@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{util, Result};
 
 /// Configuration management
 #[derive(Debug, Parser)]
@@ -13,7 +13,7 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Edit the config file [default editor: notepad]
+    /// Edit the config file [default: system default editor]
     Edit,
     /// List all settings in key-value
     #[clap(alias = "ls")]
@@ -37,11 +37,15 @@ pub enum Command {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Edit => {
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "notepad".to_string());
-            let mut child = std::process::Command::new(editor.as_str())
-                .arg(&session.config().path)
-                .spawn()?;
-            child.wait()?;
+            let path = &session.config().path;
+            if let Ok(editor) = std::env::var("EDITOR") {
+                let mut child = std::process::Command::new(editor.as_str())
+                    .arg(path)
+                    .spawn()?;
+                child.wait()?;
+            } else {
+                util::open_file(path)?;
+            }
             Ok(())
         }
         Command::List => {

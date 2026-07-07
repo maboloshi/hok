@@ -1,8 +1,8 @@
 use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
-use std::{io::Write, process::Command};
+use std::io::Write;
 
-use crate::Result;
+use crate::{util, Result};
 
 /// Browse the homepage of a package
 #[derive(Debug, Parser)]
@@ -23,12 +23,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         0 => eprintln!("Could not find package named '{}'.", query),
         1 => {
             let package = &result[0];
-            let url = std::ffi::OsStr::new(package.homepage());
-            Command::new("cmd")
-                .arg("/C")
-                .arg("start")
-                .arg(url)
-                .spawn()?;
+            let url = package.homepage();
+            util::open_url(url)?;
         }
         _ => {
             result.sort_by_key(|p| p.ident());
@@ -51,12 +47,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             if let Ok(num) = parsed {
                 if num < result.len() {
                     let package = &result[num];
-                    let url = std::ffi::OsStr::new(package.homepage());
-                    Command::new("cmd")
-                        .arg("/C")
-                        .arg("start")
-                        .arg(url)
-                        .spawn()?;
+                    let url = package.homepage();
+                    util::open_url(url)?;
                     return Ok(());
                 }
             }
