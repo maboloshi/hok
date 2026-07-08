@@ -542,33 +542,72 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         // TODO: PowerShell hosting with execution context is not supported yet.
         // Perhaps at present we could call Scoop to do the removal for packages
         // using PS scripts...
-        let (_packages_with_script, _packages): (Vec<&Package>, Vec<&Package>) =
+        let (_packages_with_script, packages_no_script): (Vec<&Package>, Vec<&Package>) =
             packages.iter().partition(|p| p.has_install_script());
 
-        // TODO: commit transcation
-        // let config = session.config();
-        // let apps_dir = config.root_path().join("apps");
+        let config = session.config();
+        let apps_dir = config.root_path().join("apps");
 
-        // for &pkg in packages.iter() {
-        //     if let Some(tx) = session.emitter() {
-        //         let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
-        //     }
+        for &pkg in packages_no_script.iter() {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
+            }
 
-        //     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
-        //     internal::fs::ensure_dir(&working_dir)?;
+            let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
+            internal::fs::ensure_dir(&working_dir)?;
 
-        //     let files = pkg.download_filenames();
+            let files = pkg.download_filenames();
 
-        //     for filename in files.iter() {
-        //         let src = config.cache_path().join(filename);
-        //         let dst = working_dir.join(filename);
+            // Determine if any file is an archive (not just a flat file)
+            let is_archive = files.iter().any(|f| {
+                let ext = std::path::Path::new(f)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                matches!(
+                    ext,
+                    "7z" | "zip" | "nupkg" | "rar" | "lzh"
+                        | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar"
+                )
+            });
 
-        //         // replace existing file
-        //         let _ = std::fs::remove_file(&dst);
-        //         std::fs::copy(src, dst)?;
+            if is_archive {
+                // Extract the archive file into the working directory
+                let cache_path = config.cache_path();
+                for filename in files.iter() {
+                    let src = cache_path.join(filename);
+                    if src.exists() {
+                        if let Some(tx) = session.emitter() {
+                            let _ = tx.send(Event::PackageExtractStart(
+                                format!("{}/{}", pkg.name(), filename),
+                            ));
+                        }
+                        internal::archive::extract(
+                            &src,
+                            &working_dir,
+                            pkg.manifest().extract_dir().as_deref(),
+                            pkg.manifest().extract_to().as_deref(),
+                            pkg.manifest().innosetup(),
+                        )?;
+                        if let Some(tx) = session.emitter() {
+                            let _ = tx.send(Event::PackageExtractDone);
+                        }
+                    }
+                }
+            } else {
+                // Flat copy for non-archive files (e.g., standalone .exe)
+                for filename in files.iter() {
+                    let src = config.cache_path().join(filename);
+                    let dst = working_dir.join(filename);
+                    let _ = std::fs::remove_file(&dst);
+                    std::fs::copy(src, dst)?;
+                }
+            }
 
-        //     }
-        // }
+            if let Some(tx) = session.emitter() {
+                let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
+            }
+        }
     }
 
     Ok(())

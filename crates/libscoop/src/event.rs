@@ -93,6 +93,15 @@ pub enum Event {
     /// Package download has finished.
     PackageDownloadDone,
 
+    /// Package extraction has started.
+    PackageExtractStart(String),
+
+    /// Package extraction has made some progress.
+    PackageExtractProgress(String),
+
+    /// Package extraction has finished.
+    PackageExtractDone,
+
     /// Package environment path(s) removal has started.
     PackageEnvPathRemoveStart,
 

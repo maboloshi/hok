@@ -28,9 +28,15 @@ sysinfo = "0.29"
 thiserror = "1.0"
 tracing = "0.1.41"
 
-# Archive
-# infer = "0.9.0"
-# zip = "0.6.2"
+# Archive — pure Rust crates (no cmake/bindgen needed)
+sevenz-rust2 = "0.21"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+lzma-rs = "0.3"
+unarc-rs = "0.6"
+zstd = { version = "0.13", default-features = false }
+bzip2 = "0.6.1"
 
 [dependencies.scoop-hash]
 version = "0.1.0-beta.7"

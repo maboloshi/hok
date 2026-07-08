@@ -87,6 +87,10 @@ pub enum Error {
     #[error("{0}")]
     Custom(String),
 
+    /// Archive extraction failed.
+    #[error("failed to extract archive: {0}")]
+    ExtractionFailed(String),
+
     /// Cycle dependency error
     #[error(transparent)]
     CyclicDependency(#[from] CyclicError),
