@@ -290,6 +290,13 @@ pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> 
     Ok(())
 }
 
+/// Download a URL's content as a UTF-8 string using the session's proxy.
+pub fn download_page(session: &Session, url: &str) -> Fallible<String> {
+    let config = session.config();
+    let data = internal::network::download_file(url, config.proxy()).map_err(Error::Curl)?;
+    String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
+}
+
 /// Reset a package to reapply its shims, shortcuts, and run post_install.
 ///
 /// If `version` is `None`, the currently installed version is used.

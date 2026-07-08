@@ -10,6 +10,7 @@ mod cache;
 mod cat;
 mod checkhashes;
 mod checkurls;
+mod checkver;
 mod cleanup;
 mod completions;
 mod config;
@@ -63,6 +64,7 @@ pub enum Command {
     Cat(cat::Args),
     Checkhashes(checkhashes::Args),
     Checkurls(checkurls::Args),
+    Checkver(checkver::Args),
     Cleanup(cleanup::Args),
     Completions(completions::Args),
     Config(config::Args),
@@ -100,6 +102,7 @@ pub fn start() -> Result<()> {
         Command::Cat(args) => cat::execute(args, &session),
         Command::Checkhashes(args) => checkhashes::execute(args, &session),
         Command::Checkurls(args) => checkurls::execute(args, &session),
+        Command::Checkver(args) => checkver::execute(args, &session),
         Command::Cleanup(args) => cleanup::execute(args, &session),
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
