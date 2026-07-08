@@ -12,36 +12,37 @@ use crate::{cui, util, Result};
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
 ///
 /// Examples:
-///   hok update            # update buckets only
-///   hok update <app>      # upgrade a specific package
-///   hok update *           # upgrade all packages
+///   hok update         update buckets only
+///   hok update <app>   upgrade a specific package (Scoop-compatible)
+///   hok update *       upgrade all packages
 #[derive(Debug, Parser)]
 pub struct Args {
     /// The package(s) to be upgraded (omit to only update buckets)
     #[arg(action = ArgAction::Append)]
-    package: Vec<String>,
+    pub package: Vec<String>,
     /// Ignore failures to ensure a complete transaction
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    pub ignore_failure: bool,
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
-    offline: bool,
+    pub offline: bool,
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
-    assume_yes: bool,
+    pub assume_yes: bool,
     /// Escape hold to allow to upgrade held package(s)
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    escape_hold: bool,
+    pub escape_hold: bool,
     /// Skip package integrity check
     #[arg(long, action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    pub no_hash_check: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     if args.package.is_empty() {
-        return update_buckets(session);
+        update_buckets(session)
+    } else {
+        execute_upgrade(session, &args.package, &args)
     }
-    upgrade_packages(args, session)
 }
 
 fn update_buckets(session: &Session) -> Result<()> {
@@ -86,12 +87,9 @@ fn update_buckets(session: &Session) -> Result<()> {
     Ok(())
 }
 
-fn upgrade_packages(args: Args, session: &Session) -> Result<()> {
-    let mut queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    // "hok update *" expands to all packages
-    if queries.len() == 1 && queries[0] == "*" {
-        queries.clear();
-    }
+/// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.
+pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> Result<()> {
+    let mut queries = packages.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     if queries.is_empty() {
         queries.push("*");
     }
