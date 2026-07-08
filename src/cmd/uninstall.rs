@@ -26,6 +26,9 @@ pub struct Args {
     /// Escape hold to allow to uninstall held package(s)
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
+    /// Ignore failures to ensure a complete transaction
+    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
+    ignore_failure: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
@@ -50,6 +53,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     if args.purge {
         options.push(SyncOption::Purge);
+    }
+
+    if args.ignore_failure || session.config().ignore_failures() {
+        options.push(SyncOption::IgnoreFailure);
     }
 
     let rx = session.event_bus().receiver();

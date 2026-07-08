@@ -47,7 +47,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(SyncOption::EscapeHold);
     }
 
-    if args.ignore_failure {
+    if args.ignore_failure || session.config().ignore_failures() {
         options.push(SyncOption::IgnoreFailure);
     }
 

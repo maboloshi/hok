@@ -159,6 +159,12 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     no_junction: Option<bool>,
 
+    /// Continue multi-package operations despite individual package failures.
+    #[serde(alias = "ignore_failure")]
+    #[serde(rename = "ignore-failures")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ignore_failures: Option<bool>,
+
     /// A list of private hosts.
     ///
     /// # Note
@@ -271,6 +277,12 @@ impl Config {
         self.no_junction.unwrap_or_default()
     }
 
+    /// Get the `ignore_failures` config. Defaults to `false`.
+    #[inline]
+    pub fn ignore_failures(&self) -> bool {
+        self.inner.ignore_failures.unwrap_or(false)
+    }
+
     /// Get the `proxy` config.
     #[inline]
     pub fn proxy(&self) -> Option<&str> {
@@ -359,6 +371,13 @@ impl Config {
                     false => Some(value.to_string()),
                 }
             }
+            "ignore_failures" | "ignore-failures" | "ignore_failure" => match is_unset {
+                true => self.inner.ignore_failures = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.ignore_failures = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "gh_token" => {
                 self.inner.gh_token = match is_unset {
                     true => None,
@@ -433,6 +452,7 @@ impl Default for Config {
             gh_token: Default::default(),
             // default_global_path: default::global_path(),
             global_path: default::global_path(),
+            ignore_failures: Default::default(),
             ignore_running_processes: Default::default(),
             last_update: Default::default(),
             show_manifest: Default::default(),

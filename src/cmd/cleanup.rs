@@ -17,7 +17,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let ignore_failure = true; // cleanup is best-effort
+    let ignore_failure = session.config().ignore_failures();
     let results = operation::package_cleanup(session, &args.app, ignore_failure)?;
 
     for (name, count) in &results {
