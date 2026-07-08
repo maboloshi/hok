@@ -237,7 +237,7 @@ fn get_string_or_array(value: &serde_json::Value, key: &str) -> Vec<String> {
 /// Compute hash of a file using the specified algorithm.
 fn compute_hash(path: &Path, algo: &str) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
-    let mut builder = ChecksumBuilder::new().algo(algo)
+    let builder = ChecksumBuilder::new().algo(algo)
         .map_err(|_| anyhow::anyhow!("unsupported hash algorithm: {}", algo))?;
     let mut hasher = builder.build();
     let mut buf = [0u8; 65536];

@@ -9,6 +9,7 @@ mod bucket;
 mod cache;
 mod cat;
 mod checkhashes;
+mod checkurls;
 mod cleanup;
 mod completions;
 mod config;
@@ -61,6 +62,7 @@ pub enum Command {
     Cache(cache::Args),
     Cat(cat::Args),
     Checkhashes(checkhashes::Args),
+    Checkurls(checkurls::Args),
     Cleanup(cleanup::Args),
     Completions(completions::Args),
     Config(config::Args),
@@ -97,6 +99,7 @@ pub fn start() -> Result<()> {
         Command::Cache(args) => cache::execute(args, &session),
         Command::Cat(args) => cat::execute(args, &session),
         Command::Checkhashes(args) => checkhashes::execute(args),
+        Command::Checkurls(args) => checkurls::execute(args),
         Command::Cleanup(args) => cleanup::execute(args, &session),
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
