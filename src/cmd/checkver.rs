@@ -59,11 +59,27 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 println!("{}", "sourceforge checkver not supported".yellow());
                 continue;
             }
+            // GitHub shortcut: construct API URL from homepage
+            None if is_github_checkver(&cv) => {
+                match github_api_url(manifest.homepage()) {
+                    Some(api_url) => api_url,
+                    None => {
+                        println!("{}", "could not extract GitHub repo from homepage".yellow());
+                        continue;
+                    }
+                }
+            }
             None => {
                 println!("{}", "no checkver url".yellow());
                 continue;
             }
         };
+
+        // Automatically add `$.tag_name` JSONPath for GitHub API responses
+        let mut effective_jsonpath = cv.jsonpath.clone();
+        if effective_jsonpath.is_none() && url.contains("api.github.com") {
+            effective_jsonpath = Some("$.tag_name".to_string());
+        }
 
         // Fetch page content
         let raw = match operation::download_page(session, &url) {
@@ -76,7 +92,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // Extract version
         let current = manifest.version().to_string();
-        let latest = extract_version(&raw, cv);
+        let latest = extract_version(&raw, cv, effective_jsonpath.as_deref());
 
         match latest {
             Some(ver) if ver == current => {
@@ -98,10 +114,24 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
+/// Check if the checkver uses the GitHub shortcut (regex matches /releases/tag/).
+fn is_github_checkver(cv: &libscoop::Checkver) -> bool {
+    cv.regex.as_deref().map_or(false, |r| r.contains("/releases/tag/"))
+}
+
+/// Extract GitHub API URL from a homepage URL.
+/// e.g. "https://github.com/owner/repo" → "https://api.github.com/repos/owner/repo/releases/latest"
+fn github_api_url(homepage: &str) -> Option<String> {
+    let re = Regex::new(r"github\.com[:/]([^/]+/[^/]+?)(?:/|$)").ok()?;
+    let caps = re.captures(homepage)?;
+    let repo = caps.get(1)?.as_str().trim_end_matches('/');
+    Some(format!("https://api.github.com/repos/{}/releases/latest", repo))
+}
+
 /// Extract version string from page content using checkver rules.
-fn extract_version(content: &str, cv: &libscoop::Checkver) -> Option<String> {
-    // JSONPath: parse content as JSON and extract with path expression
-    if let Some(jp) = &cv.jsonpath {
+fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>) -> Option<String> {
+    // JSONPath: use override first (for GitHub API), then cv.jsonpath
+    if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
         let value: serde_json::Value = serde_json::from_str(content).ok()?;
         let found = value.query(jp).ok()?;
