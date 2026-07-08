@@ -885,3 +885,53 @@ fn commit_remove(session: &Session, packages: &[Package], purge: bool) -> Fallib
 
     Ok(())
 }
+
+/// Reset a package: re-link current version, re-create shims/shortcuts,
+/// and run post_install. Unlike Scoop's original reset, this runs
+/// post_install to reapply localization settings.
+pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
+    let query = query::query_installed(session, &["*"], &[])?;
+    let pkg = query
+        .iter()
+        .find(|p| p.name() == name)
+        .ok_or_else(|| Error::PackageNotFound(name.to_owned()))?;
+
+    let config = session.config();
+    let apps_dir = config.root_path().join("apps");
+    let pkg_dir = apps_dir.join(pkg.name());
+
+    let installed_ver = pkg.installed_version().unwrap_or(pkg.version());
+    let version = target_version.unwrap_or(installed_ver);
+    let version_dir = pkg_dir.join(version);
+
+    if !version_dir.exists() {
+        return Err(Error::Custom(format!(
+            "version '{}' of '{}' is not installed",
+            version, name
+        )));
+    }
+
+    info!("resetting {} ({})", name, version);
+
+    // Re-create the `current` symlink
+    let current_lnk = pkg_dir.join("current");
+    let _ = internal::fs::remove_symlink(&current_lnk);
+    internal::fs::symlink_dir(&version_dir, &current_lnk)?;
+
+    // Re-create shims + shortcuts
+    shim::remove(session, pkg)?;
+    shim::add(session, pkg)?;
+    shortcut::remove(session, pkg)?;
+    shortcut::add(session, pkg)?;
+
+    // Run post_install to reapply localization (fixes Scoop bug)
+    run_script(
+        session,
+        pkg,
+        &version_dir,
+        "post_install",
+        pkg.manifest().post_install(),
+    )?;
+
+    Ok(())
+}

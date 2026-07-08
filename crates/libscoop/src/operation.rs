@@ -272,6 +272,13 @@ pub fn cache_remove(session: &Session, query: &str) -> Fallible<()> {
     }
 }
 
+/// Reset a package to reapply its shims, shortcuts, and run post_install.
+///
+/// If `version` is `None`, the currently installed version is used.
+pub fn package_reset(session: &Session, name: &str, version: Option<&str>) -> Fallible<()> {
+    package::sync::reset(session, name, version)
+}
+
 /// Get the configuation list.
 ///
 /// # Returns
