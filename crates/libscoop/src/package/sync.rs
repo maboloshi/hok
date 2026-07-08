@@ -617,7 +617,8 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        commit_install(session, &packages)?;
+        let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
+        commit_install(session, &packages, ignore_failure)?;
     }
 
     Ok(())
@@ -625,89 +626,91 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
-fn commit_install(session: &Session, packages: &[&Package]) -> Fallible<()> {
+fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
+    for &pkg in packages.iter() {
+        if let Err(e) = commit_one_install(session, pkg) {
+            let msg = format!("failed to install '{}': {}", pkg.name(), e);
+            if ignore_failure {
+                eprintln!("{}", msg);
+                continue;
+            }
+            return Err(Error::Custom(msg));
+        }
+    }
+    Ok(())
+}
+
+fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
     let apps_dir = config.root_path().join("apps");
+    let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
+    internal::fs::ensure_dir(&working_dir)?;
 
-    for &pkg in packages.iter() {
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
-        }
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
+    }
 
-        let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
-        internal::fs::ensure_dir(&working_dir)?;
+    if pkg.has_install_script() {
+        run_script(session, pkg, &working_dir, "pre_install",
+            pkg.manifest().pre_install())?;
+    }
 
-        if pkg.has_install_script() {
-            run_script(
-                session, pkg, &working_dir, "pre_install",
-                pkg.manifest().pre_install(),
-            )?;
-        }
+    let files = pkg.download_filenames();
+    let is_archive = files.iter().any(|f| {
+        let ext = std::path::Path::new(f)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        matches!(ext, "7z" | "zip" | "nupkg" | "rar" | "lzh"
+            | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar")
+    });
 
-        let files = pkg.download_filenames();
-        let is_archive = files.iter().any(|f| {
-            let ext = std::path::Path::new(f)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            matches!(
-                ext,
-                "7z" | "zip" | "nupkg" | "rar" | "lzh"
-                    | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar"
-            )
-        });
-
-        if is_archive {
-            let cache_path = config.cache_path();
-            for filename in files.iter() {
-                let src = cache_path.join(filename);
-                if src.exists() {
-                    if let Some(tx) = session.emitter() {
-                        let _ = tx.send(Event::PackageExtractStart(
-                            format!("{}/{}", pkg.name(), filename),
-                        ));
-                    }
-                    internal::archive::extract(
-                        &src, &working_dir,
-                        pkg.manifest().extract_dir().as_deref(),
-                        pkg.manifest().extract_to().as_deref(),
-                        pkg.manifest().innosetup(),
-                    )?;
-                    if let Some(tx) = session.emitter() {
-                        let _ = tx.send(Event::PackageExtractDone);
-                    }
+    if is_archive {
+        let cache_path = config.cache_path();
+        for filename in files.iter() {
+            let src = cache_path.join(filename);
+            if src.exists() {
+                if let Some(tx) = session.emitter() {
+                    let _ = tx.send(Event::PackageExtractStart(
+                        format!("{}/{}", pkg.name(), filename)));
+                }
+                internal::archive::extract(
+                    &src, &working_dir,
+                    pkg.manifest().extract_dir().as_deref(),
+                    pkg.manifest().extract_to().as_deref(),
+                    pkg.manifest().innosetup())?;
+                if let Some(tx) = session.emitter() {
+                    let _ = tx.send(Event::PackageExtractDone);
                 }
             }
-        } else {
-            for filename in files.iter() {
-                let src = config.cache_path().join(filename);
-                let dst = working_dir.join(filename);
-                let _ = std::fs::remove_file(&dst);
-                std::fs::copy(src, dst)?;
-            }
         }
-
-        let current_lnk = apps_dir.join(pkg.name()).join("current");
-        let _ = internal::fs::remove_symlink(&current_lnk);
-        internal::fs::symlink_dir(&working_dir, &current_lnk)?;
-
-        if pkg.has_install_script() {
-            if let Some(installer) = pkg.manifest().installer() {
-                run_script(session, pkg, &working_dir, "installer", installer.script())?;
-            }
-            run_script(
-                session, pkg, &working_dir, "post_install",
-                pkg.manifest().post_install(),
-            )?;
+    } else {
+        for filename in files.iter() {
+            let src = config.cache_path().join(filename);
+            let dst = working_dir.join(filename);
+            let _ = std::fs::remove_file(&dst);
+            std::fs::copy(src, dst)?;
         }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
-        }
-
-        shim::add(session, pkg)?;
-        shortcut::add(session, pkg)?;
     }
+
+    let current_lnk = apps_dir.join(pkg.name()).join("current");
+    let _ = internal::fs::remove_symlink(&current_lnk);
+    internal::fs::symlink_dir(&working_dir, &current_lnk)?;
+
+    if pkg.has_install_script() {
+        if let Some(installer) = pkg.manifest().installer() {
+            run_script(session, pkg, &working_dir, "installer", installer.script())?;
+        }
+        run_script(session, pkg, &working_dir, "post_install",
+            pkg.manifest().post_install())?;
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
+    }
+
+    shim::add(session, pkg)?;
+    shortcut::add(session, pkg)?;
 
     Ok(())
 }
@@ -823,7 +826,9 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
     }
 
     if let Some(packages) = transaction.remove_view() {
-        commit_remove(session, packages, options.contains(&SyncOption::Purge))?;
+        let purge = options.contains(&SyncOption::Purge);
+        let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
+        commit_remove(session, packages, purge, ignore_failure)?;
     }
 
     Ok(())
@@ -831,56 +836,64 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
 
 /// Execute the removal commit: run scripts, clean up shims/shortcuts/env,
 /// remove app directory, and optionally purge persist data.
-fn commit_remove(session: &Session, packages: &[Package], purge: bool) -> Fallible<()> {
+fn commit_remove(session: &Session, packages: &[Package], purge: bool, ignore_failure: bool) -> Fallible<()> {
+    for package in packages.iter() {
+        if let Err(e) = commit_one_remove(session, package, purge) {
+            let msg = format!("failed to remove '{}': {}", package.name(), e);
+            if ignore_failure {
+                eprintln!("{}", msg);
+                continue;
+            }
+            return Err(Error::Custom(msg));
+        }
+    }
+    Ok(())
+}
+
+fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
     let config = session.config();
     let root_dir = config.root_path();
 
-    for package in packages.iter() {
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
+    }
+
+    let app_dir = root_dir.join("apps").join(package.name());
+
+    run_script(session, package, &app_dir.join("current"), "pre_uninstall",
+        package.manifest().pre_uninstall())?;
+
+    if let Some(uninstaller) = package.manifest().uninstaller() {
+        run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
+    }
+
+    shim::remove(session, package)?;
+    shortcut::remove(session, package)?;
+    psmodule::remove(session, package)?;
+    env::remove(session, package)?;
+    persist::unlink(session, package)?;
+
+    let current_lnk = app_dir.join("current");
+    internal::fs::remove_symlink(current_lnk)?;
+
+    run_script(session, package, &app_dir, "post_uninstall",
+        package.manifest().post_uninstall())?;
+
+    internal::fs::remove_dir(&app_dir)?;
+
+    if purge {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
+            let _ = tx.send(Event::PackagePersistPurgeStart);
         }
-
-        let app_dir = root_dir.join("apps").join(package.name());
-
-        run_script(
-            session, package, &app_dir.join("current"), "pre_uninstall",
-            package.manifest().pre_uninstall(),
-        )?;
-
-        if let Some(uninstaller) = package.manifest().uninstaller() {
-            run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
-        }
-
-        shim::remove(session, package)?;
-        shortcut::remove(session, package)?;
-        psmodule::remove(session, package)?;
-        env::remove(session, package)?;
-        persist::unlink(session, package)?;
-
-        let current_lnk = app_dir.join("current");
-        internal::fs::remove_symlink(current_lnk)?;
-
-        run_script(
-            session, package, &app_dir, "post_uninstall",
-            package.manifest().post_uninstall(),
-        )?;
-
-        internal::fs::remove_dir(&app_dir)?;
-
-        if purge {
-            if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackagePersistPurgeStart);
-            }
-            let persist_dir = config.root_path().join("persist").join(package.name());
-            internal::fs::remove_dir(persist_dir)?;
-            if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackagePersistPurgeDone);
-            }
-        }
-
+        let persist_dir = config.root_path().join("persist").join(package.name());
+        internal::fs::remove_dir(persist_dir)?;
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageCommitDone(package.name().to_owned()));
+            let _ = tx.send(Event::PackagePersistPurgeDone);
         }
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageCommitDone(package.name().to_owned()));
     }
 
     Ok(())
