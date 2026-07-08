@@ -30,7 +30,6 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [dependencies.libscoop]
 version = "0.1.0-beta.7"
-features = ["rustcrypto-hash"]
 path = "./crates/libscoop"
 
 [profile.release]
