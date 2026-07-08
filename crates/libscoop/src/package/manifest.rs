@@ -841,6 +841,12 @@ impl Manifest {
         self.inner.checkver.as_ref()
     }
 
+    /// Returns `autoupdate` defined in this manifest.
+    #[inline]
+    pub fn autoupdate(&self) -> Option<&Autoupdate> {
+        self.inner.autoupdate.as_ref()
+    }
+
     /// Returns `cookie` defined in this manifest.
     #[inline]
     pub fn cookie(&self) -> Option<&HashMap<String, String>> {

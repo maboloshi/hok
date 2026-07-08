@@ -1,5 +1,6 @@
 use clap::Parser;
 use crossterm::style::Stylize;
+use libscoop::Manifest;
 use std::path::PathBuf;
 
 use crate::Result;
@@ -33,28 +34,21 @@ pub fn execute(args: Args) -> Result<()> {
             continue;
         }
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let value: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
+        let manifest = match Manifest::parse(&path) {
+            Ok(m) => m,
             Err(_) => continue,
         };
 
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        let has_checkver = value.get("checkver").is_some();
-        let has_autoupdate = value.get("autoupdate").is_some();
+        let has_checkver = manifest.checkver().is_some();
+        let has_autoupdate = manifest.autoupdate().is_some();
         total += 1;
 
         if args.supported {
-            // Only show manifests that DO have checkver/autoupdate
             if has_checkver || has_autoupdate {
                 println!("{} {}", "✓".green(), name);
             }
         } else {
-            // Default: show what's missing
             let mut issues = Vec::new();
             if !has_checkver {
                 issues.push("checkver".to_string());

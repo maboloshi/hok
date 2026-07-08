@@ -50,5 +50,6 @@ pub mod operation;
 
 pub use error::Error;
 pub use event::Event;
+pub use package::manifest::Manifest;
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;

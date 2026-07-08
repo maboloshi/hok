@@ -21,6 +21,7 @@ use futures::{executor::ThreadPool, task::SpawnExt};
 use std::{
     collections::HashSet,
     iter::FromIterator,
+    path::Path,
     sync::{Arc, Mutex},
 };
 use tracing::{debug, info};
@@ -270,6 +271,23 @@ pub fn cache_remove(session: &Session, query: &str) -> Fallible<()> {
             Ok(())
         }
     }
+}
+
+/// Check if a URL is accessible via HTTP HEAD, using the session's proxy config.
+pub fn head_url(session: &Session, url: &str, timeout_secs: u64) -> Fallible<bool> {
+    let config = session.config();
+    internal::network::head_url(url, config.proxy(), timeout_secs).map_err(Error::Curl)
+}
+
+/// Download a file via HTTP GET and save to a local path, using the session's proxy.
+pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
+    let config = session.config();
+    let data = internal::network::download_file(url, config.proxy()).map_err(Error::Curl)?;
+    if let Some(parent) = dest.parent() {
+        internal::fs::ensure_dir(parent)?;
+    }
+    std::fs::write(dest, &data)?;
+    Ok(())
 }
 
 /// Reset a package to reapply its shims, shortcuts, and run post_install.
