@@ -23,10 +23,6 @@ pub enum Error {
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
 
-    /// Bare bucket error
-    #[error("bare bucket '{0}' is no longer supported")]
-    BareBucketFound(String),
-
     /// Thrown when trying to mutate config while it is in use.
     #[error("Could not alter config because it is in use.")]
     ConfigInUse,

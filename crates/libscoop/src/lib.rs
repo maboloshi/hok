@@ -1,4 +1,3 @@
-#![allow(unused)]
 //! This crate aims to provide a full-featured, practical, and efficient Rust
 //! reimplementation of [Scoop], the Windows command-line installer. It is a
 //! library crate providing the core functionality of interacting with Scoop,

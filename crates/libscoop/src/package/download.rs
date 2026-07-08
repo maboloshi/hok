@@ -55,9 +55,6 @@ struct FileDownloadInfo<'a> {
 
     /// Whether the remote file size is estimated.
     estimated: bool,
-
-    /// Whether the server accepts Range requests.
-    accept_ranges: bool,
 }
 
 /// Possible cache state of a package.
@@ -171,7 +168,6 @@ impl<'a> PackageSet<'a> {
                     local_size,
                     remote_size,
                     estimated: false,
-                    accept_ranges: false,
                 };
 
                 pacakge_cache.inner.insert(filename.to_owned(), dlinfo);

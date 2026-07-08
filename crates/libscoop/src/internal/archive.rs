@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use crate::constant::REGEX_ARCHIVE_7Z;

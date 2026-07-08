@@ -108,6 +108,7 @@ fn create_shortcut(target: &Path, link: &Path) -> std::io::Result<()> {
     }
 
     // IShellLinkW vtable
+    #[allow(dead_code)]
     type IShellLinkW = *mut *mut IShellLinkWVtbl;
     #[repr(C)]
     struct IShellLinkWVtbl {
@@ -131,6 +132,7 @@ fn create_shortcut(target: &Path, link: &Path) -> std::io::Result<()> {
     }
 
     // IPersistFile vtable
+    #[allow(dead_code)]
     type IPersistFile = *mut *mut IPersistFileVtbl;
     #[repr(C)]
     struct IPersistFileVtbl {
@@ -171,7 +173,7 @@ fn create_shortcut(target: &Path, link: &Path) -> std::io::Result<()> {
     let mut result = Ok(());
 
     unsafe {
-        let vtbl = (*(p_sl as *mut *mut IShellLinkWVtbl));
+        let vtbl = *(p_sl as *mut *mut IShellLinkWVtbl) ;
 
         // Set target path
         let target_wide: Vec<u16> = OsStr::new(target.as_os_str())

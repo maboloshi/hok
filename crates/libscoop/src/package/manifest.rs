@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use tracing::{debug, warn};
+use tracing::warn;
 
 use crate::constant::{REGEX_HASH, SPDX_LIST};
 use crate::error::Fallible;

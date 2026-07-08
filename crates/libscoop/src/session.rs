@@ -2,7 +2,7 @@ use flume::{Receiver, Sender};
 use once_cell::unsync::OnceCell;
 use std::cell::{Ref, RefCell, RefMut};
 use std::path::Path;
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 
 use crate::{
     config::{possible_config_paths, Config, ConfigBuilder},
