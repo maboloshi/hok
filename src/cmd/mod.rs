@@ -11,6 +11,7 @@ mod cat;
 mod cleanup;
 mod completions;
 mod config;
+mod formatjson;
 mod hold;
 mod home;
 mod info;
@@ -60,6 +61,7 @@ pub enum Command {
     Cleanup(cleanup::Args),
     Completions(completions::Args),
     Config(config::Args),
+    FormatJson(formatjson::Args),
     Hold(hold::Args),
     Home(home::Args),
     Info(info::Args),
@@ -94,6 +96,7 @@ pub fn start() -> Result<()> {
         Command::Cleanup(args) => cleanup::execute(args, &session),
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
+        Command::FormatJson(args) => formatjson::execute(args),
         Command::Hold(args) => hold::execute(args, &session),
         Command::Home(args) => home::execute(args, &session),
         Command::Info(args) => info::execute(args, &session),

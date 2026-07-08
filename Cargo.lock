@@ -1087,6 +1087,7 @@ dependencies = [
  "libscoop",
  "regex",
  "remove_dir_all",
+ "serde_json",
  "tracing-subscriber",
 ]
 
