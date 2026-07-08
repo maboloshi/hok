@@ -1,3 +1,9 @@
+//! Git operations.
+//!
+//! Currently uses `git2` (libgit2 bindings). A pure-Rust `gix` version was
+//! attempted but abandoned because gix's dependency tree is prohibitively
+//! large (aws-lc-rs, quinn-proto, h2, icu — causing 20+ min first build).
+
 use git2::{CredentialType, FetchOptions, Repository};
 use std::{path::Path, result::Result};
 
