@@ -45,6 +45,7 @@ path = "../scoop_hash"
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
 winreg = "0.52"
+innospect = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 openssl = { version = "0.10.66", features = ["vendored"] }

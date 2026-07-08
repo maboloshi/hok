@@ -68,10 +68,15 @@ pub fn extract(
     extract_to: Option<&[&str]>,
     innosetup: bool,
 ) -> Fallible<()> {
+    // Compute effective extract_to path
+    let effective_dest = match extract_to {
+        Some(subdirs) if !subdirs.is_empty() => dest_dir.join(&subdirs[0]),
+        _ => dest_dir.to_path_buf(),
+    };
+    crate::internal::fs::ensure_dir(&effective_dest)?;
+
     if innosetup {
-        return Err(Error::ExtractionFailed(
-            "Inno Setup extraction not yet implemented".into(),
-        ));
+        return extract_innosetup(cache_path, &effective_dest, extract_dir);
     }
 
     let filename = cache_path
@@ -80,13 +85,6 @@ pub fn extract(
         .to_string_lossy();
     let fmt = detect_format(&filename)
         .ok_or_else(|| Error::ExtractionFailed(format!("unknown archive format: {}", filename)))?;
-
-    // Compute effective extract_to path
-    let effective_dest = match extract_to {
-        Some(subdirs) if !subdirs.is_empty() => dest_dir.join(&subdirs[0]),
-        _ => dest_dir.to_path_buf(),
-    };
-    crate::internal::fs::ensure_dir(&effective_dest)?;
 
     // Fallback for unsupported formats (ISO, etc.)
     if needs_fallback(fmt) {
@@ -301,7 +299,76 @@ fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
     Ok(())
 }
 
+// ─── Inno Setup extraction via innospect ─────────────────────────────
+
+#[cfg(windows)]
+fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
+    let data = std::fs::read(src)
+        .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
+
+    let installer = innospect::InnoInstaller::from_bytes(&data)
+        .map_err(|e| Error::ExtractionFailed(format!("innospect parse error: {}", e)))?;
+
+    for result in installer.extract_files() {
+        let (file_entry, bytes) = result
+            .map_err(|e| Error::ExtractionFailed(format!("innospect extract error: {}", e)))?;
+
+        // destination is the Inno Setup install path, e.g. `{app}\bin\file.exe`.
+        // We strip `{app}\` prefix since the extraction root IS the app dir.
+        let name = file_entry.destination.as_str();
+        if name.is_empty() {
+            continue;
+        }
+        // Strip Inno Setup constants from the destination path
+        let name = strip_innopath(name);
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !f.iter().any(|d| name.starts_with(d)) {
+                continue;
+            }
+        }
+        let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
+        let target_path = dest.join(&target);
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent)?;
+        }
+        std::fs::write(&target_path, &bytes).map_err(|e| {
+            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn extract_innosetup(_src: &Path, _dest: &Path, _filter: Option<&[&str]>) -> Fallible<()> {
+    Err(Error::ExtractionFailed(
+        "Inno Setup extraction is only supported on Windows".into(),
+    ))
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
+
+/// Strip common Inno Setup path constants from a destination path.
+///
+/// `{app}` → stripped (the app directory IS our extraction root)
+/// `{group}` → stripped (start menu group, no meaning in Scoop)
+/// `{sys}` → kept as-is (system directory, unusual but possible)
+fn strip_innopath(path: &str) -> &str {
+    if let Some(rest) = path
+        .strip_prefix("{app}")
+        .or_else(|| path.strip_prefix("{group}"))
+    {
+        rest.trim_start_matches('\\').trim_start_matches('/')
+    } else if let Some(rest) = path.strip_prefix("{autopf}") {
+        rest.trim_start_matches('\\').trim_start_matches('/')
+    } else if let Some(rest) = path.strip_prefix("{commonpf}") {
+        rest.trim_start_matches('\\').trim_start_matches('/')
+    } else {
+        path
+    }
+}
 
 /// Strip the extract_dir prefix from a path inside the archive.
 fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
@@ -551,10 +618,14 @@ mod tests {
         std::fs::create_dir_all(&dest).unwrap();
 
         let result = extract(&archive_path, &dest, None, None, true);
+        // Should fail to parse as Inno Setup (not a valid PE/Inno installer)
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ExtractionFailed(msg) => {
-                assert!(msg.contains("Inno Setup extraction not yet implemented"));
+                assert!(
+                    msg.contains("innospect") || msg.contains("parse"),
+                    "unexpected error: {msg}"
+                );
             }
             _ => panic!("expected ExtractionFailed error"),
         }
