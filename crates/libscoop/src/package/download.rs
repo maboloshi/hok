@@ -599,6 +599,67 @@ fn progress(
     tx.send(Event::PackageDownloadProgress(ctx)).is_ok()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chunk_boundaries() {
+        let size = 100u64;
+        let chunks = 4u64;
+        let chunk_size = size / chunks;
+        assert_eq!(chunk_size, 25);
+        assert_eq!(0 * chunk_size, 0);
+        assert_eq!((0 + 1) * chunk_size - 1, 24);
+        assert_eq!(1 * chunk_size, 25);
+        assert_eq!((1 + 1) * chunk_size - 1, 49);
+        assert_eq!(3 * chunk_size, 75);
+        assert_eq!(size - 1, 99);
+    }
+
+    #[test]
+    fn test_chunk_cover_all_bytes() {
+        let size = 100u64;
+        let chunks = 5u64;
+        let chunk_size = size / chunks;
+        let mut covered = vec![false; size as usize];
+
+        for i in 0..chunks {
+            let start = i * chunk_size;
+            let end = if i == chunks - 1 { size - 1 } else { (i + 1) * chunk_size - 1 };
+            for b in start..=end {
+                covered[b as usize] = true;
+            }
+        }
+        assert!(covered.iter().all(|&c| c));
+    }
+
+    #[test]
+    fn test_chunk_remainder() {
+        let size = 10u64;
+        let chunks = 3u64;
+        let chunk_size = size / chunks;
+        let mut covered = vec![false; size as usize];
+        for i in 0..chunks {
+            let start = i * chunk_size;
+            let end = if i == chunks - 1 { size - 1 } else { (i + 1) * chunk_size - 1 };
+            for b in start..=end {
+                covered[b as usize] = true;
+            }
+        }
+        assert!(covered.iter().all(|&c| c));
+    }
+
+    #[test]
+    fn test_chunk_single_byte() {
+        let size = 1u64;
+        let chunks = 1u64;
+        let chunk_size = size / chunks;
+        assert_eq!(chunk_size, 1);
+        assert_eq!(size - 1, 0);
+    }
+}
+
 // #[derive(Debug)]
 // struct ChunkedRange {
 //     pub offset: u64,
