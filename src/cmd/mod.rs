@@ -27,7 +27,6 @@ mod status;
 mod unhold;
 mod uninstall;
 mod update;
-mod upgrade;
 
 use crate::Result;
 
@@ -82,9 +81,8 @@ pub enum Command {
     Unhold(unhold::Args),
     #[clap(alias = "rm", alias = "remove")]
     Uninstall(uninstall::Args),
-    #[clap(alias = "u")]
+    #[clap(alias = "u", alias = "upgrade")]
     Update(update::Args),
-    Upgrade(upgrade::Args),
 }
 
 /// CLI entry point
@@ -119,7 +117,6 @@ pub fn start() -> Result<()> {
         Command::Unhold(args) => unhold::execute(args, &session),
         Command::Uninstall(args) => uninstall::execute(args, &session),
         Command::Update(args) => update::execute(args, &session),
-        Command::Upgrade(args) => upgrade::execute(args, &session),
     }
 }
 
