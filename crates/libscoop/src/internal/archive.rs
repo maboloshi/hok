@@ -333,6 +333,7 @@ fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn test_detect_format() {
@@ -368,5 +369,194 @@ mod tests {
 
         let filter3: Vec<&str> = vec![];
         assert_eq!(strip_dir("dir1/sub/a.txt", Some(&filter3)), None);
+    }
+
+    // ─── Integration tests ────────────────────────────────────────
+
+    fn tmpdir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("hok_test_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn create_test_zip(path: &std::path::Path) {
+        use zip::write::FileOptions;
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> = FileOptions::default().compression_method(CompressionMethod::Stored);
+
+        zip.add_directory("root/", opts).unwrap();
+        zip.start_file("root/hello.txt", opts).unwrap();
+        zip.write_all(b"Hello, World!").unwrap();
+        zip.add_directory("root/sub/", opts).unwrap();
+        zip.start_file("root/sub/deep.txt", opts).unwrap();
+        zip.write_all(b"Deep content").unwrap();
+        zip.finish().unwrap();
+    }
+
+    fn create_test_tar_gz(path: &std::path::Path) {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use tar::Builder;
+
+        let stagedir = tmpdir("tar_staging");
+        std::fs::create_dir_all(stagedir.join("root/sub")).unwrap();
+        std::fs::write(stagedir.join("root/hello.txt"), b"Hello, World!").unwrap();
+        std::fs::write(stagedir.join("root/sub/deep.txt"), b"Deep content").unwrap();
+
+        let file = std::fs::File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::fast());
+        let mut tar = Builder::new(encoder);
+        tar.append_path_with_name(stagedir.join("root/hello.txt"), "root/hello.txt")
+            .unwrap();
+        tar.append_path_with_name(stagedir.join("root/sub/deep.txt"), "root/sub/deep.txt")
+            .unwrap();
+
+        let encoder = tar.into_inner().unwrap();
+        encoder.finish().unwrap();
+
+        let _ = std::fs::remove_dir_all(&stagedir);
+    }
+
+    #[test]
+    fn test_extract_zip_basic() {
+        let dir = tmpdir("extract_zip_basic");
+        let archive_path = dir.join("test.zip");
+        create_test_zip(&archive_path);
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        extract(&archive_path, &dest, None, None, false).unwrap();
+
+        assert!(dest.join("root/hello.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("root/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+        assert!(dest.join("root/sub/deep.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("root/sub/deep.txt")).unwrap(),
+            "Deep content"
+        );
+    }
+
+    #[test]
+    fn test_extract_zip_with_extract_dir() {
+        let dir = tmpdir("extract_zip_dir");
+        let archive_path = dir.join("test.zip");
+        create_test_zip(&archive_path);
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let filter = vec!["root/sub"];
+        extract(&archive_path, &dest, Some(&filter), None, false).unwrap();
+
+        // hello.txt not extracted (not under root/sub)
+        assert!(!dest.join("root/hello.txt").exists());
+        // deep.txt extracted with prefix stripped
+        assert!(dest.join("deep.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("deep.txt")).unwrap(),
+            "Deep content"
+        );
+    }
+
+    #[test]
+    fn test_extract_zip_with_extract_to() {
+        let dir = tmpdir("extract_zip_to");
+        let archive_path = dir.join("test.zip");
+        create_test_zip(&archive_path);
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let subdir = vec!["myapp"];
+        extract(&archive_path, &dest, None, Some(&subdir), false).unwrap();
+
+        // All files go under myapp/
+        assert!(dest.join("myapp/root/hello.txt").exists());
+        assert!(dest.join("myapp/root/sub/deep.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_tar_gz_basic() {
+        let dir = tmpdir("extract_tar_gz");
+        let archive_path = dir.join("test.tar.gz");
+        create_test_tar_gz(&archive_path);
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        extract(&archive_path, &dest, None, None, false).unwrap();
+
+        assert!(dest.join("root/hello.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("root/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+        assert!(dest.join("root/sub/deep.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_invalid_file() {
+        let dir = tmpdir("extract_invalid");
+        let archive_path = dir.join("not_an_archive.zip");
+        std::fs::write(&archive_path, b"this is not a zip file").unwrap();
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let result = extract(&archive_path, &dest, None, None, false);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ExtractionFailed(msg) => {
+                assert!(msg.contains("zip error"));
+            }
+            _ => panic!("expected ExtractionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_unknown_format() {
+        let dir = tmpdir("unknown_format");
+        let archive_path = dir.join("data.bin");
+        std::fs::write(&archive_path, b"some random data").unwrap();
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let result = extract(&archive_path, &dest, None, None, false);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ExtractionFailed(msg) => {
+                assert!(msg.contains("unknown archive format"));
+            }
+            _ => panic!("expected ExtractionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_innosetup_not_implemented() {
+        let dir = tmpdir("innosetup_notimpl");
+        let archive_path = dir.join("setup.exe");
+        std::fs::write(&archive_path, b"dummy exe").unwrap();
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let result = extract(&archive_path, &dest, None, None, true);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ExtractionFailed(msg) => {
+                assert!(msg.contains("Inno Setup extraction not yet implemented"));
+            }
+            _ => panic!("expected ExtractionFailed error"),
+        }
     }
 }
