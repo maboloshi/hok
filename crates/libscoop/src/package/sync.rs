@@ -823,68 +823,63 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
     }
 
     if let Some(packages) = transaction.remove_view() {
-        let purge = options.contains(&SyncOption::Purge);
-        let config = session.config();
-        let root_dir = config.root_path();
+        commit_remove(session, packages, options.contains(&SyncOption::Purge))?;
+    }
 
-        for package in packages.iter() {
+    Ok(())
+}
+
+/// Execute the removal commit: run scripts, clean up shims/shortcuts/env,
+/// remove app directory, and optionally purge persist data.
+fn commit_remove(session: &Session, packages: &[Package], purge: bool) -> Fallible<()> {
+    let config = session.config();
+    let root_dir = config.root_path();
+
+    for package in packages.iter() {
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
+        }
+
+        let app_dir = root_dir.join("apps").join(package.name());
+
+        run_script(
+            session, package, &app_dir.join("current"), "pre_uninstall",
+            package.manifest().pre_uninstall(),
+        )?;
+
+        if let Some(uninstaller) = package.manifest().uninstaller() {
+            run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
+        }
+
+        shim::remove(session, package)?;
+        shortcut::remove(session, package)?;
+        psmodule::remove(session, package)?;
+        env::remove(session, package)?;
+        persist::unlink(session, package)?;
+
+        let current_lnk = app_dir.join("current");
+        internal::fs::remove_symlink(current_lnk)?;
+
+        run_script(
+            session, package, &app_dir, "post_uninstall",
+            package.manifest().post_uninstall(),
+        )?;
+
+        internal::fs::remove_dir(&app_dir)?;
+
+        if purge {
             if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
+                let _ = tx.send(Event::PackagePersistPurgeStart);
             }
-
-            let app_dir = root_dir.join("apps").join(package.name());
-
-            // Run pre_uninstall script before removing files
-            run_script(
-                session,
-                package,
-                &app_dir.join("current"),
-                "pre_uninstall",
-                package.manifest().pre_uninstall(),
-            )?;
-
-            // Run uninstaller script
-            if let Some(uninstaller) = package.manifest().uninstaller() {
-                run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
-            }
-
-            shim::remove(session, package)?;
-            shortcut::remove(session, package)?;
-            psmodule::remove(session, package)?;
-            env::remove(session, package)?;
-            persist::unlink(session, package)?;
-
-            let current_lnk = app_dir.join("current");
-            internal::fs::remove_symlink(current_lnk)?;
-
-            // Run post_uninstall script after removal
-            run_script(
-                session,
-                package,
-                &app_dir,
-                "post_uninstall",
-                package.manifest().post_uninstall(),
-            )?;
-
-            // Remove the app directory
-            internal::fs::remove_dir(app_dir)?;
-
-            if purge {
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackagePersistPurgeStart);
-                }
-
-                let persist_dir = config.root_path().join("persist").join(package.name());
-                internal::fs::remove_dir(persist_dir)?;
-
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackagePersistPurgeDone);
-                }
-            }
-
+            let persist_dir = config.root_path().join("persist").join(package.name());
+            internal::fs::remove_dir(persist_dir)?;
             if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackageCommitDone(package.name().to_owned()));
+                let _ = tx.send(Event::PackagePersistPurgeDone);
             }
+        }
+
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageCommitDone(package.name().to_owned()));
         }
     }
 
