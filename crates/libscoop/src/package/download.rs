@@ -218,10 +218,12 @@ impl<'a> PackageSet<'a> {
 
         internal::fs::ensure_dir(&cache_root)?;
 
-        /// Minimum file size (50MB) to enable fragmented download.
-        const FRAGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
-        /// Default number of fragments.
-        const FRAGMENT_COUNT: u64 = 4;
+        // Read fragmentation settings from aria2 config (reuse existing user config)
+        let fragmentation_enabled = config.aria2_enabled();
+        let chunk_count = config
+            .aria2_split()
+            .min(config.aria2_max_connection_per_server()) as u64;
+        let min_split_size = config.aria2_min_split_size();
 
         for (pidx, (_, cache)) in package_caches.iter().enumerate() {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
@@ -239,21 +241,23 @@ impl<'a> PackageSet<'a> {
                 }
 
                 // Decide whether to use fragmented download
-                let use_fragments = !dlinfo.estimated
-                    && dlinfo.remote_size >= FRAGMENT_THRESHOLD
-                    && dlinfo.remote_size > 0;
+                let use_fragments = fragmentation_enabled
+                    && !dlinfo.estimated
+                    && dlinfo.remote_size >= min_split_size
+                    && dlinfo.remote_size > 0
+                    && chunk_count > 1;
 
                 if use_fragments {
                     let path = cache_root.join(filename);
                     let part_dir = cache_root.join(format!("{}.parts", filename));
                     internal::fs::ensure_dir(&part_dir)?;
 
-                    let chunk_size = dlinfo.remote_size / FRAGMENT_COUNT;
+                    let chunk_size = dlinfo.remote_size / chunk_count;
                     let mut part_paths = Vec::new();
 
-                    for chunk_idx in 0..FRAGMENT_COUNT {
+                    for chunk_idx in 0..chunk_count {
                         let start = chunk_idx * chunk_size;
-                        let end = if chunk_idx == FRAGMENT_COUNT - 1 {
+                        let end = if chunk_idx == chunk_count - 1 {
                             dlinfo.remote_size - 1
                         } else {
                             (chunk_idx + 1) * chunk_size - 1

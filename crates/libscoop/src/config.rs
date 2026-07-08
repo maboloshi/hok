@@ -289,6 +289,52 @@ impl Config {
         self.use_isolated_path.as_ref()
     }
 
+    /// Whether Aria2 (or equivalent curl fragmentation) is enabled.
+    /// Defaults to `true` if not set.
+    #[inline]
+    pub fn aria2_enabled(&self) -> bool {
+        self.inner.aria2_enabled.unwrap_or(true)
+    }
+
+    /// Number of connections per server for fragmented download.
+    /// Maps from `aria2-split`. Defaults to 5.
+    #[inline]
+    pub fn aria2_split(&self) -> u32 {
+        self.inner.aria2_split.unwrap_or(5).max(1)
+    }
+
+    /// Max connections per server (cap for fragmentation count).
+    /// Maps from `aria2-max-connection-per-server`. Defaults to 5.
+    #[inline]
+    pub fn aria2_max_connection_per_server(&self) -> u32 {
+        self.inner
+            .aria2_max_connection_per_server
+            .unwrap_or(5)
+            .max(1)
+    }
+
+    /// Minimum file size to trigger fragmented download.
+    /// Maps from `aria2-min-split-size`. Parses strings like "5M", "10M".
+    /// Returns bytes. Defaults to 5MB.
+    pub fn aria2_min_split_size(&self) -> u64 {
+        const DEFAULT: u64 = 5 * 1024 * 1024;
+        let raw = match self.inner.aria2_min_split_size.as_deref() {
+            Some(s) => s,
+            None => return DEFAULT,
+        };
+        let raw = raw.trim().to_lowercase();
+        let (num_str, multiplier) = if raw.ends_with('g') {
+            (&raw[..raw.len() - 1], 1024u64 * 1024 * 1024)
+        } else if raw.ends_with('m') {
+            (&raw[..raw.len() - 1], 1024u64 * 1024)
+        } else if raw.ends_with('k') {
+            (&raw[..raw.len() - 1], 1024u64)
+        } else {
+            (raw.as_str(), 1u64)
+        };
+        num_str.parse::<u64>().ok().map(|v| v * multiplier).unwrap_or(DEFAULT)
+    }
+
     /// Update config key with new value.
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Fallible<()> {
         let is_unset = value.is_empty();
