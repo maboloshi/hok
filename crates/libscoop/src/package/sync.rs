@@ -617,103 +617,96 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        let config = session.config();
-        let apps_dir = config.root_path().join("apps");
+        commit_install(session, &packages)?;
+    }
 
-        for &pkg in packages.iter() {
-            if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
-            }
+    Ok(())
+}
 
-            let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
-            internal::fs::ensure_dir(&working_dir)?;
+/// Commit package installation: extract files, run scripts, create symlinks,
+/// shims, and shortcuts.
+fn commit_install(session: &Session, packages: &[&Package]) -> Fallible<()> {
+    let config = session.config();
+    let apps_dir = config.root_path().join("apps");
 
-            if pkg.has_install_script() {
-                // Run pre_install before extraction
-                run_script(
-                    session,
-                    pkg,
-                    &working_dir,
-                    "pre_install",
-                    pkg.manifest().pre_install(),
-                )?;
-            }
+    for &pkg in packages.iter() {
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
+        }
 
-            let files = pkg.download_filenames();
+        let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
+        internal::fs::ensure_dir(&working_dir)?;
 
-            // Determine if any file is an archive
-            let is_archive = files.iter().any(|f| {
-                let ext = std::path::Path::new(f)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
-                matches!(
-                    ext,
-                    "7z" | "zip" | "nupkg" | "rar" | "lzh"
-                        | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar"
-                )
-            });
+        if pkg.has_install_script() {
+            run_script(
+                session, pkg, &working_dir, "pre_install",
+                pkg.manifest().pre_install(),
+            )?;
+        }
 
-            if is_archive {
-                let cache_path = config.cache_path();
-                for filename in files.iter() {
-                    let src = cache_path.join(filename);
-                    if src.exists() {
-                        if let Some(tx) = session.emitter() {
-                            let _ = tx.send(Event::PackageExtractStart(
-                                format!("{}/{}", pkg.name(), filename),
-                            ));
-                        }
-                        internal::archive::extract(
-                            &src,
-                            &working_dir,
-                            pkg.manifest().extract_dir().as_deref(),
-                            pkg.manifest().extract_to().as_deref(),
-                            pkg.manifest().innosetup(),
-                        )?;
-                        if let Some(tx) = session.emitter() {
-                            let _ = tx.send(Event::PackageExtractDone);
-                        }
+        let files = pkg.download_filenames();
+        let is_archive = files.iter().any(|f| {
+            let ext = std::path::Path::new(f)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            matches!(
+                ext,
+                "7z" | "zip" | "nupkg" | "rar" | "lzh"
+                    | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar"
+            )
+        });
+
+        if is_archive {
+            let cache_path = config.cache_path();
+            for filename in files.iter() {
+                let src = cache_path.join(filename);
+                if src.exists() {
+                    if let Some(tx) = session.emitter() {
+                        let _ = tx.send(Event::PackageExtractStart(
+                            format!("{}/{}", pkg.name(), filename),
+                        ));
+                    }
+                    internal::archive::extract(
+                        &src, &working_dir,
+                        pkg.manifest().extract_dir().as_deref(),
+                        pkg.manifest().extract_to().as_deref(),
+                        pkg.manifest().innosetup(),
+                    )?;
+                    if let Some(tx) = session.emitter() {
+                        let _ = tx.send(Event::PackageExtractDone);
                     }
                 }
-            } else {
-                // Flat copy for non-archive files (e.g., standalone .exe)
-                for filename in files.iter() {
-                    let src = config.cache_path().join(filename);
-                    let dst = working_dir.join(filename);
-                    let _ = std::fs::remove_file(&dst);
-                    std::fs::copy(src, dst)?;
-                }
             }
-
-            // Create the `current` symlink pointing to this version
-            let current_lnk = apps_dir.join(pkg.name()).join("current");
-            let _ = internal::fs::remove_symlink(&current_lnk);
-            internal::fs::symlink_dir(&working_dir, &current_lnk)?;
-
-            if pkg.has_install_script() {
-                // Run installer script (the main install routine)
-                if let Some(installer) = pkg.manifest().installer() {
-                    run_script(session, pkg, &working_dir, "installer", installer.script())?;
-                }
-                // Run post_install after extraction + installer
-                run_script(
-                    session,
-                    pkg,
-                    &working_dir,
-                    "post_install",
-                    pkg.manifest().post_install(),
-                )?;
+        } else {
+            for filename in files.iter() {
+                let src = config.cache_path().join(filename);
+                let dst = working_dir.join(filename);
+                let _ = std::fs::remove_file(&dst);
+                std::fs::copy(src, dst)?;
             }
-
-            if let Some(tx) = session.emitter() {
-                let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
-            }
-
-            // Create shims and shortcuts
-            shim::add(session, pkg)?;
-            shortcut::add(session, pkg)?;
         }
+
+        let current_lnk = apps_dir.join(pkg.name()).join("current");
+        let _ = internal::fs::remove_symlink(&current_lnk);
+        internal::fs::symlink_dir(&working_dir, &current_lnk)?;
+
+        if pkg.has_install_script() {
+            if let Some(installer) = pkg.manifest().installer() {
+                run_script(session, pkg, &working_dir, "installer", installer.script())?;
+            }
+            run_script(
+                session, pkg, &working_dir, "post_install",
+                pkg.manifest().post_install(),
+            )?;
+        }
+
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
+        }
+
+        shim::add(session, pkg)?;
+        shortcut::add(session, pkg)?;
     }
 
     Ok(())
