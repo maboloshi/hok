@@ -607,6 +607,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             if let Some(tx) = session.emitter() {
                 let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
             }
+
+            // Create shims and shortcuts
+            shim::add(session, pkg)?;
+            shortcut::add(session, pkg)?;
         }
     }
 

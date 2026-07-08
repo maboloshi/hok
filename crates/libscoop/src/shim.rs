@@ -90,16 +90,129 @@ impl Shim<'_> {
     }
 }
 
-// pub fn add(session: &Session, package: &Package) -> Fallible<()> {
-//     let config = session.config();
-//     let shims_dir = config.root_path().join("shims");
+/// Add shims for a package.
+pub fn add(session: &Session, package: &Package) -> Fallible<()> {
+    let config = session.config();
+    let shims_dir = config.root_path().join("shims");
+    internal::fs::ensure_dir(&shims_dir)?;
 
-//     if let Some(bins) = package.manifest().bin() {
-//         // TODO
-//     }
+    if let Some(bins) = package.manifest().bin() {
+        let pkg_name = package.name();
 
-//     Ok(())
-// }
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageShimAddStart(pkg_name.to_owned()));
+        }
+
+        for def in bins.into_iter() {
+            let shim = Shim::new(def);
+
+            let batches = generate_shim_batches(&shim, pkg_name);
+
+            for (path, content) in batches {
+                // Check if the shim already exists (from another package)
+                let dest = if path.exists() {
+                    // Add package name suffix to avoid conflict
+                    let stem = path.file_stem().unwrap().to_str().unwrap();
+                    let ext = path.extension().map(|e| e.to_str().unwrap()).unwrap_or("");
+                    let alt_name = format!("{}.{}.{}", stem, ext, pkg_name);
+                    path.with_file_name(&alt_name)
+                } else {
+                    path
+                };
+
+                std::fs::write(&dest, content.as_bytes())?;
+
+                if let Some(tx) = session.emitter() {
+                    let name = dest.file_name().unwrap().to_string_lossy().to_string();
+                    let _ = tx.send(Event::PackageShimAddProgress(name));
+                }
+            }
+        }
+
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageShimAddDone);
+        }
+    }
+
+    Ok(())
+}
+
+/// Generate shim files content for a given shim definition.
+///
+/// Returns a list of `(target_path, content)` pairs.
+fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf, String)> {
+    let shims_dir = std::path::PathBuf::from(""); // caller joins with actual dir
+    let mut result = Vec::new();
+
+    // The target path relative to the shims dir: ..\apps\pkgname\current\real_name
+    let target_rel = format!(
+        r#"..\apps\{}\current\{}"#,
+        pkg_name, shim.real_name
+    );
+
+    let arg_suffix = shim
+        .args
+        .as_ref()
+        .map(|a| format!(" {}", a.join(" ")))
+        .unwrap_or_default();
+
+    match shim.ty {
+        ShimType::Exe => {
+            // .shim file: batch redirect that the companion .exe stub runs
+            let content = format!(
+                "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
+                target_rel, arg_suffix
+            );
+            result.push((shims_dir.join(format!("{}.shim", shim.name)), content));
+        }
+        ShimType::Batch | ShimType::Bash => {
+            // .cmd file: direct batch redirect
+            let content = format!(
+                "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
+                target_rel, arg_suffix
+            );
+            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+        }
+        ShimType::PowerShell => {
+            // .ps1 shim: PowerShell script
+            let ps_content = format!(
+                "& \"$PSScriptRoot\\{0}\" {1} @args\r\n",
+                target_rel.replace('/', "\\"),
+                shim
+                    .args
+                    .as_ref()
+                    .map(|a| a.join(" "))
+                    .unwrap_or_default()
+            );
+            result.push((shims_dir.join(format!("{}.ps1", shim.name)), ps_content));
+
+            // .cmd wrapper: batch that calls PowerShell
+            let cmd_content = format!(
+                "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{}.ps1\" %*\r\n",
+                shim.name
+            );
+            result.push((shims_dir.join(format!("{}.cmd", shim.name)), cmd_content));
+        }
+        ShimType::Java => {
+            // .cmd file: calls java -jar
+            let content = format!(
+                "@echo off\r\njava -jar \"%~dp0{}\"{} %*\r\n",
+                target_rel, arg_suffix
+            );
+            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+        }
+        ShimType::Python => {
+            // .cmd file: calls python
+            let content = format!(
+                "@echo off\r\npython \"%~dp0{}\"{} %*\r\n",
+                target_rel, arg_suffix
+            );
+            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+        }
+    }
+
+    result
+}
 
 /// Remove shims for a package.
 pub fn remove(session: &Session, package: &Package) -> Fallible<()> {

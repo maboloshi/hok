@@ -102,6 +102,24 @@ pub enum Event {
     /// Package extraction has finished.
     PackageExtractDone,
 
+    /// Package shim creation has started.
+    PackageShimAddStart(String),
+
+    /// Package shim creation has made some progress.
+    PackageShimAddProgress(String),
+
+    /// Package shim creation has finished.
+    PackageShimAddDone,
+
+    /// Package shortcut creation has started.
+    PackageShortcutAddStart,
+
+    /// Package shortcut creation has made some progress.
+    PackageShortcutAddProgress(String),
+
+    /// Package shortcut creation has finished.
+    PackageShortcutAddDone,
+
     /// Package environment path(s) removal has started.
     PackageEnvPathRemoveStart,
 
