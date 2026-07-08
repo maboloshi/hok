@@ -100,6 +100,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
 /// Extract version string from page content using checkver rules.
 fn extract_version(content: &str, cv: &libscoop::Checkver) -> Option<String> {
+    // JSONPath: parse content as JSON and extract with path expression
+    if let Some(jp) = &cv.jsonpath {
+        use jsonpath_rust::JsonPath;
+        let value: serde_json::Value = serde_json::from_str(content).ok()?;
+        let found = value.query(jp).ok()?;
+        let ver = found.first()?.as_str()?;
+        if !ver.is_empty() {
+            return Some(ver.to_string());
+        }
+    }
+
+    // Regex extraction
     if let Some(regex_str) = &cv.regex {
         let re = Regex::new(regex_str).ok()?;
         let caps = re.captures(content)?;
@@ -107,7 +119,7 @@ fn extract_version(content: &str, cv: &libscoop::Checkver) -> Option<String> {
         return Some(ver);
     }
 
-    // No regex: treat content itself as version string
+    // No JSONPath or regex: treat content itself as version string
     let trimmed = content.trim();
     if !trimmed.is_empty() {
         Some(trimmed.to_string())
