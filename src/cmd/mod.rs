@@ -17,6 +17,7 @@ mod home;
 mod info;
 mod install;
 mod list;
+mod missing_checkver;
 mod reset;
 mod search;
 mod status;
@@ -65,9 +66,9 @@ pub enum Command {
     Hold(hold::Args),
     Home(home::Args),
     Info(info::Args),
-    #[clap(alias = "i")]
     Install(install::Args),
     List(list::Args),
+    MissingCheckver(missing_checkver::Args),
     #[clap(alias = "s")]
     Search(search::Args),
     Status(status::Args),
@@ -102,6 +103,7 @@ pub fn start() -> Result<()> {
         Command::Info(args) => info::execute(args, &session),
         Command::Install(args) => install::execute(args, &session),
         Command::List(args) => list::execute(args, &session),
+        Command::MissingCheckver(args) => missing_checkver::execute(args),
         Command::Search(args) => search::execute(args, &session),
         Command::Reset(args) => reset::execute(args, &session),
         Command::Status(args) => status::execute(args, &session),
