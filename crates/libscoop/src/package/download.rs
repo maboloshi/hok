@@ -55,6 +55,9 @@ struct FileDownloadInfo<'a> {
 
     /// Whether the remote file size is estimated.
     estimated: bool,
+
+    /// Whether the server accepts Range requests.
+    accept_ranges: bool,
 }
 
 /// Possible cache state of a package.
@@ -168,6 +171,7 @@ impl<'a> PackageSet<'a> {
                     local_size,
                     remote_size,
                     estimated: false,
+                    accept_ranges: false,
                 };
 
                 pacakge_cache.inner.insert(filename.to_owned(), dlinfo);
@@ -207,14 +211,19 @@ impl<'a> PackageSet<'a> {
         let mut token_ctx = HashMap::new();
         let package_caches = self.caches.get_mut().unwrap();
 
-        // map download tmp files to their final names
-        let mut filepaths = vec![];
+        // Maps final file path → list of chunk temp paths (for reassembly)
+        let mut chunk_file_map: HashMap<std::path::PathBuf, Vec<std::path::PathBuf>> = HashMap::new();
+        // Simple non-chunked files: (tmp, final)
+        let mut filepaths: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
 
-        // ensure cache dir exists
         internal::fs::ensure_dir(&cache_root)?;
 
+        /// Minimum file size (50MB) to enable fragmented download.
+        const FRAGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
+        /// Default number of fragments.
+        const FRAGMENT_COUNT: u64 = 4;
+
         for (pidx, (_, cache)) in package_caches.iter().enumerate() {
-            // skip download if all files are cached and valid
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
                 continue;
             }
@@ -229,57 +238,133 @@ impl<'a> PackageSet<'a> {
                     continue;
                 }
 
-                let mut easy = Easy::new();
-                easy.get(true)?;
-                easy.url(dlinfo.url)?;
-                easy.follow_location(true)?;
-                easy.useragent(user_agent)?;
-                easy.fail_on_error(true)?;
-                if let Some(proxy) = proxy {
-                    easy.proxy(proxy)?;
-                }
-                set_cookie(&mut easy, &cookie)?;
+                // Decide whether to use fragmented download
+                let use_fragments = !dlinfo.estimated
+                    && dlinfo.remote_size >= FRAGMENT_THRESHOLD
+                    && dlinfo.remote_size > 0;
 
-                if let Some(tx) = self.session.emitter() {
-                    let ident = cache.package.ident();
-                    let url = dlinfo.url.to_owned();
-                    let fname = filename.to_owned();
-                    easy.progress(true)?;
-                    easy.progress_function(move |dltotal, dlnow, _, _| {
-                        progress(
-                            tx.clone(),
-                            ident.to_owned(),
-                            url.to_owned(),
-                            fname.to_owned(),
-                            dltotal,
-                            dlnow,
-                        )
+                if use_fragments {
+                    let path = cache_root.join(filename);
+                    let part_dir = cache_root.join(format!("{}.parts", filename));
+                    internal::fs::ensure_dir(&part_dir)?;
+
+                    let chunk_size = dlinfo.remote_size / FRAGMENT_COUNT;
+                    let mut part_paths = Vec::new();
+
+                    for chunk_idx in 0..FRAGMENT_COUNT {
+                        let start = chunk_idx * chunk_size;
+                        let end = if chunk_idx == FRAGMENT_COUNT - 1 {
+                            dlinfo.remote_size - 1
+                        } else {
+                            (chunk_idx + 1) * chunk_size - 1
+                        };
+
+                        let part_path = part_dir.join(format!("part.{}", chunk_idx));
+                        part_paths.push(part_path.clone());
+
+                        let mut easy = Easy::new();
+                        easy.get(true)?;
+                        easy.url(dlinfo.url)?;
+                        easy.follow_location(true)?;
+                        easy.useragent(user_agent)?;
+                        easy.fail_on_error(true)?;
+                        if let Some(proxy) = proxy {
+                            easy.proxy(proxy)?;
+                        }
+                        set_cookie(&mut easy, &cookie)?;
+
+                        // Set Range header for this chunk
+                        let range = format!("bytes={}-{}", start, end);
+                        let mut list = List::new();
+                        list.append(&range)?;
+                        easy.http_headers(list)?;
+
+                        if let Some(tx) = self.session.emitter() {
+                            let ident = cache.package.ident();
+                            let url = dlinfo.url.to_owned();
+                            let fname = filename.to_owned();
+                            easy.progress(true)?;
+                            easy.progress_function(move |dltotal, dlnow, _, _| {
+                                progress(
+                                    tx.clone(),
+                                    ident.to_owned(),
+                                    url.to_owned(),
+                                    fname.to_owned(),
+                                    dltotal,
+                                    dlnow,
+                                )
+                            })?;
+                        }
+
+                        // Remove existing chunk file
+                        let _ = std::fs::remove_file(&part_path);
+                        let mut file = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&part_path)?;
+                        easy.write_function(move |data| {
+                            file.write_all(data).unwrap();
+                            Ok(data.len())
+                        })?;
+
+                        let mut easyhandle = self.multi.add(easy)?;
+                        let token = pidx * 10000 + uidx * 100 + chunk_idx as usize;
+                        let _ = easyhandle.set_token(token);
+                        handles.insert(token, easyhandle);
+                        token_ctx.insert(token, (cache.package.ident(), filename.to_owned()));
+                    }
+
+                    chunk_file_map.insert(path.clone(), part_paths);
+                } else {
+                    // Single-threaded download (original behavior)
+                    let mut easy = Easy::new();
+                    easy.get(true)?;
+                    easy.url(dlinfo.url)?;
+                    easy.follow_location(true)?;
+                    easy.useragent(user_agent)?;
+                    easy.fail_on_error(true)?;
+                    if let Some(proxy) = proxy {
+                        easy.proxy(proxy)?;
+                    }
+                    set_cookie(&mut easy, &cookie)?;
+
+                    if let Some(tx) = self.session.emitter() {
+                        let ident = cache.package.ident();
+                        let url = dlinfo.url.to_owned();
+                        let fname = filename.to_owned();
+                        easy.progress(true)?;
+                        easy.progress_function(move |dltotal, dlnow, _, _| {
+                            progress(
+                                tx.clone(),
+                                ident.to_owned(),
+                                url.to_owned(),
+                                fname.to_owned(),
+                                dltotal,
+                                dlnow,
+                            )
+                        })?;
+                    }
+
+                    let path = cache_root.join(filename);
+                    let tmp = cache_root.join(format!("{}.download", filename));
+
+                    let _ = std::fs::remove_file(&path);
+                    let _ = std::fs::remove_file(&tmp);
+
+                    filepaths.push((tmp.clone(), path.clone()));
+
+                    let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
+                    easy.write_function(move |data| {
+                        file.write_all(data).unwrap();
+                        Ok(data.len())
                     })?;
+
+                    let mut easyhandle = self.multi.add(easy)?;
+                    let token = pidx * 100 + uidx;
+                    let _ = easyhandle.set_token(token);
+                    handles.insert(token, easyhandle);
+                    token_ctx.insert(token, (cache.package.ident(), filename.to_owned()));
                 }
-
-                let path = cache_root.join(filename);
-                let tmp = cache_root.join(format!("{}.download", filename));
-
-                // remove possible existing files
-                let _ = std::fs::remove_file(&path);
-                let _ = std::fs::remove_file(&tmp);
-
-                filepaths.push((tmp.clone(), path.clone()));
-
-                // TODO: Fragmented download support could be added to improve
-                // download speed.
-                let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
-                easy.write_function(move |data| {
-                    file.write_all(data).unwrap();
-                    Ok(data.len())
-                })?;
-
-                let mut easyhandle = self.multi.add(easy)?;
-                let token = pidx * 100 + uidx;
-                let _ = easyhandle.set_token(token);
-                handles.insert(token, easyhandle);
-
-                token_ctx.insert(token, (cache.package.ident(), filename.to_owned()));
             }
         }
 
@@ -293,7 +378,6 @@ impl<'a> PackageSet<'a> {
                 let token = message.token().expect("failed to get token");
                 let handle = handles.get_mut(&token).expect("failed to get handle");
 
-                // catch and propagate curl error
                 if let Some(Err(e)) = message.result_for(handle) {
                     handle_err = Some(e);
                 }
@@ -308,6 +392,27 @@ impl<'a> PackageSet<'a> {
             }
         }
 
+        // Reassemble fragmented files
+        for (final_path, part_paths) in chunk_file_map.iter() {
+            let _ = std::fs::remove_file(final_path);
+            let mut dest = File::create(final_path)?;
+            for part in part_paths {
+                let mut src = File::open(part)?;
+                std::io::copy(&mut src, &mut dest)?;
+                drop(src);
+                let _ = std::fs::remove_file(part);
+            }
+            // Remove parts directory
+            if let Some(parent) = final_path.parent() {
+                let part_dir = parent.join(format!(
+                    "{}.parts",
+                    final_path.file_name().unwrap().to_string_lossy()
+                ));
+                let _ = std::fs::remove_dir(&part_dir);
+            }
+        }
+
+        // Rename simple downloads
         for (tmp, path) in filepaths.iter() {
             std::fs::rename(tmp, path)?;
         }
