@@ -14,6 +14,7 @@ mod checkver;
 mod cleanup;
 mod completions;
 mod config;
+mod depends;
 mod formatjson;
 mod hold;
 mod home;
@@ -68,6 +69,7 @@ pub enum Command {
     Cleanup(cleanup::Args),
     Completions(completions::Args),
     Config(config::Args),
+    Depends(depends::Args),
     FormatJson(formatjson::Args),
     Hold(hold::Args),
     Home(home::Args),
@@ -106,6 +108,7 @@ pub fn start() -> Result<()> {
         Command::Cleanup(args) => cleanup::execute(args, &session),
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
+        Command::Depends(args) => depends::execute(args, &session),
         Command::FormatJson(args) => formatjson::execute(args),
         Command::Hold(args) => hold::execute(args, &session),
         Command::Home(args) => home::execute(args, &session),
