@@ -2,7 +2,7 @@
 name = "hok"
 description = "Hok is a CLI implementation of Scoop in Rust"
 repository = "https://github.com/chawyehsu/hok"
-version = "0.2.0-beta.0"
+version = "0.2.0-alpha.1"
 authors = ["Chawye Hsu <su+cratesio@chawyehsu.com>", "沙漠之子 <7850715+maboloshi@users.noreply.github.com>"]
 license = "Apache-2.0"
 edition = "2021"
@@ -25,14 +25,14 @@ jsonpath-rust = "1.0"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
 remove_dir_all = "0.7.0"
 serde_json = "1.0.120"
-scoop-hash = { version = "0.2.0-beta.0", path = "./crates/scoop_hash" }
+scoop-hash = { version = "0.2.0-alpha.1", path = "./crates/scoop_hash" }
 sxd-document = "0.3"
 sxd-xpath = "0.4"
 ureq = { version = "3", features = ["json"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [dependencies.libscoop]
-version = "0.2.0-beta.0"
+version = "0.2.0-alpha.1"
 path = "./crates/libscoop"
 
 [profile.release]

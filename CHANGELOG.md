@@ -1,10 +1,10 @@
 # Changelog
 
-## [0.2.0-beta.0](https://github.com/maboloshi/hok/compare/v0.1.0-beta.7...v0.2.0-beta.0) (2026-07-08)
+## [0.2.0-alpha.1](https://github.com/maboloshi/hok/compare/v0.1.0-beta.7...v0.2.0-alpha.1) (2026-07-08)
 
 > **Fork Notice**: This release is a community-maintained fork based on the original
-> v0.1.0-beta.7. The original author has paused development. This version introduces
-> significant internal rewrites and new features, and is maintained independently.
+> v0.1.0-beta.7. Core dependencies have been rewritten (HTTP, datetime, hash backend),
+> so this fork starts a new alpha cycle for stability verification.
 
 ### ⚠ BREAKING CHANGES
 
