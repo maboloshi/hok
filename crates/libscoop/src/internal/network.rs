@@ -5,18 +5,6 @@
 
 use std::io::Read;
 use std::time::Duration;
-
-/// Get the content length of a URL via HTTP HEAD.
-pub fn get_content_length(url: &str, proxy: Option<&str>) -> Option<f64> {
-    let agent = agent(proxy, 30).ok()?;
-    let resp = agent.head(url).call().ok()?;
-    resp.headers()
-        .get("Content-Length")?
-        .to_str()
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-}
-
 /// Check if a URL returns a successful HTTP status (2xx or 3xx).
 pub fn head_url(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<bool, String> {
     let agent = agent(proxy, timeout_secs)?;
