@@ -32,6 +32,26 @@
 - **SQLite manifest 缓存** —— `use_sqlite_cache`，兼容 Scoop 格式
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
 
+### Aria2 配置复用
+
+hok 虽然不使用 aria2c，但**复用了 Scoop 的 aria2 配置项**来控制内置的 HTTP 分片下载行为。二者使用的配置项完全兼容，用户无需额外配置。
+
+| Scoop 配置项 | hok 行为 | 默认值 |
+|-------------|---------|--------|
+| `aria2-enabled` | 是否启用分片下载 | `true` |
+| `aria2-split` | 分片连接数 | `5` |
+| `aria2-max-connection-per-server` | 单服务器最大连接数 | `5` |
+| `aria2-min-split-size` | 触发分片的最小文件体积 | `5M` |
+
+当 `aria2-enabled` 为 `true`、文件大小超过 `min-split-size`、且分片数 > 1 时，hok 使用 `std::thread::scope` 启动多个线程，每个线程通过 HTTP `Range` 头并发下载一个分片，最后合并。这与 aria2c 的 Range 分片逻辑本质上是一致的，只是省去了 aria2c 这个外部进程调用。
+
+```bash
+# 配置示例（与原版 Scoop 完全一致）
+hok config aria2-enabled true
+hok config aria2-split 10
+hok config aria2-min-split-size 10M
+```
+
 ### 设计原则
 
 - **纯 Rust 优先，但有底线** —— 能不用 C 编译就不用，但 `git2`（libgit2）比 `gix`（20 分钟编译）更务实。「Pure Rust first」有实际边界。
