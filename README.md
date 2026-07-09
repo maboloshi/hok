@@ -81,7 +81,11 @@ Compared to the original hok, this fork adds:
 - **checkver** — full implementation with regex, JSONPath, XPath, PowerShell script,
   reverse/replace, GitHub and SourceForge shortcuts, autoupdate with hash recomputation
 - **SQLite manifest cache** — `use_sqlite_cache` config, compatible with Scoop's schema
-- **ignore_failures** — config-driven, affects install/upgrade/uninstall/cleanup
+- **Resumable fragmented downloads** — partial parts resume via HTTP Range, no restart
+- **Batch failure isolation** — `ignore_failures` config keeps multi-package operations
+  running even if individual packages fail (applies to install/upgrade/uninstall/cleanup)
+- **Fixed upstream bug**: `reset` now correctly runs `post_install` scripts
+  (original Scoop bug — Scoop skips post_install on reset)
 - **cleanup** — remove old versions of installed packages
 - **depends / prefix / which / checkup / shim** — new CLI commands
 - **export / import** — export/import installed package lists as JSON

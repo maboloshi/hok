@@ -66,7 +66,11 @@
 * **libscoop:** Pure Rust archive extraction (7z/zip/tar/gz/bz2/xz/lzh/rar/zst)
 * **libscoop:** IShellLinkW COM FFI for shortcuts (zero dependencies)
 * **libscoop:** Fragmented download via Range requests (curl/aria2-compatible config)
+* **libscoop:** Resumable fragmented downloads — partial parts resume via HTTP Range,
+  no restart needed on interruption
 * **hok:** reset command with post_install fix (original Scoop bug workaround)
+* **hok:** batch failure isolation — `ignore_failures` keeps multi-package operations
+  running even if individual packages fail
 
 ## [0.1.0-beta.7](https://github.com/chawyehsu/hok/compare/v0.1.0-beta.6...v0.1.0-beta.7) (2024-12-10)
 

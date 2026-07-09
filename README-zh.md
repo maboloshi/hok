@@ -32,6 +32,18 @@
 - **SQLite manifest 缓存** —— `use_sqlite_cache`，兼容 Scoop 格式
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
 
+### 修复的原版 bug
+
+本分支修复了原版 hok（以及原版 Scoop）中的一些问题：
+
+| Bug | 影响 | 修复方式 |
+|-----|------|---------|
+| **多包操作批量中断** | `install`/`update`/`cleanup` 等操作中，某个包失败会导致整个操作中断 | 实现 `ignore_failures` 配置 + `-f` 参数，失败时打印错误并继续处理剩余包 |
+| **reset 不跑 post_install** | `hok reset <app>` 不会执行 manifest 中的 `post_install` 脚本，这其实是 **Scoop 原版的遗留 bug** | reset 命令现在正确执行 `post_install` |
+| **版本比较不完整** | `compare_versions()` 对文本段直接返回 `Equal`（如 `1.0.0-beta` vs `1.0.0-alpha`） | 重写比较逻辑，支持数值/文本混合段、pre-release 优先级 |
+| **死代码残留** | `get_content_length` 函数未使用，产生 warning | 删除，项目现为 **0 warning** |
+| **下载无断点续传** | 分片下载中断后全部重来 | 支持 HTTP Range 续传，已下载的分片跳过，不完整的续传 |
+
 ### Aria2 配置复用
 
 hok 虽然不使用 aria2c，但**复用了 Scoop 的 aria2 配置项**来控制内置的 HTTP 分片下载行为。二者使用的配置项完全兼容，用户无需额外配置。
