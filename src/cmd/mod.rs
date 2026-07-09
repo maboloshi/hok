@@ -5,6 +5,7 @@ use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
 
+mod alias;
 mod bucket;
 mod cache;
 mod cat;
@@ -16,9 +17,11 @@ mod cleanup;
 mod completions;
 mod config;
 mod depends;
+mod export;
 mod formatjson;
 mod hold;
 mod home;
+mod import;
 mod info;
 mod install;
 mod list;
@@ -63,6 +66,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    Alias(alias::Args),
     Bucket(bucket::Args),
     Cache(cache::Args),
     Cat(cat::Args),
@@ -74,9 +78,11 @@ pub enum Command {
     Completions(completions::Args),
     Config(config::Args),
     Depends(depends::Args),
+    Export(export::Args),
     FormatJson(formatjson::Args),
     Hold(hold::Args),
     Home(home::Args),
+    Import(import::Args),
     Info(info::Args),
     Install(install::Args),
     List(list::Args),
@@ -105,6 +111,7 @@ pub fn start() -> Result<()> {
     let _ = session.set_user_agent(&user_agent);
 
     match args.command {
+        Command::Alias(args) => alias::execute(args, &session),
         Command::Bucket(args) => bucket::execute(args, &session),
         Command::Cache(args) => cache::execute(args, &session),
         Command::Cat(args) => cat::execute(args, &session),
@@ -116,9 +123,11 @@ pub fn start() -> Result<()> {
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
         Command::Depends(args) => depends::execute(args, &session),
+        Command::Export(args) => export::execute(args, &session),
         Command::FormatJson(args) => formatjson::execute(args),
         Command::Hold(args) => hold::execute(args, &session),
         Command::Home(args) => home::execute(args, &session),
+        Command::Import(args) => import::execute(args, &session),
         Command::Info(args) => info::execute(args, &session),
         Command::Install(args) => install::execute(args, &session),
         Command::List(args) => list::execute(args, &session),
