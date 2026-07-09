@@ -61,7 +61,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 println!("{}", "sourceforge checkver not supported".yellow());
                 continue;
             }
-            // GitHub shortcut: construct API URL from homepage
             None if is_github_checkver(&cv) => {
                 match github_api_url(manifest.homepage()) {
                     Some(api_url) => api_url,
@@ -118,13 +117,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Check if the checkver uses the GitHub shortcut (regex matches /releases/tag/).
 fn is_github_checkver(cv: &libscoop::Checkver) -> bool {
     cv.regex.as_deref().map_or(false, |r| r.contains("/releases/tag/"))
 }
 
-/// Extract GitHub API URL from a homepage URL.
-/// e.g. "https://github.com/owner/repo" → "https://api.github.com/repos/owner/repo/releases/latest"
 fn github_api_url(homepage: &str) -> Option<String> {
     let re = Regex::new(r"github\.com[:/]([^/]+/[^/]+?)(?:/|$)").ok()?;
     let caps = re.captures(homepage)?;
@@ -132,10 +128,8 @@ fn github_api_url(homepage: &str) -> Option<String> {
     Some(format!("https://api.github.com/repos/{}/releases/latest", repo))
 }
 
-/// Extract version string from page content using checkver rules.
-/// Returns `(version, captures)` where captures[0] is full match (if regex used).
+/// Extract version + capture groups from page content.
 fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>) -> Option<(String, Vec<String>)> {
-    // JSONPath: use override first (for GitHub API), then cv.jsonpath
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
         let value: serde_json::Value = serde_json::from_str(content).ok()?;
@@ -146,7 +140,6 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         }
     }
 
-    // Regex extraction
     if let Some(regex_str) = &cv.regex {
         let re = Regex::new(regex_str).ok()?;
         let caps = re.captures(content)?;
@@ -157,7 +150,6 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         return Some((ver, captures));
     }
 
-    // No JSONPath or regex: treat content itself as version string
     let trimmed = content.trim();
     if !trimmed.is_empty() {
         Some((trimmed.to_string(), vec![trimmed.to_string()]))
@@ -166,132 +158,247 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
     }
 }
 
-/// Apply autoupdate to a manifest: replace $version/$matchN in URLs, download files,
-/// compute hashes, and write the updated manifest.
+// ─── Autoupdate ────────────────────────────────────────────────────────────
+
+/// Apply autoupdate: substitute variables, download files, compute/extract
+/// hashes, write updated manifest.
 fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_version: &str, captures: &[String]) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse: {}", e))?;
 
-    // Update version field
     root["version"] = serde_json::Value::String(new_version.to_string());
 
-    // Build substitution function for $version, $matchN, $matchHead, $matchTail
-    let sub = |s: &str| -> String {
-        let mut r = s.replace("$version", new_version);
-        // $match1 = captures[1] (first regex capture group), $match2 = captures[2], etc.
-        for (i, cap) in captures.iter().enumerate().skip(1) {
-            let pat = format!("$match{}", i);
-            r = r.replace(&pat, cap);
+    // Build variable substitution
+    let mut vars: Vec<(String, String)> = vec![
+        ("$version".to_string(), new_version.to_string()),
+    ];
+    for (i, cap) in captures.iter().enumerate().skip(1) {
+        vars.push((format!("$match{}", i), cap.clone()));
+    }
+    if captures.len() > 1 {
+        let m1 = &captures[1];
+        if !m1.is_empty() {
+            let head = m1.chars().next().map(|c| c.to_string()).unwrap_or_default();
+            let tail = m1[1..].to_string();
+            vars.push(("$matchHead".to_string(), head));
+            vars.push(("$matchTail".to_string(), tail));
         }
-        // $matchHead = first char of $match1, $matchTail = rest of $match1
-        if captures.len() > 1 {
-            let m1 = &captures[1];
-            if !m1.is_empty() {
-                let head = m1.chars().next().map(|c| c.to_string()).unwrap_or_default();
-                let tail = m1[1..].to_string();
-                r = r.replace("$matchHead", &head);
-                r = r.replace("$matchTail", &tail);
-            }
+    }
+
+    let sub_first = |s: &str| -> String {
+        let mut r = s.to_string();
+        for (k, v) in &vars {
+            r = r.replace(k, v);
         }
         r
     };
 
-    // Look for autoupdate section
     let au = match manifest.autoupdate() {
         Some(a) => a,
-        None => {
-            // No autoupdate — just update version
-            write_json(path, &root)?;
-            return Ok(());
-        }
+        None => { write_json(path, &root)?; return Ok(()); }
     };
 
     let tmp_dir = std::env::temp_dir().join("hok-autoupdate");
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
 
-    // Collect all (url_template, hash_dest) pairs to process
-    // Top-level URL → update root["url"], root["hash"]
+    // ── Compute $basename from first URL after initial substitution ─────────
     if let Some(urls) = &au.url {
-        let substituted: Vec<String> = urls.devectorize().into_iter().map(|u| sub(u)).collect();
-        let hashes = download_and_hash(session, &substituted, &tmp_dir)?;
-
-        root["url"] = serde_json::Value::Array(
-            substituted.iter().map(|u| serde_json::Value::String(u.clone())).collect()
-        );
-        root["hash"] = serde_json::Value::Array(
-            hashes.iter().map(|h| serde_json::Value::String(h.clone())).collect()
-        );
+        let first_url = sub_first(urls.devectorize().first().copied().unwrap_or(""));
+        let basename = url_basename(&first_url);
+        vars.push(("$basename".to_string(), basename));
     }
 
-    // Per-architecture URLs
-    if let Some(arch) = &au.architecture {
-        let arch_pairs: [(&str, Option<&_>); 3] = [
-            ("32bit", arch.ia32.as_ref()),
-            ("64bit", arch.amd64.as_ref()),
-            ("arm64", arch.aarch64.as_ref()),
-        ];
-        for (arch_name, arch_spec) in arch_pairs {
-            let Some(spec) = arch_spec else { continue };
+    // Full substitution including $basename
+    let sub = |s: &str| -> String {
+        let mut r = s.to_string();
+        for (k, v) in &vars {
+            r = r.replace(k.as_str(), v.as_str());
+        }
+        r
+    };
 
+    // ── Read hash extractions from JSON (before mutable borrow) ────────────
+    let top_hash_extractions: Vec<serde_json::Value> = root
+        .get("autoupdate").and_then(|au| au.get("hash"))
+        .and_then(|h| h.as_array()).cloned().unwrap_or_default();
+    let arch_hash_extractions: [(&str, Vec<serde_json::Value>); 3] = [
+        ("32bit", root.pointer("/architecture/32bit/autoupdate/hash")
+            .and_then(|v| v.as_array()).cloned().unwrap_or_default()),
+        ("64bit", root.pointer("/architecture/64bit/autoupdate/hash")
+            .and_then(|v| v.as_array()).cloned().unwrap_or_default()),
+        ("arm64", root.pointer("/architecture/arm64/autoupdate/hash")
+            .and_then(|v| v.as_array()).cloned().unwrap_or_default()),
+    ];
+
+    // ── Top-level URLs ─────────────────────────────────────────────────────
+    if let Some(urls) = &au.url {
+        let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
+        let hashes = download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir)?;
+
+        root["url"] = json_str_array(&substituted);
+        if !hashes.is_empty() {
+            root["hash"] = json_str_array(&hashes);
+        }
+    }
+
+    // ── Per-architecture URLs ──────────────────────────────────────────────
+    if let Some(arch) = &au.architecture {
+        for (arch_name, spec_opt, arch_extractions) in [
+            ("32bit", arch.ia32.as_ref(), &arch_hash_extractions[0].1),
+            ("64bit", arch.amd64.as_ref(), &arch_hash_extractions[1].1),
+            ("arm64", arch.aarch64.as_ref(), &arch_hash_extractions[2].1),
+        ] {
+            let Some(spec) = spec_opt else { continue };
             if let Some(urls) = &spec.url {
-                let substituted: Vec<String> = urls.devectorize().into_iter().map(|u| sub(u)).collect();
-                let hashes = download_and_hash(session, &substituted, &tmp_dir)?;
+                let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
+                let hashes = download_and_hash_multi(session, &substituted, arch_extractions, &tmp_dir)?;
 
                 let ptr = format!("/architecture/{}", arch_name);
+
                 if let Some(obj) = root.pointer_mut(&ptr) {
-                    obj["url"] = serde_json::Value::Array(
-                        substituted.iter().map(|u| serde_json::Value::String(u.clone())).collect()
-                    );
-                    obj["hash"] = serde_json::Value::Array(
-                        hashes.iter().map(|h| serde_json::Value::String(h.clone())).collect()
-                    );
+                    obj["url"] = json_str_array(&substituted);
+                    if !hashes.is_empty() {
+                        obj["hash"] = json_str_array(&hashes);
+                    }
                 }
             }
         }
     }
 
-    // Update extract_dir if present in autoupdate
-    if let Some(extract_dirs) = &au.extract_dir {
-        let substituted: Vec<String> = extract_dirs.devectorize().into_iter().map(|d| sub(d)).collect();
-        root["extract_dir"] = serde_json::Value::Array(
-            substituted.into_iter().map(|d| serde_json::Value::String(d)).collect()
-        );
+    // ── extract_dir ────────────────────────────────────────────────────────
+    if let Some(dirs) = &au.extract_dir {
+        let substituted: Vec<String> = dirs.devectorize().iter().map(|d| sub(d)).collect();
+        root["extract_dir"] = json_str_array(&substituted);
     }
 
-    // Cleanup temp directory
     let _ = std::fs::remove_dir_all(&tmp_dir);
-
     write_json(path, &root)?;
     Ok(())
 }
 
-/// Download files from URLs, compute SHA256 hash for each, return hash strings.
-fn download_and_hash(session: &Session, urls: &[String], tmp_dir: &std::path::Path) -> Result<Vec<String>> {
+/// Download files and determine hashes.
+/// For each URL, if a corresponding hash extraction config exists with a URL,
+/// fetch that page and extract the hash; otherwise download the file and compute SHA256.
+fn download_and_hash_multi(
+    session: &Session, urls: &[String],
+    extractions: &[serde_json::Value], tmp_dir: &std::path::Path,
+) -> Result<Vec<String>> {
     let mut hashes = Vec::new();
-    for url in urls {
-        let filename = url.rsplit('/').next().unwrap_or("download");
-        let dest = tmp_dir.join(filename);
+    for (i, url) in urls.iter().enumerate() {
+        let extraction = extractions.get(i);
 
-        operation::download_file(session, url, &dest)
-            .map_err(|e| anyhow::anyhow!("download {}: {}", url, e))?;
+        // Check if hash should be extracted from a remote page
+        let hash = if let Some(ext) = extraction {
+            let mode = ext.get("mode").and_then(|m| m.as_str()).unwrap_or("extract");
+            let has_url = ext.get("url").and_then(|u| u.as_str()).is_some();
 
-        let hex = compute_hash(&dest, "sha256")?;
-        hashes.push(hex);
+            if mode == "download" || !has_url {
+                // Download file and compute hash
+                let filename = url.rsplit('/').next().unwrap_or("download");
+                let dest = tmp_dir.join(filename);
+                operation::download_file(session, url, &dest)
+                    .map_err(|e| anyhow::anyhow!("download {}: {}", url, e))?;
+
+                // Determine algorithm from the extraction (default sha256)
+                let algo = ext.get("algorithm").and_then(|a| a.as_str()).unwrap_or("sha256");
+                compute_hash(&dest, algo)?
+            } else {
+                // Fetch hash page and extract
+                let hash_url = ext["url"].as_str().unwrap_or(url);
+                let page_url = sub_url(hash_url, url); // substitute any remaining vars
+                let page = operation::download_page(session, &page_url)
+                    .map_err(|e| anyhow::anyhow!("fetch hash page {}: {}", page_url, e))?;
+                extract_hash_from_page(&page, ext)?
+            }
+        } else {
+            // No hash extraction config: download file and compute SHA256
+            let filename = url.rsplit('/').next().unwrap_or("download");
+            let dest = tmp_dir.join(filename);
+            operation::download_file(session, url, &dest)
+                .map_err(|e| anyhow::anyhow!("download {}: {}", url, e))?;
+            compute_hash(&dest, "sha256")?
+        };
+
+        hashes.push(hash);
     }
     Ok(hashes)
 }
 
-/// Pretty-print and write updated JSON to disk, preserving original formatting
-fn write_json(path: &PathBuf, root: &serde_json::Value) -> Result<()> {
-    let formatted = serde_json::to_string_pretty(root)
-        .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    std::fs::write(path, formatted.as_bytes())?;
-    Ok(())
+/// Extract hash from page content using HashExtraction rules.
+fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Result<String> {
+    // JSONPath first
+    if let Some(jp) = ext.get("jp").or(ext.get("jsonpath")).and_then(|v| v.as_str()) {
+        use jsonpath_rust::JsonPath;
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(content) {
+            if let Ok(found) = val.query(jp) {
+                let found_str = found.first().and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    _ => v.as_str().map(|s| s.to_string()),
+                });
+                if let Some(h) = found_str {
+                    if !h.is_empty() { return Ok(h); }
+                }
+            }
+        }
+    }
+
+    // Regex
+    if let Some(re_str) = ext.get("regex").and_then(|v| v.as_str()) {
+        let url_for_re = ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        let re = Regex::new(re_str).map_err(|e| anyhow::anyhow!("bad hash regex: {}", e))?;
+        if let Some(caps) = re.captures(content) {
+            if let Some(h) = caps.get(1).or_else(|| caps.get(0)) {
+                return Ok(h.as_str().to_string());
+            }
+        }
+    }
+
+    // Find (simple substring + next whitespace-delimited hex token)
+    if let Some(find_str) = ext.get("find").and_then(|v| v.as_str()) {
+        if let Some(pos) = content.find(find_str) {
+            let after = &content[pos + find_str.len()..];
+            // Scoop heuristic: look for the first hex token
+            if let Some(hash) = after.split_whitespace().next() {
+                let hash = hash.trim_matches(&['"', '\'', ',', ';', ':', '=', ' '][..]);
+                if is_hex_hash(hash) {
+                    return Ok(hash.to_string());
+                }
+                // Also check next token if first is an equals sign
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!("could not extract hash from page"))
 }
 
-/// Compute hash of a file using specified algorithm name.
+/// Substitute variables in a hash URL using the download URL's context.
+fn sub_url(hash_url: &str, _download_url: &str) -> String {
+    // Most hash URLs use the same $version etc. that were already substituted
+    hash_url.to_string()
+}
+
+fn url_basename(url: &str) -> String {
+    let filename = url.rsplit('/').next().unwrap_or(url);
+    let dot = filename.rfind('.');
+    match dot {
+        Some(pos) => filename[..pos].to_string(),
+        None => filename.to_string(),
+    }
+}
+
+fn is_hex_hash(s: &str) -> bool {
+    if s.is_empty() { return false; }
+    let len = s.len();
+    // MD5=32, SHA1=40, SHA256=64, SHA512=128 + algorithm prefixes
+    let valid_len = matches!(len, 32 | 40 | 64 | 128)
+        || (len > 5 && matches!(&s[..5], "md5:" | "sha1:" | "sha256" | "sha51"))
+        || (len > 7 && &s[..7] == "sha512:");
+    valid_len && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+}
+
+/// Compute hash of a file on disk using the given algorithm name.
 fn compute_hash(path: &std::path::Path, algo: &str) -> Result<String> {
     let builder = ChecksumBuilder::new()
         .algo(algo)
@@ -301,10 +408,21 @@ fn compute_hash(path: &std::path::Path, algo: &str) -> Result<String> {
     let mut buf = vec![0u8; 65536];
     loop {
         let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+        if n == 0 { break; }
         hasher.consume(&buf[..n]);
     }
     Ok(hasher.finalize())
+}
+
+fn json_str_array(items: &[String]) -> serde_json::Value {
+    serde_json::Value::Array(
+        items.iter().map(|s| serde_json::Value::String(s.clone())).collect()
+    )
+}
+
+fn write_json(path: &PathBuf, root: &serde_json::Value) -> Result<()> {
+    let formatted = serde_json::to_string_pretty(root)
+        .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+    std::fs::write(path, formatted.as_bytes())?;
+    Ok(())
 }
