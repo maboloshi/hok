@@ -16,6 +16,7 @@ mod checkver;
 mod cleanup;
 mod completions;
 mod config;
+mod create;
 mod depends;
 mod export;
 mod formatjson;
@@ -29,11 +30,13 @@ mod missing_checkver;
 mod prefix;
 mod reset;
 mod search;
+mod shim;
 mod status;
 mod unhold;
 mod uninstall;
 mod update;
 mod upgrade;
+mod virustotal;
 mod which;
 
 use crate::Result;
@@ -77,6 +80,7 @@ pub enum Command {
     Cleanup(cleanup::Args),
     Completions(completions::Args),
     Config(config::Args),
+    Create(create::Args),
     Depends(depends::Args),
     Export(export::Args),
     FormatJson(formatjson::Args),
@@ -90,6 +94,7 @@ pub enum Command {
     Prefix(prefix::Args),
     #[clap(alias = "s")]
     Search(search::Args),
+    Shim(shim::Args),
     Status(status::Args),
     Reset(reset::Args),
     Unhold(unhold::Args),
@@ -98,6 +103,7 @@ pub enum Command {
     #[clap(alias = "u")]
     Update(update::Args),
     Upgrade(upgrade::Args),
+    Virustotal(virustotal::Args),
     Which(which::Args),
 }
 
@@ -122,6 +128,7 @@ pub fn start() -> Result<()> {
         Command::Cleanup(args) => cleanup::execute(args, &session),
         Command::Completions(args) => completions::execute(args),
         Command::Config(args) => config::execute(args, &session),
+        Command::Create(args) => create::execute(args, &session),
         Command::Depends(args) => depends::execute(args, &session),
         Command::Export(args) => export::execute(args, &session),
         Command::FormatJson(args) => formatjson::execute(args),
@@ -134,12 +141,14 @@ pub fn start() -> Result<()> {
         Command::MissingCheckver(args) => missing_checkver::execute(args),
         Command::Prefix(args) => prefix::execute(args, &session),
         Command::Search(args) => search::execute(args, &session),
+        Command::Shim(args) => shim::execute(args, &session),
         Command::Reset(args) => reset::execute(args, &session),
         Command::Status(args) => status::execute(args, &session),
         Command::Unhold(args) => unhold::execute(args, &session),
         Command::Uninstall(args) => uninstall::execute(args, &session),
         Command::Update(args) => update::execute(args, &session),
         Command::Upgrade(args) => upgrade::execute(args, &session),
+        Command::Virustotal(args) => virustotal::execute(args, &session),
         Command::Which(args) => which::execute(args, &session),
     }
 }
