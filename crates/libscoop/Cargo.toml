@@ -51,4 +51,3 @@ openssl = { version = "0.10.66", features = ["vendored"] }
 
 [features]
 default = []
-rustcrypto-hash = ["scoop-hash/rustcrypto"]

@@ -40,6 +40,6 @@ sha2 = { version = "0.10", optional = true }
 criterion = "0.4"
 
 [features]
-default = []
+default = ["rustcrypto"]
 # The "rustcrypto" feature enables hash implementations from RustCrypto's crates.
 rustcrypto = ["md-5", "sha1", "sha2"]

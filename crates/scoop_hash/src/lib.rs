@@ -1,14 +1,13 @@
+//! Hash library for libscoop.
+//!
+//! Provides a unified API (`ChecksumBuilder`) for MD5, SHA1, SHA256, SHA512.
+//! Uses the RustCrypto crates (`md-5`, `sha1`, `sha2`) for the actual hash
+//! implementations — battle-tested, pure Rust, no C deps.
+
 use std::error::Error as StdError;
 
-#[cfg(feature = "rustcrypto")]
 mod rustcrypto;
-#[cfg(feature = "rustcrypto")]
 use rustcrypto::{Digest, Md5, Sha1, Sha256, Sha512};
-
-#[cfg(not(feature = "rustcrypto"))]
-mod selfcontained;
-#[cfg(not(feature = "rustcrypto"))]
-use selfcontained::{Md5, Sha1, Sha256, Sha512};
 
 trait Hasher {
     fn hash_type(&self) -> String;
@@ -30,21 +29,11 @@ macro_rules! impl_hasher_for {
             }
 
             fn update(&mut self, data: &[u8]) {
-                #[cfg(not(feature = "rustcrypto"))]
-                self.consume(data);
-
-                #[cfg(feature = "rustcrypto")]
                 self.inner.update(data);
             }
 
             fn sum(self: Box<Self>) -> String {
-                #[cfg(not(feature = "rustcrypto"))]
-                let ret = self.result_string();
-
-                #[cfg(feature = "rustcrypto")]
-                let ret = format!("{:x}", self.inner.finalize());
-
-                ret
+                format!("{:x}", self.inner.finalize())
             }
         }
     };
@@ -89,7 +78,6 @@ impl ChecksumBuilder {
     /// assert!(md5.check("5eb63bbbe01eeed093cb22bb8f5acdc3"));
     /// ```
     pub fn new() -> ChecksumBuilder {
-        // Default to sha256
         ChecksumBuilder {
             hasher: Box::new(Sha256::new()),
         }
@@ -140,8 +128,6 @@ impl ChecksumBuilder {
     }
 
     /// Build the Checksum instance for use.
-    ///
-    /// If no hash algorithm is specified, sha256 will be used.
     pub fn build(self) -> Checksum {
         Checksum {
             hasher: self.hasher,
@@ -152,23 +138,11 @@ impl ChecksumBuilder {
 /// Checksum is a wrapper around a hash algorithm.
 #[derive(Debug)]
 pub struct Checksum {
-    /// The hash algorithm.
     hasher: Box<dyn Hasher>,
 }
 
 impl Checksum {
     /// Consumes the provided data.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use scoop_hash::ChecksumBuilder;
-    /// let mut sha256 = ChecksumBuilder::new().build();
-    /// sha256.consume(b"hello world");
-    /// let result = sha256.finalize();
-    /// assert_eq!(result, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
-    /// ```
-    #[inline]
     pub fn consume(&mut self, data: &[u8]) {
         self.hasher.update(data);
     }
@@ -176,16 +150,11 @@ impl Checksum {
     /// Gets the result of the hash computation as a hex string.
     ///
     /// Note that the Checksum instance is consumed after getting the result.
-    #[inline]
     pub fn finalize(self) -> String {
         self.hasher.sum()
     }
 
     /// Checks if the result of the hash computation matches the input hash.
-    ///
-    /// Note that the Checksum instance is consumed after calling this method,
-    /// if you want to keep the checksum result, use the finalize method instead.
-    #[inline]
     pub fn check(self, input: &str) -> bool {
         input == self.finalize()
     }
