@@ -95,14 +95,6 @@ pub enum Error {
     #[error(transparent)]
     Hash(#[from] scoop_hash::Error),
 
-    /// Curl error
-    #[error(transparent)]
-    Curl(#[from] curl::Error),
-
-    /// Curl Multi error
-    #[error(transparent)]
-    CurlMulti(#[from] curl::MultiError),
-
     /// Git error
     #[error(transparent)]
     Git(#[from] git2::Error),

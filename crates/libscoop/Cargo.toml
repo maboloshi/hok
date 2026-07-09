@@ -12,7 +12,7 @@ edition = "2021"
 readme = "README.md"
 
 [dependencies]
-curl = { version = "0.4", features = ["static-curl"] }
+# curl = { version = "0.4", features = ["static-curl"] }
 dirs = "5.0.1"
 flume = "0.10"
 jiff = "0.2"
@@ -25,6 +25,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 tracing = "0.1.41"
+ureq = "3"
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
 sevenz-rust2 = "0.21"

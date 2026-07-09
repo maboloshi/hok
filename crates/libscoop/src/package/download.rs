@@ -1,12 +1,14 @@
-use curl::easy::{Easy, List};
-use curl::multi::Multi;
-use flume::Sender;
+//! Concurrent package download with `ureq` (pure Rust).
+//!
+//! Replaced `curl` (libcurl bindings) to avoid static C compilation overhead.
+//! Fragmented downloads use `std::thread::scope` instead of `curl::multi::Multi`.
+
 use once_cell::unsync::OnceCell;
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::Write,
-    time::Duration,
+    io::{Read, Write},
+    path::PathBuf,
 };
 use tracing::debug;
 
@@ -20,68 +22,35 @@ use super::Package;
 pub struct DownloadSize {
     /// Total size to download.
     pub total: u64,
-
     /// Whether the total size is estimated.
     pub estimated: bool,
 }
 
 /// A set of packages to download.
 pub struct PackageSet<'a> {
-    /// Associated libscoop session.
     session: &'a Session,
-
-    /// Packages with intent to download.
     pub packages: &'a [&'a Package],
-
-    /// Multi handle for curl.
-    multi: Multi,
-
     caches: OnceCell<HashMap<String, PackageCache<'a>>>,
-
-    /// Whether to reuse cached files.
     reuse_cache: bool,
 }
 
-/// Stores download information of a file.
 struct FileDownloadInfo<'a> {
-    /// Download URL.
     url: &'a str,
-
-    /// Local cached file size.
     local_size: u64,
-
-    /// Remote file size.
     remote_size: u64,
-
-    /// Whether the remote file size is estimated.
     estimated: bool,
 }
 
-/// Possible cache state of a package.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CacheMaybeValid {
-    /// All files are cached and valid.
     Full,
-
-    /// Some files are cached and valid.
     Partial,
-
-    /// No valid cache.
     None,
 }
 
-/// Local cache information of a package.
 struct PackageCache<'a> {
-    /// Associated package.
     package: &'a Package,
-
-    /// Whether the cache is valid.
     valid: CacheMaybeValid,
-
-    /// Inner details of the package cache.
-    ///
-    /// Since a package may have multiple files to download, the inner hashmap
-    /// stores the download information of each file.
     inner: HashMap<String, FileDownloadInfo<'a>>,
 }
 
@@ -93,14 +62,13 @@ impl PackageCache<'_> {
                 cnt += 1;
             }
         }
-
-        if cnt == self.inner.len() {
-            self.valid = CacheMaybeValid::Full;
+        self.valid = if cnt == self.inner.len() {
+            CacheMaybeValid::Full
         } else if cnt > 0 {
-            self.valid = CacheMaybeValid::Partial;
+            CacheMaybeValid::Partial
         } else {
-            self.valid = CacheMaybeValid::None;
-        }
+            CacheMaybeValid::None
+        };
     }
 }
 
@@ -110,17 +78,9 @@ impl<'a> PackageSet<'a> {
         packages: &'a [&Package],
         reuse_cache: bool,
     ) -> Fallible<PackageSet<'a>> {
-        let mut multi = Multi::new();
-
-        let max_conn = session.config().aria2_max_connection_per_server() as usize;
-        multi.set_max_total_connections(max_conn * 2)?;
-        multi.set_max_host_connections(max_conn)?;
-        multi.pipelining(false, true)?;
-
         Ok(PackageSet {
             session,
             packages,
-            multi,
             caches: OnceCell::new(),
             reuse_cache,
         })
@@ -133,17 +93,14 @@ impl<'a> PackageSet<'a> {
 
         let config = self.session.config();
         let cache_root = config.cache_path();
-
         let mut caches = HashMap::new();
 
         for &pkg in self.packages.iter() {
-            // if the package is upgradable, use the upgradable reference instead
             let pkg = pkg.upgradable().unwrap_or(pkg);
-
             let urls = pkg.download_urls();
             let filenames = pkg.download_filenames();
 
-            let mut pacakge_cache = PackageCache {
+            let mut package_cache = PackageCache {
                 package: pkg,
                 valid: CacheMaybeValid::None,
                 inner: HashMap::new(),
@@ -163,29 +120,32 @@ impl<'a> PackageSet<'a> {
                     }
                 }
 
-                let dlinfo = FileDownloadInfo {
-                    url,
-                    local_size,
-                    remote_size,
-                    estimated: false,
-                };
-
-                pacakge_cache.inner.insert(filename.to_owned(), dlinfo);
+                package_cache.inner.insert(
+                    filename.to_owned(),
+                    FileDownloadInfo {
+                        url,
+                        local_size,
+                        remote_size,
+                        estimated: false,
+                    },
+                );
             }
 
             if self.reuse_cache {
                 if file_cached_count == urls.len() {
-                    pacakge_cache.valid = CacheMaybeValid::Full;
+                    package_cache.valid = CacheMaybeValid::Full;
                 } else if file_cached_count > 0 {
-                    pacakge_cache.valid = CacheMaybeValid::Partial;
+                    package_cache.valid = CacheMaybeValid::Partial;
                 }
             }
 
-            caches.insert(pkg.ident(), pacakge_cache);
+            caches.insert(pkg.ident(), package_cache);
         }
 
         let _ = self.caches.set(caches);
     }
+
+    // ─── Download ─────────────────────────────────────────────────────────────
 
     /// Download packages.
     pub fn download(&mut self) -> Fallible<()> {
@@ -203,14 +163,10 @@ impl<'a> PackageSet<'a> {
             .map(|s| s.as_str())
             .unwrap_or(DEFAULT_USER_AGENT);
 
-        let mut handles = HashMap::new();
-        let mut token_ctx = HashMap::new();
         let package_caches = self.caches.get_mut().unwrap();
 
-        // Maps final file path → list of chunk temp paths (for reassembly)
-        let mut chunk_file_map: HashMap<std::path::PathBuf, Vec<std::path::PathBuf>> = HashMap::new();
-        // Simple non-chunked files: (tmp, final)
-        let mut filepaths: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![];
+        let mut chunk_file_map: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let mut filepaths: Vec<(PathBuf, PathBuf)> = vec![];
 
         internal::fs::ensure_dir(&cache_root)?;
 
@@ -221,14 +177,18 @@ impl<'a> PackageSet<'a> {
             .min(config.aria2_max_connection_per_server()) as u64;
         let min_split_size = config.aria2_min_split_size();
 
-        for (pidx, (_, cache)) in package_caches.iter().enumerate() {
+        // Build agent once (shared for all downloads)
+        let agent = build_agent(proxy, user_agent, 120);
+        let agent = &agent;
+
+        for (_, cache) in package_caches.iter() {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
                 continue;
             }
 
             let cookie = cache.package.cookie().unwrap_or_default();
 
-            for (uidx, (filename, dlinfo)) in cache.inner.iter().enumerate() {
+            for (filename, dlinfo) in cache.inner.iter() {
                 if self.reuse_cache
                     && dlinfo.local_size > 0
                     && dlinfo.local_size == dlinfo.remote_size
@@ -236,7 +196,6 @@ impl<'a> PackageSet<'a> {
                     continue;
                 }
 
-                // Decide whether to use fragmented download
                 let use_fragments = fragmentation_enabled
                     && !dlinfo.estimated
                     && dlinfo.remote_size >= min_split_size
@@ -249,146 +208,113 @@ impl<'a> PackageSet<'a> {
                     internal::fs::ensure_dir(&part_dir)?;
 
                     let chunk_size = dlinfo.remote_size / chunk_count;
-                    let mut part_paths = Vec::new();
+                    let mut part_paths: Vec<PathBuf> = Vec::new();
 
-                    for chunk_idx in 0..chunk_count {
-                        let start = chunk_idx * chunk_size;
-                        let end = if chunk_idx == chunk_count - 1 {
-                            dlinfo.remote_size - 1
-                        } else {
-                            (chunk_idx + 1) * chunk_size - 1
-                        };
+                    // Launch threads for parallel chunk downloads
+                    let url_str = dlinfo.url.to_owned();
+                    let cookie_clone = cookie.clone();
 
-                        let part_path = part_dir.join(format!("part.{}", chunk_idx));
-                        part_paths.push(part_path.clone());
+                    std::thread::scope(|scope| {
+                        for chunk_idx in 0..chunk_count {
+                            let start = chunk_idx * chunk_size;
+                            let end = if chunk_idx == chunk_count - 1 {
+                                dlinfo.remote_size - 1
+                            } else {
+                                (chunk_idx + 1) * chunk_size - 1
+                            };
 
-                        let mut easy = Easy::new();
-                        easy.get(true)?;
-                        easy.url(dlinfo.url)?;
-                        easy.follow_location(true)?;
-                        easy.useragent(user_agent)?;
-                        easy.fail_on_error(true)?;
-                        if let Some(proxy) = proxy {
-                            easy.proxy(proxy)?;
+                            let part_path = part_dir.join(format!("part.{}", chunk_idx));
+                            part_paths.push(part_path.clone());
+
+                            let _ = std::fs::remove_file(&part_path);
+
+                            let part_path = part_path.clone();
+                            let url = url_str.clone();
+                            let ck = cookie_clone.clone();
+
+                            scope.spawn(move || {
+                                if let Err(e) = download_range(
+                                    &agent, &url, start, end, &part_path, &ck, proxy,
+                                ) {
+                                    debug!("chunk download failed: {}", e);
+                                }
+                            });
                         }
-                        set_cookie(&mut easy, &cookie)?;
+                    });
 
-                        // Set Range header for this chunk
-                        let range = format!("bytes={}-{}", start, end);
-                        let mut list = List::new();
-                        list.append(&range)?;
-                        easy.http_headers(list)?;
-
-                        if let Some(tx) = self.session.emitter() {
-                            let ident = cache.package.ident();
-                            let url = dlinfo.url.to_owned();
-                            let fname = filename.to_owned();
-                            easy.progress(true)?;
-                            easy.progress_function(move |dltotal, dlnow, _, _| {
-                                progress(
-                                    tx.clone(),
-                                    ident.to_owned(),
-                                    url.to_owned(),
-                                    fname.to_owned(),
-                                    dltotal,
-                                    dlnow,
-                                )
-                            })?;
+                    // Check all parts downloaded OK
+                    for part in &part_paths {
+                        if !part.exists() || part.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+                            return Err(crate::error::Error::Custom(format!(
+                                "failed to download chunk: {}",
+                                part.display()
+                            )));
                         }
-
-                        // Remove existing chunk file
-                        let _ = std::fs::remove_file(&part_path);
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&part_path)?;
-                        easy.write_function(move |data| {
-                            file.write_all(data).unwrap();
-                            Ok(data.len())
-                        })?;
-
-                        let mut easyhandle = self.multi.add(easy)?;
-                        let token = pidx * 10000 + uidx * 100 + chunk_idx as usize;
-                        let _ = easyhandle.set_token(token);
-                        handles.insert(token, easyhandle);
-                        token_ctx.insert(token, (cache.package.ident(), filename.to_owned()));
                     }
 
-                    chunk_file_map.insert(path.clone(), part_paths);
+                    chunk_file_map.insert(path, part_paths);
                 } else {
-                    // Single-threaded download (original behavior)
-                    let mut easy = Easy::new();
-                    easy.get(true)?;
-                    easy.url(dlinfo.url)?;
-                    easy.follow_location(true)?;
-                    easy.useragent(user_agent)?;
-                    easy.fail_on_error(true)?;
-                    if let Some(proxy) = proxy {
-                        easy.proxy(proxy)?;
-                    }
-                    set_cookie(&mut easy, &cookie)?;
-
-                    if let Some(tx) = self.session.emitter() {
-                        let ident = cache.package.ident();
-                        let url = dlinfo.url.to_owned();
-                        let fname = filename.to_owned();
-                        easy.progress(true)?;
-                        easy.progress_function(move |dltotal, dlnow, _, _| {
-                            progress(
-                                tx.clone(),
-                                ident.to_owned(),
-                                url.to_owned(),
-                                fname.to_owned(),
-                                dltotal,
-                                dlnow,
-                            )
-                        })?;
-                    }
-
+                    // Single download
                     let path = cache_root.join(filename);
                     let tmp = cache_root.join(format!("{}.download", filename));
-
                     let _ = std::fs::remove_file(&path);
                     let _ = std::fs::remove_file(&tmp);
 
-                    filepaths.push((tmp.clone(), path.clone()));
+                    let emitter = self.session.emitter();
+                    let ident = cache.package.ident();
+                    let fname = filename.to_owned();
+                    let url_str = dlinfo.url.to_owned();
+                    let cookie_clone = cookie.clone();
+                    let dlinfo_total = dlinfo.remote_size;
 
-                    let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
-                    easy.write_function(move |data| {
-                        file.write_all(data).unwrap();
-                        Ok(data.len())
+                    // Download via ureq
+                    let mut req = agent.get(&url_str);
+                    if !cookie_clone.is_empty() {
+                        let cookie_val = cookie_clone
+                            .iter()
+                            .map(|(k, v)| format!("{}={}", k, v))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        req = req.header("Cookie", &cookie_val);
+                    }
+
+                    let resp = req.call().map_err(|e| {
+                        crate::error::Error::Custom(format!("download failed: {}", e))
                     })?;
 
-                    let mut easyhandle = self.multi.add(easy)?;
-                    let token = pidx * 100 + uidx;
-                    let _ = easyhandle.set_token(token);
-                    handles.insert(token, easyhandle);
-                    token_ctx.insert(token, (cache.package.ident(), filename.to_owned()));
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&tmp)?;
+
+                    let mut reader = resp.into_body().into_reader();
+                    let mut buf = [0u8; 32768];
+                    let mut dlnow = 0u64;
+
+                    loop {
+                        let n = reader.read(&mut buf).map_err(|e| {
+                            crate::error::Error::Custom(e.to_string())
+                        })?;
+                        if n == 0 {
+                            break;
+                        }
+                        file.write_all(&buf[..n])?;
+                        dlnow += n as u64;
+
+                        if let Some(tx) = &emitter {
+                            let ctx = PackageDownloadProgressContext {
+                                ident: ident.clone(),
+                                url: url_str.clone(),
+                                filename: fname.clone(),
+                                dltotal: dlinfo_total,
+                                dlnow,
+                            };
+                            let _ = tx.send(Event::PackageDownloadProgress(ctx));
+                        }
+                    }
+
+                    filepaths.push((tmp, path));
                 }
-            }
-        }
-
-        let mut alive = true;
-        while alive {
-            alive = self.multi.perform()? > 0;
-
-            let mut handle_err = None;
-
-            self.multi.messages(|message| {
-                let token = message.token().expect("failed to get token");
-                let handle = handles.get_mut(&token).expect("failed to get handle");
-
-                if let Some(Err(e)) = message.result_for(handle) {
-                    handle_err = Some(e);
-                }
-            });
-
-            if let Some(err) = handle_err {
-                return Err(err.into());
-            }
-
-            if alive {
-                self.multi.wait(&mut [], Duration::from_secs(5))?;
             }
         }
 
@@ -402,7 +328,6 @@ impl<'a> PackageSet<'a> {
                 drop(src);
                 let _ = std::fs::remove_file(part);
             }
-            // Remove parts directory
             if let Some(parent) = final_path.parent() {
                 let part_dir = parent.join(format!(
                     "{}.parts",
@@ -420,10 +345,8 @@ impl<'a> PackageSet<'a> {
         Ok(())
     }
 
-    /// Calculate download size.
-    ///
-    /// This function is actually a pre-download process, which will try to
-    /// fetch the remote file size of each package file.
+    // ─── Calculate download size ──────────────────────────────────────────────
+
     pub fn calculate_download_size(&mut self) -> Fallible<DownloadSize> {
         if self.caches.get().is_none() {
             self.load_cache();
@@ -438,96 +361,64 @@ impl<'a> PackageSet<'a> {
             .map(|s| s.as_str())
             .unwrap_or(DEFAULT_USER_AGENT);
 
-        let mut handles = HashMap::new();
-        let mut token_ctx = HashMap::new();
         let package_caches = self.caches.get_mut().unwrap();
+        let agent = build_agent(proxy, user_agent, 30);
 
-        for (pidx, &pkg) in self.packages.iter().enumerate() {
-            // if the package is upgradable, use the upgradable reference instead
+        let mut total = 0u64;
+        let mut estimated = false;
+
+        for &pkg in self.packages.iter() {
             let pkg = pkg.upgradable().unwrap_or(pkg);
-
             let urls = pkg.download_urls();
             let filenames = pkg.download_filenames();
             let cookie = pkg.cookie().unwrap_or_default();
 
-            for (uidx, (url, filename)) in urls.iter().zip(filenames.iter()).enumerate() {
-                let mut easy = Easy::new();
-                easy.get(true)?;
-                easy.url(url)?;
-                easy.follow_location(true)?;
-                easy.nobody(true)?;
-                easy.useragent(user_agent)?;
-                if let Some(proxy) = proxy {
-                    easy.proxy(proxy)?;
+            for (url, filename) in urls.iter().zip(filenames.iter()) {
+                let ident = pkg.ident();
+                let package_cache = package_caches.get_mut(&ident).unwrap();
+                let info = package_cache
+                    .inner
+                    .get_mut(filename)
+                    .expect("failed to get cache info");
+
+                // HEAD request via ureq
+                let mut req = agent.head(*url);
+                if !cookie.is_empty() {
+                    let cookie_val = cookie
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    req = req.header("Cookie", &cookie_val);
                 }
-                set_cookie(&mut easy, &cookie)?;
 
-                let mut easyhandle = self.multi.add(easy)?;
-                let token = pidx * 100 + uidx;
-                let _ = easyhandle.set_token(token);
-                handles.insert(token, easyhandle);
-
-                token_ctx.insert(token, (pkg.ident(), url.to_string(), filename.to_owned()));
-            }
-        }
-
-        let mut total = 0;
-        let mut estimated = false;
-
-        let mut alive = true;
-        while alive {
-            alive = self.multi.perform()? > 0;
-
-            let mut handle_err = None;
-
-            self.multi.messages(|message| {
-                let token = message.token().expect("failed to get token");
-                let handle = handles.get_mut(&token).expect("failed to get handle");
-
-                if let Some(handle_ret) = message.result_for(handle) {
-                    match handle_ret {
-                        Err(e) => handle_err = Some(e),
-                        Ok(_) => {
-                            let (ident, url, filename) = token_ctx.get(&token).unwrap();
-                            let package_cache = package_caches.get_mut(ident).unwrap();
-                            let info = package_cache
-                                .inner
-                                .get_mut(filename)
-                                .expect("failed to get cache info");
-
-                            if let Ok(code) = handle.response_code() {
-                                let mut content_length = 0u64;
-                                if code == 200 {
-                                    content_length =
-                                        handle.content_length_download().unwrap_or(0f64) as u64;
-                                    info.remote_size = content_length;
-                                    if content_length != info.local_size {
-                                        total += content_length;
-                                    }
-                                } else {
-                                    debug!("code: {}, ident: {}, url: {}", code, ident, url)
-                                }
-
-                                if content_length == 0 {
-                                    info.estimated = true;
-                                    estimated = true;
-                                }
-
-                                package_cache.update_valid_state();
-                            } else {
-                                debug!("failed to get response code for {}", url);
-                            }
-                        }
+                let code = match req.call() {
+                    Ok(resp) => resp.status().as_u16(),
+                    Err(e) => {
+                        debug!("HEAD failed for {}: {}", url, e);
+                        info.estimated = true;
+                        estimated = true;
+                        package_cache.update_valid_state();
+                        continue;
                     }
+                };
+
+                if code == 200 {
+                    info.remote_size = get_content_length_from_agent(&agent, url, &cookie)
+                        .unwrap_or(0);
+                    if info.remote_size != info.local_size {
+                        total += info.remote_size;
+                    }
+                } else {
+                    debug!("code: {}, ident: {}, url: {}", code, ident, url)
                 }
-            });
 
-            if let Some(err) = handle_err {
-                return Err(err.into());
-            }
+                if info.remote_size == 0 {
+                    info.estimated = true;
+                    estimated = true;
+                }
 
-            if alive {
-                self.multi.wait(&mut [], Duration::from_secs(5))?;
+                package_cache.update_valid_state();
             }
         }
 
@@ -535,67 +426,77 @@ impl<'a> PackageSet<'a> {
     }
 }
 
-fn set_cookie(easy: &mut Easy, cookie: &[(&str, &str)]) -> Fallible<()> {
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn build_agent(proxy: Option<&str>, user_agent: &str, timeout_secs: u64) -> ureq::Agent {
+    let mut cfg = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
+    if let Some(proxy_url) = proxy {
+        if let Ok(p) = ureq::Proxy::new(proxy_url) {
+            cfg = cfg.proxy(Some(p));
+        }
+    }
+    cfg.build().new_agent()
+}
+
+fn get_content_length_from_agent(
+    agent: &ureq::Agent, url: &str, cookie: &[(&str, &str)],
+) -> Option<u64> {
+    let mut req = agent.head(url);
     if !cookie.is_empty() {
-        let mut header_cookie = String::from("Cookie: ");
-        header_cookie.push_str(
-            &cookie
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect::<Vec<_>>()
-                .join("; "),
-        );
-        let mut list = List::new();
-        list.append(&header_cookie)?;
-        easy.http_headers(list)?;
+        let cookie_val = cookie.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+        req = req.header("Cookie", &cookie_val);
+    }
+    let resp = req.call().ok()?;
+    resp.headers()
+        .get("Content-Length")?
+        .to_str()
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+fn download_range(
+    agent: &ureq::Agent, url: &str, start: u64, end: u64, dest: &std::path::Path,
+    cookie: &[(&str, &str)], proxy: Option<&str>,
+) -> Result<(), String> {
+    let _ = proxy; // proxy already baked into agent
+    let range = format!("bytes={}-{}", start, end);
+    let mut req = agent.get(url).header("Range", &range);
+    if !cookie.is_empty() {
+        let cookie_val = cookie.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+        req = req.header("Cookie", &cookie_val);
     }
 
+    let resp = req.call().map_err(|e| e.to_string())?;
+    let mut file = File::create(dest).map_err(|e| e.to_string())?;
+    let mut reader = resp.into_body().into_reader();
+    std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ─── Progress context ───────────────────────────────────────────────────────
 
 /// Progress context for package download.
 #[derive(Clone, Debug)]
 pub struct PackageDownloadProgressContext {
-    /// Package identifier.
     pub ident: String,
-
-    /// Download URL.
     pub url: String,
-
-    /// Download filename.
     pub filename: String,
-
-    /// Total bytes to download.
     pub dltotal: u64,
-
-    /// Downloaded bytes.
     pub dlnow: u64,
 }
 
-/// Report package download progress.
-fn progress(
-    tx: Sender<Event>,
-    ident: String,
-    url: String,
-    filename: String,
-    dltotal: f64,
-    dlnow: f64,
-) -> bool {
-    let ctx = PackageDownloadProgressContext {
-        ident,
-        url,
-        filename,
-        dltotal: dltotal as u64,
-        dlnow: dlnow as u64,
-    };
-
-    tx.send(Event::PackageDownloadProgress(ctx)).is_ok()
-}
+// ─── Old curl implementation (kept for reference) ──────────────────────────
+// (see git history for the full curl-based download.rs)
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_chunk_boundaries() {
         let size = 100u64;
@@ -616,7 +517,6 @@ mod tests {
         let chunks = 5u64;
         let chunk_size = size / chunks;
         let mut covered = vec![false; size as usize];
-
         for i in 0..chunks {
             let start = i * chunk_size;
             let end = if i == chunks - 1 { size - 1 } else { (i + 1) * chunk_size - 1 };
