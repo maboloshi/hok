@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use regex::Regex;
@@ -61,8 +61,8 @@ pub fn walk_dir_json<P: AsRef<Path>>(path: P) -> io::Result<Vec<PathBuf>> {
 /// Convert a string to a valid safe filename.
 #[inline]
 pub fn filenamify<S: AsRef<str>>(filename: S) -> String {
-    static REGEX_REPLACE: Lazy<Regex> =
-        Lazy::new(|| RegexBuilder::new(r"[^\w.-]+").build().unwrap());
+    static REGEX_REPLACE: LazyLock<Regex> =
+        LazyLock::new(|| RegexBuilder::new(r"[^\w.-]+").build().unwrap());
     REGEX_REPLACE
         .replace_all(filename.as_ref(), "_")
         .into_owned()

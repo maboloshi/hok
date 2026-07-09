@@ -1,5 +1,5 @@
-use once_cell::unsync::OnceCell;
 use scoop_hash::ChecksumBuilder;
+use std::cell::OnceCell;
 use std::io::Read;
 use std::path::Path;
 use tracing::info;

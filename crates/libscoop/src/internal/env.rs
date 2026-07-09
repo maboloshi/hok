@@ -15,7 +15,7 @@ pub fn get_path_like_env(name: &str) -> Fallible<Vec<PathBuf>> {
 
 #[cfg(windows)]
 mod windows {
-    use once_cell::sync::Lazy;
+    use std::sync::LazyLock;
     use std::ffi::OsString;
     use std::path::Path;
     use winreg::enums::HKEY_CURRENT_USER;
@@ -24,7 +24,7 @@ mod windows {
     use crate::error::Fallible;
 
     /// `HKEY_CURRENT_USER` registry key handle.
-    static HKCU: Lazy<RegKey> = Lazy::new(|| RegKey::predef(HKEY_CURRENT_USER));
+    static HKCU: LazyLock<RegKey> = LazyLock::new(|| RegKey::predef(HKEY_CURRENT_USER));
 
     /// Get the value of an environment variable.
     /// Returns an empty string if the variable is not set.

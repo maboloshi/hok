@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::{Regex, RegexBuilder};
 use std::path::{Component, Path, PathBuf};
 
@@ -21,7 +21,7 @@ pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 }
 
 pub fn extract_name_and_bucket(path: &Path) -> Fallible<(String, String)> {
-    static RE: Lazy<Regex> = Lazy::new(|| {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
         // FIXME: Uppercase <name> is not a good idea, the support is going to be dropped.
         let p = r".*?[\\/]buckets[\\/](?P<bucket>[a-zA-Z0-9-_]+).*?[\\/](?P<name>[a-zA-Z0-9-_@.]+).json$";
         RegexBuilder::new(p).build().unwrap()

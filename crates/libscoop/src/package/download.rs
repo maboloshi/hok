@@ -3,7 +3,7 @@
 //! Replaced `curl` (libcurl bindings) to avoid static C compilation overhead.
 //! Fragmented downloads use `std::thread::scope` instead of `curl::multi::Multi`.
 
-use once_cell::unsync::OnceCell;
+use std::cell::OnceCell;
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},

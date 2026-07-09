@@ -1404,7 +1404,6 @@ dependencies = [
  "jiff",
  "junction",
  "lzma-rs",
- "once_cell",
  "openssl",
  "rayon",
  "regex",

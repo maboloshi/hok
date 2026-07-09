@@ -1,6 +1,6 @@
-use once_cell::sync::OnceCell;
 use rayon::prelude::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 use std::fs::DirEntry;
+use std::sync::OnceLock;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -29,7 +29,7 @@ pub struct Bucket {
     ///
     /// Non-git bucket is also supported by Scoop, mostly it is a local directory
     /// which does not have a remote url, and bucket update is not supported.
-    remote_url: OnceCell<Option<String>>,
+    remote_url: OnceLock<Option<String>>,
 }
 
 impl Bucket {
@@ -57,7 +57,7 @@ impl Bucket {
         let bucket = Bucket {
             path,
             name,
-            remote_url: OnceCell::new(),
+            remote_url: OnceLock::new(),
         };
 
         Ok(bucket)

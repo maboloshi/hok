@@ -4,7 +4,7 @@ pub(crate) mod query;
 pub(crate) mod resolve;
 pub(crate) mod sync;
 
-use once_cell::unsync::OnceCell;
+use std::cell::OnceCell;
 use std::{fmt, path::PathBuf};
 
 pub use manifest::{HashString, InstallInfo, License, Manifest};

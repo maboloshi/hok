@@ -1,4 +1,4 @@
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -6,7 +6,7 @@ use std::ptr;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
-static SCOOP_SHORTCUT_DIR: Lazy<PathBuf> = Lazy::new(shortcut_dir);
+static SCOOP_SHORTCUT_DIR: LazyLock<PathBuf> = LazyLock::new(shortcut_dir);
 
 /// Return the path to the shortcut directory.
 ///

@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 use std::iter::FromIterator;
@@ -17,7 +17,7 @@ pub static DEFAULT_USER_AGENT: &str = "Scoop/1.0 (+http://scoop.sh/)";
 pub static ISOLATED_PACKAGE_BUCKET: &str = "__isolated__";
 
 /// Built-in list of known buckets.
-pub static BUILTIN_BUCKET_LIST: Lazy<Vec<(&'static str, &'static str)>> = Lazy::new(|| {
+pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
     vec![
         ("main", "https://github.com/ScoopInstaller/Main"),
         ("extras", "https://github.com/ScoopInstaller/Extras"),
@@ -32,7 +32,7 @@ pub static BUILTIN_BUCKET_LIST: Lazy<Vec<(&'static str, &'static str)>> = Lazy::
     ]
 });
 
-pub static BUCKET_PRIORITY: Lazy<Vec<&'static str>> = Lazy::new(|| {
+pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     vec![
         "main",
         "extras",
@@ -46,7 +46,7 @@ pub static BUCKET_PRIORITY: Lazy<Vec<&'static str>> = Lazy::new(|| {
 
 /// regex to match valid Scoop cache filename:
 /// "app#version#filenamified_url"
-pub static REGEX_CACHE_FILE: Lazy<Regex> = Lazy::new(|| {
+pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = r"(?P<name>[0-9a-zA-Z-_.]+)#(?P<version>[0-9a-zA-Z-.]+)#(?P<url>.*)";
     RegexBuilder::new(pattern).build().unwrap()
 });
@@ -61,23 +61,23 @@ pub static REGEX_CACHE_FILE: Lazy<Regex> = Lazy::new(|| {
 /// - **sha1**: `^sha1:[a-fA-F0-9]{40}$`
 /// - **sha256**: `^(sha256:)?[a-fA-F0-9]{64}$`
 /// - **sha512**: `^sha512:[a-fA-F0-9]{128}$`
-pub static REGEX_HASH: Lazy<Regex> = Lazy::new(|| {
+pub static REGEX_HASH: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = r"^md5:[a-fA-F0-9]{32}|sha1:[a-fA-F0-9]{40}|(sha256:)?[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128}$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
-pub static REGEX_ARCHIVE_7Z: Lazy<Regex> = Lazy::new(|| {
+pub static REGEX_ARCHIVE_7Z: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = r"\.((7z)|(t?gz)|(tar)|(lzma)|(bz2?)|(rar)|(iso)|(xz)|(lzh)|(nupkg))$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
-static REGEX_ARCHIVE_ZSTD: Lazy<Regex> = Lazy::new(|| {
+static REGEX_ARCHIVE_ZSTD: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = r"\.(zst)$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
 /// List of valid SPDX license identifiers.
-pub static SPDX_LIST: Lazy<HashSet<&str>> = Lazy::new(|| {
+pub static SPDX_LIST: LazyLock<HashSet<&str>> = LazyLock::new(|| {
     // Reference: https://github.com/spdx/license-list-data
     const ID_LIST: [&str; 458] = [
         "0BSD",
