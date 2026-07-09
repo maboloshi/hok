@@ -18,6 +18,7 @@ use crate::{
 
 /// Cache entry matching the `app` table schema.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CacheEntry {
     pub name: String,
     pub description: String,

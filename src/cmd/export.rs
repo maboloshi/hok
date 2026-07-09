@@ -1,5 +1,4 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, QueryOption, Session};
 
 use crate::Result;

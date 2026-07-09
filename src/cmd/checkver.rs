@@ -430,7 +430,7 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Result<Stri
 
     // Regex
     if let Some(re_str) = ext.get("regex").and_then(|v| v.as_str()) {
-        let url_for_re = ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
+        let _url_for_re = ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
         let re = Regex::new(re_str).map_err(|e| anyhow::anyhow!("bad hash regex: {}", e))?;
         if let Some(caps) = re.captures(content) {
             if let Some(h) = caps.get(1).or_else(|| caps.get(0)) {
@@ -538,7 +538,7 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 ///   $version — the current installed version
 ///
 /// The script's stdout is captured and trimmed as the new version string.
-fn run_checkver_script(session: &Session, script: &str, url: Option<&str>) -> Result<Option<String>> {
+fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>) -> Result<Option<String>> {
     use std::io::Read;
 
     let mut cmd = std::process::Command::new("powershell.exe");

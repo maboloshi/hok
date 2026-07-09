@@ -362,23 +362,9 @@ pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
 ///
 /// I/O errors will be returned if failed to write the `install.json` file.
 /// Serde errors will be returned if the install info cannot be serialized.
-///
-/// [1]: crate::Error::PackageHoldBrokenInstall
-pub fn package_hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
-
-/// Add an alias to the config.
-pub fn alias_add(session: &Session, name: &str, command: &str) -> Fallible<()> {
-    let mut config = session.config_mut()?;
-    config.set_alias(name, Some(command))
-}
-
-/// Remove an alias from the config.
-pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
-    let mut config = session.config_mut()?;
-    config.set_alias(name, None)
-}
 
 /// Hold or unhold a package.
+pub fn package_hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
     let mut path = session.config().root_path().to_owned();
     path.push("apps");
     path.push(name);

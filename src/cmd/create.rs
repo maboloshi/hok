@@ -106,7 +106,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 fn compute_file_hash(path: &std::path::Path) -> Result<String> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| anyhow::anyhow!("open: {}", e))?;
-    let mut builder = ChecksumBuilder::new();
+    let builder = ChecksumBuilder::new();
     let mut hasher = builder.build();
     let mut buf = [0u8; 65536];
     loop {
