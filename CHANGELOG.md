@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.2.0-beta.0](https://github.com/maboloshi/hok/compare/v0.1.0-beta.7...v0.2.0-beta.0) (2026-07-08)
+
+> **Fork Notice**: This release is a community-maintained fork based on the original
+> v0.1.0-beta.7. The original author has paused development. This version introduces
+> significant internal rewrites and new features, and is maintained independently.
+
+### ⚠ BREAKING CHANGES
+
+* **libscoop:** `curl` HTTP backend replaced with `ureq` (pure Rust). Proxy config
+  continues to work, but custom curl options are no longer supported.
+* **libscoop:** `sysinfo` crate replaced with raw Win32 FFI for process enumeration
+* **libscoop:** `chrono` dependency replaced with `jiff`. Config timestamps use
+  ISO 8601 format instead of RFC 3339 with microseconds.
+* **libscoop:** removed `rustcrypto-hash` feature flag — `scoop_hash` now defaults
+  to `rustcrypto` backend (RustCrypto crates). Self-contained backend removed.
+* **libscoop:** `Error::Curl` and `Error::CurlMulti` variants removed.
+* **libscoop:** `once_cell` removed — uses std `LazyLock`/`OnceCell`/`OnceLock`
+  (requires Rust 1.80+).
+
+### Features
+
+* **checkver:** complete implementation with all extraction modes:
+  * regex, JSONPath, XPath, PowerShell script
+  * reverse (last match), replace (capture group templates)
+  * GitHub shortcut (API `$.tag_name`)
+  * SourceForge shortcut (RSS feed)
+* **checkver:** autoupdate `--update` with full manifest rewriting:
+  * `$version`, `$matchN`, `$matchHead`, `$matchTail`, `$basename` variables
+  * Hash extraction from remote page (jsonpath > regex > find)
+  * Per-architecture URL/hash handling (32bit/64bit/arm64)
+* **libscoop:** SQLite manifest cache (`use_sqlite_cache` config)
+  * Compatible with original Scoop's schema at `{cache}/scoop.db`
+  * Auto-populated on `hok update` and on first query
+* **config:** `ignore_failures` setting (install/upgrade/uninstall continue on error)
+* **hok:** new commands: `depends`, `prefix`, `which`, `checkup`, `alias`,
+  `export`, `import`, `create`, `shim`, `virustotal`
+* **hok:** `cleanup` command implementation (removes old package versions)
+* **hok:** `update` command now accepts package names (Scoop-compatible)
+* **hok:** `checkhashes` streaming download + hash in single pass
+
+### Performance Improvements
+
+* **regex:** reduced feature set (dropped unicode-perl/bool/gencat). Compile
+  time reduced ~47% (5:21 → 2:48). Binary size unchanged (LTO already optimized).
+* **libscoop:** `futures` thread-pool replaced with `std::thread::spawn`.
+  Bucket update parallelism unchanged, no async runtime overhead.
+* **libscoop:** `once_cell` → std equivalents (smaller dep tree, faster compile)
+* **libscoop:** `compare_versions` rewritten — proper text segment, pre-release,
+  and v-prefix handling
+
+### Code Refactoring
+
+* **libscoop:** `chrono` → `jiff` (lighter datetime crate, same author as `regex`)
+* **libscoop:** `curl` + `static-curl` → `ureq` (pure Rust HTTP, no C build deps)
+* **libscoop:** `sysinfo` → raw Win32 FFI for `running_apps()`
+* **libscoop:** `scoop_hash` selfcontained backend removed (use RustCrypto)
+* **libscoop:** old curl/git2/sysinfo/chrono code kept as comments for reference
+* **libscoop:** removed unix-only `openssl` dependency (project is Windows-only)
+* **libscoop:** all warnings resolved (0 warnings, 0 errors)
+
+### Features (from original v0.1.0-beta.7)
+
+* **hok:** 27 CLI commands covering all original Scoop functionality
+* **libscoop:** Pure Rust archive extraction (7z/zip/tar/gz/bz2/xz/lzh/rar/zst)
+* **libscoop:** IShellLinkW COM FFI for shortcuts (zero dependencies)
+* **libscoop:** Fragmented download via Range requests (curl/aria2-compatible config)
+* **hok:** reset command with post_install fix (original Scoop bug workaround)
+
 ## [0.1.0-beta.7](https://github.com/chawyehsu/hok/compare/v0.1.0-beta.6...v0.1.0-beta.7) (2024-12-10)
 
 
