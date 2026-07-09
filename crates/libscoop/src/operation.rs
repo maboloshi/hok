@@ -170,6 +170,15 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
     if let Some(tx) = emitter {
         let _ = tx.send(Event::BucketUpdateDone);
     }
+
+    // Refresh SQLite manifest cache after bucket update
+    // Refresh SQLite manifest cache after bucket update
+    if session.config().use_sqlite_cache() {
+        if let Ok(conn) = internal::manifest_cache::open(session) {
+            let _ = internal::manifest_cache::populate(&conn, session);
+        }
+    }
+
     Ok(())
 }
 
