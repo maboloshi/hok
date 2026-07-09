@@ -339,6 +339,18 @@ pub fn config_set(session: &Session, key: &str, value: &str) -> Fallible<()> {
     session.config_mut()?.set(key, value)
 }
 
+/// Add an alias to the config.
+pub fn alias_add(session: &Session, name: &str, command: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, Some(command))
+}
+
+/// Remove an alias from the config.
+pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, None)
+}
+
 /// Hold or unhold a package.
 ///
 /// # Errors
@@ -353,6 +365,20 @@ pub fn config_set(session: &Session, key: &str, value: &str) -> Fallible<()> {
 ///
 /// [1]: crate::Error::PackageHoldBrokenInstall
 pub fn package_hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
+
+/// Add an alias to the config.
+pub fn alias_add(session: &Session, name: &str, command: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, Some(command))
+}
+
+/// Remove an alias from the config.
+pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, None)
+}
+
+/// Hold or unhold a package.
     let mut path = session.config().root_path().to_owned();
     path.push("apps");
     path.push(name);

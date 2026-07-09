@@ -283,6 +283,23 @@ impl Config {
         self.inner.ignore_failures.unwrap_or(false)
     }
 
+    /// Get the configured aliases (`alias` field in config).
+    #[inline]
+    pub fn aliases(&self) -> Option<&std::collections::HashMap<String, String>> {
+        self.inner.alias.as_ref()
+    }
+
+    /// Set or remove an alias.
+    pub fn set_alias(&mut self, name: &str, command: Option<&str>) -> Fallible<()> {
+        self.inner.alias.get_or_insert_with(std::collections::HashMap::new);
+        let map = self.inner.alias.as_mut().unwrap();
+        match command {
+            Some(cmd) => { map.insert(name.to_string(), cmd.to_string()); }
+            None => { map.remove(name); }
+        }
+        self.commit()
+    }
+
     /// Get the `proxy` config.
     #[inline]
     pub fn proxy(&self) -> Option<&str> {
