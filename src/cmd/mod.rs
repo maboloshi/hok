@@ -22,6 +22,7 @@ mod info;
 mod install;
 mod list;
 mod missing_checkver;
+mod prefix;
 mod reset;
 mod search;
 mod status;
@@ -77,6 +78,7 @@ pub enum Command {
     Install(install::Args),
     List(list::Args),
     MissingCheckver(missing_checkver::Args),
+    Prefix(prefix::Args),
     #[clap(alias = "s")]
     Search(search::Args),
     Status(status::Args),
@@ -116,6 +118,7 @@ pub fn start() -> Result<()> {
         Command::Install(args) => install::execute(args, &session),
         Command::List(args) => list::execute(args, &session),
         Command::MissingCheckver(args) => missing_checkver::execute(args),
+        Command::Prefix(args) => prefix::execute(args, &session),
         Command::Search(args) => search::execute(args, &session),
         Command::Reset(args) => reset::execute(args, &session),
         Command::Status(args) => status::execute(args, &session),
