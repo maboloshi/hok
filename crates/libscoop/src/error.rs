@@ -107,6 +107,10 @@ pub enum Error {
     #[error(transparent)]
     Regex(#[from] regex::Error),
 
+    /// SQLite error
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
     /// Serde error
     #[error(transparent)]
     Serde(#[from] serde_json::Error),

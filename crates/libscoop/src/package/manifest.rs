@@ -779,6 +779,20 @@ impl Manifest {
         &self.path
     }
 
+    /// Create a Manifest from a JSON string, using the given name as identifier.
+    ///
+    /// This is used when loading manifests from the SQLite cache, where no
+    /// file path is available.
+    pub fn from_json(name: &str, json: &str) -> Fallible<Manifest> {
+        let inner: ManifestSpec = serde_json::from_str(json)?;
+        let path = PathBuf::from(name);
+        Ok(Manifest {
+            path,
+            inner,
+            hash: String::new(),
+        })
+    }
+
     /// Return the `version` of this manifest.
     #[inline]
     pub fn version(&self) -> &str {

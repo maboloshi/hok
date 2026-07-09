@@ -301,6 +301,12 @@ impl Config {
         self.use_isolated_path.as_ref()
     }
 
+    /// Whether to use SQLite manifest cache.
+    #[inline]
+    pub fn use_sqlite_cache(&self) -> bool {
+        self.inner.use_sqlite_cache.unwrap_or(false)
+    }
+
     /// Whether Aria2 (or equivalent curl fragmentation) is enabled.
     /// Defaults to `true` if not set.
     #[inline]

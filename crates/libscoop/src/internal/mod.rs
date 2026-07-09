@@ -3,6 +3,7 @@ pub mod dag;
 pub mod env;
 pub mod fs;
 pub mod git;
+pub mod manifest_cache;
 pub mod network;
 pub mod os;
 pub mod path;
