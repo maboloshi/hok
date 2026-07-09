@@ -50,6 +50,7 @@ pub mod operation;
 
 pub use error::Error;
 pub use event::Event;
+pub use internal::compare_versions;
 pub use package::manifest::{Checkver, Manifest};
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;

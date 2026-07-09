@@ -1,0 +1,17 @@
+{
+    "version": "2.0.0",
+    "description": "Package with architecture-specific downloads",
+    "homepage": "https://example.com/arch",
+    "license": "Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://example.com/arch-2.0.0-win64.zip",
+            "hash": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+        },
+        "32bit": {
+            "url": "https://example.com/arch-2.0.0-win32.zip",
+            "hash": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+        }
+    },
+    "bin": "arch.exe"
+}
