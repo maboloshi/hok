@@ -428,7 +428,7 @@ impl<'a> PackageSet<'a> {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-fn build_agent(proxy: Option<&str>, user_agent: &str, timeout_secs: u64) -> ureq::Agent {
+fn build_agent(proxy: Option<&str>, _user_agent: &str, timeout_secs: u64) -> ureq::Agent {
     let mut cfg = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
     if let Some(proxy_url) = proxy {
