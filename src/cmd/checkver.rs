@@ -54,26 +54,31 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         print!("{} ... ", stem);
 
+        // Default regex override (used by sourceforge shortcut)
+        let mut effective_regex = None;
+
         // Determine URL and regex to use
-        let url = match &cv.url {
-            Some(u) => u.clone(),
-            None if cv.sourceforge.is_some() => {
-                println!("{}", "sourceforge checkver not supported".yellow());
-                continue;
-            }
-            None if is_github_checkver(&cv) => {
-                match github_api_url(manifest.homepage()) {
-                    Some(api_url) => api_url,
-                    None => {
-                        println!("{}", "could not extract GitHub repo from homepage".yellow());
-                        continue;
+        let url = if let Some(u) = &cv.url {
+            u.clone()
+        } else if let Some(sf) = &cv.sourceforge {
+            let extracted = extract_sourceforge_project(manifest.homepage());
+            let project = sf.project.as_deref().or(extracted.as_deref());
+            match project {
+                Some(proj) => {
+                    if cv.regex.is_none() && cv.jsonpath.is_none() {
+                        effective_regex = Some(r"/([\d.]+)/".to_string());
                     }
+                    format!("https://sourceforge.net/projects/{}/rss?path=/{}", proj, sf.path)
                 }
+                None => { eprintln!("could not extract SourceForge project"); continue; }
             }
-            None => {
-                println!("{}", "no checkver url".yellow());
-                continue;
+        } else if is_github_checkver(&cv) {
+            match github_api_url(manifest.homepage()) {
+                Some(api_url) => api_url,
+                None => { eprintln!("could not extract GitHub repo from homepage"); continue; }
             }
+        } else {
+            eprintln!("no checkver url"); continue;
         };
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses
@@ -93,7 +98,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // Extract version
         let current = manifest.version().to_string();
-        let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref());
+        let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref(), effective_regex.as_deref());
 
         match extract_result {
             Some((ref ver, ref captures)) if ver == &current => {
@@ -128,8 +133,15 @@ fn github_api_url(homepage: &str) -> Option<String> {
     Some(format!("https://api.github.com/repos/{}/releases/latest", repo))
 }
 
+/// Extract SourceForge project name from homepage URL.
+fn extract_sourceforge_project(homepage: &str) -> Option<String> {
+    let re = Regex::new(r"sourceforge\.net/projects/([^/]+)").ok()?;
+    let caps = re.captures(homepage)?;
+    caps.get(1).map(|m| m.as_str().to_string())
+}
+
 /// Extract version + capture groups from page content.
-fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>) -> Option<(String, Vec<String>)> {
+fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>, regex_override: Option<&str>) -> Option<(String, Vec<String>)> {
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
         let value: serde_json::Value = serde_json::from_str(content).ok()?;
@@ -140,7 +152,8 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         }
     }
 
-    if let Some(regex_str) = &cv.regex {
+    // Regex: use override first (sourceforge default), then cv.regex
+    if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
         let re = Regex::new(regex_str).ok()?;
         let caps = re.captures(content)?;
         let ver = caps.get(1).or_else(|| caps.get(0))?.as_str().to_string();
