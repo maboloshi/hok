@@ -142,6 +142,7 @@ fn extract_sourceforge_project(homepage: &str) -> Option<String> {
 
 /// Extract version + capture groups from page content.
 fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>, regex_override: Option<&str>) -> Option<(String, Vec<String>)> {
+    // JSONPath: use override first (for GitHub API), then cv.jsonpath
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
         let value: serde_json::Value = serde_json::from_str(content).ok()?;
@@ -149,6 +150,13 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         let ver = found.first()?.as_str()?;
         if !ver.is_empty() {
             return Some((ver.to_string(), vec![ver.to_string()]));
+        }
+    }
+
+    // XPath: evaluate XPath expression on XML content
+    if let Some(xp) = &cv.xpath {
+        if let Some(ver) = extract_xpath(content, xp) {
+            return Some((ver.clone(), vec![ver]));
         }
     }
 
@@ -438,4 +446,21 @@ fn write_json(path: &PathBuf, root: &serde_json::Value) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
     std::fs::write(path, formatted.as_bytes())?;
     Ok(())
+}
+
+/// Extract a string from XML content using XPath.
+fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
+    use sxd_document::parser;
+    use sxd_xpath::{evaluate_xpath, Value};
+
+    let doc = parser::parse(content).ok()?;
+    let doc = doc.as_document();
+    match evaluate_xpath(&doc, xpath_expr).ok()? {
+        Value::String(s) => Some(s),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Nodeset(nodes) => {
+                nodes.iter().next().map(|n| n.string_value())
+        }
+        Value::Boolean(b) => Some(b.to_string()),
+    }
 }
