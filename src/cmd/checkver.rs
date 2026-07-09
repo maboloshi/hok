@@ -94,16 +94,16 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // Extract version
         let current = manifest.version().to_string();
-        let latest = extract_version(&raw, cv, effective_jsonpath.as_deref());
+        let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref());
 
-        match latest {
-            Some(ver) if ver == current => {
+        match extract_result {
+            Some((ref ver, ref captures)) if ver == &current => {
                 println!("{} ({})", "up to date".green(), ver);
             }
-            Some(ref ver) => {
+            Some((ref ver, ref captures)) => {
                 println!("{} {} -> {}", "update available".yellow(), current, ver.as_str().blue());
                 if args.update {
-                    match apply_autoupdate(session, &path, &manifest, ver) {
+                    match apply_autoupdate(session, &path, &manifest, ver, captures) {
                         Ok(()) => println!("  {} updated to {}", "✓".green(), ver),
                         Err(e) => println!("  {}: {}", "update failed".red(), e),
                     }
@@ -133,7 +133,8 @@ fn github_api_url(homepage: &str) -> Option<String> {
 }
 
 /// Extract version string from page content using checkver rules.
-fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>) -> Option<String> {
+/// Returns `(version, captures)` where captures[0] is full match (if regex used).
+fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>) -> Option<(String, Vec<String>)> {
     // JSONPath: use override first (for GitHub API), then cv.jsonpath
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
@@ -141,7 +142,7 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         let found = value.query(jp).ok()?;
         let ver = found.first()?.as_str()?;
         if !ver.is_empty() {
-            return Some(ver.to_string());
+            return Some((ver.to_string(), vec![ver.to_string()]));
         }
     }
 
@@ -150,27 +151,51 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         let re = Regex::new(regex_str).ok()?;
         let caps = re.captures(content)?;
         let ver = caps.get(1).or_else(|| caps.get(0))?.as_str().to_string();
-        return Some(ver);
+        let captures: Vec<String> = caps.iter()
+            .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
+            .collect();
+        return Some((ver, captures));
     }
 
     // No JSONPath or regex: treat content itself as version string
     let trimmed = content.trim();
     if !trimmed.is_empty() {
-        Some(trimmed.to_string())
+        Some((trimmed.to_string(), vec![trimmed.to_string()]))
     } else {
         None
     }
 }
 
-/// Apply autoupdate to a manifest: replace $version in URLs, download files,
+/// Apply autoupdate to a manifest: replace $version/$matchN in URLs, download files,
 /// compute hashes, and write the updated manifest.
-fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_version: &str) -> Result<()> {
+fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_version: &str, captures: &[String]) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse: {}", e))?;
 
     // Update version field
     root["version"] = serde_json::Value::String(new_version.to_string());
+
+    // Build substitution function for $version, $matchN, $matchHead, $matchTail
+    let sub = |s: &str| -> String {
+        let mut r = s.replace("$version", new_version);
+        // $match1 = captures[1] (first regex capture group), $match2 = captures[2], etc.
+        for (i, cap) in captures.iter().enumerate().skip(1) {
+            let pat = format!("$match{}", i);
+            r = r.replace(&pat, cap);
+        }
+        // $matchHead = first char of $match1, $matchTail = rest of $match1
+        if captures.len() > 1 {
+            let m1 = &captures[1];
+            if !m1.is_empty() {
+                let head = m1.chars().next().map(|c| c.to_string()).unwrap_or_default();
+                let tail = m1[1..].to_string();
+                r = r.replace("$matchHead", &head);
+                r = r.replace("$matchTail", &tail);
+            }
+        }
+        r
+    };
 
     // Look for autoupdate section
     let au = match manifest.autoupdate() {
@@ -185,9 +210,6 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
     let tmp_dir = std::env::temp_dir().join("hok-autoupdate");
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
-
-    // Helper to substitute $version
-    let sub = |s: &str| -> String { s.replace("$version", new_version) };
 
     // Collect all (url_template, hash_dest) pairs to process
     // Top-level URL → update root["url"], root["hash"]
