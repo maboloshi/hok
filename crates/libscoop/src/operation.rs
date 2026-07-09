@@ -16,15 +16,13 @@
 //! let buckets = operation::bucket_list(&session).expect("failed to get buckets");
 //! println!("{} bucket(s)", buckets.len());
 //! ```
-use chrono::{SecondsFormat, Utc};
-use futures::{executor::ThreadPool, task::SpawnExt};
 use std::{
     collections::HashSet,
     iter::FromIterator,
     path::Path,
     sync::{Arc, Mutex},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
     bucket::{Bucket, BucketUpdateProgressContext},
@@ -120,27 +118,20 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
     // A mutable reference to the config is borrowed here.
     let mut config = session.config_mut()?;
     let any_bucket_updated = Arc::new(Mutex::new(false));
-    let mut tasks = Vec::new();
-    let pool = ThreadPool::builder().create()?;
     let proxy = config.proxy().map(|s| s.to_owned());
     let emitter = session.emitter();
 
-    for bucket in buckets.iter() {
-        let repo = bucket.path().to_owned();
+    let handles: Vec<_> = buckets
+        .iter()
+        .filter(|b| b.remote_url().is_some())
+        .map(|bucket| {
+            let repo = bucket.path().to_owned();
+            let name = bucket.name().to_owned();
+            let flag = Arc::clone(&any_bucket_updated);
+            let proxy = proxy.clone();
+            let emitter = emitter.clone();
 
-        // There is no remote url for this bucket, so we just ignore it.
-        if bucket.remote_url().is_none() {
-            info!("ignored non-updatable bucket '{}'", bucket.name());
-            continue;
-        }
-
-        let name = bucket.name().to_owned();
-        let flag = Arc::clone(&any_bucket_updated);
-        let proxy = proxy.clone();
-        let emitter = emitter.clone();
-
-        let task = pool
-            .spawn_with_handle(async move {
+            std::thread::spawn(move || {
                 let mut ctx = BucketUpdateProgressContext::new(name.as_str());
 
                 if let Some(tx) = emitter.clone() {
@@ -164,15 +155,15 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
                     }
                 };
             })
-            .map_err(|e| Error::Custom(e.to_string()))?;
-        tasks.push(task);
+        })
+        .collect();
+
+    for handle in handles {
+        let _ = handle.join();
     }
 
-    let joined = futures::future::join_all(tasks);
-    futures::executor::block_on(joined);
-
     if *any_bucket_updated.lock().unwrap() {
-        let time = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, false);
+        let time = jiff::Timestamp::now().to_string();
         config.set("last_update", time.as_str())?;
     }
 
