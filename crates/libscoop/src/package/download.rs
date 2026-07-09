@@ -226,7 +226,7 @@ impl<'a> PackageSet<'a> {
                             let part_path = part_dir.join(format!("part.{}", chunk_idx));
                             part_paths.push(part_path.clone());
 
-                            let _ = std::fs::remove_file(&part_path);
+                            // Don't remove — allow resume if part exists
 
                             let part_path = part_path.clone();
                             let url = url_str.clone();
@@ -242,12 +242,24 @@ impl<'a> PackageSet<'a> {
                         }
                     });
 
-                    // Check all parts downloaded OK
-                    for part in &part_paths {
-                        if !part.exists() || part.metadata().map(|m| m.len()).unwrap_or(0) == 0 {
+                    // Check all parts downloaded OK (respect resume — allow complete parts)
+                    for (idx, part) in part_paths.iter().enumerate() {
+                        let expected = if idx as u64 == chunk_count - 1 {
+                            dlinfo.remote_size - (chunk_count - 1) * chunk_size
+                        } else {
+                            chunk_size
+                        };
+                        let actual = part.metadata().map(|m| m.len()).unwrap_or(0);
+                        if actual == 0 {
                             return Err(crate::error::Error::Custom(format!(
                                 "failed to download chunk: {}",
                                 part.display()
+                            )));
+                        }
+                        if actual < expected {
+                            debug!("chunk {} is incomplete ({} < {}), will retry", idx, actual, expected);
+                            return Err(crate::error::Error::Custom(format!(
+                                "incomplete chunk {}: {} < {}", idx, actual, expected
                             )));
                         }
                     }
@@ -463,7 +475,23 @@ fn download_range(
     cookie: &[(&str, &str)], proxy: Option<&str>,
 ) -> Result<(), String> {
     let _ = proxy; // proxy already baked into agent
-    let range = format!("bytes={}-{}", start, end);
+
+    // Resume check: if part exists and has the full expected size, skip
+    let expected_size = end - start + 1;
+    if let Ok(meta) = dest.metadata() {
+        if meta.len() >= expected_size {
+            return Ok(());
+        }
+    }
+
+    // Determine resume offset
+    let resume_start = dest.metadata().ok().map(|m| m.len()).unwrap_or(0);
+    let range = if resume_start > 0 {
+        format!("bytes={}-{}", start + resume_start, end)
+    } else {
+        format!("bytes={}-{}", start, end)
+    };
+
     let mut req = agent.get(url).header("Range", &range);
     if !cookie.is_empty() {
         let cookie_val = cookie.iter()
@@ -474,7 +502,15 @@ fn download_range(
     }
 
     let resp = req.call().map_err(|e| e.to_string())?;
-    let mut file = File::create(dest).map_err(|e| e.to_string())?;
+
+    // Open file in append mode if resuming, create if new
+    let mut file = if resume_start > 0 {
+        std::fs::OpenOptions::new().append(true).open(dest)
+            .map_err(|e| e.to_string())?
+    } else {
+        std::fs::File::create(dest).map_err(|e| e.to_string())?
+    };
+
     let mut reader = resp.into_body().into_reader();
     std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
     Ok(())
