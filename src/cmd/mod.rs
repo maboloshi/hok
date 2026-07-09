@@ -9,6 +9,7 @@ mod bucket;
 mod cache;
 mod cat;
 mod checkhashes;
+mod checkup;
 mod checkurls;
 mod checkver;
 mod cleanup;
@@ -30,6 +31,7 @@ mod unhold;
 mod uninstall;
 mod update;
 mod upgrade;
+mod which;
 
 use crate::Result;
 
@@ -65,6 +67,7 @@ pub enum Command {
     Cache(cache::Args),
     Cat(cat::Args),
     Checkhashes(checkhashes::Args),
+    Checkup(checkup::Args),
     Checkurls(checkurls::Args),
     Checkver(checkver::Args),
     Cleanup(cleanup::Args),
@@ -89,6 +92,7 @@ pub enum Command {
     #[clap(alias = "u")]
     Update(update::Args),
     Upgrade(upgrade::Args),
+    Which(which::Args),
 }
 
 /// CLI entry point
@@ -105,6 +109,7 @@ pub fn start() -> Result<()> {
         Command::Cache(args) => cache::execute(args, &session),
         Command::Cat(args) => cat::execute(args, &session),
         Command::Checkhashes(args) => checkhashes::execute(args, &session),
+        Command::Checkup(args) => checkup::execute(args, &session),
         Command::Checkurls(args) => checkurls::execute(args, &session),
         Command::Checkver(args) => checkver::execute(args, &session),
         Command::Cleanup(args) => cleanup::execute(args, &session),
@@ -126,6 +131,7 @@ pub fn start() -> Result<()> {
         Command::Uninstall(args) => uninstall::execute(args, &session),
         Command::Update(args) => update::execute(args, &session),
         Command::Upgrade(args) => upgrade::execute(args, &session),
+        Command::Which(args) => which::execute(args, &session),
     }
 }
 
