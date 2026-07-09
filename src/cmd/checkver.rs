@@ -173,33 +173,72 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
         let found = value.query(jp).ok()?;
         let ver = found.first()?.as_str()?;
         if !ver.is_empty() {
-            return Some((ver.to_string(), vec![ver.to_string()]));
+            let caps = vec![ver.to_string()];
+            let v = apply_replace(&caps, cv.replace.as_deref());
+            return Some((v, caps));
         }
     }
 
     // XPath: evaluate XPath expression on XML content
     if let Some(xp) = &cv.xpath {
         if let Some(ver) = extract_xpath(content, xp) {
-            return Some((ver.clone(), vec![ver]));
+            let caps = vec![ver.clone()];
+            let v = apply_replace(&caps, cv.replace.as_deref());
+            return Some((v, caps));
         }
     }
 
     // Regex: use override first (sourceforge default), then cv.regex
     if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
         let re = Regex::new(regex_str).ok()?;
+
+        // If reverse is enabled, take the last match
+        let rev = cv.reverse.unwrap_or(false);
+        if rev {
+            // Capture all matches and take the last one
+            let all_captures: Vec<regex::Captures> = re.captures_iter(content).collect();
+            let caps = all_captures.last()?;
+            let captures: Vec<String> = caps.iter()
+                .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
+                .collect();
+            let ver = apply_replace(&captures, cv.replace.as_deref());
+            return Some((ver, captures));
+        }
+
         let caps = re.captures(content)?;
-        let ver = caps.get(1).or_else(|| caps.get(0))?.as_str().to_string();
         let captures: Vec<String> = caps.iter()
             .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
             .collect();
+        let ver = apply_replace(&captures, cv.replace.as_deref());
         return Some((ver, captures));
     }
 
     let trimmed = content.trim();
     if !trimmed.is_empty() {
-        Some((trimmed.to_string(), vec![trimmed.to_string()]))
+        let ver = apply_replace(&[trimmed.to_string()], cv.replace.as_deref());
+        Some((ver, vec![trimmed.to_string()]))
     } else {
         None
+    }
+}
+
+/// Apply the `replace` transformation to extracted captures.
+///
+/// When `replace` is set, `$1`, `$2`, etc. are replaced with the corresponding
+/// capture group values. `$0` is the full match. If `replace` is not set,
+/// returns `captures[1]` (first capture group) or `captures[0]` (full match).
+fn apply_replace(captures: &[String], replace: Option<&str>) -> String {
+    match replace {
+        Some(pattern) => {
+            let mut result = pattern.to_string();
+            for (i, cap) in captures.iter().enumerate() {
+                result = result.replace(&format!("${}", i), cap);
+            }
+            result
+        }
+        None => {
+            captures.get(1).or(captures.first()).cloned().unwrap_or_default()
+        }
     }
 }
 
