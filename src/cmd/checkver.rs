@@ -2,6 +2,8 @@ use clap::Parser;
 use crossterm::style::Stylize;
 use libscoop::{operation, Manifest, Session};
 use regex::Regex;
+use scoop_hash::ChecksumBuilder;
+use std::io::Read;
 use std::path::PathBuf;
 
 use crate::Result;
@@ -101,8 +103,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             Some(ref ver) => {
                 println!("{} {} -> {}", "update available".yellow(), current, ver.as_str().blue());
                 if args.update {
-                    update_manifest_version(&path, ver)?;
-                    println!("  {} updated to {}", "✓".green(), ver);
+                    match apply_autoupdate(session, &path, &manifest, ver) {
+                        Ok(()) => println!("  {} updated to {}", "✓".green(), ver),
+                        Err(e) => println!("  {}: {}", "update failed".red(), e),
+                    }
                 }
             }
             None => {
@@ -158,22 +162,127 @@ fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Op
     }
 }
 
-/// Update the `version` field in a manifest JSON file.
-fn update_manifest_version(path: &PathBuf, new_version: &str) -> Result<()> {
+/// Apply autoupdate to a manifest: replace $version in URLs, download files,
+/// compute hashes, and write the updated manifest.
+fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_version: &str) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse: {}", e))?;
 
-    if let Some(v) = root.get_mut("version") {
-        if let Some(s) = v.as_str() {
-            // Only update if version actually changed
-            if s != new_version {
-                *v = serde_json::Value::String(new_version.to_string());
-                let formatted = serde_json::to_string_pretty(&root)
-                    .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-                std::fs::write(path, formatted.as_bytes())?;
+    // Update version field
+    root["version"] = serde_json::Value::String(new_version.to_string());
+
+    // Look for autoupdate section
+    let au = match manifest.autoupdate() {
+        Some(a) => a,
+        None => {
+            // No autoupdate — just update version
+            write_json(path, &root)?;
+            return Ok(());
+        }
+    };
+
+    let tmp_dir = std::env::temp_dir().join("hok-autoupdate");
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    // Helper to substitute $version
+    let sub = |s: &str| -> String { s.replace("$version", new_version) };
+
+    // Collect all (url_template, hash_dest) pairs to process
+    // Top-level URL → update root["url"], root["hash"]
+    if let Some(urls) = &au.url {
+        let substituted: Vec<String> = urls.devectorize().into_iter().map(|u| sub(u)).collect();
+        let hashes = download_and_hash(session, &substituted, &tmp_dir)?;
+
+        root["url"] = serde_json::Value::Array(
+            substituted.iter().map(|u| serde_json::Value::String(u.clone())).collect()
+        );
+        root["hash"] = serde_json::Value::Array(
+            hashes.iter().map(|h| serde_json::Value::String(h.clone())).collect()
+        );
+    }
+
+    // Per-architecture URLs
+    if let Some(arch) = &au.architecture {
+        let arch_pairs: [(&str, Option<&_>); 3] = [
+            ("32bit", arch.ia32.as_ref()),
+            ("64bit", arch.amd64.as_ref()),
+            ("arm64", arch.aarch64.as_ref()),
+        ];
+        for (arch_name, arch_spec) in arch_pairs {
+            let Some(spec) = arch_spec else { continue };
+
+            if let Some(urls) = &spec.url {
+                let substituted: Vec<String> = urls.devectorize().into_iter().map(|u| sub(u)).collect();
+                let hashes = download_and_hash(session, &substituted, &tmp_dir)?;
+
+                let ptr = format!("/architecture/{}", arch_name);
+                if let Some(obj) = root.pointer_mut(&ptr) {
+                    obj["url"] = serde_json::Value::Array(
+                        substituted.iter().map(|u| serde_json::Value::String(u.clone())).collect()
+                    );
+                    obj["hash"] = serde_json::Value::Array(
+                        hashes.iter().map(|h| serde_json::Value::String(h.clone())).collect()
+                    );
+                }
             }
         }
     }
+
+    // Update extract_dir if present in autoupdate
+    if let Some(extract_dirs) = &au.extract_dir {
+        let substituted: Vec<String> = extract_dirs.devectorize().into_iter().map(|d| sub(d)).collect();
+        root["extract_dir"] = serde_json::Value::Array(
+            substituted.into_iter().map(|d| serde_json::Value::String(d)).collect()
+        );
+    }
+
+    // Cleanup temp directory
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+
+    write_json(path, &root)?;
     Ok(())
+}
+
+/// Download files from URLs, compute SHA256 hash for each, return hash strings.
+fn download_and_hash(session: &Session, urls: &[String], tmp_dir: &std::path::Path) -> Result<Vec<String>> {
+    let mut hashes = Vec::new();
+    for url in urls {
+        let filename = url.rsplit('/').next().unwrap_or("download");
+        let dest = tmp_dir.join(filename);
+
+        operation::download_file(session, url, &dest)
+            .map_err(|e| anyhow::anyhow!("download {}: {}", url, e))?;
+
+        let hex = compute_hash(&dest, "sha256")?;
+        hashes.push(hex);
+    }
+    Ok(hashes)
+}
+
+/// Pretty-print and write updated JSON to disk, preserving original formatting
+fn write_json(path: &PathBuf, root: &serde_json::Value) -> Result<()> {
+    let formatted = serde_json::to_string_pretty(root)
+        .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+    std::fs::write(path, formatted.as_bytes())?;
+    Ok(())
+}
+
+/// Compute hash of a file using specified algorithm name.
+fn compute_hash(path: &std::path::Path, algo: &str) -> Result<String> {
+    let builder = ChecksumBuilder::new()
+        .algo(algo)
+        .map_err(|_| anyhow::anyhow!("unsupported hash algorithm: {}", algo))?;
+    let mut hasher = builder.build();
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.consume(&buf[..n]);
+    }
+    Ok(hasher.finalize())
 }
