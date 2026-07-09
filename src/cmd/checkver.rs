@@ -54,6 +54,30 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         print!("{} ... ", stem);
 
+        // Script mode: execute PowerShell script to determine version
+        if let Some(script_lines) = cv.script.as_ref() {
+            let script = script_lines.devectorize().join("\r\n");
+            match run_checkver_script(session, &script, cv.url.as_deref()) {
+                Ok(Some(ver)) => {
+                    let current = manifest.version().to_string();
+                    if ver == current {
+                        println!("{} ({})", "up to date".green(), ver);
+                    } else {
+                        println!("{} {} -> {}", "update available".yellow(), current, ver.as_str().blue());
+                        if args.update {
+                            match apply_autoupdate(session, &path, &manifest, &ver, &[ver.clone()]) {
+                                Ok(()) => println!("  {} updated to {}", "✓".green(), ver.as_str()),
+                                Err(e) => println!("  {}: {}", "update failed".red(), e),
+                            }
+                        }
+                    }
+                }
+                Ok(None) => println!("{}", "script returned no version".yellow()),
+                Err(e) => println!("{}: {}", "script error".red(), e),
+            }
+            continue;
+        }
+
         // Default regex override (used by sourceforge shortcut)
         let mut effective_regex = None;
 
@@ -462,5 +486,48 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
                 nodes.iter().next().map(|n| n.string_value())
         }
         Value::Boolean(b) => Some(b.to_string()),
+    }
+}
+
+/// Execute a checkver PowerShell script and capture the version from stdout.
+///
+/// The script is invoked as:
+///   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "{script}"
+///
+/// Environment variables set:
+///   $url     — the checkver URL (if present)
+///   $version — the current installed version
+///
+/// The script's stdout is captured and trimmed as the new version string.
+fn run_checkver_script(session: &Session, script: &str, url: Option<&str>) -> Result<Option<String>> {
+    use std::io::Read;
+
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .env("url", url.unwrap_or(""))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("spawn powershell: {}", e))?;
+
+    let mut output = String::new();
+    child.stdout.take().unwrap().read_to_string(&mut output)
+        .map_err(|e| anyhow::anyhow!("read output: {}", e))?;
+
+    let status = child.wait().map_err(|e| anyhow::anyhow!("wait: {}", e))?;
+
+    if !status.success() {
+        let mut stderr = String::new();
+        if let Some(mut err) = child.stderr.take() {
+            err.read_to_string(&mut stderr).ok();
+        }
+        eprintln!("  powershell stderr: {}", stderr.trim());
+    }
+
+    let version = output.trim().to_string();
+    if version.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(version))
     }
 }
