@@ -72,16 +72,19 @@ where
     let repo = Repository::open(path.as_ref())?;
     let mut origin = repo.find_remote("origin")?;
 
-    // fetch all refs
+    // Fetch only the current HEAD branch (avoids pulling all branches)
+    let ref_name = repo.head().ok()
+        .and_then(|h| h.name().map(|n| n.to_owned()))
+        .unwrap_or_else(|| "refs/heads/master".to_owned());
     origin.fetch(
-        &["refs/heads/*:refs/heads/*"],
+        &[format!("+{ref_name}:{ref_name}").as_str()],
         Some(&mut fetch_options(proxy)),
         None,
     )?;
 
-    let head = repo.head()?.target().unwrap();
-    let obj = repo.find_object(head, None)?;
-
+    // Hard reset to the fetched branch
+    let obj = repo.find_reference(&ref_name)?
+        .peel(git2::ObjectType::Commit)?;
     repo.reset(&obj, git2::ResetType::Hard, None)?;
 
     Ok(())
