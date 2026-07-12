@@ -24,8 +24,8 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = args.package.iter().map(|s| s.as_str()).collect();
 
-    // Snapshot held status before uninstall (uninstall deletes install.json)
-    let held_names: Vec<String> = find_held(session, &queries);
+    // Snapshot which packages are held and get their full bucket-qualified names
+    let (held_names, install_queries) = find_held_and_queries(session, &queries);
 
     let mut opts = vec![];
     if args.assume_yes {
@@ -38,15 +38,16 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         opts.push(SyncOption::IgnoreCache);
     }
 
-    // Phase 1: Uninstall
+    // Phase 1: Uninstall (respect --assume-yes, user may want to review)
     let mut remove_opts = vec![SyncOption::Remove, SyncOption::EscapeHold];
     remove_opts.extend_from_slice(&opts);
     run_remove(session, &queries, &remove_opts)?;
 
-    // Phase 2: Install same version
-    let mut install_opts = vec![SyncOption::NoUpgrade, SyncOption::EscapeHold];
+    // Phase 2: Install same version (always auto-confirm — reinstall is explicit intent)
+    let install_queries_ref: Vec<&str> = install_queries.iter().map(|s| s.as_str()).collect();
+    let mut install_opts = vec![SyncOption::NoUpgrade, SyncOption::EscapeHold, SyncOption::AssumeYes];
     install_opts.extend_from_slice(&opts);
-    run_install(session, &queries, &install_opts)?;
+    run_install(session, &install_queries_ref, &install_opts)?;
 
     // Phase 3: Restore held status for previously held packages
     for name in &held_names {
@@ -56,19 +57,23 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Query which target packages are currently held.
-fn find_held(session: &Session, queries: &[&str]) -> Vec<String> {
+/// Query which target packages are currently held, returning held names
+/// and bucket-qualified queries for exact reinstall.
+fn find_held_and_queries(session: &Session, queries: &[&str]) -> (Vec<String>, Vec<String>) {
     let mut held = Vec::new();
+    let mut exact_queries = Vec::new();
     for q in queries {
         if let Ok(pkgs) = operation::package_query(session, vec![q], vec![QueryOption::Explicit], true) {
             for pkg in &pkgs {
                 if pkg.is_held() {
                     held.push(pkg.name().to_string());
                 }
+                // Use bucket-qualified name to avoid candidate selection on reinstall
+                exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
             }
         }
     }
-    held
+    (held, exact_queries)
 }
 
 /// Uninstall event handler with simple output.
@@ -137,8 +142,8 @@ fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Resu
                 Event::PackageIntegrityCheckStart => output::status("Checking package integrity..."),
                 Event::PackageIntegrityCheckDone => output::done("Checking package integrity...Ok"),
                 Event::PromptTransactionNeedConfirm(_) => {
-                    let answer = cui::prompt_yes_no();
-                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
+                    // Auto-confirm (AssumeYes is always set for reinstall)
+                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true));
                 }
                 Event::PackageCommitStart(ctx) => output::status(format!("Installing {ctx}...")),
                 Event::PackageExtractProgress(ctx) => output::detail(format!("extracting: {ctx}")),
