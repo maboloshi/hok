@@ -2,7 +2,7 @@ use scoop_hash::ChecksumBuilder;
 use std::cell::OnceCell;
 use std::io::Read;
 use std::path::Path;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error,
@@ -340,23 +340,66 @@ fn run_script(
         _ => return Ok(()),
     };
 
+    debug!("run_script: {} stage={} ({} lines)", package.name(), stage, lines.len());
+
     let script = lines.join("\r\n");
+
+    // Embed PS helper scripts so package scripts can use functions
+    // like Expand-InnoArchive, Expand-7zipArchive, Get-HelperPath, etc.
+    const CORE_PS1: &str = include_str!("../../../../asset_scripts/core.ps1");
+    const DECOMPRESS_PS1: &str = include_str!("../../../../asset_scripts/decompress.ps1");
+    let preamble = format!(r#"
+# Hok embedded helpers (always available)
+{core}
+{decompress}
+# Fallback: load Scoop lib if installed
+$hokScoopLib = Join-Path $env:SCOOP "apps\scoop\current\lib"
+if (Test-Path $hokScoopLib) {{
+    Get-ChildItem $hokScoopLib -Filter *.ps1 | ForEach-Object {{ . $_.FullName -ErrorAction SilentlyContinue }}
+}}
+
+# Notify hok about undefined commands (missing helpers)
+trap {{
+    if ($_.Exception -is [System.Management.Automation.CommandNotFoundException]) {{
+        Write-Host "[[HOK_MISSING_HELPER]]$($_.Exception.CommandName)"
+    }}
+    continue
+}}
+
+# Scoop-compatible variables for package scripts
+$dir = $env:SCOOP_APP_DIR
+$original_dir = $dir
+$scoopdir = $env:SCOOP
+$persist_dir = Join-Path $scoopdir "persist" $env:SCOOP_PACKAGE_NAME
+$version = $env:SCOOP_PACKAGE_VERSION
+$app = $env:SCOOP_PACKAGE_NAME
+$architecture = "64bit"
+$global = $false
+"#, core = CORE_PS1, decompress = DECOMPRESS_PS1);
+    let full_script = format!("{preamble}\r\n{script}");
 
     // Write script to a temp file in the working dir
     let script_path = working_dir.join(format!("{}.ps1", stage));
     if let Some(parent) = script_path.parent() {
         internal::fs::ensure_dir(parent)?;
     }
-    std::fs::write(&script_path, &script)?;
+    std::fs::write(&script_path, &full_script)?;
 
     // Build environment variables
     let config = session.config();
     let root_path = config.root_path();
-    let pkg_dir = root_path.join("apps").join(package.name()).join("current");
+    let pkg_dir = working_dir.to_path_buf();  // $dir = version dir (not current)
 
     let version = package.version();
 
-    let status = std::process::Command::new("powershell.exe")
+    // Create marker file for P2 extraction routing
+    let marker_path = working_dir.join("hok_extract_markers.txt");
+    let _ = std::fs::remove_file(&marker_path); // clean from previous runs
+
+    // Prefer pwsh.exe (PowerShell Core, faster startup)
+    let ps_exe = if is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+
+    let status = std::process::Command::new(ps_exe)
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
@@ -367,6 +410,7 @@ fn run_script(
         .env("SCOOP_PACKAGE_NAME", package.name())
         .env("SCOOP_PACKAGE_VERSION", version)
         .env("version", version)
+        .env("HOK_EXTRACT_FILE", marker_path.as_os_str())
         .status()
         .map_err(|e| {
             Error::Custom(format!(
@@ -387,10 +431,45 @@ fn run_script(
         )));
     }
 
+    // Process extraction markers (P2: Rust native extraction)
+    if let Ok(markers) = std::fs::read_to_string(&marker_path) {
+        for line in markers.lines() {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let format = parts[0];
+            let source = Path::new(parts[1]);
+            let dest = Path::new(parts[2]);
+            let innosetup = format == "innosetup";
+
+            if source.exists() {
+                if let Err(e) = internal::archive::extract(source, dest, None, None, innosetup) {
+                    // Log but don't abort — extraction errors may be handled
+                    // by the PS script's own error handling
+                    debug!("P2 extract failed for {}: {}", source.display(), e);
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&marker_path);
+
     // Clean up temp script file
     let _ = std::fs::remove_file(&script_path);
 
     Ok(())
+}
+
+/// Check whether pwsh.exe (PowerShell Core 7+) is available on PATH.
+fn is_pwsh_available() -> bool {
+    std::process::Command::new("pwsh.exe")
+        .arg("-NoProfile")
+        .arg("-c")
+        .arg("$null")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
 }
 
 /// Sync operation: install and/or upgrade packages.
@@ -404,12 +483,19 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         packages = query::query_installed(session, queries, &[QueryOption::Upgradable])?;
 
         // Replace the packages with their upgradable references.
+        // Packages without an upgradable version are skipped (filter_map).
         packages = packages
             .into_iter()
-            .map(|p| p.upgradable().cloned().unwrap())
+            .filter_map(|p| {
+                let upgradable = p.upgradable().cloned();
+                if upgradable.is_none() {
+                    debug!("package '{}' has no upgradable reference, skipping", p.name());
+                }
+                upgradable
+            })
             .collect::<Vec<_>>();
     } else {
-        let synced = query::query_synced(session, &["*"], &[])?;
+        let synced = query::query_synced(session, queries, &[])?;
 
         for &query in queries {
             let mut matched = synced
@@ -422,6 +508,9 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+
+            // Debug: log how many synced packages for diagnosis
+            debug!("query '{}': {} synced packages, {} exact matches", query, synced.len(), matched.len());
 
             match matched.len() {
                 0 => return Err(Error::PackageNotFound(query.to_owned())),
@@ -646,11 +735,15 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
 
+    debug!("commit: {} v{} - starting", pkg.name(), pkg.version());
+
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
     }
 
+    // 1. pre_install (Scoop order: before link_current)
     if pkg.has_install_script() {
+        debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
         run_script(session, pkg, &working_dir, "pre_install",
             pkg.manifest().pre_install())?;
     }
@@ -667,6 +760,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     if is_archive {
         let cache_path = config.cache_path();
+        debug!("commit: {} v{} - extract ({} files)", pkg.name(), pkg.version(), files.len());
         for filename in files.iter() {
             let src = cache_path.join(filename);
             if src.exists() {
@@ -685,6 +779,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             }
         }
     } else {
+        debug!("commit: {} v{} - copy ({} files)", pkg.name(), pkg.version(), files.len());
         for filename in files.iter() {
             let src = config.cache_path().join(filename);
             let dst = working_dir.join(filename);
@@ -693,14 +788,35 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
-    let current_lnk = apps_dir.join(pkg.name()).join("current");
-    let _ = internal::fs::remove_symlink(&current_lnk);
-    internal::fs::symlink_dir(&working_dir, &current_lnk)?;
-
+    // 2. installer.script (before link_current, $dir = version dir)
     if pkg.has_install_script() {
         if let Some(installer) = pkg.manifest().installer() {
+            debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
             run_script(session, pkg, &working_dir, "installer", installer.script())?;
         }
+    }
+
+    // 3. link_current (Scoop order: after installer, before shims)
+    debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
+    let current_lnk = apps_dir.join(pkg.name()).join("current");
+    let _ = internal::fs::remove_symlink(&current_lnk);
+    if current_lnk.exists() {
+        let _ = std::fs::remove_dir_all(&current_lnk);
+    }
+    internal::fs::symlink_dir(&working_dir, &current_lnk)?;
+
+    // 4. shims + shortcuts
+    debug!("commit: {} v{} - shims/shortcuts", pkg.name(), pkg.version());
+    shim::add(session, pkg)?;
+    shortcut::add(session, pkg)?;
+
+    // 5. persist (Scoop order: after shims, before post_install)
+    debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
+    persist::link(session, pkg)?;
+
+    // 6. post_install (Scoop order: last hook)
+    if pkg.has_install_script() {
+        debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         run_script(session, pkg, &working_dir, "post_install",
             pkg.manifest().post_install())?;
     }
@@ -709,45 +825,61 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
     }
 
-    shim::add(session, pkg)?;
-    shortcut::add(session, pkg)?;
+    debug!("commit: {} v{} - writing metadata", pkg.name(), pkg.version());
+
+    // 7. Write install metadata
+    let current_dir = apps_dir.join(pkg.name()).join("current");
+
+    // 1. Copy manifest from bucket to current/manifest.json
+    // Use bucket path (manifest.path() may be virtual when loaded from cache)
+    let bucket_path = config.root_path().join("buckets").join(pkg.bucket());
+    let manifest_src = bucket_path.join("bucket").join(format!("{}.json", pkg.name()));
+    let manifest_fallback = bucket_path.join(format!("{}.json", pkg.name()));
+    let manifest_src = if manifest_src.exists() { manifest_src } else { manifest_fallback };
+    let manifest_dst = current_dir.join("manifest.json");
+    match std::fs::copy(&manifest_src, manifest_dst) {
+        Ok(_) => {},
+        Err(e) => return Err(Error::Custom(format!(
+            "could not copy manifest from {:?}: {}", manifest_src, e))),
+    }
+
+    // 2. Write current/install.json
+    let arch = if cfg!(target_arch = "x86_64") { "64bit" }
+               else if cfg!(target_arch = "x86") { "32bit" }
+               else { "arm64" };
+    let install_info = serde_json::json!({
+        "architecture": arch,
+        "bucket": pkg.bucket(),
+    });
+    if let Err(e) = internal::fs::write_json(current_dir.join("install.json"), &install_info) {
+        return Err(Error::Custom(format!("install.json write: {}", e)));
+    }
 
     Ok(())
 }
 
 /// Sync operation: remove packages.
 pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
-    let mut packages = vec![];
-
-    let installed = query::query_installed(session, &["*"], &[])?;
     let escape_hold = options.contains(&SyncOption::EscapeHold);
+    let no_dependent_check = options.contains(&SyncOption::NoDependentCheck);
 
+    // Query target packages directly instead of scanning all installed.
+    // Dependency checking (below) does the full scan when needed.
+    let mut packages = vec![];
     for &name in queries {
-        let mut matched = installed
-            .iter()
-            .filter(|&p| p.name() == name)
-            .cloned()
-            .collect::<Vec<_>>();
-
+        let matched = query::query_installed(session, &[name], &[QueryOption::Explicit])?;
         if matched.is_empty() {
             return Err(Error::PackageNotFound(name.to_string()));
         }
-
-        // It's impossible to have more than one installed packages for the same
-        // package name.
-        assert_eq!(matched.len(), 1);
-
-        let pkg = matched.pop().unwrap();
-
+        let pkg = matched.into_iter().next().unwrap();
         if pkg.is_held() && !escape_hold {
             continue;
         }
-
         packages.push(pkg);
     }
 
-    let no_dependent_check = options.contains(&SyncOption::NoDependentCheck);
     if !no_dependent_check {
+        let installed = query::query_installed(session, &["*"], &[])?;
         let mut dependents = vec![];
 
         for pkg in packages.iter() {
@@ -854,6 +986,8 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     let config = session.config();
     let root_dir = config.root_path();
 
+    debug!("remove: {} - starting", package.name());
+
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
     }
@@ -867,6 +1001,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
     }
 
+    debug!("remove: {} - cleanup (shims/shortcuts/env/persist)", package.name());
     shim::remove(session, package)?;
     shortcut::remove(session, package)?;
     psmodule::remove(session, package)?;
@@ -882,6 +1017,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     internal::fs::remove_dir(&app_dir)?;
 
     if purge {
+        debug!("remove: {} - purging persist data", package.name());
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackagePersistPurgeStart);
         }
@@ -930,6 +1066,9 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     let current_lnk = pkg_dir.join("current");
     let _ = internal::fs::remove_symlink(&current_lnk);
     internal::fs::symlink_dir(&version_dir, &current_lnk)?;
+
+    // Re-link persistent data
+    persist::link(session, pkg)?;
 
     // Re-create shims + shortcuts
     shim::remove(session, pkg)?;
