@@ -93,10 +93,10 @@ pub fn change(label: impl AsRef<str>, _op: impl AsRef<str>, value: impl AsRef<st
     else { println!("  {} {}", label.as_ref().dark_blue().bold(), value.as_ref()) }
 }
 
-/// Detailed debug info (only shown with --detail flag).
+/// Detailed debug info (only shown with --detail flag in pacman mode;
+/// always shown as plain text in scoop mode for step visibility).
 pub fn detail(msg: impl AsRef<str>) {
-    if !crate::is_detail() { return }
     let m = msg.as_ref();
-    if is_scoop() { println!("  [debug] {m}") }
-    else { println!("  {} {}", "·".bold(), m) }
+    if is_scoop() { println!("  {m}") }
+    else if crate::is_detail() { println!("  {} {}", "·".bold(), m) }
 }
