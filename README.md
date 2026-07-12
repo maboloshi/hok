@@ -58,6 +58,7 @@ Commands:
   missing-checkver  Check bucket manifests missing checkver/autoupdate
   prefix       Show the directory where a package is installed
   reset        Reset a package to reapply shims/shortcuts
+  reinstall    Reinstall package(s) (uninstall then install)
   search       Search available package(s)
   shim         List or inspect shims
   status       Show status of installed package(s)
@@ -72,16 +73,22 @@ Commands:
 Options:
   -h, --help     Print help
   -V, --version  Print version
+      --detail   Show detailed operation information for debugging
 ```
 
 ## New Features (since original fork)
 
 Compared to the original hok, this fork adds:
 
+- **`--detail`** — global verbose flag shows per-package progress (extraction, shims, shortcuts)
 - **checkver** — full implementation with regex, JSONPath, XPath, PowerShell script,
   reverse/replace, GitHub and SourceForge shortcuts, autoupdate with hash recomputation
+- **reinstall** — uninstall + same-version reinstall with held-state preservation
+- **Native shim** — `hok-shim.exe` replaces `.cmd` wrappers (GUI detection, job objects)
+- **Pure Rust shortcuts** — `.lnk` writer using `shortcuts-rs` crate, no COM FFI, args/icon support
 - **SQLite manifest cache** — `use_sqlite_cache` config, compatible with Scoop's schema
 - **Resumable fragmented downloads** — partial parts resume via HTTP Range, no restart
+- **`hok update` improvements** — 15-min cooldown, `--force` bypass, visible cache refresh
 - **Batch failure isolation** — `ignore_failures` config keeps multi-package operations
   running even if individual packages fail (applies to install/upgrade/uninstall/cleanup)
 - **Fixed upstream bug**: `reset` now correctly runs `post_install` scripts

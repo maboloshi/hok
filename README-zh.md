@@ -43,6 +43,11 @@
 | **版本比较不完整** | `compare_versions()` 对文本段直接返回 `Equal`（如 `1.0.0-beta` vs `1.0.0-alpha`） | 重写比较逻辑，支持数值/文本混合段、pre-release 优先级 |
 | **死代码残留** | `get_content_length` 函数未使用，产生 warning | 删除，项目现为 **0 warning** |
 | **下载无断点续传** | 分片下载中断后全部重来 | 支持 HTTP Range 续传，已下载的分片跳过，不完整的续传 |
+| **缺少 native shim** | 使用 `.cmd` 包装器做 shim，启动慢 | 新增 `hok-shim.exe`：native exe shim，支持 GUI 分离、Job Object、Ctrl+C 传播 |
+| **快捷方式依赖于 COM** | 使用 raw IShellLinkW FFI 创建 `.lnk`，vtable 布局不稳定导致部分包失败 | 替换为 `shortcuts-rs` 纯 Rust .lnk 写入器，支持参数和图标 |
+| **`update` 无短时保护** | 短期内重复 `hok update` 会重复拉取所有仓库 | 增加 15 分钟 cooldown，支持 `--force` 跳过；仅拉取当前 HEAD 分支 |
+| **缓存刷新无反馈** | `update` 最后 SQLite 缓存刷写时终端无响应 | 移到 binary 层并输出 `Refreshing manifest cache...` 提示 |
+| **缺少 reinstall** | 需要手动 `uninstall` + `install` | 新增 `reinstall` 命令，自动保持 held 状态 |
 
 ### Aria2 配置复用
 
