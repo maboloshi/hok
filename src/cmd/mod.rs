@@ -28,6 +28,7 @@ mod install;
 mod list;
 mod missing_checkver;
 mod prefix;
+mod reinstall;
 mod reset;
 mod search;
 mod shim;
@@ -96,6 +97,7 @@ pub enum Command {
     List(list::Args),
     MissingCheckver(missing_checkver::Args),
     Prefix(prefix::Args),
+    Reinstall(reinstall::Args),
     #[clap(alias = "s")]
     Search(search::Args),
     Shim(shim::Args),
@@ -145,6 +147,7 @@ pub fn start() -> Result<()> {
         Command::List(args) => list::execute(args, &session),
         Command::MissingCheckver(args) => missing_checkver::execute(args),
         Command::Prefix(args) => prefix::execute(args, &session),
+        Command::Reinstall(args) => reinstall::execute(args, &session),
         Command::Search(args) => search::execute(args, &session),
         Command::Shim(args) => shim::execute(args, &session),
         Command::Reset(args) => reset::execute(args, &session),
