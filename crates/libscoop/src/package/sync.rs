@@ -370,9 +370,11 @@ trap {{
 $dir = $env:SCOOP_APP_DIR
 $original_dir = $dir
 $scoopdir = $env:SCOOP
+$bucketsdir = Join-Path $scoopdir "buckets"
 $persist_dir = Join-Path $scoopdir "persist" $env:SCOOP_PACKAGE_NAME
 $version = $env:SCOOP_PACKAGE_VERSION
 $app = $env:SCOOP_PACKAGE_NAME
+$bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "64bit"
 $global = $false
 "#, core = CORE_PS1, decompress = DECOMPRESS_PS1);
@@ -409,6 +411,7 @@ $global = $false
         .env("SCOOP_APP_DIR", pkg_dir.as_os_str())
         .env("SCOOP_PACKAGE_NAME", package.name())
         .env("SCOOP_PACKAGE_VERSION", version)
+        .env("SCOOP_PACKAGE_BUCKET", package.bucket())
         .env("version", version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str())
         .status()
