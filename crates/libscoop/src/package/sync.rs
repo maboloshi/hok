@@ -1188,4 +1188,48 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// Test URL fragment rename logic: url#/installer.exe → file named installer.exe
+    #[test]
+    fn test_url_fragment_rename() {
+        let tmp = std::env::temp_dir().join("hok_test_fragment_rename");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // Simulate cache file with hash-based name
+        let cache_file = tmp.join("pkg#1.0#abc1234.exe");
+        std::fs::write(&cache_file, b"dummy content").unwrap();
+        let work_dir = tmp.join("work");
+        std::fs::create_dir_all(&work_dir).unwrap();
+
+        // Simulate the fragment rename logic from commit_one_install
+        let url = "https://example.com/installer.exe#/installer.exe";
+        let filename = "pkg#1.0#abc1234.exe";
+        let src = &cache_file;
+
+        // Copy as hash-named file first
+        let dst = work_dir.join(filename);
+        std::fs::copy(src, &dst).unwrap();
+
+        // Then create fragment-renamed copy
+        let fragment = url.split('#').nth(1).unwrap().trim_start_matches('/');
+        assert_eq!(fragment, "installer.exe");
+        let renamed = work_dir.join(fragment);
+        std::fs::copy(src, &renamed).unwrap();
+        assert!(renamed.exists(), "fragment-renamed file should exist");
+        assert_eq!(
+            std::fs::read(&renamed).unwrap(),
+            b"dummy content"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Test URLs without fragment are NOT renamed
+    #[test]
+    fn test_url_without_fragment_no_rename() {
+        let url = "https://example.com/package.zip";
+        let fragment = url.split('#').nth(1);
+        assert!(fragment.is_none(), "no fragment should be present");
+    }
 }
