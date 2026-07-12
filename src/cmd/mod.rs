@@ -123,6 +123,11 @@ pub fn start() -> Result<()> {
     let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
     let _ = session.set_user_agent(&user_agent);
 
+    // Set output style from config (default: scoop)
+    let output_style = session.config().output_style().to_owned();
+    drop(session.config());
+    crate::output::set_style(&output_style);
+
     match args.command {
         Command::Alias(args) => alias::execute(args, &session),
         Command::Bucket(args) => bucket::execute(args, &session),

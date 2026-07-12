@@ -104,6 +104,10 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     cat_style: Option<String>,
 
+    #[serde(alias = "output-style")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_style: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     deafult_architecture: Option<String>,
 
@@ -312,6 +316,12 @@ impl Config {
         self.cat_style.as_deref().unwrap_or_default()
     }
 
+    /// Get the `output_style` config ("scoop" or "pacman").
+    #[inline]
+    pub fn output_style(&self) -> &str {
+        self.output_style.as_deref().unwrap_or("scoop")
+    }
+
     /// Returns the cooldown duration (in seconds) remaining before the next
     /// bucket update is allowed. Returns `None` if no last update recorded.
     /// The default cooldown is 15 minutes (900 seconds).
@@ -406,6 +416,12 @@ impl Config {
                     false => Some(value.to_string()),
                 }
             }
+            "output_style" | "output-style" => {
+                self.inner.output_style = match is_unset {
+                    true => None,
+                    false => Some(value.to_string()),
+                }
+            }
             "ignore_failures" | "ignore-failures" | "ignore_failure" => match is_unset {
                 true => self.inner.ignore_failures = None,
                 false => match value.parse::<bool>() {
@@ -495,6 +511,7 @@ impl Default for Config {
             use_lessmsi: Default::default(),
             use_sqlite_cache: Default::default(),
             no_junction: Default::default(),
+            output_style: Default::default(),
             private_hosts: Default::default(),
             proxy: Default::default(),
             // default_root_path: default::root_path(),
