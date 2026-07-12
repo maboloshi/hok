@@ -1,8 +1,7 @@
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Cleanup apps by removing old versions
 #[derive(Debug, Parser)]
@@ -21,18 +20,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let results = operation::package_cleanup(session, &args.app, ignore_failure)?;
 
     for (name, count) in &results {
-        println!("  {}: {} {} removed", name.as_str().blue(), count, "old version(s)".yellow());
+        output::named(name.as_str(), format!("{count} old version(s) removed"));
     }
 
     if results.is_empty() {
-        println!("{}", "No old versions to clean up.".green());
+        output::info("No old versions to clean up.");
     } else {
-        println!("{}", "Everything is shiny now!".green());
+        output::info("Everything is shiny now!");
     }
 
     if args.cache {
         operation::cache_remove(session, "*")?;
-        println!("{}", "Cache cleaned.".green());
+        output::info("Cache cleaned.");
     }
 
     Ok(())

@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::{util, Result};
+use crate::{output, util, Result};
 
 /// Configuration management
 #[derive(Debug, Parser)]
@@ -50,18 +49,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::List => {
             let config_json = operation::config_list(session)?;
-            println!("{}:", &session.config().path.display().to_string().green());
+            output::info(session.config().path.display().to_string());
             println!("{}", config_json);
             Ok(())
         }
         Command::Set { key, value } => {
             operation::config_set(session, key.as_str(), value.as_str())?;
-            println!("Config '{}' has been set to '{}'", key, value);
+            output::info(format!("Config '{key}' has been set to '{value}'"));
             Ok(())
         }
         Command::Unset { key } => {
             operation::config_set(session, key.as_str(), "")?;
-            println!("Config '{}' has been unset", key);
+            output::info(format!("Config '{key}' has been unset"));
             Ok(())
         }
     }

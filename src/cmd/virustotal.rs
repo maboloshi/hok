@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, QueryOption, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Check a package's download URL against VirusTotal
 ///
@@ -23,7 +22,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let pkgs = operation::package_query(session, queries, options, false)?;
 
     if pkgs.is_empty() {
-        eprintln!("No packages found.");
+        output::err("No packages found.");
         return Ok(());
     }
 
@@ -34,28 +33,28 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     for pkg in &pkgs {
         let urls = pkg.manifest().url();
         if urls.is_empty() {
-            println!("  {}: {}", pkg.name().blue(), "no download URLs".yellow());
+            output::named(pkg.name(), "no download URLs");
             continue;
         }
 
         let url = urls[0].split('#').next().unwrap_or(urls[0]);
-        print!("  {}: {} ... ", pkg.name().blue(), url);
+        print!("  {}: {} ... ", pkg.name(), url);
 
         if let Some(key) = &api_key {
             match check_virustotal(url, key) {
                 Ok(stats) => {
                     if stats.malicious > 0 {
-                        println!("{} {}/{} engines flagged", "MALICIOUS".red(), stats.malicious, stats.total);
+                        output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));
                     } else if stats.suspicious > 0 {
-                        println!("{} {}/{} suspicious", "SUSPICIOUS".yellow(), stats.suspicious, stats.total);
+                        output::warn(format!("SUSPICIOUS {}/{} suspicious", stats.suspicious, stats.total));
                     } else {
-                        println!("{} {}/{} clean", "OK".green(), stats.total - stats.harmless, stats.total);
+                        output::info(format!("OK {}/{} clean", stats.total - stats.harmless, stats.total));
                     }
                 }
-                Err(e) => println!("{}", e.to_string().red()),
+                Err(e) => output::err(format!("{e}")),
             }
         } else {
-            println!("{} (set VT_API_KEY to scan)", "skipped".yellow());
+            output::warn("skipped (set VT_API_KEY to scan)");
         }
     }
 

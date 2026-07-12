@@ -6,7 +6,7 @@ use scoop_hash::ChecksumBuilder;
 use std::io::Read;
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, util, Result};
 
 /// Check manifest for a newer version
 #[derive(Debug, Parser)]
@@ -27,7 +27,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        eprintln!("error: '{}' is not a directory", dir.display());
+        output::err(format!("error: '{}' is not a directory", dir.display()));
         return Ok(());
     }
 
@@ -61,19 +61,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 Ok(Some(ver)) => {
                     let current = manifest.version().to_string();
                     if ver == current {
-                        println!("{} ({})", "up to date".green(), ver);
+                        println!("{} ({ver})", "up to date".dark_green().bold());
                     } else {
-                        println!("{} {} -> {}", "update available".yellow(), current, ver.as_str().blue());
+                        println!("{} ({current} -> {ver})", "update available".dark_yellow().bold());
                         if args.update {
                             match apply_autoupdate(session, &path, &manifest, &ver, &[ver.clone()]) {
-                                Ok(()) => println!("  {} updated to {}", "✓".green(), ver.as_str()),
-                                Err(e) => println!("  {}: {}", "update failed".red(), e),
+                                Ok(()) => output::done(format!("updated to {ver}")),
+                                Err(e) => output::err(format!("update failed: {e}")),
                             }
                         }
                     }
                 }
-                Ok(None) => println!("{}", "script returned no version".yellow()),
-                Err(e) => println!("{}: {}", "script error".red(), e),
+                Ok(None) => output::warn("script returned no version"),
+                Err(e) => output::err(format!("script error: {e}")),
             }
             continue;
         }
@@ -94,15 +94,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                     format!("https://sourceforge.net/projects/{}/rss?path=/{}", proj, sf.path)
                 }
-                None => { eprintln!("could not extract SourceForge project"); continue; }
+                None => { output::err("could not extract SourceForge project"); continue; }
             }
         } else if is_github_checkver(&cv) {
             match github_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
-                None => { eprintln!("could not extract GitHub repo from homepage"); continue; }
+                None => { output::err("could not extract GitHub repo from homepage"); continue; }
             }
         } else {
-            eprintln!("no checkver url"); continue;
+            output::err("no checkver url"); continue;
         };
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses
@@ -115,7 +115,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let raw = match operation::download_page(session, &url) {
             Ok(t) => t,
             Err(e) => {
-                println!("{}: {}", "fetch error".red(), e);
+                output::err(format!("fetch error: {e}"));
                 continue;
             }
         };
@@ -125,20 +125,20 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref(), effective_regex.as_deref());
 
         match extract_result {
-            Some((ref ver, ref captures)) if ver == &current => {
-                println!("{} ({})", "up to date".green(), ver);
+            Some((ref ver, _)) if ver == &current => {
+                println!("{} ({ver})", "up to date".dark_green().bold());
             }
             Some((ref ver, ref captures)) => {
-                println!("{} {} -> {}", "update available".yellow(), current, ver.as_str().blue());
+                println!("{} ({current} -> {ver})", "update available".dark_yellow().bold());
                 if args.update {
                     match apply_autoupdate(session, &path, &manifest, ver, captures) {
-                        Ok(()) => println!("  {} updated to {}", "✓".green(), ver),
-                        Err(e) => println!("  {}: {}", "update failed".red(), e),
+                        Ok(()) => output::done(format!("updated to {ver}")),
+                        Err(e) => output::err(format!("update failed: {e}")),
                     }
                 }
             }
             None => {
-                println!("{}", "could not extract version".red());
+                output::err("could not extract version");
             }
         }
     }

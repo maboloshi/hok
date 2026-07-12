@@ -1,9 +1,8 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::Manifest;
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Check bucket manifests missing checkver and autoupdate
 #[derive(Debug, Parser)]
@@ -20,7 +19,7 @@ pub struct Args {
 pub fn execute(args: Args) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        eprintln!("error: '{}' is not a directory", dir.display());
+        output::err(format!("error: '{}' is not a directory", dir.display()));
         return Ok(());
     }
 
@@ -46,7 +45,7 @@ pub fn execute(args: Args) -> Result<()> {
 
         if args.supported {
             if has_checkver || has_autoupdate {
-                println!("{} {}", "✓".green(), name);
+                output::done(name);
             }
         } else {
             let mut issues = Vec::new();
@@ -59,22 +58,17 @@ pub fn execute(args: Args) -> Result<()> {
                 missing_autoupdate += 1;
             }
             if !issues.is_empty() {
-                println!("  {} {} ({})", "✗".red(), name, issues.join(", "));
+                output::named(&name, format!("({})", issues.join(", ")));
             }
         }
     }
 
     if !args.supported {
-        println!(
-            "\n{}",
-            format!(
-                "Scanned {} manifests: {} missing checkver, {} missing autoupdate.",
-                total, missing_checkver, missing_autoupdate
-            )
-            .yellow()
-        );
+        output::info(format!(
+            "Scanned {total} manifests: {missing_checkver} missing checkver, {missing_autoupdate} missing autoupdate.",
+        ));
         if missing_checkver == 0 && missing_autoupdate == 0 {
-            println!("{}", "All manifests have checkver and autoupdate.".green());
+            output::info("All manifests have checkver and autoupdate.");
         }
     }
 

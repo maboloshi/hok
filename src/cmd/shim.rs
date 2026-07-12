@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::Session;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// List or inspect shims
 #[derive(Debug, Parser)]
@@ -21,7 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command.as_str() {
         "list" => {
             if !shims_dir.exists() {
-                println!("{}", "No shims directory found.".yellow());
+                output::warn("No shims directory found.");
                 return Ok(());
             }
             for entry in std::fs::read_dir(&shims_dir)?.flatten() {
@@ -30,7 +29,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     // Skip .cmd files (show only .ps1 or no extension)
                     if name.ends_with(".ps1") {
                         let stem = &name[..name.len() - 4];
-                        println!("  {}  (shim)", stem.blue());
+                        output::named(stem, "(shim)");
                     }
                 }
             }
@@ -40,15 +39,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 for ext in &["", ".cmd", ".ps1", ".exe"] {
                     let path = shims_dir.join(format!("{}{}", shim_name, ext));
                     if path.exists() {
-                        println!("{} -> {}", shim_name.as_str().blue(), path.display());
+                        output::change(shim_name.as_str(), "->", path.display().to_string());
                     }
                 }
             } else {
-                eprintln!("Usage: hok shim info <name>");
+                output::err("Usage: hok shim info <name>");
             }
         }
         _ => {
-            eprintln!("Unknown command: '{}'. Use: list, info", args.command);
+            output::err(format!("Unknown command: '{}'. Use: list, info", args.command));
         }
     }
 

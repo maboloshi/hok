@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::Session;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Show the directory where a package is installed
 #[derive(Debug, Parser)]
@@ -19,9 +19,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Check if the app directory exists at all (without /current)
         let base_dir = config.root_path().join("apps").join(&args.package);
         if base_dir.exists() {
-            eprintln!("Package '{}' is installed but has no 'current' symlink.", args.package);
+            output::err(format!("Package '{}' is installed but has no 'current' symlink.", args.package));
         } else {
-            eprintln!("Package '{}' is not installed.", args.package);
+            output::err(format!("Package '{}' is not installed.", args.package));
         }
         return Ok(());
     }

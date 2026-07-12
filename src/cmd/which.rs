@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Show the shim location(s) of a command
 #[derive(Debug, Parser)]
@@ -49,7 +49,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if !found {
-        eprintln!("Could not find '{}'.", command);
+        output::err(format!("Could not find '{}'.", command));
     }
 
     Ok(())

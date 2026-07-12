@@ -1,8 +1,7 @@
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{operation, Event, Session, SyncOption};
 
-use crate::{cui, Result};
+use crate::{cui, output, Result};
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -65,18 +64,17 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let handle = std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                Event::PackageResolveStart => println!("Resolving packages..."),
+                Event::PackageResolveStart => output::status("Resolving packages..."),
                 Event::PromptTransactionNeedConfirm(transaction) => {
                     if let Some(remove) = transaction.remove_view() {
-                        println!("The following packages will be REMOVED:");
+                        output::header("The following packages will be REMOVED:");
                         let output = remove
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}{}",
-                                    p.ident(),
-                                    "-".dark_grey(),
-                                    p.version().dark_grey(),
+                                "{}-{}",
+                                p.ident(),
+                                p.version(),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -88,22 +86,22 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
                 }
                 Event::PackageCommitStart(ctx) => {
-                    println!("Uninstalling {}...", ctx);
+                    output::status(format!("Uninstalling {ctx}..."));
                 }
                 Event::PackageShortcutRemoveProgress(ctx) => {
-                    println!("Removing shortcut {}", ctx);
+                    output::detail(format!("removing shortcut: {ctx}"));
                 }
                 Event::PackageShimRemoveProgress(ctx) => {
-                    println!("Removing shim '{}'", ctx);
+                    output::detail(format!("removing shim: {ctx}"));
                 }
                 Event::PackagePersistPurgeStart => {
-                    println!("Removing persisted data...");
+                    output::detail("removing persisted data...");
                 }
                 Event::PackageCommitDone(ctx) => {
-                    let msg = format!("'{}' was uninstalled.", ctx);
-                    println!("{}", msg.dark_green());
+                    output::done(format!("'{ctx}' was uninstalled."));
                 }
                 Event::PackageSyncDone => break,
+                Event::PackageExtractStart(ctx) => output::detail(format!("extract: {ctx}")),
                 _ => {}
             }
         }

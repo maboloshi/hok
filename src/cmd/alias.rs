@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// List, add, or remove Scoop aliases
 ///
@@ -31,7 +30,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             let aliases = config.aliases();
             match aliases {
                 Some(map) if !map.is_empty() => {
-                    println!("{}", "Aliases:".green());
+                    output::header("Aliases");
                     let mut sorted: Vec<_> = map.iter().collect();
                     sorted.sort_by_key(|(k, _)| *k);
                     for (name, cmd) in sorted {
@@ -40,36 +39,36 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         } else {
                             cmd.clone()
                         };
-                        println!("  {} -> {}", name.as_str().blue(), cmd_short);
+                        output::field(name.as_str(), &cmd_short);
                     }
                 }
                 _ => {
-                    println!("{}", "No aliases configured.".yellow());
+                    output::warn("No aliases configured.");
                 }
             }
         }
         "add" => {
             if let (Some(name), Some(value)) = (&args.name, &args.value) {
                 match operation::alias_add(session, name, value) {
-                    Ok(_) => println!("  {} added: {} -> {}", "✓".green(), name.as_str().blue(), value),
-                    Err(e) => eprintln!("Error: {}", e),
+                    Ok(_) => output::done(format!("added: {name} -> {value}")),
+                    Err(e) => output::err(format!("{e}")),
                 }
             } else {
-                eprintln!("Usage: hok alias add <name> <command>");
+                output::err("Usage: hok alias add <name> <command>");
             }
         }
         "rm" | "remove" | "delete" => {
             if let Some(name) = &args.name {
                 match operation::alias_remove(session, name) {
-                    Ok(_) => println!("  {} removed: {}", "✓".green(), name.as_str().blue()),
-                    Err(e) => eprintln!("Error: {}", e),
+                    Ok(_) => output::done(format!("removed: {name}")),
+                    Err(e) => output::err(format!("{e}")),
                 }
             } else {
-                eprintln!("Usage: hok alias rm <name>");
+                output::err("Usage: hok alias rm <name>");
             }
         }
         _ => {
-            eprintln!("Unknown command: '{}'. Use: list, add, rm", cmd);
+            output::err(format!("Unknown command: '{cmd}'. Use: list, add, rm"));
         }
     }
 

@@ -1,11 +1,10 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 use scoop_hash::ChecksumBuilder;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Create a manifest from a download URL
 ///
@@ -24,11 +23,11 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let url = args.url.trim();
     if url.is_empty() {
-        eprintln!("URL is required.");
+        output::err("URL is required.");
         return Ok(());
     }
 
-    println!("  {} Creating manifest for: {}", "•".blue(), url);
+    output::info(format!("Creating manifest for: {url}"));
 
     // Extract filename from URL
     let filename = url.rsplit('/').next()
@@ -51,16 +50,16 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     std::fs::create_dir_all(&tmp_dir)?;
     let dest = tmp_dir.join(filename);
 
-    print!("  {} Downloading ... ", "•".blue());
+    print!("  Downloading ... ");
     std::io::stdout().flush()?;
     operation::download_file(session, url, &dest)
         .map_err(|e| anyhow::anyhow!("download failed: {}", e))?;
-    println!("{}", "done".green());
+    output::ok();
 
-    print!("  {} Computing hash ... ", "•".blue());
+    print!("  Computing hash ... ");
     std::io::stdout().flush()?;
     let hash = compute_file_hash(&dest)?;
-    println!("{}", "done".green());
+    output::ok();
 
     // Generate manifest
     let version = "0.0.0".to_string();
@@ -90,7 +89,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match &args.output {
         Some(path) => {
             std::fs::write(path, output.as_bytes())?;
-            println!("\n  {} Manifest saved to: {}", "✓".green(), path.display());
+            output::done(format!("Manifest saved to: {}", path.display()));
         }
         None => {
             println!("\n{}", output);

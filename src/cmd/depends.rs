@@ -1,9 +1,8 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, QueryOption, Session};
 use std::io::Write;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Show dependencies of a package
 #[derive(Debug, Parser)]
@@ -20,7 +19,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     if result.is_empty() {
-        eprintln!("Could not find package named '{}'.", query);
+        output::err(format!("Could not find package named '{query}'."));
         return Ok(());
     }
 
@@ -29,9 +28,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         result.remove(0)
     } else {
         result.sort_by_key(|p| p.ident());
-        println!("Found multiple packages named '{}':\n", query);
+        output::info(format!("Found multiple packages named '{query}':\n"));
         for (idx, pkg) in result.iter().enumerate() {
-            println!("  {}. {}/{}", idx, pkg.bucket(), pkg.name());
+            output::named(format!("{idx}."), format!("{}/{}", pkg.bucket(), pkg.name()));
         }
         print!("\nSelect one (0-{}): ", result.len() - 1);
         std::io::stdout().flush().ok();
@@ -39,7 +38,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         std::io::stdin().read_line(&mut input).ok();
         let idx = input.trim().parse::<usize>().unwrap_or(0);
         if idx >= result.len() {
-            eprintln!("Invalid selection.");
+            output::err("Invalid selection.");
             return Ok(());
         }
         result.remove(idx)
@@ -56,13 +55,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 fn print_deps(session: &Session, name: &str, bucket: &str, depth: usize, seen: &mut std::collections::HashSet<String>) -> Result<()> {
     if !seen.insert(name.to_string()) {
         if depth > 0 {
-            println!("{:indent$} {} {}", "", name.blue(), "(already listed)".dark_grey(), indent = depth * 2);
+            println!("{:indent$} {} {}", "", name, "(already listed)", indent = depth * 2);
         }
         return Ok(());
     }
 
     if depth == 0 {
-        println!("{}", format!("{}/{}", bucket, name).green());
+        output::named(format!("{bucket}/{name}"), "");
     } else {
         println!("{:indent$} {} [{}]", "", name, bucket, indent = depth * 2);
     }

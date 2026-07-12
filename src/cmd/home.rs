@@ -2,7 +2,7 @@ use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
 use std::io::Write;
 
-use crate::{util, Result};
+use crate::{output, util, Result};
 
 /// Browse the homepage of a package
 #[derive(Debug, Parser)]
@@ -20,7 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     match result.len() {
-        0 => eprintln!("Could not find package named '{}'.", query),
+        0 => output::err(format!("Could not find package named '{query}'.")),
         1 => {
             let package = &result[0];
             let url = package.homepage();
@@ -29,11 +29,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         _ => {
             result.sort_by_key(|p| p.ident());
 
-            println!("Found multiple packages named '{}':\n", query);
+            output::info(format!("Found multiple packages named '{query}':\n"));
             for (idx, pkg) in result.iter().enumerate() {
                 println!(
-                    "  {}. {}/{} ({})",
-                    idx,
+                    "  {idx}. {}/{} ({})",
                     pkg.bucket(),
                     pkg.name(),
                     pkg.homepage()
@@ -52,7 +51,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     return Ok(());
                 }
             }
-            eprintln!("Invalid input.");
+            output::err("Invalid input.");
         }
     }
     Ok(())

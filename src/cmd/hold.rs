@@ -1,8 +1,7 @@
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Hold package(s) to disable changes
 #[derive(Debug, Parser)]
@@ -17,11 +16,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     for name in &args.package {
         print!("Holding {}...", name);
         match operation::package_hold(session, name, true) {
-            Ok(..) => {
-                println!("{}", "Ok".green());
-            }
+            Ok(..) => output::ok(),
             Err(err) => {
-                println!("{}", "Err".red());
+                output::err("Err");
                 return Err(err.into());
             }
         }

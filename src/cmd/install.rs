@@ -1,15 +1,13 @@
-#![allow(unused_assignments)]
 use clap::{ArgAction, Parser};
 use crossterm::{
     cursor,
-    style::Stylize,
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
 use libscoop::{operation, Event, Session, SyncOption};
 use std::io::Write;
 
-use crate::{cui, util, Result};
+use crate::{cui, output, util, Result};
 
 /// Install package(s)
 #[derive(Debug, Parser)]
@@ -104,9 +102,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let handle = std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                Event::PackageResolveStart => println!("Resolving packages..."),
-                Event::PackageDownloadSizingStart => println!("Calculating download size..."),
-                Event::PackageDownloadStart => println!("Downloading packages..."),
+                Event::PackageResolveStart => output::status("Resolving packages..."),
+                Event::PackageDownloadSizingStart => output::status("Calculating download size..."),
+                Event::PackageDownloadStart => output::status("Downloading packages..."),
+                Event::PackageExtractStart(ctx) => output::detail(format!("extracting: {ctx}")),
                 Event::PackageDownloadProgress(ctx) => {
                     let ident = ctx.ident.to_owned();
                     let url = ctx.url.to_owned();
@@ -117,7 +116,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     dlprogress.update(ident, url, filename, dltotal, dlnow);
                 }
                 Event::PackageDownloadDone => {}
-                Event::PackageIntegrityCheckStart => println!("Checking package integrity..."),
+                Event::PackageIntegrityCheckStart => output::status("Checking package integrity..."),
                 Event::PackageIntegrityCheckProgress(ctx) => {
                     let mut stdout = std::io::stdout();
                     stdout
@@ -125,7 +124,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         .unwrap()
                         .execute(Clear(ClearType::CurrentLine))
                         .unwrap();
-                    println!("Checking package integrity...{}", ctx.dark_grey());
+                    println!("Checking package integrity...{ctx}");
                 }
                 Event::PackageIntegrityCheckDone => {
                     let mut stdout = std::io::stdout();
@@ -134,7 +133,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         .unwrap()
                         .execute(Clear(ClearType::CurrentLine))
                         .unwrap();
-                    println!("Checking package integrity...{}", "Ok".green());
+                    println!("Checking package integrity...Ok");
                 }
                 Event::PromptPackageCandidate(pkgs) => {
                     let name = pkgs[0].split_once('/').unwrap().1;
@@ -143,7 +142,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         println!("  {}: {}", i, pkg);
                     }
 
-                    let mut index = 0;
+                    let mut index;
                     let mut stdout = std::io::stdout();
                     let _ = stdout.execute(cursor::Show);
                     loop {
@@ -166,15 +165,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 Event::PromptTransactionNeedConfirm(transaction) => {
                     if let Some(install) = transaction.install_view() {
-                        println!("The following packages will be INSTALLED:");
+                        output::header("The following packages will be INSTALLED:");
                         let output = install
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}{}",
+                                    "{}-{}",
                                     p.ident(),
-                                    "-".dark_grey(),
-                                    p.version().dark_grey(),
+                                    p.version(),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -186,15 +184,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         if transaction.install_view().is_some() {
                             println!();
                         }
-                        println!("The following packages will be UPGRADED:");
+                        output::header("The following packages will be UPGRADED:");
                         let output = upgrade
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}{}",
+                                    "{}-{}",
                                     p.ident(),
-                                    "-".dark_grey(),
-                                    p.upgradable_version().unwrap().dark_grey(),
+                                    p.upgradable_version().unwrap(),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -208,13 +205,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         {
                             println!();
                         }
-                        println!("The following packages will be REPLACED:");
+                        output::header("The following packages will be REPLACED:");
                         let output = replace
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}/{}",
-                                    p.installed_bucket().unwrap().dark_grey().crossed_out(),
+                                    "{}/{}",
                                     p.bucket(),
                                     p.name(),
                                 )
@@ -228,11 +224,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                         let out = util::humansize(download_size.total, true);
                         if download_size.total > 0 {
                             if download_size.estimated {
-                                println!(
-                                    "\nTotal download size: {} {}",
-                                    out,
-                                    "(estimated)".dark_grey()
-                                );
+                                println!("\nTotal download size: {out} (estimated)");
                             } else {
                                 println!("\nTotal download size: {}", out);
                             }
@@ -261,6 +253,5 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut stdout = std::io::stdout();
     let _ = stdout.execute(cursor::Show);
 
-    eprintln!("Not implemented yet.");
     Ok(())
 }

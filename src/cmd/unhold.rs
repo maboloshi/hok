@@ -1,8 +1,7 @@
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Unhold package(s) to enable changes
 #[derive(Debug, Parser)]
@@ -18,11 +17,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     for name in packages {
         print!("Unholding {}...", name);
         match operation::package_hold(session, name, false) {
-            Ok(..) => {
-                println!("{}", "Ok".green());
-            }
+            Ok(..) => output::ok(),
             Err(err) => {
-                println!("{}", "Err".red());
+                output::err("Err");
                 return Err(err.into());
             }
         }

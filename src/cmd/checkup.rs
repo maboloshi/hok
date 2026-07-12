@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::Session;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Check for potential problems with installed packages
 #[derive(Debug, Parser)]
@@ -14,7 +13,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
     let mut issues = 0u32;
 
     if !apps_dir.exists() {
-        println!("{}", "No apps directory found.".yellow());
+        output::warn("No apps directory found.");
         return Ok(());
     }
 
@@ -28,7 +27,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
 
         // Check that 'current' symlink exists and points somewhere
         if !current.exists() {
-            println!("  {}: {} {}", "⚠".yellow(), name, "no 'current' symlink".yellow());
+            output::named(name.as_ref(), "no 'current' symlink");
             issues += 1;
             continue;
         }
@@ -38,19 +37,20 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
         let manifest_json = current.join("manifest.json");
 
         if !install_json.exists() {
-            println!("  {}: {} {}", "⚠".yellow(), name, "missing install.json".yellow());
+            output::named(name.as_ref(), "missing install.json");
             issues += 1;
         }
         if !manifest_json.exists() {
-            println!("  {}: {} {}", "⚠".yellow(), name, "missing manifest.json".yellow());
+            output::named(name.as_ref(), "missing manifest.json");
             issues += 1;
         }
     }
 
     if issues == 0 {
-        println!("{}", "No issues found.".green());
+        output::info("No issues found.");
     } else {
-        println!("\n{} {}", format!("{} issue(s) found.", issues).yellow(), "run 'hok reset <app>' to fix".dark_grey());
+        output::warn(format!("{issues} issue(s) found."));
+        output::status("run 'hok reset <app>' to fix");
     }
 
     Ok(())

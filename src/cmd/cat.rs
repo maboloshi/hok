@@ -1,9 +1,8 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, QueryOption, Session};
 use std::{io::Write, path::Path, process::Command};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Inspect the manifest of a package
 #[derive(Debug, Parser)]
@@ -21,7 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     if result.is_empty() {
-        eprintln!("Could not find package named '{}'.", query)
+        output::err(format!("Could not find package named '{query}'."))
     } else {
         let length = result.len();
         let package = if length == 1 {
@@ -29,11 +28,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         } else {
             result.sort_by_key(|p| p.ident());
 
-            println!("Found multiple packages named '{}':\n", query);
+            println!("Found multiple packages named '{query}':\n");
             for (idx, pkg) in result.iter().enumerate() {
                 println!(
-                    "  {}. {}/{} ({})",
-                    idx,
+                    "  {idx}. {}/{} ({})",
                     pkg.bucket(),
                     pkg.name(),
                     pkg.homepage()
@@ -45,20 +43,20 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             std::io::stdin().read_line(&mut input).unwrap();
             let parsed = input.trim().parse::<usize>();
             if parsed.is_err() {
-                eprintln!("Invalid input.");
+                output::err("Invalid input.");
                 return Ok(());
             }
 
             let num = parsed.unwrap();
             if num >= length {
-                eprintln!("Invalid input.");
+                output::err("Invalid input.");
                 return Ok(());
             }
             &result[num]
         };
 
         let path = package.manifest().path();
-        println!("{}:", path.display().to_string().green());
+        output::info(format!("{}", path.display()));
         match is_program_available("bat.exe") {
             false => {
                 let content = std::fs::read_to_string(path)?;

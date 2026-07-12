@@ -1,9 +1,8 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, Manifest, Session};
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Check manifest URLs for validity
 #[derive(Debug, Parser)]
@@ -28,7 +27,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        eprintln!("error: '{}' is not a directory", dir.display());
+        output::err(format!("error: '{}' is not a directory", dir.display()));
         return Ok(());
     }
 
@@ -77,32 +76,29 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     invalid += 1;
                     all_valid = false;
                     if !args.skip_valid {
-                        println!("\n  {} {}\n    {}", "✗".red(), "not found".yellow(), url);
+                        output::err(format!("not found: {url}"));
                     } else {
-                        println!("  {} {} ({})", "✗".red(), name, url);
+                        output::named(&name, url);
                     }
                 }
                 Err(e) => {
                     invalid += 1;
                     all_valid = false;
                     if !args.skip_valid {
-                        println!("\n  {} {}\n    {}", "✗".red(), e, url);
+                        output::err(format!("{e}: {url}"));
                     } else {
-                        println!("  {} {} {} ({})", "✗".red(), name, e, url);
+                        output::err(format!("{name} {e} ({url})"));
                     }
                 }
             }
         }
 
         if all_valid && !args.skip_valid {
-            println!("{} ({} urls)", "ok".green(), urls.len());
+            println!("ok ({} urls)", urls.len());
         }
     }
 
-    println!(
-        "\n{}",
-        format!("Checked {} URLs: {} valid, {} invalid.", total_urls, valid, invalid).yellow()
-    );
+    output::info(format!("Checked {total_urls} URLs: {valid} valid, {invalid} invalid."));
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 use libscoop::{operation, Session};
 
-use crate::{util, Result};
+use crate::{output, util, Result};
 
 /// Package cache management
 #[derive(Debug, Parser)]
@@ -64,7 +64,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             if all {
                 match operation::cache_remove(session, "*") {
                     Ok(_) => {
-                        println!("All download caches were removed.");
+                        output::info("All download caches were removed.");
                         return Ok(());
                     }
                     Err(e) => return Err(e.into()),
@@ -75,9 +75,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 match operation::cache_remove(session, query.as_str()) {
                     Ok(_) => {
                         if query == "*" {
-                            println!("All download caches were removed.");
+                            output::info("All download caches were removed.");
                         } else {
-                            println!("All caches matching '{}' were removed.", query);
+                            output::info(format!("All caches matching '{query}' were removed."));
                         }
                     }
                     Err(e) => return Err(e.into()),

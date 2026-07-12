@@ -1,13 +1,12 @@
 use clap::{ArgAction, Parser};
 use crossterm::{
     cursor,
-    style::Stylize,
     terminal::{Clear, ClearType},
     ExecutableCommand,
 };
 use libscoop::{operation, Event, Session, SyncOption};
 
-use crate::{cui, util, Result};
+use crate::{cui, output, util, Result};
 
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
 ///
@@ -73,7 +72,7 @@ fn update_buckets(session: &Session) -> Result<()> {
         let _ = stdout.execute(cursor::MoveToNextLine(step)).unwrap();
     });
 
-    println!("Updating buckets");
+    output::header("Updating buckets");
 
     let mut stdout = std::io::stdout();
     let _ = stdout.execute(cursor::Hide);
@@ -126,9 +125,9 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
     let handle = std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
             match event {
-                Event::PackageResolveStart => println!("Resolving packages..."),
-                Event::PackageDownloadSizingStart => println!("Calculating download size..."),
-                Event::PackageDownloadStart => println!("Downloading packages..."),
+                Event::PackageResolveStart => output::status("Resolving packages..."),
+                Event::PackageDownloadSizingStart => output::status("Calculating download size..."),
+                Event::PackageDownloadStart => output::status("Downloading packages..."),
                 Event::PackageDownloadProgress(ctx) => {
                     let ident = ctx.ident.to_owned();
                     let url = ctx.url.to_owned();
@@ -139,7 +138,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                     dlprogress.update(ident, url, filename, dltotal, dlnow);
                 }
                 Event::PackageDownloadDone => {}
-                Event::PackageIntegrityCheckStart => println!("Checking package integrity..."),
+                Event::PackageIntegrityCheckStart => output::status("Checking package integrity..."),
                 Event::PackageIntegrityCheckProgress(ctx) => {
                     let mut stdout = std::io::stdout();
                     stdout
@@ -147,7 +146,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                         .unwrap()
                         .execute(Clear(ClearType::CurrentLine))
                         .unwrap();
-                    println!("Checking package integrity...{}", ctx.dark_grey());
+                    println!("Checking package integrity...{ctx}");
                 }
                 Event::PackageIntegrityCheckDone => {
                     let mut stdout = std::io::stdout();
@@ -156,19 +155,18 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                         .unwrap()
                         .execute(Clear(ClearType::CurrentLine))
                         .unwrap();
-                    println!("Checking package integrity...{}", "Ok".green());
+                    println!("Checking package integrity...Ok");
                 }
                 Event::PromptTransactionNeedConfirm(transaction) => {
                     if let Some(install) = transaction.install_view() {
-                        println!("The following packages will be INSTALLED:");
+                        output::header("The following packages will be INSTALLED:");
                         let output = install
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}{}",
+                                    "{}-{}",
                                     p.ident(),
-                                    "-".dark_grey(),
-                                    p.version().dark_grey(),
+                                    p.version(),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -180,15 +178,14 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                         if transaction.install_view().is_some() {
                             println!();
                         }
-                        println!("The following packages will be UPGRADED:");
+                        output::header("The following packages will be UPGRADED:");
                         let output = upgrade
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}{}",
+                                    "{}-{}",
                                     p.ident(),
-                                    "-".dark_grey(),
-                                    p.upgradable_version().unwrap().dark_grey(),
+                                    p.upgradable_version().unwrap(),
                                 )
                             })
                             .collect::<Vec<_>>()
@@ -202,13 +199,12 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                         {
                             println!();
                         }
-                        println!("The following packages will be REPLACED:");
+                        output::header("The following packages will be REPLACED:");
                         let output = replace
                             .iter()
                             .map(|p| {
                                 format!(
-                                    "{}{}/{}",
-                                    p.installed_bucket().unwrap().dark_grey().crossed_out(),
+                                    "{}/{}",
                                     p.bucket(),
                                     p.name(),
                                 )
@@ -222,11 +218,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                         let out = util::humansize(download_size.total, true);
                         if download_size.total > 0 {
                             if download_size.estimated {
-                                println!(
-                                    "\nTotal download size: {} {}",
-                                    out,
-                                    "(estimated)".dark_grey()
-                                );
+                                println!("\nTotal download size: {out} (estimated)");
                             } else {
                                 println!("\nTotal download size: {}", out);
                             }
@@ -242,6 +234,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
                     let _ = stdout.execute(cursor::Hide);
                 }
                 Event::PackageSyncDone => break,
+                Event::PackageExtractStart(ctx) => output::detail(format!("extract: {ctx}")),
                 _ => {}
             }
         }

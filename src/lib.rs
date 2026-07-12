@@ -2,13 +2,25 @@ use crossterm::{
     style::{Color, Print, SetForegroundColor},
     ExecutableCommand,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Display, io};
 
 mod cmd;
 mod cui;
+mod output;
 mod util;
 
 type Result<T> = anyhow::Result<T>;
+
+static DETAIL_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_detail(enabled: bool) {
+    DETAIL_MODE.store(enabled, Ordering::Relaxed);
+}
+
+pub fn is_detail() -> bool {
+    DETAIL_MODE.load(Ordering::Relaxed)
+}
 
 fn error<T: Display>(input: &T) -> io::Result<()> {
     let mut stderr = io::stderr();

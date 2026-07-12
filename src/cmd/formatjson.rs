@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Format manifest JSON files in a bucket directory
 #[derive(Debug, Parser)]
@@ -19,7 +18,7 @@ pub struct Args {
 pub fn execute(args: Args) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        eprintln!("error: '{}' is not a directory", dir.display());
+        output::err(format!("error: '{}' is not a directory", dir.display()));
         return Ok(());
     }
 
@@ -55,7 +54,7 @@ pub fn execute(args: Args) -> Result<()> {
         let value: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("  {}: {}", path.display(), format!("parse error: {}", e).red());
+                output::err(format!("{}: parse error: {}", path.display(), e));
                 continue;
             }
         };
@@ -66,15 +65,15 @@ pub fn execute(args: Args) -> Result<()> {
         // Only write if the content changed
         if formatted != content {
             std::fs::write(&path, formatted.as_bytes())?;
-            println!("  {} {}", format!("✓").green(), path.display());
+            output::done(format!("{}", path.display()));
             count += 1;
         }
     }
 
     if count == 0 {
-        println!("{}", "No manifests needed formatting.".green());
+        output::info("No manifests needed formatting.");
     } else {
-        println!("{} {} {}", "Formatted".green(), count, "manifest(s).");
+        output::info(format!("Formatted {count} manifest(s)."));
     }
 
     Ok(())

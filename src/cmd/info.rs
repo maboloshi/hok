@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::{operation, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Show package(s) basic information
 #[derive(Debug, Parser)]
@@ -19,39 +19,25 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let packages = operation::package_query(session, queries, options, false)?;
     let length = packages.len();
     match length {
-        0 => eprintln!("Could not find package for query '{}'.", query),
+        0 => output::err(format!("Could not find package for query '{query}'.")),
         _ => {
             if length == 1 {
-                println!("Found 1 package for query '{}':", query);
+                output::info(format!("Found 1 package for query '{}'", query));
             } else {
-                println!("Found {} package(s) for query '{}':", length, query);
+                output::info(format!("Found {length} package(s) for query '{query}'"));
             }
 
             for (idx, pkg) in packages.iter().enumerate() {
-                // Ident
-                println!("Identity: {}", pkg.ident());
-                // Name
-                println!("Name: {}", pkg.name());
-                // Bucket
-                println!("Bucket: {}", pkg.bucket());
-                // Description
-                println!(
-                    "Description: {}",
-                    pkg.description().unwrap_or("<no description>")
-                );
-                // Version
-                println!("Version: {}", pkg.version());
-                // Homepage
-                println!("Homepage: {}", pkg.homepage());
-                // License
-                println!("License: {}", pkg.license());
-                // Binaries
-                println!(
-                    "Shims: {}",
-                    pkg.shims()
-                        .map(|v| v.join(","))
-                        .unwrap_or("<no shims>".to_owned())
-                );
+                output::field("Identity:", pkg.ident());
+                output::field("Name:", pkg.name());
+                output::field("Bucket:", pkg.bucket());
+                output::field("Description:", pkg.description().unwrap_or("<no description>"));
+                output::field("Version:", pkg.version());
+                output::field("Homepage:", pkg.homepage());
+                output::field("License:", pkg.license().to_string());
+                output::field("Shims:", pkg.shims()
+                    .map(|v| v.join(","))
+                    .unwrap_or("<no shims>".to_owned()));
 
                 if idx != (length - 1) {
                     println!();

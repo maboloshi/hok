@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, QueryOption, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Show the status of all installed apps
 #[derive(Debug, Parser)]
@@ -28,35 +27,32 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             continue;
         }
 
-        let mut line = format!("{}/{} {}", pkg.name(), pkg.bucket().green(), pkg.version());
+        let mut line = format!("{}/{} {}", pkg.name(), pkg.bucket(), pkg.version());
 
         if let Some(new_ver) = upgradable {
-            line.push_str(&format!(" -> {}", new_ver.blue()));
+            line.push_str(&format!(" -> {new_ver}"));
             outdated += 1;
         } else {
             up_to_date += 1;
         }
 
         if pkg.is_held() {
-            line.push_str(&format!(" [{}]", "held".magenta()));
+            line.push_str(" [held]");
         }
 
-        println!("{}", line);
+        output::status(&line);
     }
 
     if packages.is_empty() {
-        println!("No apps installed.");
+        output::status("No apps installed.");
     } else if args.all {
         if outdated == 0 {
-            println!("\n{}", "All apps are up to date.".green());
+            output::info("All apps are up to date.");
         } else {
-            println!(
-                "\n{}",
-                format!("Status: {} outdated / {} up to date.", outdated, up_to_date).yellow()
-            );
+            output::warn(format!("Status: {outdated} outdated / {up_to_date} up to date."));
         }
     } else if outdated == 0 {
-        println!("\n{}", "All apps are up to date.".green());
+        output::info("All apps are up to date.");
     }
 
     Ok(())

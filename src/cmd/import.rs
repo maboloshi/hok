@@ -1,8 +1,7 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::{operation, SyncOption, Session};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Import installed packages from a file
 #[derive(Debug, Parser)]
@@ -16,7 +15,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let content = match std::fs::read_to_string(&args.file) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error reading '{}': {}", args.file, e);
+            output::err(format!("Error reading '{}': {}", args.file, e));
             return Ok(());
         }
     };
@@ -24,7 +23,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let root: serde_json::Value = match serde_json::from_str(&content) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Error parsing JSON: {}", e);
+            output::err(format!("Error parsing JSON: {}", e));
             return Ok(());
         }
     };
@@ -42,18 +41,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if packages.is_empty() {
-        println!("{}", "No packages found in import file.".yellow());
+        output::warn("No packages found in import file.");
         return Ok(());
     }
 
-    println!("{}", format!("Found {} packages to install.", packages.len()).green());
+    output::info(format!("Found {} packages to install.", packages.len()));
 
     let queries: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
     let options = vec![SyncOption::AssumeYes];
 
     match operation::package_sync(session, queries, options) {
-        Ok(_) => println!("{}", "Import complete.".green()),
-        Err(e) => eprintln!("Import error: {}", e),
+        Ok(_) => output::info("Import complete."),
+        Err(e) => output::err(format!("Import error: {}", e)),
     }
 
     Ok(())

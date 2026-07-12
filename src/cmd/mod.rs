@@ -65,6 +65,10 @@ pub struct Cli {
     /// The verbosity level
     #[command(flatten)]
     verbose: Verbosity,
+
+    /// Show detailed operation information for debugging
+    #[arg(global = true, long)]
+    pub detail: bool,
 }
 
 #[derive(Subcommand)]
@@ -110,7 +114,8 @@ pub enum Command {
 /// CLI entry point
 pub fn start() -> Result<()> {
     let args = Cli::parse();
-    setup_logger(args.verbose.tracing_level_filter())?;
+    setup_logger(args.verbose.tracing_level_filter(), args.detail)?;
+    crate::set_detail(args.detail);
 
     let session = Session::default();
     let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
@@ -153,9 +158,12 @@ pub fn start() -> Result<()> {
     }
 }
 
-fn setup_logger(level_filter: LevelFilter) -> Result<()> {
+fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
+    // When --detail is active, ensure at least DEBUG level (unless user set higher via -vv)
+    let effective_level = if detail { level_filter.max(LevelFilter::DEBUG) } else { level_filter };
+
     // filter for low-level/depedency logs
-    let low_level_filter = match level_filter {
+    let low_level_filter = match effective_level {
         LevelFilter::OFF => LevelFilter::OFF,
         LevelFilter::ERROR => LevelFilter::ERROR,
         LevelFilter::WARN => LevelFilter::WARN,
@@ -165,7 +173,7 @@ fn setup_logger(level_filter: LevelFilter) -> Result<()> {
     };
 
     let mut layer_env_filter = EnvFilter::builder()
-        .with_default_directive(level_filter.into())
+        .with_default_directive(effective_level.into())
         .from_env()?;
 
     // The custom `HOK_LOG_LEVEL` environment variable was introduced to set the
@@ -176,7 +184,9 @@ fn setup_logger(level_filter: LevelFilter) -> Result<()> {
 
     layer_env_filter = layer_env_filter
         // add low-level filter for git2
-        .add_directive(format!("git2={}", low_level_filter).parse()?);
+        .add_directive(format!("git2={}", low_level_filter).parse()?)
+        // shortcuts-rs uses log crate internally; suppress its verbose debug output
+        .add_directive("shortcuts_rs=warn".parse()?);
 
     let layer_fmt = tracing_subscriber::fmt::layer().without_time();
 

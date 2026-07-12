@@ -1,9 +1,8 @@
 use clap::{ArgAction, Parser, Subcommand};
-use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 use std::io::{stdout, Write};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Manage manifest buckets
 #[derive(Debug, Parser)]
@@ -46,9 +45,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             let _ = stdout().flush();
             let repo = repo.as_deref().unwrap_or_default();
             match operation::bucket_add(session, name.as_str(), repo) {
-                Ok(..) => println!("{}", "Ok".green()),
+                Ok(..) => output::ok(),
                 Err(err) => {
-                    println!("{}", "Err".red());
+                    output::err("Err");
                     return Err(err.into());
                 }
             }
@@ -57,7 +56,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         Command::List { known } => {
             if known {
                 for (name, repo) in operation::bucket_list_known() {
-                    println!("{} {}", name.green(), repo);
+                    output::named(name, repo);
                 }
                 Ok(())
             } else {
@@ -65,12 +64,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     Err(e) => Err(e.into()),
                     Ok(buckets) => {
                         for bucket in buckets {
-                            println!(
-                                "{}\n ├─manifests: {}\n └─source: {}",
-                                bucket.name().green(),
-                                bucket.manifest_count(),
-                                bucket.source(),
-                            );
+                            output::named(bucket.name(), "");
+                            output::field("├─manifests", bucket.manifest_count().to_string());
+                            output::field("└─source", bucket.source());
                         }
                         Ok(())
                     }
@@ -82,9 +78,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 print!("Removing bucket {}... ", name);
                 let _ = stdout().flush();
                 match operation::bucket_remove(session, name.as_str()) {
-                    Ok(..) => println!("{}", "Ok".green()),
+                    Ok(..) => output::ok(),
                     Err(err) => {
-                        println!("{}", "Err".red());
+                        output::err("Err");
                         return Err(err.into());
                     }
                 }

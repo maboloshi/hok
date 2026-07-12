@@ -1,12 +1,11 @@
 use clap::Parser;
-use crossterm::style::Stylize;
 use libscoop::operation;
 use libscoop::{Manifest, Session};
 use scoop_hash::ChecksumBuilder;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::Result;
+use crate::{output, util, Result};
 
 /// Verify and update manifest hashes
 #[derive(Debug, Parser)]
@@ -35,7 +34,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        eprintln!("error: '{}' is not a directory", dir.display());
+        output::err(format!("error: '{}' is not a directory", dir.display()));
         return Ok(());
     }
 
@@ -73,7 +72,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             continue;
         }
 
-        print!("{} ... ", name);
+        print!("{name} ... ");
         total += 1;
 
         let url = urls[0].split('#').next().unwrap_or(urls[0]);
@@ -82,7 +81,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Skip placeholders
         let raw_hash = hash_str.value();
         if raw_hash.is_empty() || raw_hash == "TODO" {
-            println!("{}", "skipped (no hash)".yellow());
+            output::warn("skipped (no hash)");
             continue;
         }
 
@@ -94,7 +93,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             match operation::download_file(session, url, &cache_path) {
                 Ok(()) => {}
                 Err(e) => {
-                    println!("{}: {}", "download failed".red(), e);
+                    output::err(format!("download failed: {e}"));
                     failed += 1;
                     continue;
                 }
@@ -105,14 +104,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let actual_hash = match compute_hash(&cache_path, hash_str.algorithm()) {
             Ok(h) => h,
             Err(e) => {
-                println!("{}: {}", "hash error".red(), e);
+                output::err(format!("hash error: {e}"));
                 failed += 1;
                 continue;
             }
         };
 
         if actual_hash == *raw_hash && !args.force {
-            println!("{}", "ok".green());
+            output::ok();
             passed += 1;
             continue;
         }
@@ -120,36 +119,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Hash mismatch or force update
         if args.update || args.force {
             if args.force {
-                println!("{} -> {}", "re-hashed".blue(), &actual_hash[..12]);
+                output::change("re-hashed", "->", &actual_hash[..12]);
             } else {
-                println!(
-                    "{} {} -> {}",
-                    "hash mismatch! updated".yellow(),
-                    &raw_hash[..12],
-                    &actual_hash[..12]
-                );
+                output::change("hash mismatch! updated", "->", &actual_hash[..12]);
             }
             update_json_hash(&path, hash_str.algorithm(), &actual_hash)?;
             updated += 1;
         } else {
-            println!(
-                "{} expected {} got {}",
-                "hash mismatch".red(),
-                &raw_hash[..12],
-                &actual_hash[..12]
-            );
+            output::err(format!("hash mismatch expected {} got {}", &raw_hash[..12], &actual_hash[..12]));
             failed += 1;
         }
     }
 
-    println!(
-        "\n{}",
-        format!(
-            "Scanned {}: {} ok, {} failed, {} updated.",
-            total, passed, failed, updated
-        )
-        .yellow()
-    );
+    output::info(format!("Scanned {total}: {passed} ok, {failed} failed, {updated} updated."));
 
     Ok(())
 }

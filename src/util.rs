@@ -91,6 +91,27 @@ unsafe fn shell_execute_w(
     ShellExecuteW(hwnd, lp_operation, lp_file, lp_parameters, lp_directory, n_show_cmd)
 }
 
+/// Patch a JSON field value in raw text, preserving original formatting.
+///
+/// Serializes both old and new values, then replaces `"key": oldval`
+/// with `"key": newval` in the original content. Only the first
+/// occurrence is replaced (handles the common case where a field
+/// appears once at the top level).
+///
+/// Returns the patched content if the field was found and changed.
+pub fn patch_json_field(content: &str, key: &str, old_val: &serde_json::Value, new_val: &serde_json::Value) -> Option<String> {
+    let old = format!("\"{key}\": {}", serde_json::to_string(old_val).ok()?);
+    let new = format!("\"{key}\": {}", serde_json::to_string(new_val).ok()?);
+    if old == new {
+        return None;
+    }
+    let patched = content.replacen(&old, &new, 1);
+    if patched == content {
+        return None; // no replacement happened
+    }
+    Some(patched)
+}
+
 /// Convert bytes to KB/MB/GB representation.
 pub fn humansize(length: u64, with_unit: bool) -> String {
     let gb: f64 = 2.0_f64.powf(30_f64);
