@@ -786,11 +786,25 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     } else {
         debug!("commit: {} v{} - copy ({} files)", pkg.name(), pkg.version(), files.len());
-        for filename in files.iter() {
+        let urls = pkg.manifest().url();
+        for (idx, filename) in files.iter().enumerate() {
             let src = config.cache_path().join(filename);
             let dst = working_dir.join(filename);
             let _ = std::fs::remove_file(&dst);
-            std::fs::copy(src, dst)?;
+            std::fs::copy(&src, dst)?;
+
+            // If the URL has a #/rename.ext fragment, also create a copy with that name
+            // (Scoop convention: url#/newname.ext → file is accessible as newname.ext)
+            if let Some(url) = urls.get(idx) {
+                if let Some(fragment) = url.split('#').nth(1) {
+                    let fragment = fragment.trim_start_matches('/');
+                    if !fragment.is_empty() && fragment != &filename[..] {
+                        let renamed = working_dir.join(fragment);
+                        let _ = std::fs::remove_file(&renamed);
+                        let _ = std::fs::copy(&src, &renamed);
+                    }
+                }
+            }
         }
     }
 
