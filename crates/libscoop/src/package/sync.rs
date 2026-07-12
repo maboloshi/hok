@@ -793,16 +793,24 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             let _ = std::fs::remove_file(&dst);
             std::fs::copy(&src, dst)?;
 
-            // If the URL has a #/rename.ext fragment, also create a copy with that name
-            // (Scoop convention: url#/newname.ext → file is accessible as newname.ext)
+            // Scoop convention: url#/newname.ext → also accessible as newname.ext.
+            // Also: url without fragment → use the original filename from the URL path.
             if let Some(url) = urls.get(idx) {
-                if let Some(fragment) = url.split('#').nth(1) {
-                    let fragment = fragment.trim_start_matches('/');
-                    if !fragment.is_empty() && fragment != &filename[..] {
-                        let renamed = working_dir.join(fragment);
-                        let _ = std::fs::remove_file(&renamed);
-                        let _ = std::fs::copy(&src, &renamed);
-                    }
+                let target_name = if let Some(fragment) = url.split('#').nth(1) {
+                    let f = fragment.trim_start_matches('/');
+                    if f.is_empty() || f == &filename[..] { continue; }
+                    f.to_owned()
+                } else {
+                    // No fragment: use original filename from URL path
+                    std::path::Path::new(url)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| filename.clone())
+                };
+                if target_name != *filename {
+                    let renamed = working_dir.join(&target_name);
+                    let _ = std::fs::remove_file(&renamed);
+                    let _ = std::fs::copy(&src, &renamed);
                 }
             }
         }
@@ -818,11 +826,22 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
                 let exe_path = working_dir.join(file);
                 let args: Vec<&str> = installer.args().unwrap_or_default();
+
+                // Use cmd /c start /wait to ensure GUI installer windows are visible
+                #[cfg(windows)]
+                let status = std::process::Command::new("cmd.exe")
+                    .arg("/c")
+                    .arg("start").arg("").arg("/wait")
+                    .arg(&exe_path)
+                    .args(&args)
+                    .status();
+                #[cfg(not(windows))]
                 let status = std::process::Command::new(&exe_path)
                     .args(&args)
-                    .status()
-                    .map_err(|e| Error::Custom(format!(
-                        "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
+                    .status();
+
+                let status = status.map_err(|e| Error::Custom(format!(
+                    "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
                 if !status.success() {
                     let code = status.code().unwrap_or(-1);
                     return Err(Error::Custom(format!(
@@ -1048,11 +1067,21 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             debug!("remove: {} - uninstaller.file", package.name());
             let exe_path = app_dir.join("current").join(file);
             let args: Vec<&str> = uninstaller.args().unwrap_or_default();
+
+            #[cfg(windows)]
+            let status = std::process::Command::new("cmd.exe")
+                .arg("/c")
+                .arg("start").arg("").arg("/wait")
+                .arg(&exe_path)
+                .args(&args)
+                .status();
+            #[cfg(not(windows))]
             let status = std::process::Command::new(&exe_path)
                 .args(&args)
-                .status()
-                .map_err(|e| Error::Custom(format!(
-                    "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
+                .status();
+
+            let status = status.map_err(|e| Error::Custom(format!(
+                "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
                 return Err(Error::Custom(format!(
