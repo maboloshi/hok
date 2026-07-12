@@ -119,26 +119,44 @@ enum Compression {
 fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
     use sevenz_rust2::{ArchiveReader, Password};
 
-    let mut reader = ArchiveReader::open(src, Password::empty())
-        .map_err(|e| Error::ExtractionFailed(format!("cannot open 7z archive: {}", e)))?;
+    let file_data = std::fs::read(src)
+        .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
+
+    // Try standard 7z from memory (fast path for real .7z files).
+    if let Ok(reader) = ArchiveReader::new(std::io::Cursor::new(&file_data[..]), Password::empty()) {
+        return extract_7z_entries(reader, dest, filter);
+    }
+
+    // Scoop accepts many installer formats via 7z.exe.
+    // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
+    extract_with_7z_exe(src, dest)
+}
+
+/// Extract entries from an already-opened 7z ArchiveReader.
+fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
+    mut reader: sevenz_rust2::ArchiveReader<R>,
+    dest: &Path,
+    filter: Option<&[&str]>,
+) -> Fallible<()> {
+    use sevenz_rust2::ArchiveEntry;
 
     let entries: Vec<String> = reader
         .archive()
         .files
         .iter()
-        .filter(|e| !e.is_directory())
+        .filter(|e: &&ArchiveEntry| !e.is_directory())
         .filter(|e| {
             filter
                 .map(|f| f.iter().any(|d| e.name().starts_with(d)))
                 .unwrap_or(true)
         })
-        .map(|e| e.name().to_string())
+        .map(|e: &ArchiveEntry| e.name().to_string())
         .collect();
 
     for name in &entries {
         let data = reader
             .read_file(name)
-            .map_err(|e| Error::ExtractionFailed(format!("failed to read '{}': {}", name, e)))?;
+            .map_err(|e| Error::ExtractionFailed(format!("failed to read '{name}': {e}")))?;
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
         let target_path = dest.join(&target);
         if let Some(parent) = target_path.parent() {
@@ -276,7 +294,12 @@ fn extract_with_unarc(
 // ─── Fallback: call external 7z.exe for ISO ─────────────────────────
 
 fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
-    let status = Command::new("7z.exe")
+    // Look for 7z.exe in PATH or in Scoop's shims directory
+    let path_env = std::env::var("SCOOP").unwrap_or_default();
+    let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
+    let exe = if shims_7z.exists() { shims_7z } else { std::path::PathBuf::from("7z.exe") };
+
+    let status = Command::new(&exe)
         .arg("x")
         .arg(src)
         .arg(format!("-o{}", dest.display()))
@@ -285,7 +308,7 @@ fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
         .status()
         .map_err(|e| {
             Error::ExtractionFailed(format!(
-                "failed to launch 7z.exe (is 7-Zip installed?): {}",
+                "failed to launch 7z.exe (install '7zip' via hok first): {}",
                 e
             ))
         })?;
