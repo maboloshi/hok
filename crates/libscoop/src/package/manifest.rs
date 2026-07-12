@@ -920,6 +920,11 @@ impl Manifest {
         ret.map(|v| v.devectorize())
     }
 
+    /// Returns `notes` defined in this manifest.
+    pub fn notes(&self) -> Option<Vec<&str>> {
+        self.inner.notes.as_ref().map(|v| v.devectorize())
+    }
+
     pub fn installer(&self) -> Option<&Installer> {
         arch_specific_field!(self, installer)
     }

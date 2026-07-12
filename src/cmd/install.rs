@@ -240,6 +240,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     let _ = stdout.execute(cursor::Hide);
                 }
                 Event::PackageSyncDone => break,
+                Event::PackageNotes(note) => println!("\n  {note}"),
                 _ => {}
             }
         }

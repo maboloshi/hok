@@ -180,6 +180,9 @@ pub enum Event {
     /// Package sync operation has finished.
     PackageSyncDone,
 
+    /// Post-install notes from the manifest.
+    PackageNotes(String),
+
     /// Prompt the user to confirm the transaction.
     PromptTransactionNeedConfirm(Transaction),
 

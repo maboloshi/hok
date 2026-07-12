@@ -828,6 +828,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
     }
 
+    // Emit post-install notes if the manifest has them
+    if let Some(notes) = pkg.manifest().notes() {
+        let notes_text = notes.join("\n");
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageNotes(notes_text));
+        }
+    }
+
     debug!("commit: {} v{} - writing metadata", pkg.name(), pkg.version());
 
     // 7. Write install metadata
