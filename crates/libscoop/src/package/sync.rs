@@ -789,30 +789,22 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let urls = pkg.manifest().url();
         for (idx, filename) in files.iter().enumerate() {
             let src = config.cache_path().join(filename);
-            let dst = working_dir.join(filename);
+
+            // Determine target name: use fragment (#/name.ext) or original URL filename
+            let target_name = urls.get(idx).map(|url| {
+                if let Some(fragment) = url.split('#').nth(1) {
+                    let f = fragment.trim_start_matches('/');
+                    if !f.is_empty() { return f.to_owned(); }
+                }
+                // No fragment: use original filename from URL path
+                Path::new(url).file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| filename.clone())
+            }).unwrap_or_else(|| filename.clone());
+
+            let dst = working_dir.join(&target_name);
             let _ = std::fs::remove_file(&dst);
             std::fs::copy(&src, dst)?;
-
-            // Scoop convention: url#/newname.ext → also accessible as newname.ext.
-            // Also: url without fragment → use the original filename from the URL path.
-            if let Some(url) = urls.get(idx) {
-                let target_name = if let Some(fragment) = url.split('#').nth(1) {
-                    let f = fragment.trim_start_matches('/');
-                    if f.is_empty() || f == &filename[..] { continue; }
-                    f.to_owned()
-                } else {
-                    // No fragment: use original filename from URL path
-                    std::path::Path::new(url)
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| filename.clone())
-                };
-                if target_name != *filename {
-                    let renamed = working_dir.join(&target_name);
-                    let _ = std::fs::remove_file(&renamed);
-                    let _ = std::fs::copy(&src, &renamed);
-                }
-            }
         }
     }
 
@@ -826,22 +818,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
                 let exe_path = working_dir.join(file);
                 let args: Vec<&str> = installer.args().unwrap_or_default();
-
-                // Use cmd /c start /wait to ensure GUI installer windows are visible
-                #[cfg(windows)]
-                let status = std::process::Command::new("cmd.exe")
-                    .arg("/c")
-                    .arg("start").arg("").arg("/wait")
-                    .arg(&exe_path)
-                    .args(&args)
-                    .status();
-                #[cfg(not(windows))]
                 let status = std::process::Command::new(&exe_path)
                     .args(&args)
-                    .status();
-
-                let status = status.map_err(|e| Error::Custom(format!(
-                    "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
+                    .status()
+                    .map_err(|e| Error::Custom(format!(
+                        "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
                 if !status.success() {
                     let code = status.code().unwrap_or(-1);
                     return Err(Error::Custom(format!(
@@ -1067,21 +1048,11 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             debug!("remove: {} - uninstaller.file", package.name());
             let exe_path = app_dir.join("current").join(file);
             let args: Vec<&str> = uninstaller.args().unwrap_or_default();
-
-            #[cfg(windows)]
-            let status = std::process::Command::new("cmd.exe")
-                .arg("/c")
-                .arg("start").arg("").arg("/wait")
-                .arg(&exe_path)
-                .args(&args)
-                .status();
-            #[cfg(not(windows))]
             let status = std::process::Command::new(&exe_path)
                 .args(&args)
-                .status();
-
-            let status = status.map_err(|e| Error::Custom(format!(
-                "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
+                .status()
+                .map_err(|e| Error::Custom(format!(
+                    "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
             if !status.success() {
                 let code = status.code().unwrap_or(-1);
                 return Err(Error::Custom(format!(
@@ -1218,7 +1189,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Test URL fragment rename logic: url#/installer.exe → file named installer.exe
+    /// Test URL fragment rename: url#/installer.exe → copy directly as installer.exe
     #[test]
     fn test_url_fragment_rename() {
         let tmp = std::env::temp_dir().join("hok_test_fragment_rename");
@@ -1227,38 +1198,31 @@ mod tests {
 
         // Simulate cache file with hash-based name
         let cache_file = tmp.join("pkg#1.0#abc1234.exe");
-        std::fs::write(&cache_file, b"dummy content").unwrap();
+        std::fs::write(&cache_file, b"dummy").unwrap();
         let work_dir = tmp.join("work");
         std::fs::create_dir_all(&work_dir).unwrap();
 
-        // Simulate the fragment rename logic from commit_one_install
-        let url = "https://example.com/installer.exe#/installer.exe";
-        let filename = "pkg#1.0#abc1234.exe";
-        let src = &cache_file;
+        // Simulate the copy logic: url#/installer.exe → target = "installer.exe"
+        let url = "https://example.com/setup.exe#/installer.exe";
+        let cache_name = "pkg#1.0#abc1234.exe";
+        let target_name = url.split('#').nth(1).unwrap().trim_start_matches('/');
+        assert_eq!(target_name, "installer.exe");
 
-        // Copy as hash-named file first
-        let dst = work_dir.join(filename);
-        std::fs::copy(src, &dst).unwrap();
-
-        // Then create fragment-renamed copy
-        let fragment = url.split('#').nth(1).unwrap().trim_start_matches('/');
-        assert_eq!(fragment, "installer.exe");
-        let renamed = work_dir.join(fragment);
-        std::fs::copy(src, &renamed).unwrap();
-        assert!(renamed.exists(), "fragment-renamed file should exist");
-        assert_eq!(
-            std::fs::read(&renamed).unwrap(),
-            b"dummy content"
-        );
+        let dst = work_dir.join(target_name);
+        std::fs::copy(&cache_file, &dst).unwrap();
+        assert!(dst.exists(), "should copy directly as installer.exe");
+        assert!(!work_dir.join(cache_name).exists(), "no hash-named copy");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Test URLs without fragment are NOT renamed
+    /// Test URL without fragment: use original filename from URL path
     #[test]
-    fn test_url_without_fragment_no_rename() {
-        let url = "https://example.com/package.zip";
-        let fragment = url.split('#').nth(1);
-        assert!(fragment.is_none(), "no fragment should be present");
+    fn test_url_filename_without_fragment() {
+        let url = "https://example.com/dopus_patcher.exe";
+        let filename = std::path::Path::new(url).file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap();
+        assert_eq!(filename, "dopus_patcher.exe");
     }
 }
