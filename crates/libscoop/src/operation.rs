@@ -175,11 +175,8 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
         let _ = tx.send(Event::BucketUpdateDone);
     }
 
-    if session.config().use_sqlite_cache() {
-        if let Ok(conn) = internal::manifest_cache::open(session) {
-            let _ = internal::manifest_cache::populate(&conn, session);
-        }
-    }
+    // Note: manifest cache population (if enabled) is now handled
+    // by the caller via refresh_manifest_cache().
 
     Ok(())
 }
@@ -564,4 +561,18 @@ pub fn package_sync(
     }
 
     Ok(())
+}
+
+/// Re-populate the SQLite manifest cache after bucket updates.
+///
+/// This is a no-op if the SQLite cache is not enabled in config.
+/// Call this after `bucket_update()` to refresh the cache with the
+/// latest manifest data from all buckets.
+pub fn refresh_manifest_cache(session: &Session) {
+    if !session.config().use_sqlite_cache() {
+        return;
+    }
+    if let Ok(conn) = internal::manifest_cache::open(session) {
+        let _ = internal::manifest_cache::populate(&conn, session);
+    }
 }

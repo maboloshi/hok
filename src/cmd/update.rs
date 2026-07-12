@@ -94,6 +94,13 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
 
     handle.join().unwrap();
 
+    // Refresh SQLite manifest cache with visible feedback
+    if session.config().use_sqlite_cache() {
+        output::status("Refreshing manifest cache...");
+        operation::refresh_manifest_cache(session);
+        output::done("Manifest cache refreshed.");
+    }
+
     let _ = stdout.execute(cursor::Show);
 
     Ok(())
