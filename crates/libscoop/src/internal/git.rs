@@ -62,7 +62,9 @@ where
         .map(|_| {})
 }
 
-// NOTE: this will discard all local changes.
+// Update a bucket repo via fetch + fast-forward.
+// Preserves local changes — fails with an error if the working tree has
+// uncommitted modifications (Scoop-compatible behavior).
 pub fn reset_head<P, S>(path: P, proxy: Option<S>) -> Fallible<()>
 where
     P: AsRef<Path>,
@@ -82,10 +84,25 @@ where
         None,
     )?;
 
-    // Hard reset to the fetched branch
-    let obj = repo.find_reference(&ref_name)?
+    // Fast-forward: move branch reference to fetched commit
+    let fetch_commit = repo.find_reference("FETCH_HEAD")?
         .peel(git2::ObjectType::Commit)?;
-    repo.reset(&obj, git2::ResetType::Hard, None)?;
+
+    // repo.head() must not be alive when we call set_target below
+    let head_id = repo.head()?.target().unwrap();
+    if fetch_commit.id() == head_id {
+        return Ok(()); // already up to date
+    }
+
+    let branch = repo.head()?.name().unwrap_or(&ref_name).to_string();
+    let mut head_ref = repo.find_reference(&branch)?;
+    head_ref.set_target(fetch_commit.id(), "fast-forward: update bucket")?;
+    repo.set_head(&branch)?;
+
+    // Checkout without force — fails if working tree has local changes
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.allow_conflicts(false);
+    repo.checkout_head(Some(&mut co))?;
 
     Ok(())
 }
