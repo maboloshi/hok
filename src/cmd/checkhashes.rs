@@ -154,53 +154,46 @@ fn compute_hash(path: &Path, algo: &str) -> Result<String> {
     Ok(hasher.finalize())
 }
 
-/// Update hash value in a manifest JSON file, preserving algorithm prefix.
+/// Update hash in a manifest JSON file, preserving original formatting.
 fn update_json_hash(path: &Path, algo: &str, actual_hash: &str) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
-    let mut manifest: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse error: {}", e))?;
 
     let prefixed = match algo {
-        "md5" => format!("md5:{}", actual_hash),
-        "sha1" => format!("sha1:{}", actual_hash),
-        "sha512" => format!("sha512:{}", actual_hash),
+        "md5" => format!("md5:{actual_hash}"),
+        "sha1" => format!("sha1:{actual_hash}"),
+        "sha512" => format!("sha512:{actual_hash}"),
         _ => actual_hash.to_string(),
     };
 
-    // Update arch-specific first, then top-level
-    let mut updated = false;
-    if let Some(arch) = manifest.get_mut("architecture") {
-        for key in &["64bit", "32bit", "arm64"] {
-            if let Some(cfg) = arch.get_mut(*key) {
-                if set_hash_node(cfg, &prefixed) {
-                    updated = true;
+    let old_root: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse error: {e}"))?;
+
+    // Find and modify the hash (arch-specific first, then top-level)
+    let mut new_root = old_root.clone();
+    let hash_paths = ["/architecture/64bit/hash", "/architecture/32bit/hash",
+                       "/architecture/arm64/hash", "/hash"];
+    let mut patched = content.clone();
+
+    for ptr in &hash_paths {
+        if let Some(old_val) = old_root.pointer(ptr) {
+            if let Some(old_str) = old_val.as_str() {
+                if !old_str.is_empty() {
+                    // Set new value in the modified root
+                    if let Some(target) = new_root.pointer_mut(ptr) {
+                        *target = serde_json::Value::String(prefixed.clone());
+                    }
+                    // Text-patch only this field
+                    if let Some(p) = util::patch_json_field(&patched, "hash", old_val,
+                        &serde_json::Value::String(prefixed.clone()))
+                    {
+                        patched = p;
+                        std::fs::write(path, patched.as_bytes())?;
+                        return Ok(());
+                    }
                 }
             }
         }
     }
-    if !updated {
-        set_hash_node(&mut manifest, &prefixed);
-    }
 
-    let formatted = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| anyhow::anyhow!("serialize error: {}", e))?;
-    std::fs::write(path, formatted.as_bytes())?;
-    Ok(())
-}
-
-fn set_hash_node(node: &mut serde_json::Value, hash: &str) -> bool {
-    match node.get_mut("hash") {
-        Some(serde_json::Value::String(s)) => {
-            *s = hash.to_string();
-            true
-        }
-        Some(serde_json::Value::Array(arr)) => {
-            if let Some(first) = arr.get_mut(0) {
-                *first = serde_json::Value::String(hash.to_string());
-                return true;
-            }
-            false
-        }
-        _ => false,
-    }
+    Err(anyhow::anyhow!("no hash field found or replacement failed"))
 }

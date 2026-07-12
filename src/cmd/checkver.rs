@@ -250,6 +250,7 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse: {}", e))?;
+    let old_root = root.clone(); // snapshot before modifications
 
     root["version"] = serde_json::Value::String(new_version.to_string());
 
@@ -358,7 +359,46 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    write_json(path, &root)?;
+
+    // ── Patch changed fields in original text (preserve formatting) ─────────
+    let mut patched = content;
+    let mut changed = false;
+
+    // version
+    if let Some(p) = util::patch_json_field(&patched, "version", &old_root["version"], &root["version"]) {
+        patched = p; changed = true;
+    }
+
+    // Top-level fields
+    for key in &["url", "hash", "extract_dir"] {
+        let old_v = &old_root[key];
+        let new_v = &root[key];
+        if !old_v.is_null() && !new_v.is_null() && old_v != new_v {
+            if let Some(p) = util::patch_json_field(&patched, key, old_v, new_v) {
+                patched = p; changed = true;
+            }
+        }
+    }
+
+    // Per-architecture fields
+    for arch in &["32bit", "64bit", "arm64"] {
+        for key in &["url", "hash"] {
+            let old_ptr = format!("/architecture/{arch}/{key}");
+            let old_v = old_root.pointer(&old_ptr);
+            let new_v = root.pointer(&old_ptr);
+            if let (Some(o), Some(n)) = (old_v, new_v) {
+                if o != n {
+                    if let Some(p) = util::patch_json_field(&patched, key, o, n) {
+                        patched = p; changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if changed {
+        std::fs::write(path, patched.as_bytes())?;
+    }
     Ok(())
 }
 
