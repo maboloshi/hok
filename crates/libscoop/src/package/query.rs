@@ -493,14 +493,20 @@ fn query_synced_cached(
             continue;
         }
 
-        let manifest = match manifest_cache::entry_to_manifest(entry) {
+        // Prefer reading manifest files directly to avoid stale cache.
+        // Cache is populated once during bucket update, but the user
+        // may have edited the file since then.
+        let manifest = match try_read_file_manifest(session, name, bucket)
+            .or_else(|| manifest_cache::entry_to_manifest(entry)) {
             Some(m) => m,
             None => continue,
         };
 
-        let mut unmatched = is_wildcard_query;
+        let mut unmatched = true;
 
-        if !is_wildcard_query {
+        if is_wildcard_query {
+            unmatched = false;
+        } else {
             let prefixed = matchers
                 .iter()
                 .filter(|&(_, m)| m.is_match(name))
@@ -564,4 +570,18 @@ fn query_synced_cached(
     }
 
     Ok(packages)
+}
+
+/// Read a manifest file directly from the bucket directory,
+/// bypassing the SQLite cache. Returns `None` if the file
+/// doesn't exist or fails to parse.
+fn try_read_file_manifest(session: &Session, name: &str, bucket: &str) -> Option<Manifest> {
+    let path = session.config().root_path()
+        .join("buckets").join(bucket).join("bucket")
+        .join(format!("{name}.json"));
+    if path.exists() {
+        Manifest::parse(path).ok()
+    } else {
+        None
+    }
 }

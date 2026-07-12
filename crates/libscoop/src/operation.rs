@@ -167,12 +167,14 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
         config.set("last_update", time.as_str())?;
     }
 
+    // Drop the mutable config borrow before calling open(), which needs
+    // an immutable borrow on config via session.config().
+    drop(config);
+
     if let Some(tx) = emitter {
         let _ = tx.send(Event::BucketUpdateDone);
     }
 
-    // Refresh SQLite manifest cache after bucket update
-    // Refresh SQLite manifest cache after bucket update
     if session.config().use_sqlite_cache() {
         if let Ok(conn) = internal::manifest_cache::open(session) {
             let _ = internal::manifest_cache::populate(&conn, session);

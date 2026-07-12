@@ -16,9 +16,16 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
     let mut graph = DepGraph::<String>::new();
     let mut to_resolve = packages.clone();
 
-    // For performance reason, a wildcard query is done here to get all the
-    // available packages in one shot and then used for the following queries.
-    let synced = query::query_synced(session, &["*"], &[])?;
+    // Only query all packages when there are actual dependencies to resolve.
+    // Most packages have no deps, so this avoids a costly full scan.
+    let has_deps = packages.iter().any(|p| !p.dependencies().is_empty());
+    let synced = if has_deps {
+        // For performance reason, a wildcard query is done here to get all the
+        // available packages in one shot and then used for the following queries.
+        query::query_synced(session, &["*"], &[])?
+    } else {
+        Vec::new()
+    };
 
     loop {
         if to_resolve.is_empty() {
