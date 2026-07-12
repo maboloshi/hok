@@ -333,6 +333,7 @@ fn run_script(
     package: &Package,
     working_dir: &Path,
     stage: &str,
+    cmd: &str,
     script_lines: Option<Vec<&str>>,
 ) -> Fallible<()> {
     let lines = match script_lines {
@@ -377,6 +378,7 @@ $app = $env:SCOOP_PACKAGE_NAME
 $bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "64bit"
 $global = $false
+$cmd = $env:SCOOP_PACKAGE_CMD
 "#, core = CORE_PS1, decompress = DECOMPRESS_PS1);
     let full_script = format!("{preamble}\r\n{script}");
 
@@ -412,6 +414,7 @@ $global = $false
         .env("SCOOP_PACKAGE_NAME", package.name())
         .env("SCOOP_PACKAGE_VERSION", version)
         .env("SCOOP_PACKAGE_BUCKET", package.bucket())
+        .env("SCOOP_PACKAGE_CMD", cmd)
         .env("version", version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str())
         .status()
@@ -747,7 +750,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 1. pre_install (Scoop order: before link_current)
     if pkg.has_install_script() {
         debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
-        run_script(session, pkg, &working_dir, "pre_install",
+        run_script(session, pkg, &working_dir, "pre_install", "install",
             pkg.manifest().pre_install())?;
     }
 
@@ -795,7 +798,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     if pkg.has_install_script() {
         if let Some(installer) = pkg.manifest().installer() {
             debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
-            run_script(session, pkg, &working_dir, "installer", installer.script())?;
+            run_script(session, pkg, &working_dir, "installer", "install", installer.script())?;
         }
     }
 
@@ -820,7 +823,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 6. post_install (Scoop order: last hook)
     if pkg.has_install_script() {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
-        run_script(session, pkg, &working_dir, "post_install",
+        run_script(session, pkg, &working_dir, "post_install", "install",
             pkg.manifest().post_install())?;
     }
 
@@ -1005,11 +1008,11 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 
     let app_dir = root_dir.join("apps").join(package.name());
 
-    run_script(session, package, &app_dir.join("current"), "pre_uninstall",
+    run_script(session, package, &app_dir.join("current"), "pre_uninstall", "uninstall",
         package.manifest().pre_uninstall())?;
 
     if let Some(uninstaller) = package.manifest().uninstaller() {
-        run_script(session, package, &app_dir.join("current"), "uninstaller", uninstaller.script())?;
+        run_script(session, package, &app_dir.join("current"), "uninstaller", "uninstall", uninstaller.script())?;
     }
 
     debug!("remove: {} - cleanup (shims/shortcuts/env/persist)", package.name());
@@ -1022,7 +1025,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     let current_lnk = app_dir.join("current");
     internal::fs::remove_symlink(current_lnk)?;
 
-    run_script(session, package, &app_dir, "post_uninstall",
+    run_script(session, package, &app_dir, "post_uninstall", "uninstall",
         package.manifest().post_uninstall())?;
 
     internal::fs::remove_dir(&app_dir)?;
@@ -1093,6 +1096,7 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
         pkg,
         &version_dir,
         "post_install",
+        "install",
         pkg.manifest().post_install(),
     )?;
 
