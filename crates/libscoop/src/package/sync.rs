@@ -794,11 +794,27 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
-    // 2. installer.script (before link_current, $dir = version dir)
+    // 2. installer (before link_current, $dir = version dir)
     if pkg.has_install_script() {
         if let Some(installer) = pkg.manifest().installer() {
-            debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
-            run_script(session, pkg, &working_dir, "installer", "install", installer.script())?;
+            if let Some(script) = installer.script() {
+                debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
+                run_script(session, pkg, &working_dir, "installer", "install", Some(script))?;
+            } else if let Some(file) = installer.file() {
+                debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
+                let exe_path = working_dir.join(file);
+                let args: Vec<&str> = installer.args().unwrap_or_default();
+                let status = std::process::Command::new(&exe_path)
+                    .args(&args)
+                    .status()
+                    .map_err(|e| Error::Custom(format!(
+                        "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
+                if !status.success() {
+                    let code = status.code().unwrap_or(-1);
+                    return Err(Error::Custom(format!(
+                        "installer '{}' for '{}' exited with code {}", file, pkg.name(), code)));
+                }
+            }
         }
     }
 
@@ -1012,7 +1028,23 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         package.manifest().pre_uninstall())?;
 
     if let Some(uninstaller) = package.manifest().uninstaller() {
-        run_script(session, package, &app_dir.join("current"), "uninstaller", "uninstall", uninstaller.script())?;
+        if let Some(script) = uninstaller.script() {
+            run_script(session, package, &app_dir.join("current"), "uninstaller", "uninstall", Some(script))?;
+        } else if let Some(file) = uninstaller.file() {
+            debug!("remove: {} - uninstaller.file", package.name());
+            let exe_path = app_dir.join("current").join(file);
+            let args: Vec<&str> = uninstaller.args().unwrap_or_default();
+            let status = std::process::Command::new(&exe_path)
+                .args(&args)
+                .status()
+                .map_err(|e| Error::Custom(format!(
+                    "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
+            if !status.success() {
+                let code = status.code().unwrap_or(-1);
+                return Err(Error::Custom(format!(
+                    "uninstaller '{}' for '{}' exited with code {}", file, package.name(), code)));
+            }
+        }
     }
 
     debug!("remove: {} - cleanup (shims/shortcuts/env/persist)", package.name());
@@ -1101,4 +1133,45 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     )?;
 
     Ok(())
+}
+
+#[cfg(all(windows, test))]
+mod tests {
+    use super::*;
+
+    /// Test that installer.file execution path works correctly.
+    #[test]
+    fn test_installer_file_execution() {
+        let tmp = std::env::temp_dir().join("hok_test_installer_file");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let marker = tmp.join("ran.txt");
+        let script = tmp.join("test.cmd");
+        std::fs::write(&script, format!(
+            "@echo off\r\necho ok > \"{}\"\r\n", marker.display()
+        )).unwrap();
+
+        // Same pattern as commit_one_install's installer.file path
+        let status = std::process::Command::new(&script)
+            .status()
+            .unwrap();
+        assert!(status.success(), "installer script should exit 0");
+        assert!(marker.exists(), "installer should have created marker file");
+
+        // With args
+        let marker2 = tmp.join("ran_with_args.txt");
+        let script2 = tmp.join("test_args.cmd");
+        std::fs::write(&script2, format!(
+            "@echo off\r\necho %1 %2 > \"{}\"\r\n", marker2.display()
+        )).unwrap();
+
+        let status = std::process::Command::new(&script2)
+            .args(&["/S", "/D=C:\\test"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

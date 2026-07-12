@@ -141,3 +141,19 @@ fn test_scoop_broken_schema() {
     let result = Manifest::parse(scoop_fixture("manifest/broken_schema.json"));
     assert!(result.is_err() || result.is_ok(), "schema may be valid depending on strictness");
 }
+
+#[test]
+fn test_parse_installer_file() {
+    let manifest = Manifest::parse(fixture_path("installer-file.json")).unwrap();
+    assert_eq!(manifest.version(), "1.0.0");
+
+    let installer = manifest.installer().expect("should have installer");
+    assert_eq!(installer.file(), Some("installer.exe"));
+    assert_eq!(installer.args(), Some(vec!["/S", "/D=$dir"]));
+    assert!(installer.script().is_none());
+
+    let uninstaller = manifest.uninstaller().expect("should have uninstaller");
+    assert_eq!(uninstaller.file(), Some("uninstall.exe"));
+    assert_eq!(uninstaller.args(), Some(vec!["/S", "/D=$dir"]));
+    assert!(uninstaller.script().is_none());
+}
