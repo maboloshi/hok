@@ -45,6 +45,7 @@ path = "../scoop_hash"
 junction = "1.2.0"
 winreg = "0.52"
 innospect = "0.1"
+shortcuts-rs = "1.1.1"
 
 [features]
 default = []

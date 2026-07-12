@@ -1,8 +1,5 @@
 use std::sync::LazyLock;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::ptr;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
@@ -35,13 +32,21 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let length = shortcut.len();
             assert!(length > 1);
 
-            // shortcut[0] = target exe relative to package dir, e.g. "bin\prog.exe"
-            // shortcut[1] = display name in start menu
+            // Scoop shortcut format:
+            //   [0] = target exe (relative to package dir)
+            //   [1] = display name in start menu
+            //   [2] = optional arguments
+            //   [3] = optional icon path (relative to package dir)
             let target = apps_dir.join(package.name()).join("current").join(shortcut[0]);
+            let target_str = target.to_string_lossy().into_owned();
+
+            let args = shortcut.get(2).map(|s| s.to_string());
+            let icon = shortcut.get(3).map(|s| apps_dir.join(package.name()).join("current").join(s).to_string_lossy().into_owned());
+
             let mut link_path = SCOOP_SHORTCUT_DIR.join(shortcut[1]);
             link_path.set_extension("lnk");
 
-            create_shortcut(&target, &link_path)?;
+            create_shortcut(&target_str, &link_path, args, icon)?;
 
             if let Some(tx) = session.emitter() {
                 let name = link_path.file_name().unwrap().to_str().unwrap().to_owned();
@@ -57,176 +62,24 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     Ok(())
 }
 
-/// Create a `.lnk` shortcut file via IShellLink COM interface.
-///
-/// This is a raw FFI call to shell32 / ole32 with zero extra dependencies.
+/// Create a `.lnk` shortcut file using `shortcuts-rs` (pure Rust LNK writer).
 #[cfg(windows)]
-fn create_shortcut(target: &Path, link: &Path) -> std::io::Result<()> {
-    // CLSID_ShellLink: {00021401-0000-0000-C000-000000000046}
-    const CLSID_SHELLLINK: GUID = GUID {
-        data1: 0x00021401,
-        data2: 0x0000,
-        data3: 0x0000,
-        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
-    };
+fn create_shortcut(
+    target: &str,
+    link: &Path,
+    args: Option<String>,
+    icon: Option<String>,
+) -> std::io::Result<()> {
+    use shortcuts_rs::ShellLink;
 
-    // IID_IShellLinkW: {000214F9-0000-0000-C000-000000000046}
-    const IID_ISHELLLINKW: GUID = GUID {
-        data1: 0x000214F9,
-        data2: 0x0000,
-        data3: 0x0000,
-        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
-    };
+    let link_str = link.to_string_lossy();
+    // The display name is derived from the .lnk filename (minus .lnk extension)
+    let name = link.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned());
 
-    // IID_IPersistFile: {0000010B-0000-0000-C000-000000000046}
-    const IID_IPERSISTFILE: GUID = GUID {
-        data1: 0x0000010B,
-        data2: 0x0000,
-        data3: 0x0000,
-        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
-    };
-
-    #[repr(C)]
-    struct GUID {
-        data1: u32,
-        data2: u16,
-        data3: u16,
-        data4: [u8; 8],
-    }
-
-    #[link(name = "ole32")]
-    extern "system" {
-        fn CoInitialize(pvReserved: *const std::ffi::c_void) -> i32;
-        fn CoCreateInstance(
-            rclsid: *const GUID,
-            pUnkOuter: *mut std::ffi::c_void,
-            dwClsContext: u32,
-            riid: *const GUID,
-            ppv: *mut *mut std::ffi::c_void,
-        ) -> i32;
-        fn CoUninitialize();
-    }
-
-    // IShellLinkW vtable
-    #[allow(dead_code)]
-    type IShellLinkW = *mut *mut IShellLinkWVtbl;
-    #[repr(C)]
-    struct IShellLinkWVtbl {
-        // IUnknown
-        query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const GUID, *mut *mut std::ffi::c_void) -> i32,
-        add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
-        release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
-        // IShellLinkW
-        set_path: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, *mut *mut std::ffi::c_void, u32) -> i32,
-        get_path: *mut std::ffi::c_void,
-        find_target: *mut std::ffi::c_void,
-        get_arg_list: *mut std::ffi::c_void,
-        set_arg_list: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
-        get_description: *mut std::ffi::c_void,
-        set_description: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
-        get_working_dir: *mut std::ffi::c_void,
-        set_working_dir: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16) -> i32,
-        get_show_cmd: *mut std::ffi::c_void,
-        set_show_cmd: unsafe extern "system" fn(*mut std::ffi::c_void, i32) -> i32,
-        // ... remaining methods not needed
-    }
-
-    // IPersistFile vtable
-    #[allow(dead_code)]
-    type IPersistFile = *mut *mut IPersistFileVtbl;
-    #[repr(C)]
-    struct IPersistFileVtbl {
-        // IUnknown
-        query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const GUID, *mut *mut std::ffi::c_void) -> i32,
-        add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
-        release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
-        // IPersist
-        get_class_id: *mut std::ffi::c_void,
-        // IPersistFile
-        is_dirty: *mut std::ffi::c_void,
-        load: *mut std::ffi::c_void,
-        save: unsafe extern "system" fn(*mut std::ffi::c_void, *const u16, i32) -> i32,
-        save_completed: *mut std::ffi::c_void,
-        get_cur_file: *mut std::ffi::c_void,
-    }
-
-    let hr = unsafe { CoInitialize(ptr::null()) };
-    if hr < 0 && hr != -2147221008 /* RPC_E_CHANGED_MODE */ {
-        return Err(std::io::Error::last_os_error());
-    }
-
-    let mut p_sl: *mut std::ffi::c_void = ptr::null_mut();
-    let hr = unsafe {
-        CoCreateInstance(
-            &CLSID_SHELLLINK,
-            ptr::null_mut(),
-            1, // CLSCTX_INPROC_SERVER
-            &IID_ISHELLLINKW,
-            &mut p_sl,
-        )
-    };
-    if hr < 0 {
-        unsafe { CoUninitialize() };
-        return Err(std::io::Error::from_raw_os_error(hr));
-    }
-
-    let mut result = Ok(());
-
-    unsafe {
-        let vtbl = *(p_sl as *mut *mut IShellLinkWVtbl) ;
-
-        // Set target path
-        let target_wide: Vec<u16> = OsStr::new(target.as_os_str())
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let hr = ((*vtbl).set_path)(p_sl, target_wide.as_ptr(), ptr::null_mut(), 0);
-        if hr < 0 {
-            result = Err(std::io::Error::from_raw_os_error(hr));
-        }
-
-        // Set description
-        if result.is_ok() {
-            let desc_wide: Vec<u16> = OsStr::new("Scoop installed application")
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect();
-            let hr = ((*vtbl).set_description)(p_sl, desc_wide.as_ptr());
-            if hr < 0 {
-                result = Err(std::io::Error::from_raw_os_error(hr));
-            }
-        }
-
-        // Get IPersistFile
-        if result.is_ok() {
-            let mut p_pf: *mut std::ffi::c_void = ptr::null_mut();
-            let hr = ((*vtbl).query_interface)(p_sl, &IID_IPERSISTFILE, &mut p_pf);
-            if hr < 0 {
-                result = Err(std::io::Error::from_raw_os_error(hr));
-            } else {
-                let pf_vtbl = *(p_pf as *mut *mut IPersistFileVtbl);
-
-                // Save .lnk file
-                let link_wide: Vec<u16> = OsStr::new(link.as_os_str())
-                    .encode_wide()
-                    .chain(std::iter::once(0))
-                    .collect();
-                let hr = ((*pf_vtbl).save)(p_pf, link_wide.as_ptr(), 1); // TRUE = remember
-                if hr < 0 {
-                    result = Err(std::io::Error::from_raw_os_error(hr));
-                }
-
-                // Release IPersistFile
-                let _ = ((*pf_vtbl).release)(p_pf);
-            }
-        }
-
-        // Release IShellLinkW
-        let _ = ((*vtbl).release)(p_sl);
-    }
-
-    unsafe { CoUninitialize() };
-    result
+    let sl = ShellLink::new(target, args, name, icon)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    sl.create_lnk(link_str.as_ref())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
 }
 
 /// Remove shortcut(s) for a given package.
@@ -264,4 +117,50 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(all(windows, test))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_create_shortcut_to_exe() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let target = Path::new(&system_root).join("System32\\cmd.exe");
+        let link = std::env::temp_dir().join("hok_test_shortcut.lnk");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let _ = std::fs::remove_file(&link);
+
+        let result = create_shortcut(&target_str, &link, None, None);
+        assert!(result.is_ok(), "create_shortcut failed: {:?}", result.err());
+        assert!(link.exists(), ".lnk file was not created");
+
+        let bytes = std::fs::read(&link).unwrap();
+        assert_eq!(&bytes[..4], &[0x4C, 0x00, 0x00, 0x00], "not a valid LNK header");
+
+        let _ = std::fs::remove_file(&link);
+    }
+
+    #[test]
+    fn test_create_shortcut_with_args_and_icon() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let target = Path::new(&system_root).join("System32\\cmd.exe");
+        let link = std::env::temp_dir().join("hok_test_shortcut_args.lnk");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let _ = std::fs::remove_file(&link);
+
+        let result = create_shortcut(
+            &target_str,
+            &link,
+            Some("/k echo hello".into()),
+            Some(target_str.clone()),
+        );
+        assert!(result.is_ok(), "create_shortcut with args/icon failed: {:?}", result.err());
+        assert!(link.exists(), ".lnk file was not created");
+
+        let _ = std::fs::remove_file(&link);
+    }
 }
