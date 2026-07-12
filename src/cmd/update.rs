@@ -34,17 +34,30 @@ pub struct Args {
     /// Skip package integrity check
     #[arg(long, action = ArgAction::SetTrue)]
     pub no_hash_check: bool,
+    /// Force update even within cooldown period
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub force: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     if args.package.is_empty() {
-        update_buckets(session)
+        update_buckets(session, args.force)
     } else {
         execute_upgrade(session, &args.package, &args)
     }
 }
 
-fn update_buckets(session: &Session) -> Result<()> {
+fn update_buckets(session: &Session, force: bool) -> Result<()> {
+    // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
+    if !force {
+        if let Some(remaining) = session.config().update_cooldown_remaining() {
+            output::status(format!(
+                "Buckets recently updated. Next update allowed in ~{remaining}s. Use --force to update now."
+            ));
+            return Ok(());
+        }
+    }
+
     let rx = session.event_bus().receiver();
 
     let handle = std::thread::spawn(move || {

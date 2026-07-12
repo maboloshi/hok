@@ -312,6 +312,18 @@ impl Config {
         self.cat_style.as_deref().unwrap_or_default()
     }
 
+    /// Returns the cooldown duration (in seconds) remaining before the next
+    /// bucket update is allowed. Returns `None` if no last update recorded.
+    /// The default cooldown is 15 minutes (900 seconds).
+    pub fn update_cooldown_remaining(&self) -> Option<i64> {
+        const COOLDOWN_SECS: i64 = 900; // 15 minutes
+        let last = self.inner.last_update.as_ref()?;
+        let last_ts = last.parse::<jiff::Timestamp>().ok()?;
+        let elapsed = jiff::Timestamp::now().as_second() - last_ts.as_second();
+        let remaining = COOLDOWN_SECS - elapsed;
+        if remaining > 0 { Some(remaining) } else { None }
+    }
+
     /// Get the `use_isoloated_path` config.
     #[inline]
     pub fn use_isolated_path(&self) -> Option<&IsolatedPath> {
