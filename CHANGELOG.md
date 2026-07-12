@@ -1,6 +1,38 @@
 # Changelog
 
-## [0.2.0-alpha.1](https://github.com/maboloshi/hok/compare/v0.1.0-beta.7...v0.2.0-alpha.1) (2026-07-08)
+## [0.2.0-alpha.2](https://github.com/maboloshi/hok/compare/v0.2.0-alpha.1...v0.2.0-alpha.2) (2026-07-12)
+
+### Features
+
+* **output:** unified output system with pacman-style coloring (`output::*` helpers)
+* **output:** `--detail` global flag for verbose per-package progress visibility
+* **shim:** native Rust shim launcher (`hok-shim.exe`) with fallback to `.cmd` wrapper
+* **shortcut:** pure Rust `.lnk` writer with args/icon support — no COM FFI
+* **reinstall:** new command — uninstall + same-version reinstall with held-state preservation
+* **update:** 15-minute cooldown to prevent short-term repeated bucket updates
+* **update:** `--force` flag to bypass cooldown
+* **update:** visible manifest cache refresh progress
+
+### Performance
+
+* **update:** fetch only current HEAD branch instead of all branches
+* **libscoop:** optimized package queries — skip full scans for exact lookups
+
+### Fixes
+
+* **shortcut:** replaced unreliable IShellLinkW COM FFI with `shortcuts-rs` crate
+* **manifest:** preserve JSON formatting when updating hashes/versions (text patching)
+* **install:** aligned commit order with Scoop (pre_install → extract → link_current → post_install)
+* **persist:** directory → junction, file → hard link
+* **cooldown:** skip `hok update` cooldown when `--offline` is active
+* **install:** `pre_install`/`post_install` scripts now execute correctly (was silently skipped)
+
+### Tests
+
+* integration test fixtures with Scoop-original compatibility tracking
+* manifest parsing tests (simple, architecture, checkver, dependencies, script blocks)
+* shortcut creation tests (basic, with args/icon)
+* version comparison tests (9 edge case scenarios)
 
 > **Fork Notice**: This release is a community-maintained fork based on the original
 > v0.1.0-beta.7. Core dependencies have been rewritten (HTTP, datetime, hash backend),
