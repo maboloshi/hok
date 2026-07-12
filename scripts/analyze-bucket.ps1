@@ -1,4 +1,4 @@
-﻿# analyze-bucket.ps1
+# analyze-bucket.ps1
 # 扫描 bucket 目录的 manifest，提取包脚本中调用的 Scoop helper 函数
 # 用法: .\scripts\analyze-bucket.ps1 -Path D:\App\Scoop\buckets\scoop-private\bucket
 #       .\scripts\analyze-bucket.ps1 -Path main,bucket\extra -Root D:\Scoop\buckets
@@ -47,6 +47,19 @@ $scoopHelpers = @(
     'Expand-Msi'  # 别名
 )
 
+# hok preamble variables (defined in sync.rs run_script preamble)
+$hokPreambleVars = @(
+    '$dir', '$original_dir', '$scoopdir', '$bucketsdir',
+    '$persist_dir', '$version', '$app', '$bucket',
+    '$architecture', '$global', '$cmd'
+)
+
+# Scoop standard variables (check which ones are used but missing from hok)
+$scoopStandardVars = @{
+    '$cmd'   = 'current operation: install/uninstall/update'
+    '$quiet' = 'suppress progress output'
+}
+
 $scriptExtensions = @('pre_install', 'post_install', 'pre_uninstall', 'post_uninstall')
 $scriptBlocks = @('installer.script', 'uninstaller.script')
 
@@ -71,6 +84,7 @@ if ($resolvedPaths.Count -eq 0) { Write-Host "ERROR: no valid paths" -Foreground
 Write-Host "`nScanning: $($resolvedPaths -join ', ')`n" -ForegroundColor Cyan
 
 $results = @{}
+$varResults = @{}
 $scriptManifests = 0
 
 foreach ($scanPath in $resolvedPaths) {
@@ -87,6 +101,7 @@ foreach ($file in $manifests) {
     $hasScript = $false
     $manifestName = $file.BaseName
     $foundHere = @{}
+    $foundVarsHere = @{}
 
     # 提取所有脚本文本
     $allScriptText = ''
@@ -119,9 +134,21 @@ foreach ($file in $manifests) {
         }
     }
 
+    # 扫描 Scoop 标准变量引用
+    if ($allScriptText -ne '') {
+        foreach ($kv in $scoopStandardVars.GetEnumerator()) {
+            if ($allScriptText.Contains($kv.Key)) {
+                $foundVarsHere[$kv.Key] = $true
+            }
+        }
+    }
+
     if ($ShowDetail -and $hasScript) {
-        if ($foundHere.Keys.Count -gt 0) {
-            Write-Host "  [$manifestName] $($foundHere.Keys -join ', ')" -ForegroundColor Yellow
+        $parts = @()
+        if ($foundHere.Keys.Count -gt 0) { $parts += ($foundHere.Keys -join ', ') }
+        if ($foundVarsHere.Keys.Count -gt 0) { $parts += ('vars: ' + ($foundVarsHere.Keys -join ', ')) }
+        if ($parts.Count -gt 0) {
+            Write-Host "  [$manifestName] $($parts -join ' | ')" -ForegroundColor Yellow
         } elseif ($ShowDetail) {
             Write-Host "  [$manifestName] (scripts, no helpers)" -ForegroundColor DarkGray
         }
@@ -134,6 +161,13 @@ foreach ($file in $manifests) {
         }
         $results[$cmd].Count++
         $results[$cmd].Manifests += $manifestName
+    }
+    foreach ($v in $foundVarsHere.Keys) {
+        if (!$varResults.ContainsKey($v)) {
+            $varResults[$v] = @{ Count = 0; Manifests = @() }
+        }
+        $varResults[$v].Count++
+        $varResults[$v].Manifests += $manifestName
     }
 }  # foreach file
 }  # foreach scanPath
@@ -150,7 +184,7 @@ Write-Host "Total manifests : $allManifests"
 Write-Host "With scripts   : $scriptManifests"
 Write-Host "With helpers   : $($results.Keys.Count) unique functions`n"
 
-if ($results.Keys.Count -eq 0) { Write-Host "No Scoop helper calls found." -ForegroundColor Yellow; exit 0 }
+if ($results.Keys.Count -eq 0 -and $varResults.Keys.Count -eq 0) { Write-Host "No Scoop helper calls or variable refs found." -ForegroundColor Yellow; exit 0 }
 
 $sorted = $results.GetEnumerator() | Sort-Object { $_.Value.Count } -Descending
 
@@ -167,6 +201,64 @@ if ($knownFunctions.Count -gt 0) {
     $unknown = $sorted | Where-Object { $_.Key -notin $knownFunctions }
     if ($unknown) {
         Write-Host "`n===== Unknown (not in known list) =====" -ForegroundColor Yellow
+        foreach ($entry in $unknown) {
+            Write-Host "  $($entry.Key) ($($entry.Value.Count) times)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "`nAll found functions are covered in the known list." -ForegroundColor Green
+    }
+}
+
+# ====== 变量覆盖检查 ======
+Write-Host "`n========== Scoop Standard Variable Coverage ==========" -ForegroundColor Cyan
+$missingVars = @()
+foreach ($kv in $scoopStandardVars.GetEnumerator()) {
+    $v = $kv.Key
+    if ($v -in $hokPreambleVars) { continue }
+    if ($varResults.ContainsKey($v)) {
+        $missingVars += [PSCustomObject]@{
+            Var = $v
+            Desc = $kv.Value
+            Count = $varResults[$v].Count
+            Manifests = $varResults[$v].Manifests
+        }
+    }
+}
+
+if ($missingVars.Count -eq 0) {
+    Write-Host "  All Scoop standard variables are covered in hok preamble." -ForegroundColor Green
+} else {
+    foreach ($m in $missingVars) {
+        Write-Host "  $($m.Var) used by $($m.Count) manifests [$($m.Desc)]" -ForegroundColor Yellow
+        Write-Host "  $($m.Manifests -join ', ')"
+    }
+}
+
+# ====== Scoop standard variable coverage check ======
+Write-Host "`n========== Scoop Standard Variable Coverage ==========" -ForegroundColor Cyan
+$missingVars = @()
+foreach ($kv in $scoopStandardVars.GetEnumerator()) {
+    $v = $kv.Key
+    if ($v -in $hokPreambleVars) { continue }
+    if ($varResults.ContainsKey($v)) {
+        $missingVars += $kv
+    }
+}
+if ($missingVars.Count -eq 0) {
+    Write-Host "  All Scoop standard variables are covered in hok preamble." -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: These Scoop variables are used by manifests but NOT defined in hok preamble:" -ForegroundColor Yellow
+    foreach ($kv in $missingVars) {
+        $refs = ($varResults[$kv.Key].Manifests -join ', ')
+        Write-Host "  $($kv.Key)`t$($kv.Value)`t$refs" -ForegroundColor Yellow
+    }
+}
+
+# 未知函数（已知列表以外的）
+if ($knownFunctions.Count -gt 0) {
+    $unknown = $sorted | Where-Object { $_.Key -notin $knownFunctions }
+    if ($unknown) {
+        Write-Host "`n===== Unknown helpers (not in known list) =====" -ForegroundColor Yellow
         foreach ($entry in $unknown) {
             Write-Host "  $($entry.Key) ($($entry.Value.Count) times)" -ForegroundColor Red
         }
