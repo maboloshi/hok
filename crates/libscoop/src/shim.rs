@@ -1,7 +1,10 @@
 #![allow(dead_code)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
+
+/// Name of the shim launcher binary (shipped alongside hok.exe).
+const SHIM_EXE_NAME: &str = "hok-shim.exe";
 
 #[derive(Debug)]
 pub struct Shim<'a> {
@@ -96,6 +99,9 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let shims_dir = config.root_path().join("shims");
     internal::fs::ensure_dir(&shims_dir)?;
 
+    // Check if the native shim launcher (hok-shim.exe) is available
+    let shim_exe = find_shim_launcher();
+
     if let Some(bins) = package.manifest().bin() {
         let pkg_name = package.name();
 
@@ -106,25 +112,55 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         for def in bins.into_iter() {
             let shim = Shim::new(def);
 
-            let batches = generate_shim_batches(&shim, pkg_name);
+            if shim.ty == ShimType::Exe && shim_exe.is_some() {
+                // Use native .exe shim (hok-shim.exe) instead of .cmd wrapper
+                let shim_name = format!("{}.exe", shim.name);
+                let shim_dest = shims_dir.join(&shim_name);
 
-            for (path, content) in batches {
-                // Check if the shim already exists (from another package)
-                let dest = if path.exists() {
-                    // Add package name suffix to avoid conflict
-                    let stem = path.file_stem().unwrap().to_str().unwrap();
-                    let ext = path.extension().map(|e| e.to_str().unwrap()).unwrap_or("");
-                    let alt_name = format!("{}.{}.{}", stem, ext, pkg_name);
-                    path.with_file_name(&alt_name)
+                // Copy the shim launcher
+                if !shim_dest.exists() {
+                    std::fs::copy(shim_exe.as_ref().unwrap(), &shim_dest)?;
+                }
+
+                // Write .shim metadata file
+                let target_rel = format!(
+                    r#"~\..\apps\{}\current\{}"#,
+                    pkg_name, shim.real_name
+                );
+                let shim_meta = if let Some(args) = &shim.args {
+                    format!("path = \"{target_rel}\"\r\nargs = \"{}\"\r\n", args.join(" "))
                 } else {
-                    path
+                    format!("path = \"{target_rel}\"\r\n")
                 };
-
-                std::fs::write(&dest, content.as_bytes())?;
+                let meta_path = shims_dir.join(format!("{}.shim", shim.name));
+                std::fs::write(&meta_path, shim_meta.as_bytes())?;
 
                 if let Some(tx) = session.emitter() {
-                    let name = dest.file_name().unwrap().to_string_lossy().to_string();
-                    let _ = tx.send(Event::PackageShimAddProgress(name));
+                    let _ = tx.send(Event::PackageShimAddProgress(shim_name));
+                }
+            } else {
+                // Use script-based shim (.cmd, .ps1, etc.)
+                let batches = generate_shim_batches(&shim, pkg_name);
+
+                for (path, content) in batches {
+                    let full_path = shims_dir.join(&path);
+                    // Check if the shim already exists (from another package)
+                    let dest = if full_path.exists() {
+                        // Add package name suffix to avoid conflict
+                        let stem = full_path.file_stem().unwrap().to_str().unwrap();
+                        let ext = full_path.extension().map(|e| e.to_str().unwrap()).unwrap_or("");
+                        let alt_name = format!("{}.{}.{}", stem, ext, pkg_name);
+                        full_path.with_file_name(&alt_name)
+                    } else {
+                        full_path
+                    };
+
+                    std::fs::write(&dest, content.as_bytes())?;
+
+                    if let Some(tx) = session.emitter() {
+                        let name = dest.file_name().unwrap().to_string_lossy().to_string();
+                        let _ = tx.send(Event::PackageShimAddProgress(name));
+                    }
                 }
             }
         }
@@ -135,6 +171,29 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     }
 
     Ok(())
+}
+
+/// Find the hok-shim.exe launcher.
+fn find_shim_launcher() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+
+    // Check alongside current exe
+    let candidate = dir.join(SHIM_EXE_NAME);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+
+    // Check workspace target directory (for `cargo run` / development)
+    if let Ok(cwd) = std::env::current_dir() {
+        let build_type = if cfg!(debug_assertions) { "debug" } else { "release" };
+        let dev_path = cwd.join("target").join(build_type).join(SHIM_EXE_NAME);
+        if dev_path.exists() {
+            return Some(dev_path);
+        }
+    }
+
+    None
 }
 
 /// Generate shim files content for a given shim definition.
@@ -158,12 +217,18 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
 
     match shim.ty {
         ShimType::Exe => {
-            // .shim file: batch redirect that the companion .exe stub runs
+            // .cmd file: batch redirect to the target executable
+            // (hok doesn't include Scoop's pre-built shim.exe stub,
+            //  so .cmd wrapper is used for CLI access)
             let content = format!(
                 "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
             );
-            result.push((shims_dir.join(format!("{}.shim", shim.name)), content));
+            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+
+            // .shim metadata file (Scoop-compatible format)
+            let shim_meta = format!("path = \"~\\..\\apps\\{}\\current\\{}\"\r\n", pkg_name, shim.real_name);
+            result.push((shims_dir.join(format!("{}.shim", shim.name)), shim_meta));
         }
         ShimType::Batch | ShimType::Bash => {
             // .cmd file: direct batch redirect

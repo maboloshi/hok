@@ -9,7 +9,7 @@ edition = "2021"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/scoop_hash"]
+members = ["crates/libscoop", "crates/scoop_hash", "crates/hok-shim"]
 
 [lib]
 path = "src/lib.rs"
