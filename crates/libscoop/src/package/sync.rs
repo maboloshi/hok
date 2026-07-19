@@ -1174,7 +1174,7 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     Ok(())
 }
 
-#[cfg(all(windows, test))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

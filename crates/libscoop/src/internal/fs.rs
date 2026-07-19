@@ -88,7 +88,6 @@ where
 }
 
 /// Remove a symlink at `lnk`.
-#[cfg(windows)]
 pub fn remove_symlink<P: AsRef<Path>>(lnk: P) -> io::Result<()> {
     let lnk = lnk.as_ref();
     let metadata = lnk.symlink_metadata()?;
@@ -122,15 +121,7 @@ pub fn remove_symlink<P: AsRef<Path>>(lnk: P) -> io::Result<()> {
     }
 }
 
-/// Remove a symlink at `lnk`.
-#[cfg(unix)]
-#[inline]
-pub fn remove_symlink<P: AsRef<Path>>(lnk: P) -> io::Result<()> {
-    std::fs::remove_file(lnk)
-}
-
 /// Create a directory symlink at `lnk` pointing to `src`.
-#[cfg(windows)]
 pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
     let src = src.as_ref();
     let lnk = lnk.as_ref();
@@ -159,15 +150,7 @@ pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result
     }
 }
 
-/// Create a directory symlink at `lnk` pointing to `src`.
-#[cfg(unix)]
-#[inline]
-pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
-    std::os::unix::fs::symlink(src, lnk)
-}
-
 /// Create a file symlink at `lnk` pointing to `src`.
-#[cfg(windows)]
 pub fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
     let src = src.as_ref();
     let lnk = lnk.as_ref();
@@ -197,16 +180,8 @@ pub fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Resul
     }
 }
 
-/// Create a file symlink at `lnk` pointing to `src`.
-#[cfg(unix)]
-#[inline]
-pub fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
-    std::os::unix::fs::symlink(src, lnk)
-}
-
 /// Create a symlink at `lnk` pointing to `src`.
 /// This function will automatically determine if `src` is a file or a directory.
-#[cfg(windows)]
 pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
     let src = src.as_ref();
     let lnk = lnk.as_ref();
@@ -220,10 +195,3 @@ pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()>
     }
 }
 
-/// Create a symlink at `lnk` pointing to `src`.
-/// This function will automatically determine if `src` is a file or a directory.
-#[cfg(unix)]
-#[inline]
-pub fn symlink<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
-    std::os::unix::fs::symlink(src, lnk)
-}

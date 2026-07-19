@@ -324,7 +324,6 @@ fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
 
 // ─── Inno Setup extraction via innospect ─────────────────────────────
 
-#[cfg(windows)]
 fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
@@ -364,12 +363,6 @@ fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallib
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn extract_innosetup(_src: &Path, _dest: &Path, _filter: Option<&[&str]>) -> Fallible<()> {
-    Err(Error::ExtractionFailed(
-        "Inno Setup extraction is only supported on Windows".into(),
-    ))
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 

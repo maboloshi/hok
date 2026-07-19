@@ -2,9 +2,6 @@ use std::path::PathBuf;
 
 use crate::error::Fallible;
 
-#[cfg(unix)]
-pub use unix::{get, set};
-#[cfg(windows)]
 pub use windows::{get, set};
 
 /// Get the value of a path-like environment variable.
@@ -13,7 +10,6 @@ pub fn get_path_like_env(name: &str) -> Fallible<Vec<PathBuf>> {
     Ok(std::env::split_paths(&paths).collect())
 }
 
-#[cfg(windows)]
 mod windows {
     use std::sync::LazyLock;
     use std::ffi::OsString;
@@ -47,26 +43,6 @@ mod windows {
                 let _ = env.delete_value(key);
             }
         }
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-mod unix {
-    use std::ffi::OsString;
-
-    use crate::error::Fallible;
-
-    /// Get the value of an environment variable.
-    /// Returns an empty string if the variable is not set.
-    pub fn get(key: &str) -> Fallible<OsString> {
-        Ok(std::env::var_os(key).unwrap_or_default())
-    }
-
-    /// Set the value of an environment variable.
-    /// If the value is an empty string, the variable is deleted.
-    pub fn set(key: &str, value: Option<&OsString>) -> Fallible<()> {
-        // no-op
         Ok(())
     }
 }

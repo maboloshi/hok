@@ -15,7 +15,6 @@ fn shortcut_dir() -> PathBuf {
 }
 
 /// Add shortcut(s) for a given package.
-#[cfg(windows)]
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     if let Some(shortcuts) = package.manifest().shortcuts() {
         let config = session.config();
@@ -63,7 +62,6 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 }
 
 /// Create a `.lnk` shortcut file using `shortcuts-rs` (pure Rust LNK writer).
-#[cfg(windows)]
 fn create_shortcut(
     target: &str,
     link: &Path,
@@ -80,12 +78,6 @@ fn create_shortcut(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     sl.create_lnk(link_str.as_ref())
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-}
-
-/// Remove shortcut(s) for a given package.
-#[cfg(not(windows))]
-pub fn add(_session: &Session, _package: &Package) -> Fallible<()> {
-    Ok(())
 }
 
 /// Remove shortcut(s) for a given package.
@@ -119,7 +111,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     Ok(())
 }
 
-#[cfg(all(windows, test))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
