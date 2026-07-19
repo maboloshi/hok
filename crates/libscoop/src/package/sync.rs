@@ -744,6 +744,13 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     debug!("commit: {} v{} - starting", pkg.name(), pkg.version());
 
     if let Some(tx) = session.emitter() {
+        let old_ver = pkg.installed_version().unwrap_or_default().to_owned();
+        let new_ver = pkg.version().to_owned();
+        let _ = tx.send(Event::PackageVersionKnown {
+            name: pkg.name().to_owned(),
+            old_version: old_ver,
+            new_version: new_ver,
+        });
         let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
     }
 

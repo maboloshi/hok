@@ -183,6 +183,11 @@ impl<'a> PackageSet<'a> {
 
         for (_, cache) in package_caches.iter() {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
+                if let Some(tx) = self.session.emitter() {
+                    for (filename, _) in cache.inner.iter() {
+                        let _ = tx.send(Event::PackageCacheHit(filename.clone()));
+                    }
+                }
                 continue;
             }
 

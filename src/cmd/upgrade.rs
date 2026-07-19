@@ -35,6 +35,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         escape_hold: args.escape_hold,
         no_hash_check: args.no_hash_check,
         force: false,
+        independent: false,
+        no_upgrade: false,
+        no_replace: false,
+        ignore_cache: false,
     };
     super::update::execute_upgrade(session, &update_args.package, &update_args)
 }

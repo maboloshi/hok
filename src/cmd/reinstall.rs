@@ -1,162 +1,104 @@
-use clap::{ArgAction, Parser};
-use crossterm::ExecutableCommand;
-use libscoop::{operation, Event, QueryOption, Session, SyncOption};
+use clap::Parser;
+use libscoop::{operation, Session, SyncOption};
 
-use crate::{cui, output, Result};
+use crate::{eventloop, output, Result};
 
-/// Reinstall package(s) (uninstall then install)
+/// Reinstall a package
 #[derive(Debug, Parser)]
 pub struct Args {
     /// The package(s) to reinstall
-    #[arg(required = true, action = ArgAction::Append)]
+    #[arg(required = true)]
     package: Vec<String>,
-    /// Assume yes to all prompts and run non-interactively
-    #[arg(short = 'y', long, action = ArgAction::SetTrue)]
-    assume_yes: bool,
-    /// Ignore cache and force re-download
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    force: bool,
+    /// Leverage cache and suppress network access
+    #[arg(short = 'o', long, action = clap::ArgAction::SetTrue)]
+    offline: bool,
+    /// Ignore cache and force download
+    #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
+    ignore_cache: bool,
+    /// Skip package integrity check
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    no_hash_check: bool,
     /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'i', long, action = ArgAction::SetTrue)]
+    #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
     ignore_failure: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let queries: Vec<&str> = args.package.iter().map(|s| s.as_str()).collect();
+    let mut hold_set = std::collections::BTreeSet::new();
+    let mut exact_queries = Vec::new();
 
-    // Snapshot which packages are held and get their full bucket-qualified names
-    let (held_names, install_queries) = find_held_and_queries(session, &queries);
-
-    let mut opts = vec![];
-    if args.assume_yes {
-        opts.push(SyncOption::AssumeYes);
+    // Resolve queries to exact bucket-qualified names
+    for q in &args.package {
+        if let Ok(pkgs) = operation::package_query(
+            session,
+            vec![q.as_str()],
+            vec![libscoop::QueryOption::Explicit],
+            true,
+        ) {
+            for pkg in &pkgs {
+                if pkg.is_held() {
+                    hold_set.insert(pkg.name().to_string());
+                }
+                exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
+            }
+        }
     }
-    if args.ignore_failure || session.config().ignore_failures() {
+
+    // Release held packages temporarily
+    let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
+    if !held.is_empty() {
+        output::status(format!("Releasing held packages: {}", held.join(", ")));
+        for name in &held { operation::package_hold(session, name, false)?; }
+        output::done("Packages released.");
+    }
+
+    // Step 1: Uninstall
+    let queries: Vec<&str> = exact_queries.iter().map(|s| s.as_str()).collect();
+    let mut opts = vec![SyncOption::AssumeYes];
+    if args.ignore_failure {
         opts.push(SyncOption::IgnoreFailure);
     }
-    if args.force {
+
+    run_remove(session, &queries, &opts)?;
+
+    // Step 2: Install
+    if args.offline {
+        opts.push(SyncOption::Offline);
+    }
+    if args.ignore_cache {
         opts.push(SyncOption::IgnoreCache);
     }
+    if args.no_hash_check {
+        opts.push(SyncOption::NoHashCheck);
+    }
 
-    // Phase 1: Uninstall (respect --assume-yes, user may want to review)
-    let mut remove_opts = vec![SyncOption::Remove, SyncOption::EscapeHold];
-    remove_opts.extend_from_slice(&opts);
-    run_remove(session, &queries, &remove_opts)?;
+    run_install(session, &queries, &opts)?;
 
-    // Phase 2: Install same version (always auto-confirm — reinstall is explicit intent)
-    let install_queries_ref: Vec<&str> = install_queries.iter().map(|s| s.as_str()).collect();
-    let mut install_opts = vec![SyncOption::NoUpgrade, SyncOption::EscapeHold, SyncOption::AssumeYes];
-    install_opts.extend_from_slice(&opts);
-    run_install(session, &install_queries_ref, &install_opts)?;
-
-    // Phase 3: Restore held status for previously held packages
-    for name in &held_names {
-        let _ = operation::package_hold(session, name, true);
+    // Re-hold packages that were held before
+    if !held.is_empty() {
+        output::status(format!("Re-holding packages: {}", held.join(", ")));
+        for name in &held { operation::package_hold(session, name, true)?; }
+        output::done("Packages re-held.");
     }
 
     Ok(())
 }
 
-/// Query which target packages are currently held, returning held names
-/// and bucket-qualified queries for exact reinstall.
-fn find_held_and_queries(session: &Session, queries: &[&str]) -> (Vec<String>, Vec<String>) {
-    let mut held = Vec::new();
-    let mut exact_queries = Vec::new();
-    for q in queries {
-        if let Ok(pkgs) = operation::package_query(session, vec![q], vec![QueryOption::Explicit], true) {
-            for pkg in &pkgs {
-                if pkg.is_held() {
-                    held.push(pkg.name().to_string());
-                }
-                // Use bucket-qualified name to avoid candidate selection on reinstall
-                exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
-            }
-        }
-    }
-    (held, exact_queries)
-}
-
-/// Uninstall event handler with simple output.
+/// Uninstall phase.
 fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
-    let rx = session.event_bus().receiver();
-    let tx = session.event_bus().sender();
-
-    let handle = std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
-            match event {
-                Event::PackageResolveStart => output::status("Resolving packages..."),
-                Event::PromptTransactionNeedConfirm(transaction) => {
-                    if let Some(remove) = transaction.remove_view() {
-                        output::header("The following packages will be REMOVED:");
-                        let output = remove
-                            .iter()
-                            .map(|p| format!("{}-{}", p.ident(), p.version()))
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        println!("  {output}");
-                    }
-                    let answer = cui::prompt_yes_no();
-                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
-                }
-                Event::PackageCommitStart(ctx) => output::status(format!("Uninstalling {ctx}...")),
-                Event::PackageShortcutRemoveProgress(ctx) => output::detail(format!("removing shortcut: {ctx}")),
-                Event::PackageShimRemoveProgress(ctx) => output::detail(format!("removing shim: {ctx}")),
-                Event::PackageCommitDone(ctx) => output::done(format!("'{ctx}' was uninstalled.")),
-                Event::PackageSyncDone => break,
-                Event::PackageExtractStart(ctx) => output::detail(format!("extract: {ctx}")),
-                _ => {}
-            }
-        }
-    });
-
+    let handle = eventloop::run_event_loop(session, Default::default());
     operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
     handle.join().unwrap();
     Ok(())
 }
 
-/// Install event handler with download progress bar.
+/// Install phase.
 fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
-    let rx = session.event_bus().receiver();
-    let tx = session.event_bus().sender();
-
-    let mut dlprogress = cui::MultiProgressUI::new();
-    let mut stdout = std::io::stdout();
-    let _ = stdout.execute(crossterm::cursor::Hide);
-
-    let handle = std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
-            match event {
-                Event::PackageResolveStart => output::status("Resolving packages..."),
-                Event::PackageDownloadSizingStart => output::status("Calculating download size..."),
-                Event::PackageDownloadStart => output::status("Downloading packages..."),
-                Event::PackageDownloadProgress(ctx) => {
-                    dlprogress.update(
-                        ctx.ident.to_owned(),
-                        ctx.url.to_owned(),
-                        ctx.filename.to_owned(),
-                        ctx.dltotal,
-                        ctx.dlnow,
-                    );
-                }
-                Event::PackageDownloadDone => {}
-                Event::PackageIntegrityCheckStart => output::status("Checking package integrity..."),
-                Event::PackageIntegrityCheckDone => output::done("Checking package integrity...Ok"),
-                Event::PromptTransactionNeedConfirm(_) => {
-                    // Auto-confirm (AssumeYes is always set for reinstall)
-                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true));
-                }
-                Event::PackageCommitStart(ctx) => output::status(format!("Installing {ctx}...")),
-                Event::PackageExtractProgress(ctx) => output::detail(format!("extracting: {ctx}")),
-                Event::PackageShimAddProgress(ctx) => output::detail(format!("creating shim: {ctx}")),
-                Event::PackageShortcutAddProgress(ctx) => output::detail(format!("creating shortcut: {ctx}")),
-                Event::PackageCommitDone(ctx) => output::done(format!("'{ctx}' was installed.")),
-                Event::PackageSyncDone => break,
-                Event::PackageExtractStart(ctx) => output::detail(format!("extract: {ctx}")),
-                _ => {}
-            }
-        }
-    });
-
+    let config = eventloop::EventLoopConfig {
+        auto_confirm: true,
+        ..Default::default()
+    };
+    let handle = eventloop::run_event_loop(session, config);
     operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
     handle.join().unwrap();
     Ok(())

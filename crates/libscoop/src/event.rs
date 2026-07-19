@@ -179,6 +179,40 @@ pub enum Event {
 
     /// Package sync operation has finished.
     PackageSyncDone,
+    /// PowerShell script emitted output (stdout line).
+    ScriptOutput(String),
+
+
+    /// Version information for a resolved package (old -> new).
+    PackageVersionKnown {
+        /// Package name
+        name: String,
+        /// Currently installed version, or empty if new install
+        old_version: String,
+        /// Version to be installed
+        new_version: String,
+    },
+
+    /// A download was satisfied from local cache.
+    PackageCacheHit(String),
+
+    /// A symlink/junction was removed.
+    PackageSymlinkRemove(String),
+
+    /// A symlink/junction was created.
+    PackageSymlinkCreate {
+        /// Source path
+        from: String,
+        /// Target path
+        to: String,
+    },
+    /// PowerShell script execution finished.
+    ScriptDone {
+        /// Whether the script exited successfully.
+        success: bool,
+        /// Captured stderr output.
+        stderr: String,
+    },
 
     /// Post-install notes from the manifest.
     PackageNotes(String),
@@ -199,3 +233,4 @@ pub enum Event {
     /// [1]: Event::PromptPackageCandidate
     PromptPackageCandidateResult(usize),
 }
+
