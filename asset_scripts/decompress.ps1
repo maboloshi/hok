@@ -37,4 +37,16 @@ function Expand-MsiArchive($Path, $DestinationPath, $ExtractDir, $Removal, $Swit
 function Expand-7ZipArchive { Expand-7zipArchive @args }
 function Expand-Msi { Expand-MsiArchive @args }
 function Expand-ZipArchive { Expand-7zipArchive @args }
-function Expand-DarkArchive { Expand-7zipArchive @args }
+function Expand-DarkArchive($Path, $DestinationPath, $ExtractDir, $Removal, $Switches) {
+    $dest = if ($ExtractDir) { Join-Path $DestinationPath $ExtractDir } else { $DestinationPath }
+    $null = New-Item -ItemType Directory -Path $dest -Force
+    $DarkPath = Get-HelperPath -Helper Dark
+    if ((Split-Path $DarkPath -Leaf) -eq 'wix.exe') {
+        $ArgList = @('burn', 'extract', $Path, '-out', $dest, '-outba', "$dest\UX")
+    } else {
+        $ArgList = @('-nologo', '-x', $dest, $Path)
+    }
+    if ($Switches) { $ArgList += (-split $Switches) }
+    Invoke-ExternalCommand $DarkPath $ArgList
+    if ($Removal) { Remove-Item -Path $Path -Force -ErrorAction SilentlyContinue }
+}

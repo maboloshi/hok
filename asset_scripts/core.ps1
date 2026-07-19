@@ -13,6 +13,7 @@ function Get-HelperPath($name) {
         '7z' = '7zip'; '7zip' = '7zip'
         'innounp' = 'innounp'
         'aria2c' = 'aria2'
+        'dark' = 'dark'
         'gsudo' = 'gsudo'
         'git' = 'git'
     }
