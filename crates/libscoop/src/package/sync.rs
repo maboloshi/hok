@@ -762,19 +762,36 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     let files = pkg.download_filenames();
-    let is_archive = files.iter().any(|f| {
-        let ext = std::path::Path::new(f)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        matches!(ext, "7z" | "zip" | "nupkg" | "rar" | "lzh"
-            | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar")
-    });
+    let urls = pkg.manifest().url();
 
-    if is_archive {
+    // Collect the files that need to be decompressed
+    let archives: Vec<usize> = files.iter().enumerate()
+        .filter_map(|(idx, f)| {
+            let url = &urls[idx];
+
+            // Extract the target filename directly from the URL
+            let target_name = url.rsplit('/').next().unwrap_or(f);
+
+            let ext = Path::new(target_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if matches!(ext, "7z" | "zip" | "nupkg" | "rar" | "lzh"
+                | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar") {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // 1. Extract the archive file
+    if !archives.is_empty() {
         let cache_path = config.cache_path();
-        debug!("commit: {} v{} - extract ({} files)", pkg.name(), pkg.version(), files.len());
-        for filename in files.iter() {
+        debug!("commit: {} v{} - extract ({} files)", pkg.name(), pkg.version(), archives.len());
+
+        for idx in archives.iter() {
+            let filename = &files[*idx];
             let src = cache_path.join(filename);
             if src.exists() {
                 if let Some(tx) = session.emitter() {
@@ -791,28 +808,28 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 }
             }
         }
-    } else {
-        debug!("commit: {} v{} - copy ({} files)", pkg.name(), pkg.version(), files.len());
-        let urls = pkg.manifest().url();
-        for (idx, filename) in files.iter().enumerate() {
-            let src = config.cache_path().join(filename);
+    }
 
-            // Determine target name: use fragment (#/name.ext) or original URL filename
-            let target_name = urls.get(idx).map(|url| {
-                if let Some(fragment) = url.split('#').nth(1) {
-                    let f = fragment.trim_start_matches('/');
-                    if !f.is_empty() { return f.to_owned(); }
-                }
-                // No fragment: use original filename from URL path
-                Path::new(url).file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| filename.clone())
-            }).unwrap_or_else(|| filename.clone());
+    // 2. Copy all non-archived files (including _ files and regular files)
+    debug!("commit: {} v{} - copy ({} files)", pkg.name(), pkg.version(), files.len() - archives.len());
 
-            let dst = working_dir.join(&target_name);
-            let _ = std::fs::remove_file(&dst);
-            std::fs::copy(&src, dst)?;
+    for (idx, filename) in files.iter().enumerate() {
+        // Skip already extracted archive files
+        if archives.contains(&idx) {
+            continue;
         }
+
+        let src = config.cache_path().join(filename);
+        if !src.exists() {
+            continue;
+        }
+
+        let url = &urls[idx];
+        let target_name = url.rsplit('/').next().unwrap_or(filename);
+
+        let dst = working_dir.join(&target_name);
+        let _ = std::fs::remove_file(&dst);
+        std::fs::copy(&src, dst)?;
     }
 
     // 2. installer (before link_current, $dir = version dir)
