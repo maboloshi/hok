@@ -754,13 +754,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
     }
 
-    // 1. pre_install (Scoop order: before link_current)
-    if pkg.has_install_script() {
-        debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
-        run_script(session, pkg, &working_dir, "pre_install", "install",
-            pkg.manifest().pre_install())?;
-    }
-
+    // 1. extract/copy downloaded files
     let files = pkg.download_filenames();
     let urls = pkg.manifest().url();
 
@@ -832,7 +826,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         std::fs::copy(&src, dst)?;
     }
 
-    // 2. installer (before link_current, $dir = version dir)
+    // 2. pre_install (Scoop order: after extract/copy, before link_current)
+    if pkg.has_install_script() {
+        debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
+        run_script(session, pkg, &working_dir, "pre_install", "install",
+            pkg.manifest().pre_install())?;
+    }
+
+    // 3. installer, $dir = version dir)
     if pkg.has_install_script() {
         if let Some(installer) = pkg.manifest().installer() {
             if let Some(script) = installer.script() {
@@ -856,7 +857,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
-    // 3. link_current (Scoop order: after installer, before shims)
+    // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
     let current_lnk = apps_dir.join(pkg.name()).join("current");
     let _ = internal::fs::remove_symlink(&current_lnk);
@@ -865,16 +866,16 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
     internal::fs::symlink_dir(&working_dir, &current_lnk)?;
 
-    // 4. shims + shortcuts
+    // 5. shims + shortcuts
     debug!("commit: {} v{} - shims/shortcuts", pkg.name(), pkg.version());
     shim::add(session, pkg)?;
     shortcut::add(session, pkg)?;
 
-    // 5. persist (Scoop order: after shims, before post_install)
+    // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
     persist::link(session, pkg)?;
 
-    // 6. post_install (Scoop order: last hook)
+    // 7. post_install (Scoop order: last hook)
     if pkg.has_install_script() {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         run_script(session, pkg, &working_dir, "post_install", "install",
