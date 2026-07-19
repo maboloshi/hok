@@ -115,3 +115,76 @@ pub enum Error {
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
 }
+
+impl Error {
+    /// Returns a structured i18n key for this error variant.
+    ///
+    /// The key can be used with `t!("error.xxx")` to look up a translated
+    /// error message template. Dynamic parameters embedded in the variant
+    /// must be injected separately.
+    pub fn error_key(&self) -> &'static str {
+        match self {
+            Error::BucketAlreadyExists(_) => "error.bucket_already_exists",
+            Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
+            Error::BucketNotFound(_) => "error.bucket_not_found",
+            Error::ConfigInUse => "error.config_in_use",
+            Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
+            Error::ConfigValueInvalid(_) => "error.config_value_invalid",
+            Error::UserAgentAlreadySet => "error.user_agent_already_set",
+            Error::HashMismatch(_) => "error.hash_mismatch",
+            Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
+            Error::InvalidAnswer => "error.invalid_answer",
+            Error::PackageNotFound(_) => "error.package_not_found",
+            Error::PackageCascadeRemoveHold(_) => "error.package_cascade_remove_hold",
+            Error::PackageDependentFound(_) => "error.package_dependent_found",
+            Error::PackageMultipleCandidates(_) => "error.package_multiple_candidates",
+            Error::PackageHoldNotInstalled(_) => "error.package_hold_not_installed",
+            Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
+            Error::Custom(_) => "error.custom",
+            Error::ExtractionFailed(_) => "error.extraction_failed",
+            Error::CyclicDependency(_) => "error.cyclic_dependency",
+            Error::Hash(_) => "error.hash",
+            Error::Git(_) => "error.git",
+            Error::Io(_) => "error.io",
+            Error::Regex(_) => "error.regex",
+            Error::Sqlite(_) => "error.sqlite",
+            Error::Serde(_) => "error.serde",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_key_bucket() {
+        assert_eq!(Error::BucketAlreadyExists("main".into()).error_key(), "error.bucket_already_exists");
+        assert_eq!(Error::BucketNotFound("main".into()).error_key(), "error.bucket_not_found");
+        assert_eq!(Error::BucketAddRemoteRequired("main".into()).error_key(), "error.bucket_add_remote_required");
+    }
+
+    #[test]
+    fn test_error_key_config() {
+        assert_eq!(Error::ConfigInUse.error_key(), "error.config_in_use");
+        assert_eq!(Error::ConfigKeyInvalid("x".into()).error_key(), "error.config_key_invalid");
+        assert_eq!(Error::ConfigValueInvalid("x".into()).error_key(), "error.config_value_invalid");
+    }
+
+    #[test]
+    fn test_error_key_package() {
+        assert_eq!(Error::PackageNotFound("7zip".into()).error_key(), "error.package_not_found");
+        assert_eq!(Error::PackageMultipleCandidates("7zip".into()).error_key(), "error.package_multiple_candidates");
+        assert_eq!(Error::PackageHoldNotInstalled("7zip".into()).error_key(), "error.package_hold_not_installed");
+    }
+
+    #[test]
+    fn test_error_key_technical() {
+        assert_eq!(Error::ExtractionFailed("corrupt".into()).error_key(), "error.extraction_failed");
+        assert_eq!(Error::Custom("something".into()).error_key(), "error.custom");
+        assert_eq!(Error::InvalidAnswer.error_key(), "error.invalid_answer");
+        assert_eq!(Error::UserAgentAlreadySet.error_key(), "error.user_agent_already_set");
+    }
+
+}
+

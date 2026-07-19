@@ -5,6 +5,8 @@ use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
 
+use crate::i18n::{self, LanguageChoice};
+
 mod alias;
 mod bucket;
 mod cache;
@@ -70,6 +72,14 @@ pub struct Cli {
     /// Show detailed operation information for debugging
     #[arg(global = true, long)]
     pub detail: bool,
+
+    /// Force CLI language (auto/en/zh)
+    #[arg(global = true, long = "lang", short = 'L', default_value_t = LanguageChoice::Auto, value_enum)]
+    pub language: LanguageChoice,
+
+    /// Disable colored output
+    #[arg(global = true, long = "no-color", short = 'N')]
+    pub no_color: bool,
 }
 
 #[derive(Subcommand)]
@@ -115,7 +125,17 @@ pub enum Command {
 
 /// CLI entry point
 pub fn start() -> Result<()> {
+    // Detect language before Cli::parse() so help text is rendered in the right language
+    let preselected_language = i18n::detect_language_choice_from_args();
+    i18n::init_language(preselected_language);
+
     let args = Cli::parse();
+
+    // If user explicitly set --lang in Cli args (not auto), re-init with explicit choice
+    if !matches!(args.language, LanguageChoice::Auto) {
+        i18n::init_language(args.language);
+    }
+
     setup_logger(args.verbose.tracing_level_filter(), args.detail)?;
     crate::set_detail(args.detail);
 
@@ -123,10 +143,30 @@ pub fn start() -> Result<()> {
     let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
     let _ = session.set_user_agent(&user_agent);
 
+    // --- Config-driven initialization ---
+    let config = session.config();
+
     // Set output style from config (default: scoop)
-    let output_style = session.config().output_style().to_owned();
-    drop(session.config());
-    crate::output::set_style(&output_style);
+    crate::output::set_style(config.output_style());
+
+    // Apply language from config if --lang was not explicitly set
+    if matches!(args.language, LanguageChoice::Auto) {
+        let cfg_lang = config.language();
+        if cfg_lang != "auto" {
+            let choice = match cfg_lang.to_lowercase().as_str() {
+                "en" => LanguageChoice::En,
+                "zh" => LanguageChoice::Zh,
+                _ => LanguageChoice::Auto,
+            };
+            i18n::init_language(choice);
+        }
+    }
+
+    // Color setting: CLI --no-color > config no_color > default enabled
+    let no_color = args.no_color || config.no_color();
+    crate::output::set_color_enabled(!no_color);
+
+    drop(config);
 
     match args.command {
         Command::Alias(args) => alias::execute(args, &session),

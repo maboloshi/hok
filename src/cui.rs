@@ -7,7 +7,7 @@ use crossterm::{
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::{
     collections::HashMap,
-    io::{stdout, Write},
+    io::{stdout},
 };
 
 static BAR_FMT: &str = " {wide_msg} {total_bytes:>12} [{bar:>20}] {percent:>3}%";
@@ -79,18 +79,21 @@ impl MultiProgressUI {
 }
 
 /// Simple UI for bucket update progress
+#[allow(dead_code)]
 pub struct BucketUpdateUI {
     pub data: HashMap<String, BucketState>,
     pub cursor: usize,
 }
 
 /// Bucket update state
+#[allow(dead_code)]
 pub enum BucketState {
     Started,
     Failed(String),
     Successed,
 }
 
+#[allow(dead_code)]
 impl BucketUpdateUI {
     pub fn new() -> BucketUpdateUI {
         BucketUpdateUI {
@@ -151,19 +154,6 @@ impl BucketUpdateUI {
     }
 }
 
-/// Prompt user to continue or not.
-pub fn prompt_yes_no() -> bool {
-    loop {
-        print!("\nDo you want to continue? [y/N]: ");
-        std::io::stdout().flush().unwrap();
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-        let c = input.trim_end();
-        if c.chars().count() == 1 {
-            let ch: char = c.chars().next().unwrap();
-            if ['y', 'Y', 'n', 'N'].contains(&ch) {
-                return ch == 'y' || ch == 'Y';
-            }
-        }
-    }
-}
+
+
+

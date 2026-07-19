@@ -108,6 +108,15 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_style: Option<String>,
 
+    #[serde(alias = "language")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
+
+    #[serde(alias = "no-color")]
+    #[serde(rename = "no-color")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    no_color: Option<bool>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     deafult_architecture: Option<String>,
 
@@ -322,6 +331,18 @@ impl Config {
         self.output_style.as_deref().unwrap_or("scoop")
     }
 
+    /// Get the `language` config ("auto", "en", or "zh").
+    #[inline]
+    pub fn language(&self) -> &str {
+        self.language.as_deref().unwrap_or("auto")
+    }
+
+    /// Get the `no_color` config.
+    #[inline]
+    pub fn no_color(&self) -> bool {
+        self.no_color.unwrap_or(false)
+    }
+
     /// Returns the cooldown duration (in seconds) remaining before the next
     /// bucket update is allowed. Returns `None` if no last update recorded.
     /// The default cooldown is 15 minutes (900 seconds).
@@ -517,6 +538,8 @@ impl Default for Config {
             use_sqlite_cache: Default::default(),
             no_junction: Default::default(),
             output_style: Default::default(),
+            language: Default::default(),
+            no_color: Default::default(),
             private_hosts: Default::default(),
             proxy: Default::default(),
             // default_root_path: default::root_path(),
@@ -686,3 +709,10 @@ mod default {
         is_default(global_path().as_path(), path.as_ref())
     }
 }
+
+
+
+
+
+
+

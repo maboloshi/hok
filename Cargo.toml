@@ -31,6 +31,9 @@ sxd-xpath = "0.4"
 ureq = { version = "3", features = ["json"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
+rust-i18n = "3.1.5"
+sys-locale = "0.3"
+
 [dependencies.libscoop]
 version = "0.2.0-alpha.2"
 path = "./crates/libscoop"
@@ -47,3 +50,7 @@ codegen-units = 1
 inherits = "release"
 debug = true
 strip = false
+
+
+
+

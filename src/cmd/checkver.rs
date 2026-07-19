@@ -1,5 +1,5 @@
-use clap::Parser;
 use crossterm::style::Stylize;
+use clap::Parser;
 use libscoop::{operation, Manifest, Session};
 use regex::Regex;
 use scoop_hash::ChecksumBuilder;
@@ -610,3 +610,5 @@ fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>) -> R
         Ok(Some(version))
     }
 }
+
+
