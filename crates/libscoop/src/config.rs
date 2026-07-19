@@ -328,7 +328,12 @@ impl Config {
     pub fn update_cooldown_remaining(&self) -> Option<i64> {
         const COOLDOWN_SECS: i64 = 900; // 15 minutes
         let last = self.inner.last_update.as_ref()?;
-        let last_ts = last.parse::<jiff::Timestamp>().ok()?;
+        // Scoop stores local time with offset: 2026-07-19T10:48:34.0100861+08:00
+        let last_ts = if let Ok(z) = last.parse::<jiff::Zoned>() {
+            z.timestamp()
+        } else {
+            last.parse::<jiff::Timestamp>().ok()?
+        };
         let elapsed = jiff::Timestamp::now().as_second() - last_ts.as_second();
         let remaining = COOLDOWN_SECS - elapsed;
         if remaining > 0 { Some(remaining) } else { None }

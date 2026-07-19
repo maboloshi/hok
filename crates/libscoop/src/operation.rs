@@ -163,7 +163,17 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
     }
 
     if *any_bucket_updated.lock().unwrap() {
-        let time = jiff::Timestamp::now().to_string();
+        // Scoop format: [DateTime]::Now.ToString('o')
+        // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
+        let now = jiff::Timestamp::now();
+        let zoned = now.to_zoned(jiff::tz::TimeZone::system());
+        let nsec = now.subsec_nanosecond() / 100; // 100-nanosecond ticks → 7 digits
+        let time = format!(
+            "{}.{:07}{}",
+            zoned.strftime("%Y-%m-%dT%H:%M:%S"),
+            nsec,
+            zoned.strftime("%:z"),
+        );
         config.set("last_update", time.as_str())?;
     }
 
