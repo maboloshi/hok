@@ -127,7 +127,20 @@ fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> 
         return extract_7z_entries(reader, dest, filter);
     }
 
-    // Scoop accepts many installer formats via 7z.exe.
+    // PE/SFX: search for embedded 7z data in PE executables.
+    // Many installers append the real 7z archive after the PE stub.
+    if file_data.starts_with(b"MZ") {
+        const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+        if let Some(pos) = file_data.windows(MAGIC_7Z.len()).position(|w| w == MAGIC_7Z) {
+            if let Ok(reader) = ArchiveReader::new(
+                std::io::Cursor::new(&file_data[pos..]),
+                Password::empty(),
+            ) {
+                return extract_7z_entries(reader, dest, filter);
+            }
+        }
+    }
+
     // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
     extract_with_7z_exe(src, dest)
 }
