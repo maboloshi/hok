@@ -4,7 +4,9 @@ use std::process::Command;
 
 use crate::constant::REGEX_ARCHIVE_7Z;
 use crate::error::Fallible;
+use crate::event::Event;
 use crate::Error;
+use flume::Sender;
 
 /// Detect archive format from filename extension.
 fn detect_format(filename: &str) -> Option<&'static str> {
@@ -67,6 +69,7 @@ pub fn extract(
     extract_dir: Option<&[&str]>,
     extract_to: Option<&[&str]>,
     innosetup: bool,
+    emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
     // Compute effective extract_to path
     let effective_dest = match extract_to {
@@ -76,7 +79,7 @@ pub fn extract(
     crate::internal::fs::ensure_dir(&effective_dest)?;
 
     if innosetup {
-        return extract_innosetup(cache_path, &effective_dest, extract_dir);
+        return extract_innosetup(cache_path, &effective_dest, extract_dir, emitter);
     }
 
     let filename = cache_path
@@ -88,18 +91,18 @@ pub fn extract(
 
     // Fallback for unsupported formats (ISO, etc.)
     if needs_fallback(fmt) {
-        return extract_with_7z_exe(cache_path, &effective_dest);
+        return extract_with_7z_exe(cache_path, &effective_dest, emitter);
     }
 
     match fmt {
-        "7z" => extract_7z(cache_path, &effective_dest, extract_dir),
-        "zip" => extract_zip(cache_path, &effective_dest, extract_dir),
-        "tar" => extract_tar(cache_path, &effective_dest, extract_dir, None),
-        "gz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Gzip)),
-        "bz2" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Bzip2)),
-        "xz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Xz)),
-        "zst" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Zstd)),
-        "rar" | "lzh" => extract_with_unarc(cache_path, &effective_dest, extract_dir, fmt),
+        "7z" => extract_7z(cache_path, &effective_dest, extract_dir, emitter),
+        "zip" => extract_zip(cache_path, &effective_dest, extract_dir, emitter),
+        "tar" => extract_tar(cache_path, &effective_dest, extract_dir, None, emitter),
+        "gz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Gzip), emitter),
+        "bz2" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Bzip2), emitter),
+        "xz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Xz), emitter),
+        "zst" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Zstd), emitter),
+        "rar" | "lzh" => extract_with_unarc(cache_path, &effective_dest, extract_dir, fmt, emitter),
         "iso" | "unknown" => unreachable!(), // handled by needs_fallback
         _ => Err(Error::ExtractionFailed(format!("unsupported format: {}", fmt))),
     }
@@ -116,7 +119,7 @@ enum Compression {
 
 // ─── 7z extraction via sevenz-rust2 ──────────────────────────────────
 
-fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
+fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Option<Sender<Event>>) -> Fallible<()> {
     use sevenz_rust2::{ArchiveReader, Password};
 
     let file_data = std::fs::read(src)
@@ -124,7 +127,7 @@ fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> 
 
     // Try standard 7z from memory (fast path for real .7z files).
     if let Ok(reader) = ArchiveReader::new(std::io::Cursor::new(&file_data[..]), Password::empty()) {
-        return extract_7z_entries(reader, dest, filter);
+        return extract_7z_entries(reader, dest, filter, emitter);
     }
 
     // PE/SFX: search for embedded 7z data in PE executables.
@@ -136,13 +139,13 @@ fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> 
                 std::io::Cursor::new(&file_data[pos..]),
                 Password::empty(),
             ) {
-                return extract_7z_entries(reader, dest, filter);
+                return extract_7z_entries(reader, dest, filter, emitter);
             }
         }
     }
 
     // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
-    extract_with_7z_exe(src, dest)
+    extract_with_7z_exe(src, dest, emitter)
 }
 
 /// Extract entries from an already-opened 7z ArchiveReader.
@@ -150,6 +153,7 @@ fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
     mut reader: sevenz_rust2::ArchiveReader<R>,
     dest: &Path,
     filter: Option<&[&str]>,
+    emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
     use sevenz_rust2::ArchiveEntry;
 
@@ -166,7 +170,11 @@ fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
         .map(|e: &ArchiveEntry| e.name().to_string())
         .collect();
 
-    for name in &entries {
+    let total = entries.len();
+    for (i, name) in entries.iter().enumerate() {
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(format!("{} ({}/{})", name, i + 1, total)));
+        }
         let data = reader
             .read_file(name)
             .map_err(|e| Error::ExtractionFailed(format!("failed to read '{name}': {e}")))?;
@@ -182,15 +190,16 @@ fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
 
 // ─── Zip extraction via zip crate ────────────────────────────────────
 
-fn extract_zip(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
+fn extract_zip(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Option<Sender<Event>>) -> Fallible<()> {
     use std::fs::File;
     use zip::ZipArchive;
 
     let file = File::open(src)?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| Error::ExtractionFailed(format!("zip error: {}", e)))?;
+    let total = archive.len();
 
-    for i in 0..archive.len() {
+    for i in 0..total {
         let mut entry = archive.by_index(i).map_err(|e| {
             Error::ExtractionFailed(format!("zip read error: {}", e))
         })?;
@@ -202,6 +211,9 @@ fn extract_zip(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()>
             if !f.iter().any(|d| name.starts_with(d)) {
                 continue;
             }
+        }
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(format!("{} ({}/{})", name, i + 1, total)));
         }
         let target = strip_dir(&name, filter).unwrap_or(name);
         let target_path = dest.join(&target);
@@ -222,6 +234,7 @@ fn extract_tar(
     dest: &Path,
     filter: Option<&[&str]>,
     compression: Option<Compression>,
+    emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
     use tar::Archive as TarArchive;
 
@@ -243,12 +256,15 @@ fn extract_tar(
         let mut archive = TarArchive::new(reader);
         let mut entries = archive.entries()?;
         while let Some(entry) = entries.next() {
-            let mut entry: tar::Entry<'_, Box<dyn Read + Send>> = entry?;
+            let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
             if let Some(f) = filter {
                 if !f.iter().any(|d| path.starts_with(d)) {
                     continue;
                 }
+            }
+            if let Some(tx) = emitter {
+                let _ = tx.send(Event::PackageExtractProgress(path.clone()));
             }
             let target = strip_dir(&path, filter).unwrap_or(path);
             let target_path = dest.join(&target);
@@ -271,6 +287,7 @@ fn extract_with_unarc(
     dest: &Path,
     filter: Option<&[&str]>,
     _fmt: &str,
+    emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
     use unarc_rs::unified::ArchiveFormat as UnarcFormat;
 
@@ -290,6 +307,9 @@ fn extract_with_unarc(
                 continue;
             }
         }
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(name.clone()));
+        }
         let target = strip_dir(&name, filter).unwrap_or(name);
         let target_path = dest.join(&target);
         if let Some(parent) = target_path.parent() {
@@ -306,25 +326,47 @@ fn extract_with_unarc(
 
 // ─── Fallback: call external 7z.exe for ISO ─────────────────────────
 
-fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
+fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>) -> Fallible<()> {
     // Look for 7z.exe in PATH or in Scoop's shims directory
     let path_env = std::env::var("SCOOP").unwrap_or_default();
     let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
     let exe = if shims_7z.exists() { shims_7z } else { std::path::PathBuf::from("7z.exe") };
 
-    let status = Command::new(&exe)
+    let mut child = Command::new(&exe)
         .arg("x")
         .arg(src)
         .arg(format!("-o{}", dest.display()))
         .arg("-y")
-        .arg("-bb0")
-        .status()
+        .arg("-bso0")
+        .arg("-bsp1")
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
         .map_err(|e| {
             Error::ExtractionFailed(format!(
                 "failed to launch 7z.exe (install '7zip' via hok first): {}",
                 e
             ))
         })?;
+
+    // Parse progress from stderr (format: "\r69% 6143")
+    if let Some(stderr) = child.stderr.take() {
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(text) = line {
+                if let Some(pct) = text.trim().split('%').next().and_then(|s| s.parse::<u8>().ok()) {
+                    if let Some(tx) = emitter {
+                        let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| {
+        Error::ExtractionFailed(format!("failed to wait for 7z.exe: {}", e))
+    })?;
 
     if !status.success() {
         return Err(Error::ExtractionFailed(format!(
@@ -337,7 +379,7 @@ fn extract_with_7z_exe(src: &Path, dest: &Path) -> Fallible<()> {
 
 // ─── Inno Setup extraction via innospect ─────────────────────────────
 
-fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<()> {
+fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Option<Sender<Event>>) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
@@ -363,6 +405,9 @@ fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallib
             if !f.iter().any(|d| name.starts_with(d)) {
                 continue;
             }
+        }
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(name.to_string()));
         }
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
         let target_path = dest.join(&target);
@@ -527,7 +572,7 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
-        extract(&archive_path, &dest, None, None, false).unwrap();
+        extract(&archive_path, &dest, None, None, false, &None).unwrap();
 
         assert!(dest.join("root/hello.txt").exists());
         assert_eq!(
@@ -551,7 +596,7 @@ mod tests {
         std::fs::create_dir_all(&dest).unwrap();
 
         let filter = vec!["root/sub"];
-        extract(&archive_path, &dest, Some(&filter), None, false).unwrap();
+        extract(&archive_path, &dest, Some(&filter), None, false, &None).unwrap();
 
         // hello.txt not extracted (not under root/sub)
         assert!(!dest.join("root/hello.txt").exists());
@@ -573,7 +618,7 @@ mod tests {
         std::fs::create_dir_all(&dest).unwrap();
 
         let subdir = vec!["myapp"];
-        extract(&archive_path, &dest, None, Some(&subdir), false).unwrap();
+        extract(&archive_path, &dest, None, Some(&subdir), false, &None).unwrap();
 
         // All files go under myapp/
         assert!(dest.join("myapp/root/hello.txt").exists());
@@ -589,7 +634,7 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
-        extract(&archive_path, &dest, None, None, false).unwrap();
+        extract(&archive_path, &dest, None, None, false, &None).unwrap();
 
         assert!(dest.join("root/hello.txt").exists());
         assert_eq!(
@@ -608,7 +653,7 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
-        let result = extract(&archive_path, &dest, None, None, false);
+        let result = extract(&archive_path, &dest, None, None, false, &None);
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ExtractionFailed(msg) => {
@@ -627,7 +672,7 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
-        let result = extract(&archive_path, &dest, None, None, false);
+        let result = extract(&archive_path, &dest, None, None, false, &None);
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ExtractionFailed(msg) => {
@@ -646,7 +691,7 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
-        let result = extract(&archive_path, &dest, None, None, true);
+        let result = extract(&archive_path, &dest, None, None, true, &None);
         // Should fail to parse as Inno Setup (not a valid PE/Inno installer)
         assert!(result.is_err());
         match result.unwrap_err() {

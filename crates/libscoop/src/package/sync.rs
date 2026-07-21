@@ -450,7 +450,8 @@ $cmd = $env:SCOOP_PACKAGE_CMD
             let innosetup = format == "innosetup";
 
             if source.exists() {
-                if let Err(e) = internal::archive::extract(source, dest, None, None, innosetup) {
+                let emit = session.emitter();
+                if let Err(e) = internal::archive::extract(source, dest, None, None, innosetup, &emit) {
                     // Log but don't abort — extraction errors may be handled
                     // by the PS script's own error handling
                     debug!("P2 extract failed for {}: {}", source.display(), e);
@@ -579,7 +580,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     let no_upgrade = options.contains(&SyncOption::NoUpgrade);
     if !no_upgrade && !upgradable.is_empty() {
         if !escape_hold {
-            let (held, mut upgradable_list): (Vec<_>, Vec<_>) =
+            let (held, upgradable_list): (Vec<_>, Vec<_>) =
                 upgradable.into_iter().partition(|p| p.is_held());
 
             // Emit PackageHeld for each held package
@@ -802,11 +803,13 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                     let _ = tx.send(Event::PackageExtractStart(
                         format!("{}/{}", pkg.name(), filename)));
                 }
+                let emit = session.emitter();
                 internal::archive::extract(
                     &src, &working_dir,
                     pkg.manifest().extract_dir().as_deref(),
                     pkg.manifest().extract_to().as_deref(),
-                    pkg.manifest().innosetup())?;
+                    pkg.manifest().innosetup(),
+                    &emit)?;
                 if let Some(tx) = session.emitter() {
                     let _ = tx.send(Event::PackageExtractDone);
                 }
