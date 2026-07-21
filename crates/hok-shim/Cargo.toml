@@ -5,3 +5,9 @@ edition = "2021"
 description = "Shim launcher for hok"
 
 [dependencies]
+
+[profile.release]
+inherits = "release"
+lto = true
+strip = "symbols"
+codegen-units = 1

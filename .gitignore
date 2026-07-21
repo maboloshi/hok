@@ -2,3 +2,18 @@
 flamegraph.svg
 bench.ps1
 sandbox.wsb
+
+# Rust
+*.pyc
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
