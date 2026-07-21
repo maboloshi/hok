@@ -35,6 +35,19 @@ jobs:
       - name: Clippy Check
         run: cargo clippy
 
+  # unused dependency check via nightly
+  ci_udeps:
+    name: Unused Deps
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: baptiste0928/cargo-install@v3
+        with:
+          crate: cargo-udeps
+      - run: cargo +nightly udeps
+
   # tests and build
   ci_test_build:
     name: Test Build
