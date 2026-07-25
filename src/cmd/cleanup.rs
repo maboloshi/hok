@@ -16,8 +16,8 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let ignore_failure = session.config().ignore_failures();
-    let results = operation::package_cleanup(session, &args.app, ignore_failure)?;
+    // Cleanup is a maintenance operation; individual failures should not abort it
+    let results = operation::package_cleanup(session, &args.app, true)?;
 
     for (name, count) in &results {
         output::named(name.as_str(), format!("{count} old version(s) removed"));
