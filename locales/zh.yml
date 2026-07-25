@@ -189,7 +189,7 @@ cli_help:
     args:
       name: 别名名称（用于 add/rm）
       value: 别名命令（用于 add）
-    about: "列出、添加或删除 Scoop 别名  示例:   hok alias                        列出所有别名   hok alias list                   列出所有别名   hok alias add <名称> <命令>   添加别名   hok alias rm  <名称>            删除别名"
+    about: "列出、添加或删除 Scoop 别名\n\n示例:\n  hok alias list                   列出所有别名\n  hok alias add <名称> <命令>          添加别名\n  hok alias rm  <名称>               删除别名"
   bucket:
     about: 管理清单仓库
     args:
@@ -328,7 +328,7 @@ cli_help:
       version: 要重置到的特定版本
     about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
   search:
-    about: "搜索可用包  从已同步的仓库中搜索可用包。默认按包名称搜索，使用 --with-description 或 --with-binary 可通过包描述或可执行文件搜索。"
+    about: "搜索可用包\n\n从已同步的仓库中搜索可用包。默认按包名称搜索，使用 --with-description 或 --with-binary 可通过包描述或可执行文件搜索。"
     args:
       explicit: 关闭正则并使用精确匹配
       query: 查询字符串（默认支持正则）
@@ -378,7 +378,7 @@ cli_help:
       offline: 利用缓存并禁止网络访问
       package: "要升级的包（默认为全部，被锁定的除外）"
   virustotal:
-    about: "检查包下载 URL 是否被 VirusTotal 标记  需要 VirusTotal API 密钥。通过以下方式设置:   hok config virustotal_api_key <密钥> 或设置 $VT_API_KEY 环境变量。"
+    about: "检查包下载 URL 是否被 VirusTotal 标记\n\n需要 VirusTotal API 密钥。通过以下方式设置:\n  hok config virustotal_api_key <密钥>\n或设置 $VT_API_KEY 环境变量。"
     args:
       app: 要检查的包名称
   which:
