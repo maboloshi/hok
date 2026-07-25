@@ -235,6 +235,8 @@ cli_help:
     about: Cleanup apps by removing old versions
     args:
       app: Given named app(s) to be cleaned up (all apps if empty)
+      all: Cleanup all apps (alternative to '*')
+      global: Cleanup a globally installed app
       cache: Remove download cache simultaneously
   completions:
     args:
