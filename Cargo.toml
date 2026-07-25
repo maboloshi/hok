@@ -36,6 +36,9 @@ sys-locale = "0.3"
 
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
+[build-dependencies]
+jiff = "0.2"
+
 [dependencies.libscoop]
 version = "0.2.0-alpha.2"
 path = "./crates/libscoop"

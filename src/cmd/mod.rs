@@ -50,7 +50,7 @@ use crate::Result;
 #[derive(I18nHelp)]
 #[command(
     name = crate_name!(),
-    version = crate_version!(),
+    version = format!("{} (built {})", crate_version!(), option_env!("BUILD_DATE").unwrap_or("unknown")),
     about = crate_description!(),
     long_about = format!("{}
 
