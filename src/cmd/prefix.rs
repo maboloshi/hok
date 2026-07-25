@@ -19,9 +19,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Check if the app directory exists at all (without /current)
         let base_dir = config.root_path().join("apps").join(&args.package);
         if base_dir.exists() {
-            output::err(format!("Package '{}' is installed but has no 'current' symlink.", args.package));
+            output::err(rust_i18n::t!("cmd.prefix_installed", pkg = args.package));
         } else {
-            output::err(format!("Package '{}' is not installed.", args.package));
+            output::err(rust_i18n::t!("cmd.prefix_no_pkg", pkg = args.package));
         }
         return Ok(());
     }

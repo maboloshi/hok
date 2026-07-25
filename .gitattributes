@@ -1,2 +1,26 @@
-bench.ps1.template linguist-language=PowerShell
-sandbox.wsb.template linguist-language=XML
+# Source code
+*.rs        text eol=lf
+*.cargo     text eol=lf
+*.toml      text eol=lf
+*.lock      text eol=lf
+
+# Config / data
+*.yml       text eol=lf working-tree-encoding=UTF-8
+*.yaml      text eol=lf working-tree-encoding=UTF-8
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+
+# Shell / scripts
+*.ps1       text eol=lf
+*.psd1      text eol=lf
+*.psm1      text eol=lf
+*.py        text eol=lf
+
+# Build / CI
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# Binary / generated
+*.zip       binary
+*.exe       binary

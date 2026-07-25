@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::{operation, Session};
 use scoop_hash::ChecksumBuilder;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -23,7 +23,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let url = args.url.trim();
     if url.is_empty() {
-        output::err("URL is required.");
+        output::err(rust_i18n::t!("cmd.create_url_required"));
         return Ok(());
     }
 
@@ -50,14 +50,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     std::fs::create_dir_all(&tmp_dir)?;
     let dest = tmp_dir.join(filename);
 
-    print!("  Downloading ... ");
-    std::io::stdout().flush()?;
+    output::progress(rust_i18n::t!("cmd.downloading"), "");
     operation::download_file(session, url, &dest)
         .map_err(|e| anyhow::anyhow!("download failed: {}", e))?;
     output::ok();
 
-    print!("  Computing hash ... ");
-    std::io::stdout().flush()?;
+    output::progress(rust_i18n::t!("cmd.computing_hash"), "");
     let hash = compute_file_hash(&dest)?;
     output::ok();
 
@@ -89,7 +87,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match &args.output {
         Some(path) => {
             std::fs::write(path, output.as_bytes())?;
-            output::done(format!("Manifest saved to: {}", path.display()));
+            output::done(rust_i18n::t!("cmd.create_manifest_saved", path = path.display()));
         }
         None => {
             println!("\n{}", output);

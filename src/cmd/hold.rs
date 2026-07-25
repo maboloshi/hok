@@ -14,11 +14,11 @@ pub struct Args {
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     for name in &args.package {
-        print!("Holding {}...", name);
+        output::progress(rust_i18n::t!("cmd.holding"), name);
         match operation::package_hold(session, name, true) {
             Ok(..) => output::ok(),
             Err(err) => {
-                output::err("Err");
+                output::err(rust_i18n::t!("cmd.hold_err"));
                 return Err(err.into());
             }
         }

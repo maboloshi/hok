@@ -55,12 +55,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Set { key, value } => {
             operation::config_set(session, key.as_str(), value.as_str())?;
-            output::info(format!("Config '{key}' has been set to '{value}'"));
+            output::info(rust_i18n::t!("cmd.config_set", key = key, value = value));
             Ok(())
         }
         Command::Unset { key } => {
             operation::config_set(session, key.as_str(), "")?;
-            output::info(format!("Config '{key}' has been unset"));
+            output::info(rust_i18n::t!("cmd.config_unset", key = key));
             Ok(())
         }
     }

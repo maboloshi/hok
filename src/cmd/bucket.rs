@@ -1,6 +1,5 @@
 use clap::{ArgAction, Parser, Subcommand};
 use libscoop::{operation, Session};
-use std::io::{stdout, Write};
 
 use crate::{output, Result};
 
@@ -41,13 +40,12 @@ pub enum Command {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Add { name, repo } => {
-            print!("Adding bucket {}... ", name);
-            let _ = stdout().flush();
+            output::progress(rust_i18n::t!("cmd.adding_bucket"), &name);
             let repo = repo.as_deref().unwrap_or_default();
             match operation::bucket_add(session, name.as_str(), repo) {
                 Ok(..) => output::ok(),
                 Err(err) => {
-                    output::err("Err");
+                    output::err(rust_i18n::t!("cmd.bucket_err"));
                     return Err(err.into());
                 }
             }
@@ -75,12 +73,11 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Remove { name } => {
             for name in name {
-                print!("Removing bucket {}... ", name);
-                let _ = stdout().flush();
+                output::progress(rust_i18n::t!("cmd.removing_bucket"), &name);
                 match operation::bucket_remove(session, name.as_str()) {
                     Ok(..) => output::ok(),
                     Err(err) => {
-                        output::err("Err");
+                        output::err(rust_i18n::t!("cmd.bucket_err"));
                         return Err(err.into());
                     }
                 }

@@ -41,7 +41,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if packages.is_empty() {
-        output::warn("No packages found in import file.");
+        output::warn(rust_i18n::t!("cmd.import_no_pkgs"));
         return Ok(());
     }
 
@@ -51,7 +51,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let options = vec![SyncOption::AssumeYes];
 
     match operation::package_sync(session, queries, options) {
-        Ok(_) => output::info("Import complete."),
+        Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),
         Err(e) => output::err(format!("Import error: {}", e)),
     }
 

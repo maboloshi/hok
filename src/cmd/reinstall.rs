@@ -49,7 +49,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     if !held.is_empty() {
         output::status(format!("Releasing held packages: {}", held.join(", ")));
         for name in &held { operation::package_hold(session, name, false)?; }
-        output::done("Packages released.");
+        output::done(rust_i18n::t!("reinstall.released"));
     }
 
     // Step 1: Uninstall
@@ -78,7 +78,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     if !held.is_empty() {
         output::status(format!("Re-holding packages: {}", held.join(", ")));
         for name in &held { operation::package_hold(session, name, true)?; }
-        output::done("Packages re-held.");
+        output::done(rust_i18n::t!("reinstall.reheld"));
     }
 
     Ok(())

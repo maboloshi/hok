@@ -19,7 +19,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     if result.is_empty() {
-        output::err(format!("Could not find package named '{query}'."));
+        output::err(rust_i18n::t!("cmd.depends_not_found", query = query));
         return Ok(());
     }
 
@@ -32,13 +32,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         for (idx, pkg) in result.iter().enumerate() {
             output::named(format!("{idx}."), format!("{}/{}", pkg.bucket(), pkg.name()));
         }
-        print!("\nSelect one (0-{}): ", result.len() - 1);
+        output::prompt(rust_i18n::t!("output.select_one", max = result.len() - 1));
         std::io::stdout().flush().ok();
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).ok();
         let idx = input.trim().parse::<usize>().unwrap_or(0);
         if idx >= result.len() {
-            output::err("Invalid selection.");
+            output::err(rust_i18n::t!("cmd.depends_invalid"));
             return Ok(());
         }
         result.remove(idx)

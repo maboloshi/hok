@@ -18,7 +18,7 @@ pub struct Args {
 pub fn execute(args: Args) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        output::err(format!("error: '{}' is not a directory", dir.display()));
+        output::err(rust_i18n::t!("cmd.checkurls_err_dir", path = dir.display()));
         return Ok(());
     }
 
@@ -71,7 +71,7 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     if count == 0 {
-        output::info("No manifests needed formatting.");
+        output::info(rust_i18n::t!("cmd.formatjson_none"));
     } else {
         output::info(format!("Formatted {count} manifest(s)."));
     }

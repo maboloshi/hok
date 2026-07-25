@@ -1,6 +1,7 @@
 use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
-use std::{io::Write, path::Path, process::Command};
+use std::path::Path;
+use std::process::Command;
 
 use crate::{output, Result};
 
@@ -20,7 +21,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     if result.is_empty() {
-        output::err(format!("Could not find package named '{query}'."))
+        output::err(rust_i18n::t!("cmd.cat_not_found", query = query))
     } else {
         let length = result.len();
         let package = if length == 1 {
@@ -37,19 +38,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     pkg.homepage()
                 );
             }
-            print!("\nPlease select one, enter the number to continue: ");
-            std::io::stdout().flush().unwrap();
+            output::prompt(rust_i18n::t!("output.select_prompt"));
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
             let parsed = input.trim().parse::<usize>();
             if parsed.is_err() {
-                output::err("Invalid input.");
+                output::err(rust_i18n::t!("cmd.cat_invalid"));
                 return Ok(());
             }
 
             let num = parsed.unwrap();
             if num >= length {
-                output::err("Invalid input.");
+                output::err(rust_i18n::t!("cmd.cat_invalid"));
                 return Ok(());
             }
             &result[num]

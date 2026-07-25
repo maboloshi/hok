@@ -19,7 +19,7 @@ pub struct Args {
 pub fn execute(args: Args) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        output::err(format!("error: '{}' is not a directory", dir.display()));
+        output::err(rust_i18n::t!("cmd.checkurls_err_dir", path = dir.display()));
         return Ok(());
     }
 
@@ -64,11 +64,9 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     if !args.supported {
-        output::info(format!(
-            "Scanned {total} manifests: {missing_checkver} missing checkver, {missing_autoupdate} missing autoupdate.",
-        ));
+        output::info(rust_i18n::t!("cmd.missing_checkver_scan", total = total, missing = missing_checkver, noauto = missing_autoupdate));
         if missing_checkver == 0 && missing_autoupdate == 0 {
-            output::info("All manifests have checkver and autoupdate.");
+            output::info(rust_i18n::t!("cmd.missing_checkver_all"));
         }
     }
 

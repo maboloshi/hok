@@ -24,14 +24,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if results.is_empty() {
-        output::info("No old versions to clean up.");
+        output::info(rust_i18n::t!("cmd.cleanup_no_old"));
     } else {
-        output::info("Everything is shiny now!");
+        output::info(rust_i18n::t!("cmd.checkup_ok"));
     }
 
     if args.cache {
         operation::cache_remove(session, "*")?;
-        output::info("Cache cleaned.");
+        output::info(rust_i18n::t!("cmd.cache_cleaned"));
     }
 
     Ok(())

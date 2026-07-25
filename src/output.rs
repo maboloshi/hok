@@ -8,6 +8,24 @@
 //!
 //! Both styles support colored output. Color can be disabled via
 //! `--no-color` flag, `NO_COLOR` environment variable, or config.
+//!
+//! # Function overview (Scoop / Pacman)
+//!
+//! | Function    | Scoop mode                 | Pacman mode                      |
+//! |-------------|----------------------------|----------------------------------|
+//! | `header`    | `\nTitle` (bold)           | `\n:: Title` (cyan bold)         |
+//! | `info`      | `  msg` (green)            | `  ✓ msg` (green)                |
+//! | `warn`      | `WARN msg` (yellow stderr) | `  ⚠ msg` (yellow)              |
+//! | `err`       | `ERROR msg` (red stderr)   | `  ✗ msg` (red stderr)           |
+//! | `status`    | `  msg...` (inline flush)  | `  msg` (grey bold)              |
+//! | `done`      | `  msg` (green)            | `  ✓ msg` (green)                |
+//! | `ok`        | `ok`                       | `  ok` (green bold)              |
+//! | `detail`    | `  msg` (always visible)   | `  · msg` (only with --detail)   |
+//! | `field`     | `  label: value`           | `  label` (cyan) `value`         |
+//! | `named`     | `  name msg`               | `  name` (blue) `msg`            |
+//! | `change`    | `  label -> value`         | `  label` (blue) `value`         |
+//! | `progress`  | `  action target...` (flush)| same (Scoop-only style)         |
+//! | `prompt`    | `\nmsg ` (no newline)      | same                             |
 
 use crossterm::style::Stylize;
 use std::io::Write;
@@ -173,6 +191,19 @@ pub fn prompt_yes_no() -> bool {
             }
         }
     }
+}
+
+/// Display an interactive prompt message (no trailing newline).
+pub fn prompt(msg: impl AsRef<str>) {
+    print!("\n{} ", msg.as_ref());
+    let _ = std::io::stdout().flush();
+}
+
+/// Inline progress with flush (paired with ok/err/done).
+/// Example: progress("Holding", "7zip") → "  Holding 7zip... "
+pub fn progress(action: impl AsRef<str>, target: impl AsRef<str>) {
+    print!("  {} {}... ", action.as_ref(), target.as_ref());
+    let _ = std::io::stdout().flush();
 }
 
 

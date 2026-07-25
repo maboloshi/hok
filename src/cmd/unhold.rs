@@ -15,11 +15,11 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let packages = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     for name in packages {
-        print!("Unholding {}...", name);
+        output::progress(rust_i18n::t!("cmd.unholding"), name);
         match operation::package_hold(session, name, false) {
             Ok(..) => output::ok(),
             Err(err) => {
-                output::err("Err");
+                output::err(rust_i18n::t!("cmd.hold_err"));
                 return Err(err.into());
             }
         }

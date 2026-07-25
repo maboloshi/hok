@@ -22,7 +22,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let pkgs = operation::package_query(session, queries, options, false)?;
 
     if pkgs.is_empty() {
-        output::err("No packages found.");
+        output::err(rust_i18n::t!("cmd.no_pkgs_found"));
         return Ok(());
     }
 
@@ -33,7 +33,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     for pkg in &pkgs {
         let urls = pkg.manifest().url();
         if urls.is_empty() {
-            output::named(pkg.name(), "no download URLs");
+            output::named(pkg.name(), rust_i18n::t!("cmd.no_download_urls"));
             continue;
         }
 
@@ -54,7 +54,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 Err(e) => output::err(format!("{e}")),
             }
         } else {
-            output::warn("skipped (set VT_API_KEY to scan)");
+            output::warn(rust_i18n::t!("cmd.vt_skip"));
         }
     }
 

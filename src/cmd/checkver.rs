@@ -1,4 +1,3 @@
-use crossterm::style::Stylize;
 use clap::Parser;
 use libscoop::{operation, Manifest, Session};
 use regex::Regex;
@@ -27,7 +26,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        output::err(format!("error: '{}' is not a directory", dir.display()));
+        output::err(rust_i18n::t!("cmd.checkver_err_dir", path = dir.display()));
         return Ok(());
     }
 
@@ -52,8 +51,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             None => continue,
         };
 
-        print!("{} ... ", stem);
-
         // Script mode: execute PowerShell script to determine version
         if let Some(script_lines) = cv.script.as_ref() {
             let script = script_lines.devectorize().join("\r\n");
@@ -61,19 +58,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 Ok(Some(ver)) => {
                     let current = manifest.version().to_string();
                     if ver == current {
-                        println!("{} ({ver})", "up to date".dark_green().bold());
+                        output::done(format!("{stem} ({ver})"));
                     } else {
-                        println!("{} ({current} -> {ver})", "update available".dark_yellow().bold());
+                        output::info(format!("{stem} ({current} -> {ver})"));
                         if args.update {
                             match apply_autoupdate(session, &path, &manifest, &ver, &[ver.clone()]) {
-                                Ok(()) => output::done(format!("updated to {ver}")),
-                                Err(e) => output::err(format!("update failed: {e}")),
+                                Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
+                                Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
                             }
                         }
                     }
                 }
-                Ok(None) => output::warn("script returned no version"),
-                Err(e) => output::err(format!("script error: {e}")),
+                Ok(None) => output::warn(rust_i18n::t!("cmd.checkver_no_version")),
+                Err(e) => output::err(rust_i18n::t!("cmd.checkver_script_err", e = e)),
             }
             continue;
         }
@@ -94,15 +91,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                     format!("https://sourceforge.net/projects/{}/rss?path=/{}", proj, sf.path)
                 }
-                None => { output::err("could not extract SourceForge project"); continue; }
+                None => { output::err(rust_i18n::t!("cmd.checkver_sourceforge_err")); continue; }
             }
         } else if is_github_checkver(&cv) {
             match github_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
-                None => { output::err("could not extract GitHub repo from homepage"); continue; }
+                None => { output::err(rust_i18n::t!("cmd.checkver_github_err")); continue; }
             }
         } else {
-            output::err("no checkver url"); continue;
+            output::err(rust_i18n::t!("cmd.checkver_no_url")); continue;
         };
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses
@@ -115,7 +112,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let raw = match operation::download_page(session, &url) {
             Ok(t) => t,
             Err(e) => {
-                output::err(format!("fetch error: {e}"));
+                output::err(rust_i18n::t!("cmd.err_download", e = e));
                 continue;
             }
         };
@@ -126,19 +123,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         match extract_result {
             Some((ref ver, _)) if ver == &current => {
-                println!("{} ({ver})", "up to date".dark_green().bold());
+                output::done(format!("{stem} ({ver})"));
             }
             Some((ref ver, ref captures)) => {
-                println!("{} ({current} -> {ver})", "update available".dark_yellow().bold());
+                output::info(format!("{stem} ({current} -> {ver})"));
                 if args.update {
                     match apply_autoupdate(session, &path, &manifest, ver, captures) {
-                        Ok(()) => output::done(format!("updated to {ver}")),
-                        Err(e) => output::err(format!("update failed: {e}")),
+                        Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
+                        Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
                     }
                 }
             }
             None => {
-                output::err("could not extract version");
+                output::err(rust_i18n::t!("cmd.checkver_no_extract"));
             }
         }
     }

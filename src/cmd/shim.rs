@@ -20,7 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command.as_str() {
         "list" => {
             if !shims_dir.exists() {
-                output::warn("No shims directory found.");
+                output::warn(rust_i18n::t!("cmd.shim_no_dir"));
                 return Ok(());
             }
             for entry in std::fs::read_dir(&shims_dir)?.flatten() {
@@ -43,7 +43,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                 }
             } else {
-                output::err("Usage: hok shim info <name>");
+                output::err(rust_i18n::t!("cmd.shim_info_usage"));
             }
         }
         _ => {

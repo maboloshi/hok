@@ -44,15 +44,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if packages.is_empty() {
-        output::status("No apps installed.");
+        output::status(rust_i18n::t!("cmd.no_apps"));
     } else if args.all {
         if outdated == 0 {
-            output::info("All apps are up to date.");
+            output::info(rust_i18n::t!("cmd.install_ok"));
         } else {
             output::warn(format!("Status: {outdated} outdated / {up_to_date} up to date."));
         }
     } else if outdated == 0 {
-        output::info("All apps are up to date.");
+        output::info(rust_i18n::t!("cmd.install_ok"));
     }
 
     Ok(())

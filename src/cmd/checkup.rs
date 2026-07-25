@@ -13,7 +13,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
     let mut issues = 0u32;
 
     if !apps_dir.exists() {
-        output::warn("No apps directory found.");
+        output::warn(rust_i18n::t!("cmd.no_apps_found"));
         return Ok(());
     }
 
@@ -27,7 +27,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
 
         // Check that 'current' symlink exists and points somewhere
         if !current.exists() {
-            output::named(name.as_ref(), "no 'current' symlink");
+            output::named(name.as_ref(), rust_i18n::t!("cmd.no_current_symlink"));
             issues += 1;
             continue;
         }
@@ -37,20 +37,20 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
         let manifest_json = current.join("manifest.json");
 
         if !install_json.exists() {
-            output::named(name.as_ref(), "missing install.json");
+            output::named(name.as_ref(), rust_i18n::t!("cmd.missing_install_json"));
             issues += 1;
         }
         if !manifest_json.exists() {
-            output::named(name.as_ref(), "missing manifest.json");
+            output::named(name.as_ref(), rust_i18n::t!("cmd.missing_manifest_json"));
             issues += 1;
         }
     }
 
     if issues == 0 {
-        output::info("No issues found.");
+        output::info(rust_i18n::t!("cmd.no_issues"));
     } else {
         output::warn(format!("{issues} issue(s) found."));
-        output::status("run 'hok reset <app>' to fix");
+        output::status(rust_i18n::t!("cmd.run_reset"));
     }
 
     Ok(())

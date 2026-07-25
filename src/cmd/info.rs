@@ -28,14 +28,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
 
             for (idx, pkg) in packages.iter().enumerate() {
-                output::field("Identity:", pkg.ident());
-                output::field("Name:", pkg.name());
-                output::field("Bucket:", pkg.bucket());
-                output::field("Description:", pkg.description().unwrap_or("<no description>"));
-                output::field("Version:", pkg.version());
-                output::field("Homepage:", pkg.homepage());
-                output::field("License:", pkg.license().to_string());
-                output::field("Shims:", pkg.shims()
+                output::field(rust_i18n::t!("output.field_identity"), pkg.ident());
+                output::field(rust_i18n::t!("output.field_name"), pkg.name());
+                output::field(rust_i18n::t!("output.field_bucket"), pkg.bucket());
+                output::field(rust_i18n::t!("output.field_description"), pkg.description().unwrap_or("<no description>"));
+                output::field(rust_i18n::t!("output.field_version"), pkg.version());
+                output::field(rust_i18n::t!("output.field_homepage"), pkg.homepage());
+                output::field(rust_i18n::t!("output.field_license"), pkg.license().to_string());
+                output::field(rust_i18n::t!("output.field_shims"), pkg.shims()
                     .map(|v| v.join(","))
                     .unwrap_or("<no shims>".to_owned()));
 

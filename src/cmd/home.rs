@@ -1,6 +1,5 @@
 use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
-use std::io::Write;
 
 use crate::{output, util, Result};
 
@@ -20,7 +19,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = operation::package_query(session, queries, options, false)?;
 
     match result.len() {
-        0 => output::err(format!("Could not find package named '{query}'.")),
+        0 => output::err(rust_i18n::t!("cmd.home_not_found", query = query)),
         1 => {
             let package = &result[0];
             let url = package.homepage();
@@ -29,7 +28,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         _ => {
             result.sort_by_key(|p| p.ident());
 
-            output::info(format!("Found multiple packages named '{query}':\n"));
+            output::info(rust_i18n::t!("cmd.home_multiple", query = query));
             for (idx, pkg) in result.iter().enumerate() {
                 println!(
                     "  {idx}. {}/{} ({})",
@@ -38,8 +37,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     pkg.homepage()
                 );
             }
-            print!("\nPlease select one, enter the number to continue: ");
-            std::io::stdout().flush().unwrap();
+            output::prompt(rust_i18n::t!("output.select_prompt"));
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
             let parsed = input.trim().parse::<usize>();
@@ -51,7 +49,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     return Ok(());
                 }
             }
-            output::err("Invalid input.");
+            output::err(rust_i18n::t!("cmd.home_invalid"));
         }
     }
     Ok(())

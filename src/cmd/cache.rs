@@ -64,7 +64,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             if all {
                 match operation::cache_remove(session, "*") {
                     Ok(_) => {
-                        output::info("All download caches were removed.");
+                        output::info(rust_i18n::t!("cmd.cache_all_removed"));
                         return Ok(());
                     }
                     Err(e) => return Err(e.into()),
@@ -75,9 +75,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 match operation::cache_remove(session, query.as_str()) {
                     Ok(_) => {
                         if query == "*" {
-                            output::info("All download caches were removed.");
+                            output::info(rust_i18n::t!("cmd.cache_all_removed"));
                         } else {
-                            output::info(format!("All caches matching '{query}' were removed."));
+                            output::info(rust_i18n::t!("cmd.cache_matching_removed", query = query));
                         }
                     }
                     Err(e) => return Err(e.into()),

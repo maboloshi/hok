@@ -30,7 +30,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             let aliases = config.aliases();
             match aliases {
                 Some(map) if !map.is_empty() => {
-                    output::header("Aliases");
+                    output::header(rust_i18n::t!("cmd.header_aliases"));
                     let mut sorted: Vec<_> = map.iter().collect();
                     sorted.sort_by_key(|(k, _)| *k);
                     for (name, cmd) in sorted {
@@ -43,7 +43,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                 }
                 _ => {
-                    output::warn("No aliases configured.");
+                    output::warn(rust_i18n::t!("cmd.no_aliases"));
                 }
             }
         }
@@ -54,7 +54,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     Err(e) => output::err(format!("{e}")),
                 }
             } else {
-                output::err("Usage: hok alias add <name> <command>");
+                output::err(rust_i18n::t!("cmd.alias_add_usage"));
             }
         }
         "rm" | "remove" | "delete" => {
@@ -64,11 +64,11 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     Err(e) => output::err(format!("{e}")),
                 }
             } else {
-                output::err("Usage: hok alias rm <name>");
+                output::err(rust_i18n::t!("cmd.alias_rm_usage"));
             }
         }
         _ => {
-            output::err(format!("Unknown command: '{cmd}'. Use: list, add, rm"));
+            output::err(rust_i18n::t!("cmd.alias_unknown", cmd = cmd));
         }
     }
 

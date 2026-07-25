@@ -87,15 +87,15 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
         }
     });
 
-    output::header("Updating buckets");
+    output::header(rust_i18n::t!("cmd.header_buckets"));
     operation::bucket_update(session)?;
     handle.join().unwrap();
 
     // Refresh SQLite manifest cache with visible feedback
     if session.config().use_sqlite_cache() {
-        output::status("Refreshing manifest cache...");
+        output::status(rust_i18n::t!("cmd.refresh_cache"));
         operation::refresh_manifest_cache(session);
-        output::done("Manifest cache refreshed.");
+        output::done(rust_i18n::t!("cmd.cache_done"));
     }
 
     Ok(())

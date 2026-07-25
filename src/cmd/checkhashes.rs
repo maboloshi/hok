@@ -34,7 +34,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        output::err(format!("error: '{}' is not a directory", dir.display()));
+        output::err(rust_i18n::t!("cmd.checkhashes_err_dir", path = dir.display()));
         return Ok(());
     }
 
@@ -81,7 +81,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Skip placeholders
         let raw_hash = hash_str.value();
         if raw_hash.is_empty() || raw_hash == "TODO" {
-            output::warn("skipped (no hash)");
+            output::warn(rust_i18n::t!("cmd.checkhashes_skipped"));
             continue;
         }
 
@@ -93,7 +93,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             match operation::download_file(session, url, &cache_path) {
                 Ok(()) => {}
                 Err(e) => {
-                    output::err(format!("download failed: {e}"));
+                    output::err(rust_i18n::t!("cmd.err_download", e = e));
                     failed += 1;
                     continue;
                 }
@@ -104,7 +104,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let actual_hash = match compute_hash(&cache_path, hash_str.algorithm()) {
             Ok(h) => h,
             Err(e) => {
-                output::err(format!("hash error: {e}"));
+                output::err(rust_i18n::t!("cmd.err_hash", e = e));
                 failed += 1;
                 continue;
             }
@@ -119,19 +119,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Hash mismatch or force update
         if args.update || args.force {
             if args.force {
-                output::change("re-hashed", "->", &actual_hash[..12]);
+                output::change(rust_i18n::t!("cmd.checkhashes_rehashed"), "->", &actual_hash[..12]);
             } else {
-                output::change("hash mismatch! updated", "->", &actual_hash[..12]);
+                output::change(rust_i18n::t!("cmd.checkhashes_mismatch_upd"), "->", &actual_hash[..12]);
             }
             update_json_hash(&path, hash_str.algorithm(), &actual_hash)?;
             updated += 1;
         } else {
-            output::err(format!("hash mismatch expected {} got {}", &raw_hash[..12], &actual_hash[..12]));
+            output::err(rust_i18n::t!("cmd.checkhashes_mismatch", expected = &raw_hash[..12], actual = &actual_hash[..12]));
             failed += 1;
         }
     }
 
-    output::info(format!("Scanned {total}: {passed} ok, {failed} failed, {updated} updated."));
+    output::info(rust_i18n::t!("cmd.checkhashes_summary", total = total, passed = passed, failed = failed, updated = updated));
 
     Ok(())
 }

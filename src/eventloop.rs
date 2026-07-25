@@ -65,21 +65,21 @@ pub fn run_event_loop(
             match event {
                 // --- Resolve phase ---
                 Event::PackageResolveStart => {
-                    output::status("Resolving packages...");
+                    output::status(rust_i18n::t!("status.resolving"));
                 }
                 Event::PackageResolveDone => {
-                    output::done("Resolving packages completed.");
+                    output::done(rust_i18n::t!("status.resolving_done"));
                 }
 
                 // --- Download sizing ---
                 Event::PackageDownloadSizingStart => {
-                    output::status("Calculating download size...");
+                    output::status(rust_i18n::t!("status.sizing"));
                 }
                 Event::PackageDownloadSizingDone => {}
 
                 // --- Download ---
                 Event::PackageDownloadStart => {
-                    output::status("Downloading packages...");
+                    output::status(rust_i18n::t!("status.downloading"));
                 }
                 Event::PackageDownloadProgress(ctx) => {
                     if let Some(ref mut dp) = dlprogress {
@@ -93,22 +93,24 @@ pub fn run_event_loop(
 
                 // --- Integrity check ---
                 Event::PackageIntegrityCheckStart => {
-                    output::status("Checking hash...");
+                    output::status(rust_i18n::t!("status.checking_hash"));
                 }
                 Event::PackageIntegrityCheckProgress(ctx) => {
-                    output::status(format!("Checking hash...{ctx}"));
+                    output::status(rust_i18n::t!("detail.checking_hash_item", ctx = ctx));
                 }
                 Event::PackageIntegrityCheckDone => {
                     output::ok();
                 }
                 // --- Extraction ---
                 Event::PackageExtractStart(ctx) => {
-                    output::detail(format!("extracting: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.extracting", ctx = ctx));
                 }
                 Event::PackageExtractProgress(ctx) => {
-                    output::detail(format!("extracting: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.extracting", ctx = ctx));
                 }
-                Event::PackageExtractDone => {}
+                Event::PackageExtractDone => {
+                    output::detail(rust_i18n::t!("detail.extract_done"));
+                }
 
                 // --- Commit (install/update/uninstall) ---
                 Event::PackageCommitStart(ctx) => {
@@ -121,53 +123,69 @@ pub fn run_event_loop(
                 // --- Shim operations ---
                 Event::PackageShimRemoveStart => {}
                 Event::PackageShimRemoveProgress(ctx) => {
-                    output::detail(format!("removing shim: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.removing_shim", ctx = ctx));
                 }
-                Event::PackageShimRemoveDone => {}
+                Event::PackageShimRemoveDone => {
+                    output::detail(rust_i18n::t!("detail.shim_removed"));
+                }
 
                 Event::PackageShimAddStart(ctx) => {
-                    output::detail(format!("creating shim: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
                 }
                 Event::PackageShimAddProgress(ctx) => {
-                    output::detail(format!("creating shim: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
                 }
-                Event::PackageShimAddDone => {}
+                Event::PackageShimAddDone => {
+                    output::detail(rust_i18n::t!("detail.shim_done"));
+                }
 
                 // --- Shortcut operations ---
                 Event::PackageShortcutRemoveStart => {}
                 Event::PackageShortcutRemoveProgress(ctx) => {
-                    output::detail(format!("removing shortcut: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.removing_shortcut", ctx = ctx));
                 }
-                Event::PackageShortcutRemoveDone => {}
+                Event::PackageShortcutRemoveDone => {
+                    output::detail(rust_i18n::t!("detail.shortcut_removed"));
+                }
 
                 Event::PackageShortcutAddStart => {}
                 Event::PackageShortcutAddProgress(ctx) => {
-                    output::detail(format!("creating shortcut: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.creating_shortcut", ctx = ctx));
                 }
-                Event::PackageShortcutAddDone => {}
+                Event::PackageShortcutAddDone => {
+                    output::detail(rust_i18n::t!("detail.shortcut_done"));
+                }
 
                 // --- Environment operations ---
                 Event::PackageEnvPathRemoveStart => {
-                    output::detail("removing environment path...");
+                    output::detail(rust_i18n::t!("detail.removing_env_path"));
                 }
-                Event::PackageEnvPathRemoveDone => {}
+                Event::PackageEnvPathRemoveDone => {
+                    output::detail(rust_i18n::t!("detail.env_path_removed"));
+                }
 
                 Event::PackageEnvVarRemoveStart => {
-                    output::detail("removing environment variable...");
+                    output::detail(rust_i18n::t!("detail.removing_env_var"));
                 }
-                Event::PackageEnvVarRemoveDone => {}
+                Event::PackageEnvVarRemoveDone => {
+                    output::detail(rust_i18n::t!("detail.env_var_removed"));
+                }
 
                 // --- Persist ---
                 Event::PackagePersistPurgeStart => {
-                    output::detail("removing persisted data...");
+                    output::detail(rust_i18n::t!("detail.removing_persist"));
                 }
-                Event::PackagePersistPurgeDone => {}
+                Event::PackagePersistPurgeDone => {
+                    output::detail(rust_i18n::t!("detail.persist_done"));
+                }
 
                 // --- PS module ---
                 Event::PackagePsModuleRemoveStart(ctx) => {
-                    output::detail(format!("removing psmodule: {ctx}"));
+                    output::detail(rust_i18n::t!("detail.removing_psmodule", ctx = ctx));
                 }
-                Event::PackagePsModuleRemoveDone => {}
+                Event::PackagePsModuleRemoveDone => {
+                    output::detail(rust_i18n::t!("detail.psmodule_removed"));
+                }
 
                 // --- PowerShell script output ---
                 Event::ScriptOutput(line) => {
@@ -181,7 +199,7 @@ pub fn run_event_loop(
 
                 // --- Post-install notes ---
                 Event::PackageNotes(note) => {
-                    println!("\n  {note}");
+                    output::info(note);
                 }
 
                 // --- Interactive prompts ---
@@ -194,7 +212,7 @@ pub fn run_event_loop(
 
                     let _ = std::io::stdout().execute(cursor::Show);
                     let index = loop {
-                        print!("\nPlease select one, enter the number to continue: ");
+                        output::prompt(rust_i18n::t!("output.select_prompt"));
                         std::io::stdout().flush().unwrap();
                         let mut input = String::new();
                         std::io::stdin().read_line(&mut input).unwrap();
@@ -213,7 +231,7 @@ pub fn run_event_loop(
                         continue;
                     }
                     if let Some(install) = transaction.install_view() {
-                        output::header("The following packages will be INSTALLED:");
+                        output::header(rust_i18n::t!("cmd.header_installed"));
                         let out = install
                             .iter()
                             .map(|p| format!("{}-{}", p.ident(), p.version()))
@@ -226,7 +244,7 @@ pub fn run_event_loop(
                         if transaction.install_view().is_some() {
                             println!();
                         }
-                        output::header("The following packages will be UPGRADED:");
+                        output::header(rust_i18n::t!("cmd.header_upgraded"));
                         let out = upgrade
                             .iter()
                             .map(|p| {
@@ -243,7 +261,7 @@ pub fn run_event_loop(
                         {
                             println!();
                         }
-                        output::header("The following packages will be REPLACED:");
+                        output::header(rust_i18n::t!("cmd.header_replaced"));
                         let out = replace
                             .iter()
                             .map(|p| format!("{}/{}", p.bucket(), p.name()))
@@ -283,15 +301,15 @@ pub fn run_event_loop(
 
                 // --- Cache hit ---
                 Event::PackageCacheHit(filename) => {
-                    output::status(format!("Loading {} from cache.", filename));
+                    output::status(rust_i18n::t!("detail.loading_cache", filename = filename));
                 }
 
                 // --- Symlink operations ---
                 Event::PackageSymlinkRemove(path) => {
-                    output::detail(format!("Unlinking {}", path));
+                    output::detail(rust_i18n::t!("detail.unlinking", path = path));
                 }
                 Event::PackageSymlinkCreate { from, to } => {
-                    output::detail(format!("Linking {} => {}", from, to));
+                    output::detail(rust_i18n::t!("detail.linking", from = from, to = to));
                 }
                 // --- Sync done ---
                 Event::PackageSyncDone => break,
