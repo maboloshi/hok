@@ -27,7 +27,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut hold_set = std::collections::BTreeSet::new();
     let mut exact_queries = Vec::new();
 
-    // Resolve queries to exact bucket-qualified names
+    // Resolve queries to exact bucket-qualified names.
+    // Only installed packages (with install.json + manifest.json) are accepted.
     for q in &args.package {
         if let Ok(pkgs) = operation::package_query(
             session,
@@ -41,6 +42,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
             }
+        } else {
+            return Err(anyhow::anyhow!(rust_i18n::t!("cmd.reinstall_not_installed", name = q)));
         }
     }
 
@@ -86,8 +89,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
 /// Uninstall phase.
 fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
+    let mut remove_opts = opts.to_vec();
+    remove_opts.push(SyncOption::Remove);
     let handle = eventloop::run_event_loop(session, Default::default());
-    operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
+    operation::package_sync(session, queries.to_vec(), remove_opts)?;
     handle.join().unwrap();
     Ok(())
 }

@@ -129,6 +129,7 @@ cmd:
   found: "Found %{count} package(s) for query '%{query}'"
   no_download_urls: "no download URLs"
   held_skip: "'%{name}' is held to version %{version}"
+  reinstall_not_installed: "'%{name}' is not installed. Use 'hok install' to install it."
 cli:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
