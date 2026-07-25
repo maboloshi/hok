@@ -21,7 +21,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let mut options = vec![];
+    let mut options = vec![SyncOption::Remove];
 
     if args.escape_hold {
         options.push(SyncOption::EscapeHold);
