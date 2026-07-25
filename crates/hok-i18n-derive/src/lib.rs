@@ -106,6 +106,7 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
     let mut sub_patches = vec![];
     for (kebab, _, _, ykey) in &cmds {
         let ta = format!("cli_help.{ykey}.about");
+        let tla = format!("cli_help.{ykey}.long_about");
         let mut ap = vec![];
         if let Some(fs) = plain.get(ykey.as_str()) {
             for fn_ in fs {
@@ -116,6 +117,7 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
         if let Some(subs) = nested.get(ykey.as_str()) {
             for (sk, sfs) in subs {
                 let tsa = format!("cli_help.{ykey}.args.{sk}");
+                let tla_sk = format!("cli_help.{ykey}.args.{sk}.long_about");
                 let sa: Vec<_> = sfs.iter().map(|fn_| {
                     let tk = format!("cli_help.{ykey}.args.{sk}.{fn_}");
                     quote! { .mut_arg(#fn_, |a| a.help(t!(#tk).to_string())) }
@@ -123,7 +125,7 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
                 ap.push(quote! { .mut_subcommand(#sk, |s| s
                     .help_template(#sub_tmpl)
                     .about(t!(#tsa).to_string())
-                    .long_about(t!(#tsa).to_string())
+                    .long_about(i18n_cli_long_about(#tla_sk, #tsa))
                     #(#sa)*
                 ) });
             }
@@ -132,12 +134,17 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
             .help_template(#sub_tmpl)
             .subcommand_help_heading(t!(#sub_h).to_string())
             .about(t!(#ta).to_string())
-            .long_about(t!(#ta).to_string())
+            .long_about(i18n_cli_long_about(#tla, #ta))
             #(#ap)*
         ) });
     }
 
     let expanded = quote! {
+        fn i18n_cli_long_about(key: &str, fallback: &str) -> String {
+            let v = rust_i18n::t!(key).to_string();
+            if v.starts_with("cli_help.") { fallback.to_owned() } else { v }
+        }
+
         impl #struct_name {
             fn patch_i18n(cmd: ::clap::Command) -> ::clap::Command {
                 cmd

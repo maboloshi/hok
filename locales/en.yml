@@ -189,9 +189,11 @@ cli_help:
       version: "Print version"
   alias:
     args:
+      command: "Command: list (default), add, rm"
       name: Alias name (for add/rm)
       value: Alias command (for add)
-    about: "List, add, or remove Scoop aliases\n\nExamples:\n  hok alias list                   list all aliases\n  hok alias add <name> <command>   add an alias\n  hok alias rm  <name>            remove an alias"
+    about: "List, add, or remove Scoop aliases"
+    long_about: "List, add, or remove Scoop aliases\n\nExamples:\n  hok alias list                   list all aliases\n  hok alias add <name> <command>   add an alias\n  hok alias rm  <name>            remove an alias"
   bucket:
     about: Manage manifest buckets
     args:
@@ -252,7 +254,7 @@ cli_help:
       set: Add a new setting to the config file
       unset: Remove a setting from config file
   create:
-    about: "Create a manifest from a download URL\n\nDownloads the file, computes its hash, and generates a manifest skeleton."
+    about: "Create a manifest from a download URL"
     args:
       url: Download URL
       output: "Optional output file (default: stdout)"
@@ -330,7 +332,7 @@ cli_help:
       version: A specific version to reset to
     about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
   search:
-    about: "Search available package(s)\n\nSearch available package(s) from synced buckets. The query is performed against package names by default, use --with-description or --with-binary to search through package descriptions or binaries."
+    about: "Search available package(s)"
     args:
       explicit: Turn regex off and use explicit matching
       query: The query string (regex supported by default)
@@ -357,7 +359,8 @@ cli_help:
       no_hash_check: Skip package integrity check
       package: The package(s) to uninstall
   update:
-    about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
+    about: "Fetch and update subscribed buckets, or upgrade installed package(s)"
+    long_about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
@@ -380,7 +383,7 @@ cli_help:
       offline: Leverage cache and suppress network access
       package: "The package(s) to be upgraded (default: all except held)"
   virustotal:
-    about: "Check a package's download URL against VirusTotal\n\nRequires a VirusTotal API key. Set it with:\n  hok config virustotal_api_key <key>\nOr set the $VT_API_KEY environment variable."
+    about: "Check a package's download URL against VirusTotal"
     args:
       app: Package name(s) to check
   which:
