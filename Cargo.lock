@@ -1138,6 +1138,7 @@ dependencies = [
  "clap-verbosity-flag",
  "clap_complete",
  "crossterm",
+ "hok-i18n-derive",
  "indicatif",
  "jsonpath-rust",
  "libscoop",
@@ -1151,6 +1152,15 @@ dependencies = [
  "sys-locale",
  "tracing-subscriber",
  "ureq",
+]
+
+[[package]]
+name = "hok-i18n-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

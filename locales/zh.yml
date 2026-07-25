@@ -154,3 +154,233 @@ error:
   regex: "正则表达式错误"
   sqlite: "SQLite 错误"
   serde: "序列化错误"
+
+cli_help:
+  heading:
+    usage: "用法:"
+    subcommands: "子命令"
+    options: "选项"
+  after_help: "输入 'hok help <命令>' 查看特定命令的帮助。"
+  help:
+    about: "打印此消息或给定子命令的帮助"
+  hok:
+    about: "Hok 是 Scoop 的 Rust 实现"
+    args:
+      detail: "显示详细操作信息以便调试"
+      language: "强制 CLI 语言 (auto/en/zh)"
+      no_color: "禁用彩色输出"
+      verbose: "增加日志详细程度"
+      quiet: "减少日志详细程度"
+      help: "打印帮助信息"
+      version: "打印版本信息"
+  alias:
+    args:
+      name: 别名名称（用于 add/rm）
+      value: 别名命令（用于 add）
+    about: "列出、添加或删除 Scoop 别名  示例:   hok alias                        列出所有别名   hok alias list                   列出所有别名   hok alias add <名称> <命令>   添加别名   hok alias rm  <名称>            删除别名"
+  bucket:
+    about: 管理清单仓库
+    args:
+      add: 添加仓库
+      list: 列出仓库
+      list.known: 列出已知仓库
+      remove: 删除仓库
+      remove.name: 仓库名称
+  cache:
+    about: 包缓存管理
+    args:
+      list: 列出下载缓存
+      remove: 删除下载缓存
+      remove.all: 删除所有缓存
+  cat:
+    args:
+      package: 要检查的包名称
+    about: 查看包的清单信息
+  checkhashes:
+    about: 验证并更新清单哈希值
+    args:
+      app: "要检查的特定应用（支持通配符，默认为全部）"
+      cache: 对下载的文件使用缓存目录
+      dir: 要扫描清单的仓库目录
+      force: 即使哈希匹配也强制更新清单（重新哈希）
+      update: 发现不匹配时用正确哈希更新清单
+  checkup:
+    about: 检查已安装包的潜在问题
+  checkurls:
+    about: 检查清单 URL 的有效性
+    args:
+      app: "要检查的特定应用（支持通配符，默认为全部）"
+      dir: 要扫描清单的仓库目录
+      skip_valid: 仅显示无效 URL（隐藏有效的）
+      timeout: 请求超时时间（秒）
+  checkver:
+    about: 检查清单是否有新版本
+    args:
+      app: "要检查的特定应用（支持通配符，默认为全部）"
+      dir: 要扫描清单的仓库目录
+      update: 用新版本更新清单并触发自动更新
+  cleanup:
+    about: 通过删除旧版本清理应用
+    args:
+      app: 指定要清理的应用名称（留空表示全部）
+      cache: 同时删除下载缓存
+  completions:
+    args:
+      shell: Shell 类型
+    about: 生成 shell 补全脚本
+  config:
+    about: 配置管理
+    args:
+      edit: "编辑配置文件 [默认: 系统默认编辑器]"
+      list: 以键值对形式列出所有设置
+      set: 向配置文件添加新设置
+      unset: 从配置文件删除设置
+  create:
+    about: "从下载 URL 创建清单  下载文件、计算哈希并生成清单骨架。"
+    args:
+      url: 下载 URL
+      output: "输出文件路径（可选，默认为 stdout）"
+  depends:
+    args:
+      package: 包名称
+    about: 显示包的依赖关系
+  export:
+    about: 导出已安装包列表
+    args:
+      all: 包含非仓库包（URL/路径安装）
+  formatjson:
+    about: 格式化仓库目录中的清单 JSON 文件
+    args:
+      app: "要格式化的特定应用（支持通配符，默认为全部）"
+      dir: 要扫描清单的仓库目录
+  hold:
+    about: 锁定包以禁止更改
+    args:
+      package: 要锁定的包
+  home:
+    args:
+      package: 包名称
+    about: 浏览包的主页
+  import:
+    args:
+      file: 要导入的 JSON 文件
+    about: 从文件导入已安装包
+  info:
+    args:
+      query: 查询字符串（支持正则）
+    about: 显示包的基本信息
+  install:
+    about: 安装包
+    args:
+      assume_yes: 假设所有提示都是"是"并以非交互方式运行
+      download_only: 仅下载包而不执行安装
+      escape_hold: 绕过锁定以允许更改被锁定的包
+      ignore_cache: 忽略缓存并强制下载
+      ignore_failure: 忽略错误以确保事务完成
+      independent: 不安装依赖（可能破坏包）
+      no_hash_check: 跳过包完整性检查
+      no_replace: 不替换包
+      no_upgrade: 不升级包
+      offline: 利用缓存并禁止网络访问
+      package: 要安装的包
+  list:
+    about: 列出已安装的包
+    args:
+      explicit: 关闭正则并使用精确匹配
+      held: 列出被锁定的包
+      query: 查询字符串（默认支持正则）
+      upgradable: 列出可升级的包
+      versions: 显示所有已安装版本（不仅仅是当前版本）
+  missing_checkver:
+    about: 检查缺少 checkver 和 autoupdate 的仓库清单
+    args:
+      dir: 要扫描清单的仓库目录
+      supported: 仅显示具有 checkver/autoupdate 的清单（反向筛选）
+  prefix:
+    args:
+      package: 包名称
+    about: 显示包的安装目录
+  reinstall:
+    about: 重新安装包
+    args:
+      ignore_cache: 忽略缓存并强制下载
+      ignore_failure: 忽略错误以确保事务完成
+      no_hash_check: 跳过包完整性检查
+      offline: 利用缓存并禁止网络访问
+      package: 要重新安装的包
+  reset:
+    args:
+      app: 应用名称
+      version: 要重置到的特定版本
+    about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
+  search:
+    about: "搜索可用包  从已同步的仓库中搜索可用包。默认按包名称搜索，使用 --with-description 或 --with-binary 可通过包描述或可执行文件搜索。"
+    args:
+      explicit: 关闭正则并使用精确匹配
+      query: 查询字符串（默认支持正则）
+      with_binary: 同时搜索包的可执行文件
+      with_description: 同时搜索包的描述信息
+  shim:
+    args:
+      name: Shim 名称（用于 info 命令）
+    about: 列出或检查 shim
+    args:
+      command: "命令: info（默认），list"
+  status:
+    about: 显示所有已安装应用的状态
+    args:
+      all: "同时显示已是最新的应用（默认仅显示过期的）"
+  unhold:
+    about: 解锁包以允许更改
+    args:
+      package: 要解锁的包
+  uninstall:
+    about: 卸载包
+    args:
+      escape_hold: 绕过锁定以允许更改被锁定的包
+      ignore_failure: 忽略错误以确保事务完成
+      no_hash_check: 跳过包完整性检查
+      package: 要卸载的包
+  update:
+    about: "获取并更新已订阅的仓库，或升级已安装的包  示例:   hok update         仅更新仓库   hok update <应用>   升级特定包（兼容 Scoop）   hok update *       升级所有包"
+    args:
+      assume_yes: 假设所有提示都是"是"并以非交互方式运行
+      escape_hold: 绕过锁定以允许升级被锁定的包
+      force: 即使在冷却期内也强制更新
+      ignore_cache: 忽略缓存并强制下载
+      ignore_failure: 忽略错误以确保事务完成
+      independent: 不安装依赖（可能破坏包）
+      no_hash_check: 跳过包完整性检查
+      no_replace: 不替换包
+      no_upgrade: 不升级包
+      offline: 利用缓存并禁止网络访问
+      package: 要升级的包（省略则仅更新仓库）
+  upgrade:
+    about: 升级已安装的包
+    args:
+      assume_yes: 假设所有提示都是"是"并以非交互方式运行
+      escape_hold: 绕过锁定以允许升级被锁定的包
+      ignore_failure: 忽略错误以确保事务完成
+      no_hash_check: 跳过包完整性检查
+      offline: 利用缓存并禁止网络访问
+      package: "要升级的包（默认为全部，被锁定的除外）"
+  virustotal:
+    about: "检查包下载 URL 是否被 VirusTotal 标记  需要 VirusTotal API 密钥。通过以下方式设置:   hok config virustotal_api_key <密钥> 或设置 $VT_API_KEY 环境变量。"
+    args:
+      app: 要检查的包名称
+  which:
+    about: 显示命令的 shim 位置
+
+# 命令别名（用于 shell 补全）
+cli_alias:
+  bucket:
+    List: [ls]
+    Remove: [rm]
+  cache:
+    List: [ls]
+    Remove: [rm]
+  config:
+    List: [ls]
+  search: [s]
+  uninstall: [rm, remove]
+  update: [u]

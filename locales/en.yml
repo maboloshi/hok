@@ -156,3 +156,233 @@ error:
   regex: "Regular expression error"
   sqlite: "SQLite error"
   serde: "Serialization error"
+
+cli_help:
+  heading:
+    usage: "Usage:"
+    subcommands: "Subcommands"
+    options: "Options"
+  after_help: "Type 'hok help <command>' to get help for a specific command."
+  help:
+    about: "Print this message or the help of the given subcommand(s)"
+  hok:
+    about: "Hok is a CLI implementation of Scoop in Rust"
+    args:
+      detail: "Show detailed operation information for debugging"
+      language: "Force CLI language (auto/en/zh)"
+      no_color: "Disable colored output"
+      verbose: "Increase logging verbosity"
+      quiet: "Decrease logging verbosity"
+      help: "Print help"
+      version: "Print version"
+  alias:
+    args:
+      name: Alias name (for add/rm)
+      value: Alias command (for add)
+    about: "List, add, or remove Scoop aliases  Examples:   hok alias                        list all aliases   hok alias list                   list all aliases   hok alias add <name> <command>   add an alias   hok alias rm  <name>            remove an alias"
+  bucket:
+    about: Manage manifest buckets
+    args:
+      add: Add a bucket
+      list: List buckets
+      list.known: List known buckets
+      remove: Remove bucket(s)
+      remove.name: The bucket name(s)
+  cache:
+    about: Package cache management
+    args:
+      list: List download caches
+      remove: Remove download caches
+      remove.all: Remove all caches
+  cat:
+    args:
+      package: Name of the package to be inspected
+    about: Inspect the manifest of a package
+  checkhashes:
+    about: Verify and update manifest hashes
+    args:
+      app: "Specific app(s) to check (supports wildcards, default: all)"
+      cache: Use cache directory for downloaded files
+      dir: Bucket directory to scan for manifests
+      force: Force update manifest even when hash matches (re-hash)
+      update: Update manifest with correct hash when mismatch found
+  checkup:
+    about: Check for potential problems with installed packages
+  checkurls:
+    about: Check manifest URLs for validity
+    args:
+      app: "Specific app(s) to check (supports wildcards, default: all)"
+      dir: Bucket directory to scan for manifests
+      skip_valid: Only show invalid URLs (suppress valid ones)
+      timeout: Request timeout in seconds
+  checkver:
+    about: Check manifest for a newer version
+    args:
+      app: "Specific app(s) to check (supports wildcards, default: all)"
+      dir: Bucket directory to scan for manifests
+      update: Update manifest with new version and trigger autoupdate
+  cleanup:
+    about: Cleanup apps by removing old versions
+    args:
+      app: Given named app(s) to be cleaned up (all apps if empty)
+      cache: Remove download cache simultaneously
+  completions:
+    args:
+      shell: The shell type
+    about: Generate shell completions
+  config:
+    about: Configuration management
+    args:
+      edit: "Edit the config file [default: system default editor]"
+      list: List all settings in key-value
+      set: Add a new setting to the config file
+      unset: Remove a setting from config file
+  create:
+    about: "Create a manifest from a download URL  Downloads the file, computes its hash, and generates a manifest skeleton."
+    args:
+      url: Download URL
+      output: "Optional output file (default: stdout)"
+  depends:
+    args:
+      package: Name of the package
+    about: Show dependencies of a package
+  export:
+    about: Export installed packages list
+    args:
+      all: Include non-bucket packages (URL/path installs)
+  formatjson:
+    about: Format manifest JSON files in a bucket directory
+    args:
+      app: "Specific app(s) to format (supports wildcards, default: all)"
+      dir: Bucket directory to scan for manifests
+  hold:
+    about: Hold package(s) to disable changes
+    args:
+      package: The package(s) to be held
+  home:
+    args:
+      package: The package name
+    about: Browse the homepage of a package
+  import:
+    args:
+      file: JSON file to import from
+    about: Import installed packages from a file
+  info:
+    args:
+      query: The query string (regex supported)
+    about: Show package(s) basic information
+  install:
+    about: Install package(s)
+    args:
+      assume_yes: Assume yes to all prompts and run non-interactively
+      download_only: Download package(s) without performing installation
+      escape_hold: Escape hold to allow changes on held package(s)
+      ignore_cache: Ignore cache and force download
+      ignore_failure: Ignore failures to ensure a complete transaction
+      independent: Do not install dependencies (may break packages)
+      no_hash_check: Skip package integrity check
+      no_replace: Do not replace package(s)
+      no_upgrade: Do not upgrade package(s)
+      offline: Leverage cache and suppress network access
+      package: The package(s) to install
+  list:
+    about: List installed package(s)
+    args:
+      explicit: Turn regex off and use explicit matching
+      held: List held package(s)
+      query: The query string (regex supported by default)
+      upgradable: List upgradable package(s)
+      versions: Show all installed versions (not just current)
+  missing_checkver:
+    about: Check bucket manifests missing checkver and autoupdate
+    args:
+      dir: Bucket directory to scan for manifests
+      supported: Only show manifests that have checkver/autoupdate (inverse)
+  prefix:
+    args:
+      package: Name of the package
+    about: Show the directory where a package is installed
+  reinstall:
+    about: Reinstall a package
+    args:
+      ignore_cache: Ignore cache and force download
+      ignore_failure: Ignore failures to ensure a complete transaction
+      no_hash_check: Skip package integrity check
+      offline: Leverage cache and suppress network access
+      package: The package(s) to reinstall
+  reset:
+    args:
+      app: The app name
+      version: A specific version to reset to
+    about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
+  search:
+    about: "Search available package(s)  Search available package(s) from synced buckets. The query is performed against package names by default, use --with-description or --with-binary to search through package descriptions or binaries."
+    args:
+      explicit: Turn regex off and use explicit matching
+      query: The query string (regex supported by default)
+      with_binary: Search through package binaries as well
+      with_description: Search through package descriptions as well
+  shim:
+    args:
+      name: Shim name (for info command)
+    about: List or inspect shims
+    args:
+      command: "Command: info (default), list"
+  status:
+    about: Show the status of all installed apps
+    args:
+      all: "Also show up-to-date apps (default: only outdated)"
+  unhold:
+    about: Unhold package(s) to enable changes
+    args:
+      package: The package(s) to be unheld
+  uninstall:
+    about: Uninstall package(s)
+    args:
+      escape_hold: Escape hold to allow changes on held package(s)
+      ignore_failure: Ignore failures to ensure a complete transaction
+      no_hash_check: Skip package integrity check
+      package: The package(s) to uninstall
+  update:
+    about: "Fetch and update subscribed buckets, or upgrade installed package(s)  Examples:   hok update         update buckets only   hok update <app>   upgrade a specific package (Scoop-compatible)   hok update *       upgrade all packages"
+    args:
+      assume_yes: Assume yes to all prompts and run non-interactively
+      escape_hold: Escape hold to allow to upgrade held package(s)
+      force: Force update even within cooldown period
+      ignore_cache: Ignore cache and force download
+      ignore_failure: Ignore failures to ensure a complete transaction
+      independent: Do not install dependencies (may break packages)
+      no_hash_check: Skip package integrity check
+      no_replace: Do not replace package(s)
+      no_upgrade: Do not upgrade package(s)
+      offline: Leverage cache and suppress network access
+      package: The package(s) to be upgraded (omit to only update buckets)
+  upgrade:
+    about: Upgrade installed package(s)
+    args:
+      assume_yes: Assume yes to all prompts and run non-interactively
+      escape_hold: Escape hold to allow to upgrade held package(s)
+      ignore_failure: Ignore failures to ensure a complete transaction
+      no_hash_check: Skip package integrity check
+      offline: Leverage cache and suppress network access
+      package: "The package(s) to be upgraded (default: all except held)"
+  virustotal:
+    about: "Check a package's download URL against VirusTotal  Requires a VirusTotal API key. Set it with:   hok config virustotal_api_key <key> Or set the $VT_API_KEY environment variable."
+    args:
+      app: Package name(s) to check
+  which:
+    about: Show the shim location(s) of a command
+
+# Command aliases (for shell completions)
+cli_alias:
+  bucket:
+    List: [ls]
+    Remove: [rm]
+  cache:
+    List: [ls]
+    Remove: [rm]
+  config:
+    List: [ls]
+  search: [s]
+  uninstall: [rm, remove]
+  update: [u]

@@ -9,14 +9,14 @@ edition = "2021"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/scoop_hash", "crates/hok-shim"]
+members = ["crates/libscoop", "crates/scoop_hash", "crates/hok-shim", "crates/hok-i18n-derive"]
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "4.5", features = ["wrap_help", "cargo", "derive"] }
+clap = { version = "4.5", features = ["wrap_help", "cargo", "derive", "string"] }
 clap-verbosity-flag = { version = "3.0.1", features = ["tracing"], default-features = false }
 clap_complete = "4.5.38"
 crossterm = "0.28"
@@ -33,6 +33,8 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 rust-i18n = "3.1.5"
 sys-locale = "0.3"
+
+hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
 [dependencies.libscoop]
 version = "0.2.0-alpha.2"

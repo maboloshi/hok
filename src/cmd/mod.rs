@@ -1,6 +1,8 @@
-use clap::{crate_description, crate_name, crate_version, Parser, Subcommand};
+use clap::{crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
+use hok_i18n_derive::I18nHelp;
 use libscoop::Session;
+use rust_i18n::t;
 use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
@@ -45,6 +47,7 @@ mod which;
 use crate::Result;
 
 #[derive(Parser)]
+#[derive(I18nHelp)]
 #[command(
     name = crate_name!(),
     version = crate_version!(),
@@ -129,7 +132,10 @@ pub fn start() -> Result<()> {
     let preselected_language = i18n::detect_language_choice_from_args();
     i18n::init_language(preselected_language);
 
-    let args = Cli::parse();
+    let args = {
+        let cmd = Cli::patch_i18n(Cli::command());
+        Cli::from_arg_matches(&cmd.get_matches())
+    }?;
 
     // If user explicitly set --lang in Cli args (not auto), re-init with explicit choice
     if !matches!(args.language, LanguageChoice::Auto) {
