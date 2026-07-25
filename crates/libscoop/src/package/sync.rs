@@ -801,7 +801,11 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
 
 fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
-    let apps_dir = config.root_path().join("apps");
+    let apps_dir = if session.is_global() {
+        config.global_path().join("apps")
+    } else {
+        config.root_path().join("apps")
+    };
     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
 
@@ -1114,7 +1118,11 @@ fn commit_remove(session: &Session, packages: &[Package], purge: bool, ignore_fa
 
 fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
     let config = session.config();
-    let root_dir = config.root_path();
+    let root_dir = if session.is_global() {
+        config.global_path().to_path_buf()
+    } else {
+        config.root_path().to_path_buf()
+    };
 
     debug!("remove: {} - starting", package.name());
 

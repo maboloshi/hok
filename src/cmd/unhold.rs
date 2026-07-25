@@ -10,9 +10,13 @@ pub struct Args {
     /// The package(s) to be unheld
     #[arg(required = true, action = ArgAction::Append)]
     package: Vec<String>,
+    /// Unhold globally installed app (from $SCOOP_GLOBAL)
+    #[arg(short = 'g', long, action = ArgAction::SetTrue)]
+    global: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    session.set_global(args.global);
     let packages = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     for name in packages {
         output::progress(rust_i18n::t!("cmd.unholding"), name);

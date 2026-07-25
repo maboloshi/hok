@@ -1,5 +1,5 @@
 use flume::{Receiver, Sender};
-use std::cell::{OnceCell, Ref, RefCell, RefMut};
+use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
 use std::path::Path;
 use tracing::{debug, info};
 
@@ -22,6 +22,9 @@ pub struct Session {
 
     /// User agent for the session
     pub(crate) user_agent: OnceCell<String>,
+
+    /// Whether operations should target the global Scoop root.
+    global: Cell<bool>,
 }
 
 impl Default for Session {
@@ -56,6 +59,7 @@ impl Session {
             config,
             event_bus: OnceCell::new(),
             user_agent: OnceCell::new(),
+            global: Cell::new(false),
         }
     }
 
@@ -79,6 +83,7 @@ impl Session {
             config,
             event_bus: OnceCell::new(),
             user_agent: OnceCell::new(),
+            global: Cell::new(false),
         })
     }
 
@@ -93,6 +98,29 @@ impl Session {
     /// [2]: crate::operation
     pub fn config(&self) -> Ref<'_, Config> {
         self.config.borrow()
+    }
+
+    /// Set whether operations should target the global Scoop root.
+    pub fn set_global(&self, global: bool) {
+        self.global.set(global);
+    }
+
+    /// Check whether operations should target the global Scoop root.
+    pub fn is_global(&self) -> bool {
+        self.global.get()
+    }
+
+    /// Get the effective root path based on the global flag.
+    ///
+    /// Returns the global root path when `is_global()` is `true`,
+    /// otherwise returns the user root path.
+    pub fn effective_root_path(&self) -> std::path::PathBuf {
+        let config = self.config();
+        if self.global.get() {
+            config.global_path().to_path_buf()
+        } else {
+            config.root_path().to_path_buf()
+        }
     }
 
     /// Get a mutable reference to the config held by the session.

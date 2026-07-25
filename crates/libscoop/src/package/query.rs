@@ -70,7 +70,11 @@ pub(crate) fn query_installed(
 ) -> Fallible<Vec<Package>> {
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
-    let root_path = session.config().root_path().to_owned();
+    let root_path = if session.is_global() {
+        session.config().global_path().to_owned()
+    } else {
+        session.config().root_path().to_owned()
+    };
     let apps_dir = root_path.join("apps");
     // build matchers
     let mut matchers: Vec<(Option<String>, Box<dyn Matcher + Send + Sync>)> = vec![];
@@ -293,7 +297,11 @@ pub(crate) fn query_synced(
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let buckets = crate::bucket::bucket_added(session)?;
-    let apps_dir = session.config().root_path().join("apps");
+    let apps_dir = if session.is_global() {
+        session.config().global_path().join("apps")
+    } else {
+        session.config().root_path().join("apps")
+    };
     // build matchers
     let mut matchers: Vec<(Option<String>, Box<dyn Matcher + Send + Sync>)> = vec![];
 
@@ -449,7 +457,11 @@ fn query_synced_cached(
     }
 
     let entries = manifest_cache::query(&conn, None, None)?;
-    let apps_dir = session.config().root_path().join("apps");
+    let apps_dir = if session.is_global() {
+        session.config().global_path().join("apps")
+    } else {
+        session.config().root_path().join("apps")
+    };
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();

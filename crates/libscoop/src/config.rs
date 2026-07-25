@@ -284,6 +284,15 @@ impl Config {
         self.root_path.as_path()
     }
 
+    /// Get the global root directory of Scoop.
+    ///
+    /// Globally installed apps are stored here. By default the value is
+    /// `$env:SCOOP_GLOBAL` or `C:\ProgramData\scoop`.
+    #[inline]
+    pub fn global_path(&self) -> &Path {
+        self.global_path.as_path()
+    }
+
     /// Get the `no_junction` config.
     #[inline]
     pub fn no_junction(&self) -> bool {

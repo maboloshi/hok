@@ -18,6 +18,9 @@ pub struct Args {
     /// Skip package integrity check
     #[arg(long, action = clap::ArgAction::SetTrue)]
     no_hash_check: bool,
+    /// Uninstall a globally installed app (from $SCOOP_GLOBAL)
+    #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]
+    global: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
@@ -35,6 +38,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(SyncOption::NoHashCheck);
     }
 
+    session.set_global(args.global);
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let handle = crate::eventloop::run_event_loop(session, Default::default());
 

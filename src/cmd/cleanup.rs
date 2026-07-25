@@ -13,12 +13,16 @@ pub struct Args {
     /// Cleanup all apps (alternative to '*')
     #[arg(short = 'a', long, action = ArgAction::SetTrue)]
     all: bool,
+    /// Cleanup a globally installed app
+    #[arg(short = 'g', long, action = ArgAction::SetTrue)]
+    global: bool,
     /// Remove download cache simultaneously
     #[arg(short = 'k', long, action = ArgAction::SetTrue)]
     cache: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    session.set_global(args.global);
     // --all or '*' overrides any specific app names
     let apps: Vec<String> = if args.all || args.app.iter().any(|a| a == "*") {
         Vec::new() // empty means "all apps" in package_cleanup
