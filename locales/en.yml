@@ -357,7 +357,7 @@ cli_help:
       no_hash_check: Skip package integrity check
       package: The package(s) to uninstall
   update:
-    about: "Fetch and update subscribed buckets, or upgrade installed package(s)  Examples:   hok update         update buckets only   hok update <app>   upgrade a specific package (Scoop-compatible)   hok update *       upgrade all packages"
+    about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)

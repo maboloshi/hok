@@ -355,7 +355,7 @@ cli_help:
       no_hash_check: 跳过包完整性检查
       package: 要卸载的包
   update:
-    about: "获取并更新已订阅的仓库，或升级已安装的包  示例:   hok update         仅更新仓库   hok update <应用>   升级特定包（兼容 Scoop）   hok update *       升级所有包"
+    about: "获取并更新已订阅的仓库，或升级已安装的包\n\n示例:\n  hok update            仅更新仓库\n  hok update <应用>     升级特定包（兼容 Scoop）\n  hok update *          升级所有包"
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
