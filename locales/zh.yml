@@ -92,6 +92,8 @@ cmd:
   checkurls_err_dir: "错误: '%{path}' 不是目录"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
   cleanup_no_old: "没有旧版本需要清理。"
+  cleanup_removed: "已清理 %{count} 个旧版本"
+  cleanup_removed_failed: "已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）"
   create_url_required: "需要提供 URL。"
   create_manifest_saved: "清单已保存到: %{path}"
   depends_invalid: "无效选择。"

@@ -32,8 +32,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     // Cleanup is a maintenance operation; individual failures should not abort it
     let results = operation::package_cleanup(session, &apps, true)?;
 
-    for (name, count) in &results {
-        output::named(name.as_str(), format!("{count} old version(s) removed"));
+    for (name, count, failed) in &results {
+        let msg = if *failed > 0 {
+            rust_i18n::t!("cmd.cleanup_removed_failed", count = *count, failed = *failed)
+        } else {
+            rust_i18n::t!("cmd.cleanup_removed", count = *count)
+        };
+        output::named(name.as_str(), msg);
     }
 
     if results.is_empty() {

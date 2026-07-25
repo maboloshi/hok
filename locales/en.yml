@@ -92,6 +92,8 @@ cmd:
   checkurls_err_dir: "error: '%{path}' is not a directory"
   checkurls_summary: "Checked %{total} URLs: %{valid} valid, %{invalid} invalid."
   cleanup_no_old: "No old versions to clean up."
+  cleanup_removed: "%{count} old version(s) removed"
+  cleanup_removed_failed: "%{count} old version(s) removed, %{failed} failed (retry after restart)"
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
   create_url_required: "URL is required."

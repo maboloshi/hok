@@ -445,7 +445,7 @@ pub fn package_query(
 /// Removes all version directories except the current one for each package.
 /// If `names` is empty, cleans up all installed packages.
 /// Returns a list of (package_name, old_versions_removed_count).
-pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool) -> Fallible<Vec<(String, usize)>> {
+pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool) -> Fallible<Vec<(String, usize, usize)>> {
     let config = session.config();
     let apps_dir = if session.is_global() {
         config.global_path().join("apps")
@@ -512,24 +512,30 @@ pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool
             }
         }
 
-        let count = old_dirs.len();
-        if count == 0 {
+        if old_dirs.is_empty() {
             continue;
         }
 
+        let mut removed = 0u32;
+        let mut failed = 0u32;
         for ver in &old_dirs {
             let ver_dir = pkg_dir.join(ver);
             if let Err(e) = internal::fs::remove_dir(&ver_dir) {
                 let msg = format!("failed to remove {} v{}: {}", name, ver, e);
                 if ignore_failure {
                     eprintln!("{}", msg);
+                    failed += 1;
                 } else {
                     return Err(Error::Custom(msg));
                 }
+            } else {
+                removed += 1;
             }
         }
 
-        results.push((name.clone(), count));
+        if removed > 0 || failed > 0 {
+            results.push((name.clone(), removed as usize, failed as usize));
+        }
     }
 
     Ok(results)
