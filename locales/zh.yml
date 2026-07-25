@@ -335,11 +335,10 @@ cli_help:
       with_binary: 同时搜索包的可执行文件
       with_description: 同时搜索包的描述信息
   shim:
-    args:
-      name: Shim 名称（用于 info 命令）
     about: 列出或检查 shim
     args:
       command: "命令: info（默认），list"
+      name: "Shim 名称（用于 info 命令）"
   status:
     about: 显示所有已安装应用的状态
     args:

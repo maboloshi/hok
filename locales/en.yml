@@ -337,11 +337,10 @@ cli_help:
       with_binary: Search through package binaries as well
       with_description: Search through package descriptions as well
   shim:
-    args:
-      name: Shim name (for info command)
     about: List or inspect shims
     args:
       command: "Command: info (default), list"
+      name: Shim name (for info command)
   status:
     about: Show the status of all installed apps
     args:
