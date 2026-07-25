@@ -51,6 +51,12 @@ reinstall:
 cmd:
   header_aliases: "别名"
   header_buckets: "正在更新仓库"
+  header_installed_apps: "已安装应用"
+  list_header_name: "名称"
+  list_header_version: "版本"
+  list_header_source: "源"
+  list_header_info: "状态"
+  list_summary: "已安装 %{count} 个，锁定 %{held} 个，可更新 %{upgradable} 个"
   no_aliases: "没有配置别名。"
   alias_add_usage: "用法: hok alias add <名称> <命令>"
   alias_rm_usage: "用法: hok alias rm <名称>"

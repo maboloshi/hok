@@ -51,6 +51,12 @@ reinstall:
 cmd:
   header_aliases: "Aliases"
   header_buckets: "Updating buckets"
+  header_installed_apps: "Installed apps"
+  list_header_name: "Name"
+  list_header_version: "Version"
+  list_header_source: "Source"
+  list_header_info: "Info"
+  list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable"
   no_aliases: "No aliases configured."
   alias_add_usage: "Usage: hok alias add <name> <command>"
   alias_rm_usage: "Usage: hok alias rm <name>"
