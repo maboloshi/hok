@@ -33,6 +33,12 @@ pub enum QueryOption {
     ///
     /// This option only takes effect on querying installed packages.
     Upgradable,
+
+    /// Check upgradable status without filtering out non-upgradable packages.
+    ///
+    /// Like `Upgradable` but does NOT exclude packages that are already
+    /// at the latest version.
+    UpgradableCheck,
 }
 
 /// A trait represents a matcher that can be used to do string matching.
@@ -242,7 +248,7 @@ pub(crate) fn query_installed(
                                                         bucket,
                                                         origin_manifest,
                                                     );
-                                                    origin_pkg.fill_install_state(state);
+                                                    origin_pkg.fill_install_state(state.clone());
 
                                                     package.fill_upgradable(origin_pkg);
                                                 } else {
@@ -264,6 +270,44 @@ pub(crate) fn query_installed(
                                         // origin bucket is not reachable. This could
                                         // happen when the bucket is removed or renamed.
                                         return None;
+                                    }
+                                }
+
+                                // UpgradableCheck: same version check but without filtering.
+                                // Populates upgradable info when found; keeps the package
+                                // either way.
+                                if options.contains(&QueryOption::UpgradableCheck)
+                                    && !options.contains(&QueryOption::Upgradable)
+                                {
+                                    if bucket != ISOLATED_PACKAGE_BUCKET {
+                                        let mut bucket_path = root_path.join("buckets");
+                                        bucket_path.push(bucket);
+
+                                        if let Ok(origin_bucket) = Bucket::from(&bucket_path) {
+                                            if let Some(origin_manifest_path) =
+                                                origin_bucket.path_of_manifest(name)
+                                            {
+                                                if let Ok(origin_manifest) =
+                                                    Manifest::parse(origin_manifest_path)
+                                                {
+                                                    let origin_version = origin_manifest.version();
+                                                    let is_upgradable = compare_versions(
+                                                        origin_version,
+                                                        &current_version,
+                                                    )
+                                                        == std::cmp::Ordering::Greater;
+                                                    if is_upgradable {
+                                                        let origin_pkg = Package::from(
+                                                            name,
+                                                            bucket,
+                                                            origin_manifest,
+                                                        );
+                                                        origin_pkg.fill_install_state(state);
+                                                        package.fill_upgradable(origin_pkg);
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 

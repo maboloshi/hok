@@ -58,7 +58,7 @@ pub struct Args {
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    let mut options = vec![];
+    let mut options = vec![QueryOption::UpgradableCheck];
 
     if args.explicit {
         options.push(QueryOption::Explicit);
