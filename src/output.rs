@@ -13,17 +13,17 @@
 //!
 //! | Function    | Scoop mode                 | Pacman mode                      |
 //! |-------------|----------------------------|----------------------------------|
-//! | `header`    | `\nTitle` (bold)           | `\n:: Title` (cyan bold)         |
-//! | `info`      | `  msg` (green)            | `  ✓ msg` (green)                |
-//! | `warn`      | `WARN msg` (yellow stderr) | `  ⚠ msg` (yellow)              |
-//! | `err`       | `ERROR msg` (red stderr)   | `  ✗ msg` (red stderr)           |
-//! | `status`    | `  msg...` (inline flush)  | `  msg` (grey bold)              |
-//! | `done`      | `  msg` (green)            | `  ✓ msg` (green)                |
-//! | `ok`        | `ok`                       | `  ok` (green bold)              |
-//! | `detail`    | `  msg` (always visible)   | `  · msg` (only with --detail)   |
-//! | `field`     | `  label: value`           | `  label` (cyan) `value`         |
-//! | `named`     | `  name msg`               | `  name` (blue) `msg`            |
-//! | `change`    | `  label -> value`         | `  label` (blue) `value`         |
+//! | `header`    | `\nTitle`                  | `\n:: Title` (cyan :: bold)      |
+//! | `info`      | `  msg` (green)            | `  ✓ msg` (✓ bold, msg green)   |
+//! | `warn`      | `WARN msg` (yellow stderr) | `  ⚠ msg` (⚠ bold, msg yellow) |
+//! | `err`       | `ERROR msg` (red stderr)   | `  ✗ msg` (✗ bold, msg red)    |
+//! | `status`    | `  msg...` (inline flush)  | `  msg` (grey)                   |
+//! | `done`      | `  msg` (green)            | `  ✓ msg` (✓ bold, msg green)   |
+//! | `ok`        | `ok` (green)               | `  ok` (green)                   |
+//! | `detail`    | `  msg` (always visible)   | `  · msg` (· bold, only --detail)|
+//! | `field`     | `  label: value`           | `  label` (cyan bold) `value`    |
+//! | `named`     | `  name msg`               | `  name` (blue bold) `msg`       |
+//! | `change`    | `  label -> value`         | `  label` (blue bold) `value`    |
 //! | `progress`  | `  action target...` (flush)| same (Scoop-only style)         |
 //! | `prompt`    | `\nmsg ` (no newline)      | same                             |
 
@@ -72,9 +72,9 @@ pub fn is_scoop_style() -> bool {
 pub fn header(msg: impl AsRef<str>) {
     let m = msg.as_ref();
     if is_scoop() {
-        println!("\n{}", m.bold());
+        println!("\n{}", m);
     } else {
-        println!("\n{} {}", "::".dark_cyan().bold(), m.dark_cyan().bold());
+        println!("\n{} {}", "::".dark_cyan().bold(), m.dark_cyan());
     }
 }
 
@@ -84,7 +84,7 @@ pub fn info(msg: impl AsRef<str>) {
     if is_scoop() {
         println!("{}", m.green());
     } else {
-        println!("  {} {}", "✓".dark_green().bold(), m.dark_green().bold());
+        println!("  {} {}", "✓".dark_green().bold(), m.dark_green());
     }
 }
 
@@ -94,7 +94,7 @@ pub fn warn(msg: impl AsRef<str>) {
     if is_scoop() {
         eprintln!("{} {m}", rust_i18n::t!("output.warn").yellow().bold());
     } else {
-        println!("  {} {}", "⚠".dark_yellow().bold(), m.dark_yellow().bold());
+        println!("  {} {}", "⚠".dark_yellow().bold(), m.dark_yellow());
     }
 }
 
@@ -104,7 +104,7 @@ pub fn err(msg: impl AsRef<str>) {
     if is_scoop() {
         eprintln!("{} {m}", rust_i18n::t!("output.error").red().bold());
     } else {
-        eprintln!("  {} {}", "✗".dark_red().bold(), m);
+        eprintln!("  {} {}", "✗".dark_red().bold(), m.dark_red());
     }
 }
 
@@ -115,7 +115,7 @@ pub fn status(msg: impl AsRef<str>) {
         println!("  {m}...");
         let _ = std::io::stdout().flush();
     } else {
-        println!("  {}", m.dark_grey().bold());
+        println!("  {}", m.dark_grey());
     }
 }
 
@@ -134,7 +134,7 @@ pub fn done(msg: impl AsRef<str>) {
     if is_scoop() {
         println!("  {}", m.green());
     } else {
-        println!("  {} {}", "✓".dark_green().bold(), m.dark_green().bold());
+        println!("  {} {}", "✓".dark_green().bold(), m.dark_green());
     }
 }
 
@@ -143,7 +143,7 @@ pub fn ok() {
     if is_scoop() {
         println!("{}", rust_i18n::t!("output.ok").green());
     } else {
-        println!("  {}", rust_i18n::t!("output.ok").dark_green().bold());
+        println!("  {}", rust_i18n::t!("output.ok").dark_green());
     }
 }
 
