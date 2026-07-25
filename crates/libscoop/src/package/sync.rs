@@ -479,6 +479,59 @@ fn is_pwsh_available() -> bool {
         .is_ok()
 }
 
+/// Expand Scoop-style variables (`$dir`, `$scoopdir`, `$persist_dir`, etc.)
+/// in installer/uninstaller args, replacing them with the actual filesystem paths.
+///
+/// This mirrors the variable definitions in `run_script`'s PowerShell preamble,
+/// so that `installer.file` and `uninstaller.file` (which run via `run_gui`
+/// rather than through PowerShell) get equivalent variable expansion.
+fn expand_installer_vars(
+    args: &[&str],
+    session: &Session,
+    pkg: &Package,
+    working_dir: &Path,
+    cmd: &str,
+) -> Vec<String> {
+    let config = session.config();
+    let root_path = config.root_path();
+    let persist_dir = root_path.join("persist").join(pkg.name());
+    let buckets_dir = root_path.join("buckets");
+    let version = pkg.version();
+    let app = pkg.name();
+    let bucket = pkg.bucket();
+    let architecture = if cfg!(target_arch = "x86_64") {
+        "64bit"
+    } else if cfg!(target_arch = "x86") {
+        "32bit"
+    } else {
+        "arm64"
+    };
+
+    let working_dir_str = working_dir.to_string_lossy().to_string();
+    let root_path_str = root_path.to_string_lossy().to_string();
+    let persist_dir_str = persist_dir.to_string_lossy().to_string();
+    let buckets_dir_str = buckets_dir.to_string_lossy().to_string();
+
+    args.iter()
+        .map(|arg| {
+            let mut s = arg.to_string();
+            // Longer/replace more specific patterns first to avoid partial overlap
+            s = s.replace("$original_dir", &working_dir_str);
+            s = s.replace("$persist_dir", &persist_dir_str);
+            s = s.replace("$bucketsdir", &buckets_dir_str);
+            s = s.replace("$scoopdir", &root_path_str);
+            s = s.replace("$architecture", architecture);
+            s = s.replace("$version", version);
+            s = s.replace("$app", app);
+            s = s.replace("$bucket", bucket);
+            s = s.replace("$global", "false");
+            s = s.replace("$cmd", cmd);
+            s = s.replace("$dir", &working_dir_str);
+            s
+        })
+        .collect()
+}
+
 /// Sync operation: install and/or upgrade packages.
 pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let mut packages = vec![];
@@ -855,7 +908,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             } else if let Some(file) = installer.file() {
                 debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
                 let exe_path = working_dir.join(file);
-                let args: Vec<&str> = installer.args().unwrap_or_default();
+                let raw_args: Vec<&str> = installer.args().unwrap_or_default();
+                let expanded = expand_installer_vars(&raw_args, session, pkg, &working_dir, "install");
+                let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
                 crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir))
                     .map_err(|e| Error::Custom(format!(
                         "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
@@ -1078,7 +1133,9 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         } else if let Some(file) = uninstaller.file() {
             debug!("remove: {} - uninstaller.file", package.name());
             let exe_path = app_dir.join("current").join(file);
-            let args: Vec<&str> = uninstaller.args().unwrap_or_default();
+            let raw_args: Vec<&str> = uninstaller.args().unwrap_or_default();
+            let expanded = expand_installer_vars(&raw_args, session, package, &app_dir.join("current"), "uninstall");
+            let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
             crate::internal::os::run_gui(&exe_path, &args, Some(&app_dir.join("current")))
                 .map_err(|e| Error::Custom(format!(
                     "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
@@ -1237,5 +1294,166 @@ mod tests {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap();
         assert_eq!(filename, "dopus_patcher.exe");
+    }
+
+    /// Helper to create a test environment for expand_installer_vars tests.
+    /// Cleans up the temp dir on drop via the returned guard.
+    struct TestDirGuard(std::path::PathBuf);
+    impl Drop for TestDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn setup_expand_vars_test(test_name: &str) -> (crate::Session, Package, std::path::PathBuf, TestDirGuard) {
+        let tmp = std::env::temp_dir().join(format!("hok_test_expand_vars_{}", test_name));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let guard = TestDirGuard(tmp.clone());
+        let root = &tmp;
+
+        // Write minimal Scoop config
+        let config_path = root.join("config.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(r#"{{"root_path": "{}"}}"#, root_escaped),
+        )
+        .unwrap();
+
+        let session = crate::Session::new_with(&config_path).unwrap();
+        let manifest = crate::package::Manifest::from_json(
+            "test-pkg",
+            r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+        )
+        .unwrap();
+        let pkg = Package::from("test-pkg", "test-bucket", manifest);
+        let working_dir = root.join("apps").join("test-pkg").join("1.0.0");
+
+        (session, pkg, working_dir, guard)
+    }
+
+    /// Test that $dir is expanded to the working directory path.
+    #[test]
+    fn test_expand_dir_var() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("dir");
+        let args = vec!["/DIR=\"$dir\""];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(
+            expanded[0],
+            format!("/DIR=\"{}\"", working_dir.to_string_lossy())
+        );
+    }
+
+    /// Test that $scoopdir is expanded to the Scoop root path.
+    #[test]
+    fn test_expand_scoopdir_var() {
+        let (session, pkg, working_dir, tmp) = setup_expand_vars_test("scoopdir");
+        let root = &tmp.0;
+        let args = vec!["$scoopdir"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0], root.to_string_lossy().to_string());
+    }
+
+    /// Test that $persist_dir is expanded correctly.
+    #[test]
+    fn test_expand_persist_dir_var() {
+        let (session, pkg, working_dir, tmp) = setup_expand_vars_test("persist");
+        let root = &tmp.0;
+        let expected = root.join("persist").join("test-pkg");
+        let args = vec!["$persist_dir"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0], expected.to_string_lossy().to_string());
+    }
+
+    /// Test that $version, $app, and $bucket are expanded.
+    #[test]
+    fn test_expand_identity_vars() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("identity");
+        let args = vec!["$version", "$app", "$bucket"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[0], "1.0.0");
+        assert_eq!(expanded[1], "test-pkg");
+        assert_eq!(expanded[2], "test-bucket");
+    }
+
+    /// Test that $cmd is expanded to "install" or "uninstall" accordingly.
+    #[test]
+    fn test_expand_cmd_var() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("cmd");
+        let args = vec!["$cmd"];
+        let expanded_install = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        let expanded_uninstall =
+            expand_installer_vars(&args, &session, &pkg, &working_dir, "uninstall");
+        assert_eq!(expanded_install[0], "install");
+        assert_eq!(expanded_uninstall[0], "uninstall");
+    }
+
+    /// Test that all variables together in a realistic installer arg string are expanded.
+    #[test]
+    fn test_expand_all_vars_in_args() {
+        let (session, pkg, working_dir, tmp) = setup_expand_vars_test("all_vars");
+        let root = &tmp.0;
+        let args = vec![
+            "/VERYSILENT",
+            "/DIR=\"$dir\"",
+            "/D=\"$persist_dir\"",
+            "/SCOOP=\"$scoopdir\"",
+        ];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[0], "/VERYSILENT");
+        assert_eq!(
+            expanded[1],
+            format!("/DIR=\"{}\"", working_dir.to_string_lossy())
+        );
+        assert_eq!(
+            expanded[2],
+            format!(
+                "/D=\"{}\"",
+                root.join("persist").join("test-pkg").to_string_lossy()
+            )
+        );
+        assert_eq!(
+            expanded[3],
+            format!("/SCOOP=\"{}\"", root.to_string_lossy())
+        );
+    }
+
+    /// Test that $original_dir produces the same value as $dir.
+    #[test]
+    fn test_expand_original_dir_var() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("original_dir");
+        let args = vec!["$original_dir"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded[0], working_dir.to_string_lossy().to_string());
+    }
+
+    /// Test that $architecture is expanded (not empty, one of the known values).
+    #[test]
+    fn test_expand_architecture_var() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("arch");
+        let args = vec!["$architecture"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert!(
+            expanded[0] == "64bit" || expanded[0] == "32bit" || expanded[0] == "arm64",
+            "expected 64bit/32bit/arm64, got {}",
+            expanded[0]
+        );
+    }
+
+    /// Test that variable names inside longer words do NOT get replaced (false positive).
+    #[test]
+    fn test_expand_no_false_positive() {
+        let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("false_positive");
+        // "directory" contains "dir" but should not be replaced
+        let args = vec!["directory", "scoopdirectory"];
+        let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        assert_eq!(expanded[0], "directory");
+        assert_eq!(expanded[1], "scoopdirectory");
     }
 }
