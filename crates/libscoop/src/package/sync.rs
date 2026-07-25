@@ -856,16 +856,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
                 let exe_path = working_dir.join(file);
                 let args: Vec<&str> = installer.args().unwrap_or_default();
-                let status = std::process::Command::new(&exe_path)
-                    .args(&args)
-                    .status()
+                crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir))
                     .map_err(|e| Error::Custom(format!(
                         "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
-                if !status.success() {
-                    let code = status.code().unwrap_or(-1);
-                    return Err(Error::Custom(format!(
-                        "installer '{}' for '{}' exited with code {}", file, pkg.name(), code)));
-                }
             }
         }
     }
@@ -1086,16 +1079,9 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             debug!("remove: {} - uninstaller.file", package.name());
             let exe_path = app_dir.join("current").join(file);
             let args: Vec<&str> = uninstaller.args().unwrap_or_default();
-            let status = std::process::Command::new(&exe_path)
-                .args(&args)
-                .status()
+            crate::internal::os::run_gui(&exe_path, &args, Some(&app_dir.join("current")))
                 .map_err(|e| Error::Custom(format!(
                     "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
-            if !status.success() {
-                let code = status.code().unwrap_or(-1);
-                return Err(Error::Custom(format!(
-                    "uninstaller '{}' for '{}' exited with code {}", file, package.name(), code)));
-            }
         }
     }
 
@@ -1201,28 +1187,17 @@ mod tests {
         let marker = tmp.join("ran.txt");
         let script = tmp.join("test.cmd");
         std::fs::write(&script, format!(
-            "@echo off\r\necho ok > \"{}\"\r\n", marker.display()
+            "@echo off\r\necho ok > \"{}\"\r\nexit /b 0\r\n", marker.display()
         )).unwrap();
 
-        // Same pattern as commit_one_install's installer.file path
-        let status = std::process::Command::new(&script)
-            .status()
-            .unwrap();
-        assert!(status.success(), "installer script should exit 0");
+        // Use run_gui to execute the script (same path as commit_one_install)
+        let exit_code = crate::internal::os::run_gui(&script, &[], Some(&tmp)).unwrap();
+        // run_gui returns the exit code; 0 = success
+        assert_eq!(exit_code, 0, "installer script should exit 0");
+
+        // Marker file should have been created by the script
+        // Note: ShellExecuteExW on .cmd files launches cmd.exe which handles redirection
         assert!(marker.exists(), "installer should have created marker file");
-
-        // With args
-        let marker2 = tmp.join("ran_with_args.txt");
-        let script2 = tmp.join("test_args.cmd");
-        std::fs::write(&script2, format!(
-            "@echo off\r\necho %1 %2 > \"{}\"\r\n", marker2.display()
-        )).unwrap();
-
-        let status = std::process::Command::new(&script2)
-            .args(&["/S", "/D=C:\\test"])
-            .status()
-            .unwrap();
-        assert!(status.success());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

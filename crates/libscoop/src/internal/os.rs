@@ -4,6 +4,7 @@
 //! The old `sysinfo`-based implementation is commented out below.
 
 #![allow(dead_code)]
+use std::ffi::c_void;
 use std::path::Path;
 
 use crate::error::{Error, Fallible};
@@ -41,6 +42,9 @@ extern "system" {
         lpExeName: *mut u16,
         lpdwSize: *mut u32,
     ) -> i32; // BOOL
+
+    fn WaitForSingleObject(hHandle: isize, dwMilliseconds: u32) -> u32;
+    fn GetExitCodeProcess(hProcess: isize, lpExitCode: *mut u32) -> i32;
 }
 
 const TH32CS_SNAPPROCESS: u32 = 0x00000002;
@@ -196,3 +200,91 @@ fn running_apps_win(apps_dir: &Path) -> Fallible<Vec<String>> {
 //     proc_names.dedup();
 //     Ok(proc_names)
 // }
+
+// ─── process execution (ShellExecuteExW) ──────────────────────────────
+
+/// Run a GUI executable with arguments and wait for it to complete.
+#[cfg(windows)]
+pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io::Result<i32> {
+    use std::mem;
+    use std::ptr;
+
+    const SEE_MASK_NOASYNC: u32 = 0x0000_0010;
+    const SEE_MASK_NOCLOSEPROCESS: u32 = 0x0000_0040;
+    const SW_SHOWNORMAL: i32 = 1;
+    const INFINITE: u32 = 0xFFFF_FFFF;
+
+    #[repr(C)]
+    struct SHELLEXECUTEINFOW {
+        cb_size: u32,
+        f_mask: u32,
+        hwnd: *mut c_void,
+        lp_verb: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show: i32,
+        h_inst_app: *mut c_void,
+        lp_id_list: *mut c_void,
+        lp_class: *const u16,
+        hkey_class: *mut c_void,
+        dw_hot_key: u32,
+        h_icon: *mut c_void,
+        h_process: *mut c_void,
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteExW(p_exec_info: *mut SHELLEXECUTEINFOW) -> i32;
+    }
+
+    let exe_wide = encode_wide(&exe.to_string_lossy());
+    let args_wide = encode_wide(&args.join(" "));
+    let dir_wide = working_dir
+        .map(|p| encode_wide(&p.to_string_lossy()))
+        .unwrap_or_default();
+    let verb = encode_wide("open");
+
+    let mut info = SHELLEXECUTEINFOW {
+        cb_size: mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        f_mask: SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS,
+        hwnd: ptr::null_mut(),
+        lp_verb: verb.as_ptr(),
+        lp_file: exe_wide.as_ptr(),
+        lp_parameters: args_wide.as_ptr(),
+        lp_directory: if dir_wide.is_empty() { ptr::null() } else { dir_wide.as_ptr() },
+        n_show: SW_SHOWNORMAL,
+        h_inst_app: ptr::null_mut(),
+        lp_id_list: ptr::null_mut(),
+        lp_class: ptr::null(),
+        hkey_class: ptr::null_mut(),
+        dw_hot_key: 0,
+        h_icon: ptr::null_mut(),
+        h_process: ptr::null_mut(),
+    };
+
+    let ret = unsafe { ShellExecuteExW(&mut info) };
+    if ret == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    unsafe {
+        let wait = WaitForSingleObject(info.h_process as isize, INFINITE);
+        if wait != 0 {
+            let _ = CloseHandle(info.h_process as isize);
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut exit_code: u32 = 0;
+        GetExitCodeProcess(info.h_process as isize, &mut exit_code);
+        CloseHandle(info.h_process as isize);
+        Ok(exit_code as i32)
+    }
+}
+
+fn encode_wide(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
