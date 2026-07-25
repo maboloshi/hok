@@ -173,7 +173,7 @@ fn to_file_name(s: &str) -> String {
 }
 
 fn extract_field_names(fields: &Fields) -> Vec<String> {
-    const SKIP: &[&str] = &["command", "subcommand", "args"];
+    const SKIP: &[&str] = &["subcommand", "args"];
     match fields {
         Fields::Named(n) => n.named.iter()
             .filter_map(|f| f.ident.as_ref().map(|i| i.to_string()))
