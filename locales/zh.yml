@@ -125,6 +125,7 @@ cmd:
   computing_hash: "正在计算哈希"
   found: "找到 %{count} 个包匹配查询 '%{query}'"
   no_download_urls: "没有下载 URL"
+  held_skip: "'%{name}' 已锁定到版本 %{version}"
 cli:
   config_set: "配置 '%{key}' 已设置为 '%{value}'"
   config_unset: "配置 '%{key}' 已取消设置"

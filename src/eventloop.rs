@@ -61,6 +61,7 @@ pub fn run_event_loop(
 
     std::thread::spawn(move || {
         let _guard = CursorGuard::hide();
+        let mut committed = 0;
         while let Ok(event) = rx.recv() {
             match event {
                 // --- Resolve phase ---
@@ -117,6 +118,7 @@ pub fn run_event_loop(
                     output::status(ctx);
                 }
                 Event::PackageCommitDone(ctx) => {
+                    committed += 1;
                     output::done(ctx);
                 }
 
@@ -311,8 +313,17 @@ pub fn run_event_loop(
                 Event::PackageSymlinkCreate { from, to } => {
                     output::detail(rust_i18n::t!("detail.linking", from = from, to = to));
                 }
+                // --- Held package skipped ---
+                Event::PackageHeld { name, version } => {
+                    output::warn(rust_i18n::t!("cmd.held_skip", name = name, version = version));
+                }
                 // --- Sync done ---
-                Event::PackageSyncDone => break,
+                Event::PackageSyncDone => {
+                    if committed == 0 {
+                        output::info(rust_i18n::t!("cmd.outdated"));
+                    }
+                    break;
+                }
 
                 // --- Future events ---
                 _ => {}

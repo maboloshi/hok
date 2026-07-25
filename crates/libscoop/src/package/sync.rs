@@ -579,11 +579,21 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     let no_upgrade = options.contains(&SyncOption::NoUpgrade);
     if !no_upgrade && !upgradable.is_empty() {
         if !escape_hold {
-            let (_held, upgradable): (Vec<_>, Vec<_>) =
+            let (held, mut upgradable_list): (Vec<_>, Vec<_>) =
                 upgradable.into_iter().partition(|p| p.is_held());
 
-            if !upgradable.is_empty() {
-                transaction.set_upgrade(upgradable);
+            // Emit PackageHeld for each held package
+            for p in &held {
+                if let Some(tx) = session.emitter() {
+                    let _ = tx.send(Event::PackageHeld {
+                        name: p.name().to_string(),
+                        version: p.version().to_string(),
+                    });
+                }
+            }
+
+            if !upgradable_list.is_empty() {
+                transaction.set_upgrade(upgradable_list);
             }
         } else {
             transaction.set_upgrade(upgradable);

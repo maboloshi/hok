@@ -217,6 +217,14 @@ pub enum Event {
     /// Post-install notes from the manifest.
     PackageNotes(String),
 
+    /// A package was skipped during upgrade because it is held.
+    PackageHeld {
+        /// Package name
+        name: String,
+        /// Current held version
+        version: String,
+    },
+
     /// Prompt the user to confirm the transaction.
     PromptTransactionNeedConfirm(Transaction),
 

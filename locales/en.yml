@@ -127,6 +127,7 @@ cmd:
   computing_hash: "Computing hash"
   found: "Found %{count} package(s) for query '%{query}'"
   no_download_urls: "no download URLs"
+  held_skip: "'%{name}' is held to version %{version}"
 cli:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
