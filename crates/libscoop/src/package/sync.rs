@@ -1241,20 +1241,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
+        // Test 1: capture exit code via cmd.exe /c
+        let exit_code = crate::internal::os::run_gui(
+            &std::path::PathBuf::from("cmd.exe"),
+            &["/c", "exit /b 42"],
+            Some(&tmp),
+        ).unwrap();
+        assert_eq!(exit_code, 42, "should capture exit code from cmd.exe /c");
+
+        // Test 2: create a file via PowerShell (used in many Scoop installer scripts)
         let marker = tmp.join("ran.txt");
-        let script = tmp.join("test.cmd");
-        std::fs::write(&script, format!(
-            "@echo off\r\necho ok > \"{}\"\r\nexit /b 0\r\n", marker.display()
-        )).unwrap();
-
-        // Use run_gui to execute the script (same path as commit_one_install)
-        let exit_code = crate::internal::os::run_gui(&script, &[], Some(&tmp)).unwrap();
-        // run_gui returns the exit code; 0 = success
-        assert_eq!(exit_code, 0, "installer script should exit 0");
-
-        // Marker file should have been created by the script
-        // Note: ShellExecuteExW on .cmd files launches cmd.exe which handles redirection
-        assert!(marker.exists(), "installer should have created marker file");
+        let ps = if is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+        let exit_code = crate::internal::os::run_gui(
+            &std::path::PathBuf::from(ps),
+            &[
+                "-NoProfile",
+                "-Command",
+                &format!("New-Item -Path '{}' -ItemType File -Force | Out-Null", marker.display()),
+            ],
+            Some(&tmp),
+        ).unwrap();
+        assert_eq!(exit_code, 0, "powershell script should exit 0");
+        assert!(marker.exists(), "powershell should have created marker file");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
