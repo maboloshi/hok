@@ -7,7 +7,7 @@
 use git2::{CredentialType, FetchOptions, Repository};
 use std::{path::Path, result::Result};
 
-use crate::error::Fallible;
+use crate::error::{Error, Fallible};
 
 fn fetch_options(proxy: Option<&str>) -> FetchOptions<'static> {
     let mut fo = FetchOptions::new();
@@ -74,30 +74,41 @@ where
     let repo = Repository::open(path.as_ref())?;
     let mut origin = repo.find_remote("origin")?;
 
-    // Fetch only the current HEAD branch (avoids pulling all branches)
-    let ref_name = repo.head().ok()
+    // Capture old HEAD before fetch. The symmetrical refspec would update the
+    // local branch during fetch, making head_id == fetch_commit.id() and the
+    // early return always trigger — so we save it first.
+    let head_id = repo.head()?.target().unwrap();
+    let ref_name = repo.head()
+        .ok()
         .and_then(|h| h.name().map(|n| n.to_owned()))
         .unwrap_or_else(|| "refs/heads/master".to_owned());
+
+    // Fetch to remote-tracking ref so the local branch is NOT updated
+    // until we verify fast-forward safety.
+    let branch = ref_name.strip_prefix("refs/heads/").unwrap_or(&ref_name);
     origin.fetch(
-        &[format!("+{ref_name}:{ref_name}").as_str()],
+        &[format!("+{ref_name}:refs/remotes/origin/{branch}").as_str()],
         Some(&mut fetch_options(proxy)),
         None,
     )?;
 
-    // Fast-forward: move branch reference to fetched commit
     let fetch_commit = repo.find_reference("FETCH_HEAD")?
         .peel(git2::ObjectType::Commit)?;
 
-    // repo.head() must not be alive when we call set_target below
-    let head_id = repo.head()?.target().unwrap();
     if fetch_commit.id() == head_id {
         return Ok(()); // already up to date
     }
 
-    let branch = repo.head()?.name().unwrap_or(&ref_name).to_string();
-    let mut head_ref = repo.find_reference(&branch)?;
+    // Fast-forward safety: the fetched commit must be a descendant of old HEAD.
+    // If not (e.g. force-push on remote), reject.
+    let merge_base = repo.merge_base(head_id, fetch_commit.id())?;
+    if merge_base != head_id {
+        return Err(Error::BucketUpdateNotFastForward(ref_name));
+    }
+
+    let mut head_ref = repo.find_reference(&ref_name)?;
     head_ref.set_target(fetch_commit.id(), "fast-forward: update bucket")?;
-    repo.set_head(&branch)?;
+    repo.set_head(&ref_name)?;
 
     // Checkout without force — fails if working tree has local changes
     let mut co = git2::build::CheckoutBuilder::new();

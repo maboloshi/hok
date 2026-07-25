@@ -23,6 +23,11 @@ pub enum Error {
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
 
+    /// Thrown when a bucket update is rejected because the update is not
+    /// a fast-forward (e.g. the remote branch was force-pushed).
+    #[error("bucket ref update for '{0}' was rejected: not a fast-forward")]
+    BucketUpdateNotFastForward(String),
+
     /// Thrown when trying to mutate config while it is in use.
     #[error("Could not alter config because it is in use.")]
     ConfigInUse,
@@ -127,6 +132,7 @@ impl Error {
             Error::BucketAlreadyExists(_) => "error.bucket_already_exists",
             Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
             Error::BucketNotFound(_) => "error.bucket_not_found",
+            Error::BucketUpdateNotFastForward(_) => "error.bucket_update_not_fast_forward",
             Error::ConfigInUse => "error.config_in_use",
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
@@ -162,6 +168,7 @@ mod tests {
         assert_eq!(Error::BucketAlreadyExists("main".into()).error_key(), "error.bucket_already_exists");
         assert_eq!(Error::BucketNotFound("main".into()).error_key(), "error.bucket_not_found");
         assert_eq!(Error::BucketAddRemoteRequired("main".into()).error_key(), "error.bucket_add_remote_required");
+        assert_eq!(Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(), "error.bucket_update_not_fast_forward");
     }
 
     #[test]
