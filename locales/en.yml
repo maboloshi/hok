@@ -118,6 +118,7 @@ cmd:
   header_installed: "The following packages will be INSTALLED:"
   header_upgraded: "The following packages will be UPGRADED:"
   header_replaced: "The following packages will be REPLACED:"
+  header_removed: "The following packages will be REMOVED:"
   vt_skip: "skipped (set VT_API_KEY to scan)"
   holding: "Holding"
   unholding: "Unholding"

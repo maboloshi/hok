@@ -272,6 +272,22 @@ pub fn run_event_loop(
                         println!("  {}", out);
                     }
 
+                    if let Some(remove) = transaction.remove_view() {
+                        if transaction.install_view().is_some()
+                            || transaction.upgrade_view().is_some()
+                            || transaction.replace_view().is_some()
+                        {
+                            println!();
+                        }
+                        output::header(rust_i18n::t!("cmd.header_removed"));
+                        let out = remove
+                            .iter()
+                            .map(|p| format!("{}-{}", p.ident(), p.version()))
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        println!("  {}", out);
+                    }
+
                     if let Some(download_size) = transaction.download_size() {
                         let out = util::humansize(download_size.total, true);
                         if download_size.total > 0 {
