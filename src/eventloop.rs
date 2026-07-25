@@ -62,6 +62,7 @@ pub fn run_event_loop(
     std::thread::spawn(move || {
         let _guard = CursorGuard::hide();
         let mut committed = 0;
+        let mut user_cancelled = false;
         while let Ok(event) = rx.recv() {
             match event {
                 // --- Resolve phase ---
@@ -303,6 +304,7 @@ pub fn run_event_loop(
 
                     let _ = std::io::stdout().execute(cursor::Show);
                     let answer = output::prompt_yes_no();
+                    user_cancelled = !answer;
                     let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
                     let _ = std::io::stdout().execute(cursor::Hide);
                 }
@@ -335,7 +337,7 @@ pub fn run_event_loop(
                 }
                 // --- Sync done ---
                 Event::PackageSyncDone => {
-                    if committed == 0 {
+                    if committed == 0 && !user_cancelled {
                         output::info(rust_i18n::t!("cmd.outdated"));
                     }
                     break;
