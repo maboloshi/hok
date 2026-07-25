@@ -126,3 +126,13 @@ where
     let remote = repo.find_remote(remote.as_ref())?;
     Ok(remote.url().map(|s| s.to_owned()))
 }
+
+/// Get the HEAD commit author time of a git repo as Unix seconds.
+///
+/// Returns `None` if the repository is not available or has no commits.
+pub fn head_commit_time<P: AsRef<Path>>(path: P) -> Option<i64> {
+    let repo = Repository::open(path.as_ref()).ok()?;
+    let head = repo.head().ok()?;
+    let commit = head.peel_to_commit().ok()?;
+    Some(commit.time().seconds())
+}

@@ -67,8 +67,11 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     Ok(buckets) => {
                         for bucket in buckets {
                             output::named(bucket.name(), "");
-                            output::field("├─manifests", bucket.manifest_count().to_string());
-                            output::field("└─source", bucket.source());
+                            output::field(" ├─manifests", bucket.manifest_count().to_string());
+                            if let Some(updated) = bucket.updated_at() {
+                                output::field(" ├─updated", updated);
+                            }
+                            output::field(" └─source", bucket.source());
                         }
                         Ok(())
                     }

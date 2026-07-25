@@ -30,6 +30,9 @@ pub struct Bucket {
     /// Non-git bucket is also supported by Scoop, mostly it is a local directory
     /// which does not have a remote url, and bucket update is not supported.
     remote_url: OnceLock<Option<String>>,
+
+    /// The HEAD commit author date of the bucket repo (cached).
+    updated_at: OnceLock<Option<String>>,
 }
 
 impl Bucket {
@@ -58,6 +61,7 @@ impl Bucket {
             path,
             name,
             remote_url: OnceLock::new(),
+            updated_at: OnceLock::new(),
         };
 
         Ok(bucket)
@@ -95,6 +99,23 @@ impl Bucket {
     pub fn remote_url(&self) -> Option<&str> {
         self.remote_url
             .get_or_init(|| internal::git::remote_url_of(self.path(), "origin").unwrap_or(None))
+            .as_deref()
+    }
+
+    /// Get the HEAD commit author date of the bucket.
+    ///
+    /// # Returns
+    ///
+    /// A formatted date string like "2026-07-25", or `None` if the bucket
+    /// is not a git repository or git metadata is broken.
+    pub fn updated_at(&self) -> Option<&str> {
+        self.updated_at
+            .get_or_init(|| {
+                let secs = internal::git::head_commit_time(self.path())?;
+                let ts = jiff::Timestamp::from_second(secs).ok()?;
+                let zoned = ts.to_zoned(jiff::tz::TimeZone::system());
+                Some(zoned.strftime("%Y/%-m/%-d %-H:%M:%S").to_string())
+            })
             .as_deref()
     }
 
