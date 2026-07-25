@@ -105,12 +105,15 @@ pub fn run_event_loop(
                 }
                 // --- Extraction ---
                 Event::PackageExtractStart(ctx) => {
-                    output::detail(rust_i18n::t!("detail.extracting", ctx = ctx));
+                    print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
+                    let _ = std::io::stdout().flush();
                 }
                 Event::PackageExtractProgress(ctx) => {
-                    output::detail(rust_i18n::t!("detail.extracting", ctx = ctx));
+                    print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
+                    let _ = std::io::stdout().flush();
                 }
                 Event::PackageExtractDone => {
+                    println!();
                     output::detail(rust_i18n::t!("detail.extract_done"));
                 }
 
