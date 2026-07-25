@@ -51,6 +51,7 @@ reinstall:
 cmd:
   header_aliases: "别名"
   header_buckets: "正在更新仓库"
+  header_buckets_list: "已知仓库"
   header_installed_apps: "已安装应用"
   list_header_name: "名称"
   list_header_version: "版本"

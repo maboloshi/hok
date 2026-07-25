@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser, Subcommand};
+use crossterm::style::Stylize;
 use libscoop::{operation, Session};
 
 use crate::{output, Result};
@@ -53,8 +54,11 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::List { known } => {
             if known {
-                for (name, repo) in operation::bucket_list_known() {
-                    output::named(name, repo);
+                let known_buckets = operation::bucket_list_known();
+                let max_name = known_buckets.iter().map(|&(n, _)| n.len()).max().unwrap_or(4);
+                output::header(rust_i18n::t!("cmd.header_buckets_list"));
+                for (name, repo) in &known_buckets {
+                    println!("  {}  {}", format!("{:<1$}", name, max_name).dark_cyan(), repo);
                 }
                 Ok(())
             } else {

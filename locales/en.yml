@@ -51,6 +51,7 @@ reinstall:
 cmd:
   header_aliases: "Aliases"
   header_buckets: "Updating buckets"
+  header_buckets_list: "Known buckets"
   header_installed_apps: "Installed apps"
   list_header_name: "Name"
   list_header_version: "Version"
