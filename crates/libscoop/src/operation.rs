@@ -292,7 +292,7 @@ pub fn head_url(session: &Session, url: &str, timeout_secs: u64) -> Fallible<boo
 /// Download a file via HTTP GET and save to a local path, using the session's proxy.
 pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
     let config = session.config();
-    let data = internal::network::download_file(url, config.proxy())
+    let data = internal::network::download_file(url, config.proxy(), 120)
         .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
     if let Some(parent) = dest.parent() {
         internal::fs::ensure_dir(parent)?;
@@ -302,9 +302,9 @@ pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> 
 }
 
 /// Download a URL's content as a UTF-8 string using the session's proxy.
-pub fn download_page(session: &Session, url: &str) -> Fallible<String> {
+pub fn download_page(session: &Session, url: &str, timeout_secs: u64) -> Fallible<String> {
     let config = session.config();
-    let data = internal::network::download_file(url, config.proxy())
+    let data = internal::network::download_file(url, config.proxy(), timeout_secs)
         .map_err(|e| Error::Custom(e.to_string()))?;
     String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
 }

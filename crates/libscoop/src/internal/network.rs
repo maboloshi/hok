@@ -14,8 +14,8 @@ pub fn head_url(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<boo
 }
 
 /// Download a URL's content as bytes via HTTP GET.
-pub fn download_file(url: &str, proxy: Option<&str>) -> Result<Vec<u8>, String> {
-    let agent = agent(proxy, 120)?;
+pub fn download_file(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<Vec<u8>, String> {
+    let agent = agent(proxy, timeout_secs)?;
     let resp = agent.get(url).call().map_err(|e| e.to_string())?;
     let mut body = Vec::new();
     resp.into_body()

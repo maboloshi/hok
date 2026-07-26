@@ -21,6 +21,10 @@ pub struct Args {
     /// Update manifest with new version and trigger autoupdate
     #[arg(short = 'u', long, action = clap::ArgAction::SetTrue)]
     update: bool,
+
+    /// Request timeout in seconds
+    #[arg(short = 't', long, default_value = "30")]
+    timeout: u64,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
@@ -54,23 +58,23 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Script mode: execute PowerShell script to determine version
         if let Some(script_lines) = cv.script.as_ref() {
             let script = script_lines.devectorize().join("\r\n");
-            match run_checkver_script(session, &script, cv.url.as_deref()) {
+            match run_checkver_script(session, &script, cv.url.as_deref(), args.timeout) {
                 Ok(Some(ver)) => {
                     let current = manifest.version().to_string();
                     if ver == current {
-                        output::done(format!("{stem} ({ver})"));
+                        println!("  {stem} ({ver})");
                     } else {
-                        output::info(format!("{stem} ({current} -> {ver})"));
+                        println!("  {stem} ({current} -> {ver})");
                         if args.update {
                             match apply_autoupdate(session, &path, &manifest, &ver, &[ver.clone()]) {
-                                Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
-                                Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
+                                Ok(()) => output::done(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_updated_to", ver = ver))),
+                                Err(e) => output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_update_failed", e = e))),
                             }
                         }
                     }
                 }
-                Ok(None) => output::warn(rust_i18n::t!("cmd.checkver_no_version")),
-                Err(e) => output::err(rust_i18n::t!("cmd.checkver_script_err", e = e)),
+                Ok(None) => output::warn(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_version"))),
+                Err(e) => output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_script_err", e = e))),
             }
             continue;
         }
@@ -91,15 +95,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                     format!("https://sourceforge.net/projects/{}/rss?path=/{}", proj, sf.path)
                 }
-                None => { output::err(rust_i18n::t!("cmd.checkver_sourceforge_err")); continue; }
+                None => { output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_sourceforge_err"))); continue; }
             }
         } else if is_github_checkver(&cv) {
             match github_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
-                None => { output::err(rust_i18n::t!("cmd.checkver_github_err")); continue; }
+                None => { output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_github_err"))); continue; }
             }
         } else {
-            output::err(rust_i18n::t!("cmd.checkver_no_url")); continue;
+            output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_url"))); continue;
         };
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses
@@ -109,10 +113,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
 
         // Fetch page content
-        let raw = match operation::download_page(session, &url) {
+        let raw = match operation::download_page(session, &url, args.timeout) {
             Ok(t) => t,
             Err(e) => {
-                output::err(rust_i18n::t!("cmd.err_download", e = e));
+                output::err(format!("{stem}: {}", rust_i18n::t!("cmd.err_download", e = e)));
                 continue;
             }
         };
@@ -121,21 +125,31 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let current = manifest.version().to_string();
         let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref(), effective_regex.as_deref());
 
-        match extract_result {
-            Some((ref ver, _)) if ver == &current => {
-                output::done(format!("{stem} ({ver})"));
-            }
-            Some((ref ver, ref captures)) => {
-                output::info(format!("{stem} ({current} -> {ver})"));
-                if args.update {
-                    match apply_autoupdate(session, &path, &manifest, ver, captures) {
-                        Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
-                        Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
-                    }
+        // Auto-strip leading v/V prefix (common for GitHub tags)
+        let (ver, captures) = match extract_result {
+            Some((ref ver, ref caps)) => {
+                let stripped = ver.trim_start_matches(|c: char| c == 'v' || c == 'V');
+                if stripped != ver && stripped == &current {
+                    (stripped.to_string(), caps.clone())
+                } else {
+                    (ver.clone(), caps.clone())
                 }
             }
             None => {
-                output::err(rust_i18n::t!("cmd.checkver_no_extract"));
+                output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_extract")));
+                continue;
+            }
+        };
+
+        if ver == current {
+            println!("  {stem} ({ver})");
+        } else {
+            println!("  {stem} ({current} -> {ver})");
+            if args.update {
+                match apply_autoupdate(session, &path, &manifest, &ver, &captures) {
+                    Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
+                    Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
+                }
             }
         }
     }
@@ -429,7 +443,7 @@ fn download_and_hash_multi(
                 // Fetch hash page and extract
                 let hash_url = ext["url"].as_str().unwrap_or(url);
                 let page_url = sub_url(hash_url, url); // substitute any remaining vars
-                let page = operation::download_page(session, &page_url)
+                let page = operation::download_page(session, &page_url, 30)
                     .map_err(|e| anyhow::anyhow!("fetch hash page {}: {}", page_url, e))?;
                 extract_hash_from_page(&page, ext)?
             }
@@ -575,8 +589,9 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 ///   $version — the current installed version
 ///
 /// The script's stdout is captured and trimmed as the new version string.
-fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>) -> Result<Option<String>> {
+fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>, timeout_secs: u64) -> Result<Option<String>> {
     use std::io::Read;
+    use std::time::Duration;
 
     let mut cmd = std::process::Command::new("powershell.exe");
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
@@ -586,18 +601,31 @@ fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>) -> R
 
     let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("spawn powershell: {}", e))?;
 
+    // Wait with timeout
+    let start = std::time::Instant::now();
+    let deadline = Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if start.elapsed() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow::anyhow!("timed out after {}s", timeout_secs));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(anyhow::anyhow!("wait: {}", e)),
+        }
+    }
+
     let mut output = String::new();
     child.stdout.take().unwrap().read_to_string(&mut output)
         .map_err(|e| anyhow::anyhow!("read output: {}", e))?;
 
-    let status = child.wait().map_err(|e| anyhow::anyhow!("wait: {}", e))?;
-
-    if !status.success() {
-        let mut stderr = String::new();
-        if let Some(mut err) = child.stderr.take() {
-            err.read_to_string(&mut stderr).ok();
-        }
-        eprintln!("  powershell stderr: {}", stderr.trim());
+    let mut stderr = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_string(&mut stderr).ok();
     }
 
     let version = output.trim().to_string();
