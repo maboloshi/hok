@@ -108,25 +108,7 @@ pub fn is_pwsh_available() -> bool {
 }
 
 /// Find all running processes whose executable is under `apps_dir`.
-///
-/// On Unix this always returns an empty vec (returns [`Ok`]).
 pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
-    #[cfg(not(windows))]
-    {
-        let _ = apps_dir;
-        Ok(vec![])
-    }
-
-    #[cfg(windows)]
-    {
-        running_apps_win(apps_dir)
-    }
-}
-
-// ─── Windows implementation ────────────────────────────────────────────────
-
-#[cfg(windows)]
-fn running_apps_win(apps_dir: &Path) -> Fallible<Vec<String>> {
     let h_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if h_snapshot == -1 || h_snapshot == 0 {
         // INVALID_HANDLE_VALUE is -1, NULL is also possible
