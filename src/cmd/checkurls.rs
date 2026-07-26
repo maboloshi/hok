@@ -76,6 +76,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     invalid += 1;
                     all_valid = false;
                     if !args.skip_valid {
+                        println!();
                         output::err(format!("not found: {url}"));
                     } else {
                         output::named(&name, url);
@@ -85,6 +86,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     invalid += 1;
                     all_valid = false;
                     if !args.skip_valid {
+                        println!();
                         output::err(format!("{e}: {url}"));
                     } else {
                         output::err(format!("{name} {e} ({url})"));
