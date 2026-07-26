@@ -122,7 +122,7 @@ pub(crate) fn select_candidate(session: &Session, candidates: &mut Vec<Package>)
 
     // Sort candidates by package ident, in other words, by alphabetical order
     // of bucket name.
-    candidates.sort_by_key(|p| p.ident());
+    candidates.sort_by_key(|p| p.ident().to_lowercase());
 
     // Only we can ask user/frontend to select one from multiple candidates
     // when the outbound tx is available for us to do an interactive q&a.

@@ -79,7 +79,7 @@ pub fn bucket_add(session: &Session, name: &str, remote_url: &str) -> Fallible<(
 /// I/O errors will be returned if the `buckets` directory is not readable.
 pub fn bucket_list(session: &Session) -> Fallible<Vec<Bucket>> {
     crate::bucket::bucket_added(session).map(|mut buckets| {
-        buckets.sort_by_key(|b| b.name().to_owned());
+        buckets.sort_by_key(|b| b.name().to_lowercase());
         buckets
     })
 }
@@ -435,7 +435,7 @@ pub fn package_query(
         package::query::query_synced(session, &queries, &options)?
     };
 
-    packages.sort_by_key(|p| p.name().to_owned());
+    packages.sort_by_key(|p| p.name().to_lowercase());
 
     Ok(packages)
 }
