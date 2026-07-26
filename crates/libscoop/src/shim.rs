@@ -1,10 +1,9 @@
 #![allow(dead_code)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
-/// Name of the shim launcher binary (shipped alongside hok.exe).
-const SHIM_EXE_NAME: &str = "hok-shim.exe";
+include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"));
 
 #[derive(Debug)]
 pub struct Shim<'a> {
@@ -99,9 +98,6 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let shims_dir = config.root_path().join("shims");
     internal::fs::ensure_dir(&shims_dir)?;
 
-    // Check if the native shim launcher (hok-shim.exe) is available
-    let shim_exe = find_shim_launcher();
-
     if let Some(bins) = package.manifest().bin() {
         let pkg_name = package.name();
 
@@ -112,15 +108,13 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         for def in bins.into_iter() {
             let shim = Shim::new(def);
 
-            if shim.ty == ShimType::Exe && shim_exe.is_some() {
-                // Use native .exe shim (hok-shim.exe) instead of .cmd wrapper
+            if shim.ty == ShimType::Exe {
+                // Use the embedded hok-shim.exe as the native .exe shim
                 let shim_name = format!("{}.exe", shim.name);
                 let shim_dest = shims_dir.join(&shim_name);
 
-                // Copy the shim launcher
-                if !shim_dest.exists() {
-                    std::fs::copy(shim_exe.as_ref().unwrap(), &shim_dest)?;
-                }
+                // Write the embedded shim (replace if exists)
+                std::fs::write(&shim_dest, HOK_SHIM_BYTES)?;
 
                 // Write .shim metadata file
                 let target_rel = format!(
@@ -171,29 +165,6 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     }
 
     Ok(())
-}
-
-/// Find the hok-shim.exe launcher.
-fn find_shim_launcher() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-
-    // Check alongside current exe
-    let candidate = dir.join(SHIM_EXE_NAME);
-    if candidate.exists() {
-        return Some(candidate);
-    }
-
-    // Check workspace target directory (for `cargo run` / development)
-    if let Ok(cwd) = std::env::current_dir() {
-        let build_type = if cfg!(debug_assertions) { "debug" } else { "release" };
-        let dev_path = cwd.join("target").join(build_type).join(SHIM_EXE_NAME);
-        if dev_path.exists() {
-            return Some(dev_path);
-        }
-    }
-
-    None
 }
 
 /// Generate shim files content for a given shim definition.

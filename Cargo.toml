@@ -51,6 +51,14 @@ opt-level = 3
 strip = "symbols"
 codegen-units = 1
 
+[profile.release.package.hok-shim]
+opt-level = "z"
+codegen-units = 1
+incremental = false
+
+[profile.dev]
+panic = "abort"
+
 [profile.release-debug]
 inherits = "release"
 debug = true
