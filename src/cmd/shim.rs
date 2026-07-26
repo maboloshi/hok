@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use libscoop::Session;
 
 use crate::{output, Result};
@@ -6,19 +6,28 @@ use crate::{output, Result};
 /// List or inspect shims
 #[derive(Debug, Parser)]
 pub struct Args {
-    /// Command: info (default), list
-    #[arg(default_value = "list")]
-    command: String,
-    /// Shim name (for info command)
-    name: Option<String>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// List all shims (default)
+    #[clap(alias = "ls")]
+    List,
+    /// Show shim paths for a specific app
+    Info {
+        /// Shim name
+        name: String,
+    },
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let config = session.config();
     let shims_dir = config.root_path().join("shims");
 
-    match args.command.as_str() {
-        "list" => {
+    match args.command.unwrap_or(Command::List) {
+        Command::List => {
             if !shims_dir.exists() {
                 output::warn(rust_i18n::t!("cmd.shim_no_dir"));
                 return Ok(());
@@ -34,20 +43,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
             }
         }
-        "info" => {
-            if let Some(shim_name) = &args.name {
-                for ext in &["", ".cmd", ".ps1", ".exe"] {
-                    let path = shims_dir.join(format!("{}{}", shim_name, ext));
-                    if path.exists() {
-                        output::change(shim_name.as_str(), "->", path.display().to_string());
-                    }
+        Command::Info { name } => {
+            for ext in &["", ".cmd", ".ps1", ".exe"] {
+                let path = shims_dir.join(format!("{}{}", name, ext));
+                if path.exists() {
+                    output::change(name.as_str(), "->", path.display().to_string());
                 }
-            } else {
-                output::err(rust_i18n::t!("cmd.shim_info_usage"));
             }
-        }
-        _ => {
-            output::err(format!("Unknown command: '{}'. Use: list, info", args.command));
         }
     }
 
