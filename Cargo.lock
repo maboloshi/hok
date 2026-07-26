@@ -1141,12 +1141,14 @@ dependencies = [
  "hok-i18n-derive",
  "indicatif",
  "jiff",
+ "json5",
  "jsonpath-rust",
  "libscoop",
  "regex",
  "remove_dir_all",
  "rust-i18n",
  "scoop-hash",
+ "serde",
  "serde_json",
  "sxd-document",
  "sxd-xpath",
@@ -1500,6 +1502,17 @@ checksum = "2964e92d1d9dc3364cae4d718d93f227e3abb088e747d92e0395bfdedf1c12ca"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "json5"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b0db21af676c1ce64250b5f40f3ce2cf27e4e47cb91ed91eb6fe9350b430c1"
+dependencies = [
+ "pest",
+ "pest_derive",
+ "serde",
 ]
 
 [[package]]
@@ -2439,6 +2452,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",

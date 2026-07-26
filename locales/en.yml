@@ -103,6 +103,7 @@ cmd:
   err_download: "download failed: %{e}"
   err_hash: "hash error: %{e}"
   formatjson_none: "No manifests needed formatting."
+  formatjson_count: "Formatted %{count} manifest(s)."
   hold_err: "Err"
   import_complete: "Import complete."
   import_no_pkgs: "No packages found in import file."

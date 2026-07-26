@@ -21,10 +21,12 @@ clap-verbosity-flag = { version = "3.0.1", features = ["tracing"], default-featu
 clap_complete = "4.5.38"
 crossterm = "0.28"
 indicatif = "0.17.9"
+json5 = "0.4"
 jsonpath-rust = "1.0"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
 remove_dir_all = "0.7.0"
-serde_json = "1.0.120"
+serde = "1.0"
+serde_json = { version = "1.0.120", features = ["preserve_order"] }
 scoop-hash = { version = "0.2.0-alpha.1", path = "./crates/scoop_hash" }
 sxd-document = "0.3"
 sxd-xpath = "0.4"

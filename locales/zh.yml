@@ -103,6 +103,7 @@ cmd:
   err_download: "下载失败: %{e}"
   err_hash: "哈希错误: %{e}"
   formatjson_none: "没有清单需要格式化。"
+  formatjson_count: "已格式化 %{count} 个清单。"
   hold_err: "错误"
   import_complete: "导入完成。"
   import_no_pkgs: "导入文件中没有找到包。"

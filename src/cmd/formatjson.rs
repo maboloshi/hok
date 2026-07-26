@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde::Serialize;
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -51,7 +52,9 @@ pub fn execute(args: Args) -> Result<()> {
             Err(_) => continue,
         };
 
-        let value: serde_json::Value = match serde_json::from_str(&content) {
+        let cleaned = content.trim_start_matches('\u{FEFF}');
+
+        let value: serde_json::Value = match json5::from_str(&cleaned) {
             Ok(v) => v,
             Err(e) => {
                 output::err(format!("{}: parse error: {}", path.display(), e));
@@ -59,8 +62,18 @@ pub fn execute(args: Args) -> Result<()> {
             }
         };
 
-        let formatted = serde_json::to_string_pretty(&value)
+        // Serialize with 4-space indent (Scoop convention), CRLF (Windows).
+        let mut buf = Vec::new();
+        let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
+        value.serialize(&mut ser)
             .map_err(|e| anyhow::anyhow!("serialize error: {}", e))?;
+        let mut formatted = String::from_utf8(buf)
+            .map_err(|e| anyhow::anyhow!("utf8 error: {}", e))?;
+        formatted = formatted.replace('\n', "\r\n");
+        if !formatted.ends_with("\r\n") {
+            formatted.push_str("\r\n");
+        }
 
         // Only write if the content changed
         if formatted != content {
@@ -73,7 +86,7 @@ pub fn execute(args: Args) -> Result<()> {
     if count == 0 {
         output::info(rust_i18n::t!("cmd.formatjson_none"));
     } else {
-        output::info(format!("Formatted {count} manifest(s)."));
+        output::info(rust_i18n::t!("cmd.formatjson_count", count = count));
     }
 
     Ok(())
