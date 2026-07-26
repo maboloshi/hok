@@ -38,7 +38,7 @@ mod constant;
 mod env;
 mod error;
 mod event;
-mod internal;
+pub mod internal;
 mod package;
 mod persist;
 mod psmodule;

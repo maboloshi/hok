@@ -593,7 +593,9 @@ fn run_checkver_script(_session: &Session, script: &str, url: Option<&str>, time
     use std::io::Read;
     use std::time::Duration;
 
-    let mut cmd = std::process::Command::new("powershell.exe");
+    // Prefer pwsh.exe (PowerShell Core, faster startup) over Windows PowerShell.
+    let ps_exe = if libscoop::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+    let mut cmd = std::process::Command::new(ps_exe);
     cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
         .env("url", url.unwrap_or(""))
         .stdout(std::process::Stdio::piped())

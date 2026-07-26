@@ -401,7 +401,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     let _ = std::fs::remove_file(&marker_path); // clean from previous runs
 
     // Prefer pwsh.exe (PowerShell Core, faster startup)
-    let ps_exe = if is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+    let ps_exe = if crate::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
 
     let status = std::process::Command::new(ps_exe)
         .arg("-NoProfile")
@@ -466,19 +466,6 @@ $cmd = $env:SCOOP_PACKAGE_CMD
 
     Ok(())
 }
-
-/// Check whether pwsh.exe (PowerShell Core 7+) is available on PATH.
-fn is_pwsh_available() -> bool {
-    std::process::Command::new("pwsh.exe")
-        .arg("-NoProfile")
-        .arg("-c")
-        .arg("$null")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
-}
-
 /// Expand Scoop-style variables (`$dir`, `$scoopdir`, `$persist_dir`, etc.)
 /// in installer/uninstaller args, replacing them with the actual filesystem paths.
 ///
@@ -1259,7 +1246,7 @@ mod tests {
 
         // Test 2: create a file via PowerShell (used in many Scoop installer scripts)
         let marker = tmp.join("ran.txt");
-        let ps = if is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+        let ps = if crate::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
         let exit_code = crate::internal::os::run_gui(
             &std::path::PathBuf::from(ps),
             &[

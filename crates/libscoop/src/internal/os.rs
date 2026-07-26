@@ -90,6 +90,23 @@ pub fn is_program_available(exe: &str) -> bool {
     false
 }
 
+/// Check whether pwsh.exe (PowerShell Core 7+) is available on PATH.
+/// Result is cached via OnceLock — only checked once per process lifetime.
+pub fn is_pwsh_available() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        // Fast path: check PATH for pwsh.exe without spawning
+        if is_program_available("pwsh.exe") {
+            return true;
+        }
+        // Confirm it actually runs (PATH scan can false-positive on dirs)
+        std::process::Command::new("pwsh.exe")
+            .arg("-NoProfile").arg("-c").arg("$null")
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .status().is_ok()
+    })
+}
+
 /// Find all running processes whose executable is under `apps_dir`.
 ///
 /// On Unix this always returns an empty vec (returns [`Ok`]).
