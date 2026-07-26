@@ -20,6 +20,7 @@ use crate::internal;
 /// to deserialize a Scoop manifest JSON file into a `Manifest` instance.
 ///
 /// [schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
+/// [wiki]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
 ///
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Manifest {
