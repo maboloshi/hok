@@ -31,13 +31,12 @@ pub struct CacheEntry {
     pub suggest: Option<String>,
 }
 
-/// Open or create the SQLite manifest cache database at `{cache}/scoop.db`.
+/// Open or create the SQLite manifest cache database at `{SCOOP}/scoop.db`.
 pub fn open(session: &Session) -> Fallible<Connection> {
     let config = session.config();
-    let cache_dir = config.cache_path();
-    let db_path = cache_dir.join("scoop.db");
+    let db_path = config.root_path().join("scoop.db");
 
-    internal::fs::ensure_dir(&cache_dir)?;
+    internal::fs::ensure_dir(config.root_path())?;
 
     let conn = Connection::open(&db_path)?;
 
