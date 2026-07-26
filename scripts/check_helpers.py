@@ -1,3 +1,15 @@
+"""
+Check which Scoop helper functions are embedded in hok's asset_scripts.
+
+Parses asset_scripts/core.ps1 and decompress.ps1 for function definitions,
+then compares against the known helper list (scripts/known-helpers.txt).
+Reports coverage and any missing functions.
+
+known-helpers.txt is the reference list of Scoop PS helper functions
+encountered in the wild — its initial content was harvested from
+analyze-bucket.ps1 output (scanning ~20k manifest files).
+"""
+
 import re, pathlib
 
 helpers = set()
