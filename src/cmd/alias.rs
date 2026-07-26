@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use libscoop::{operation, Session};
 
 use crate::{output, Result};
@@ -12,20 +12,36 @@ use crate::{output, Result};
 ///   hok alias rm  <name>            remove an alias
 #[derive(Debug, Parser)]
 pub struct Args {
-    /// Command: list (default), add, rm
-    command: Option<String>,
-    /// Alias name (for add/rm)
-    name: Option<String>,
-    /// Alias command (for add)
-    value: Option<String>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// List all aliases (default)
+    #[clap(alias = "ls")]
+    List,
+
+    /// Add a new alias
+    Add {
+        /// Alias name
+        name: String,
+        /// Command to execute
+        value: String,
+    },
+
+    /// Remove an alias
+    #[clap(alias = "rm", alias = "delete")]
+    Remove {
+        /// Alias name to remove
+        name: String,
+    },
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    // Determine command from positional args or use default
-    let cmd = args.command.as_deref().unwrap_or("list");
-
-    match cmd {
-        "list" => {
+    match args.command {
+        // If no subcommand is provided, default to List
+        Some(Command::List) | None => {
             let config = session.config();
             let aliases = config.aliases();
             match aliases {
@@ -35,7 +51,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     sorted.sort_by_key(|(k, _)| *k);
                     for (name, cmd) in sorted {
                         let cmd_short = if cmd.len() > 60 {
-                            format!("{}...", &cmd[..57])
+                            let truncated: String = cmd.chars().take(57).collect();
+                            format!("{}...", truncated)
                         } else {
                             cmd.clone()
                         };
@@ -47,28 +64,17 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
             }
         }
-        "add" => {
-            if let (Some(name), Some(value)) = (&args.name, &args.value) {
-                match operation::alias_add(session, name, value) {
-                    Ok(_) => output::done(format!("added: {name} -> {value}")),
-                    Err(e) => output::err(format!("{e}")),
-                }
-            } else {
-                output::err(rust_i18n::t!("cmd.alias_add_usage"));
+        Some(Command::Add { name, value }) => {
+            match operation::alias_add(session, &name, &value) {
+                Ok(_) => output::info(rust_i18n::t!("cmd.alias_added", name = name, value = value)),
+                Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
             }
         }
-        "rm" | "remove" | "delete" => {
-            if let Some(name) = &args.name {
-                match operation::alias_remove(session, name) {
-                    Ok(_) => output::done(format!("removed: {name}")),
-                    Err(e) => output::err(format!("{e}")),
-                }
-            } else {
-                output::err(rust_i18n::t!("cmd.alias_rm_usage"));
+        Some(Command::Remove { name }) => {
+            match operation::alias_remove(session, &name) {
+                Ok(_) => output::info(rust_i18n::t!("cmd.alias_removed", name = name)),
+                Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
             }
-        }
-        _ => {
-            output::err(rust_i18n::t!("cmd.alias_unknown", cmd = cmd));
         }
     }
 
