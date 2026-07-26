@@ -31,6 +31,12 @@
 - **checkver 全套** —— 7 种版本提取模式（regex / JSONPath / XPath / Script / reverse / replace / GitHub / SourceForge）+ autoupdate 回写
 - **SQLite manifest 缓存** —— `use_sqlite_cache`，兼容 Scoop 格式
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
+- **native shim** —— 10KB `#![no_std]` 原生 exe shim，嵌入 hok 二进制，零外部依赖
+- **i18n 国际化** —— 全部用户消息迁移到 `rust_i18n`，支持中英文切换
+- **可切换输出风格** —— `hok config set output-style pacman`，Scoop/Pacman 两种风格
+- **列表表格化** —— `hok list` 表格显示，支持 CJK 对齐、可更新版本提示
+- **安装器文件** —— 支持 `installer.file`/`uninstaller.file` manifest 格式
+- **`--global/-g`** —— 全局安装支持（install/cleanup/uninstall/hold/unhold）
 
 ### 修复的原版 bug
 
@@ -48,6 +54,10 @@
 | **`update` 无短时保护** | 短期内重复 `hok update` 会重复拉取所有仓库 | 增加 15 分钟 cooldown，支持 `--force` 跳过；仅拉取当前 HEAD 分支 |
 | **缓存刷新无反馈** | `update` 最后 SQLite 缓存刷写时终端无响应 | 移到 binary 层并输出 `Refreshing manifest cache...` 提示 |
 | **缺少 reinstall** | 需要手动 `uninstall` + `install` | 新增 `reinstall` 命令，自动保持 held 状态 |
+| **`SetConsoleCtrlHandler(NULL)` 错误** | NULL 移除所有 handler 导致某些 Windows 版本上 crash | 替换为真实 handler 函数，返回 TRUE 吞掉 Ctrl+C |
+| **`ShellExecuteW` 不等待退出码** | elevation 路径不等待子进程、不转发退出码 | 改用 `ShellExecuteExW` + `WaitForSingleObject` |
+| **`expand_dp0` 空 args 越界** | 无 args 字段时 `wrapping_sub(5)` 回绕导致 panic | 加 `len < 5` 边界检查 |
+| **大小写排序不一致** | 包/仓库/候选列表排序混乱 | 统一 case-insensitive 比较 |
 
 ### Aria2 配置复用
 
@@ -69,12 +79,54 @@ hok config aria2-split 10
 hok config aria2-min-split-size 10M
 ```
 
+### 国际化（i18n）
+
+hok 0.2.0-beta.1 起支持多语言切换：
+
+```bash
+# 查看当前语言
+hok config LANG
+
+# 切换为英文
+hok config set LANG en
+```
+
+目前已内置 `zh`（中文）和 `en`（英文）两种语言，全部用户界面消息均已迁移到 `rust_i18n` 框架。CLI 帮助信息（`--help`/`-h`）也支持多语言，通过 `hok-i18n-derive` proc-macro 自动生成翻译键。
+
+### 输出风格切换
+
+```bash
+# 切换为 Pacman 风格
+hok config set output-style pacman
+
+# 恢复 Scoop 风格
+hok config set output-style scoop
+```
+
+Scoop 风格（默认）：`  Extracting... done` 逐步进度。
+Pacman 风格：`::` 标题前缀、`✓`/`⚠`/`✗` 状态符号，粗体标签 + 普通信息内容。
+
+### Native Shim 基准测试
+
+hok 内嵌了 **10KB** 的 `#![no_std]` 原生 exe shim，完全符合 [Scoop Shim 规范](https://github.com/ScoopInstaller/Shim)。性能对比（whoami.exe, 30 runs）：
+
+| 实现 | 平均耗时 | 开销 | 体积 |
+|------|---------|------|------|
+| 直接启动 | 29.7 ms | — | — |
+| **hok-shim (no_std)** | **51.7 ms** | **+22 ms** | **10 KB** |
+| Rust (上游) | 54.9 ms | +25 ms | 121 KB |
+| Zig (上游) | 53.9 ms | +24 ms | 71 KB |
+| C++ (上游) | 56.9 ms | +27 ms | 158 KB |
+| C# (上游) | 107.3 ms | +77 ms | 14 KB |
+
+hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig/C++ 处于同一量级。关键优化：`AttachConsole` 避免 GUI 子系统创建新控制台（节省约 400ms），`CreateJobObject` 确保子进程树清理。
+
 ### 设计原则
 
 - **纯 Rust 优先，但有底线** —— 能不用 C 编译就不用，但 `git2`（libgit2）比 `gix`（20 分钟编译）更务实。「Pure Rust first」有实际边界。
 - **不要重复造轮子，但也不当冤大头** —— 标准算法（MD5/SHA）用现成 crate，平台特定 API（COM/Win32）用 raw FFI。后者没有合适的轻量 crate，几十行 FFI 比引入整个 crate 更合理。
 - **兼容原版 Scoop** —— SQLite 缓存 schema、config 格式、autoupdate 行为均保持兼容。
-- **零 warning 策略** —— 所有代码 0 warning，25 测试全过。
+- **零 warning 策略** —— 所有代码 0 warning，101 测试全过。
 
 ---
 

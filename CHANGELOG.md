@@ -1,6 +1,85 @@
 # Changelog
 
-## [0.2.0-alpha.2](https://github.com/maboloshi/hok/compare/v0.2.0-alpha.1...v0.2.0-alpha.2) (2026-07-12)
+## [0.2.0-beta.1](https://github.com/maboloshi/hok/compare/v0.2.0-alpha.2...v0.2.0-beta.1) (2026-07-26)
+
+### ⚠ BREAKING CHANGES
+
+* **i18n:** All user-facing messages migrated to `rust_i18n::t!()`. Third-party
+  tools parsing CLI output should use `--quiet` or machine-readable flags.
+  Custom language packs can now be added via `locales/{locale}.yml`.
+* **output:** Output style config key `output-style` replaces `pacman-style`.
+  Old config values are auto-migrated on first use.
+* **list:** Table format replaces plain list — column widths now dynamic.
+  `hok list -k` output columns are realigned.
+
+### Features
+
+* **hok-shim:** no_std native Shim launcher (10 KB, zero deps, full spec compliance)
+  * PE header parsing for GUI/console detection (no `shell32` dependency)
+  * `AttachConsole` for console targets (avoids ~400ms console allocation)
+  * `CreateJobObject` + `KILL_ON_JOB_CLOSE` for child cleanup
+  * `SetConsoleCtrlHandler` with real handler (not NULL, per MSDN spec)
+  * `ShellExecuteExW` for elevation — waits + forwards exit code
+  * `%~dp0` and `%ENV%` expansion, `~\\..\\` relative path resolution
+  * Benchmark: +22ms overhead over direct execution
+  * Embedded into `hok.exe` at compile time — no separate build step
+* **i18n:** Full user-facing message internationalization framework
+  * `locales/en.yml` + `locales/zh.yml` — switch via `LANG` env or config
+  * All 28 commands + eventloop migrated to `t!()` keys
+  * `hok-i18n-derive` proc-macro for CLI `--help`/`-h` i18n
+  * `about`/`long_about` split — examples only in `--help` (not `-h`)
+* **output:** Switchable style — `hok config set output-style pacman`
+  * Scoop style (default): step-by-step progress messages
+  * Pacman style: `::` headers, `✓`/`⚠`/`✗` icons, bold tags, plain content
+  * `--detail` global flag for verbose extraction progress (Scoop style always shows steps)
+* **list:** Table format with I18n headers, CJK-aware column alignment
+  * `-u` flag filters to upgradable packages; `Info` column always shows `→ version`
+  * `-k` output columns realigned
+* **cleanup:** `*` wildcard and `--all/-a` flag support
+  * Fail count with retry hint on partial failures
+  * i18n for `--all`/`--global` args
+* **install:** `--global/-g` flag for install, uninstall, cleanup, hold, unhold
+* **installer.file:** Support `installer.file` + `installer.args` manifest format
+  * ShellExecuteExW for proper GUI installation window display
+  * Scoop variable expansion in args (`$dir`, `$scoopdir`, `$version`, etc.)
+  * URL fragment rename (`#/installer.exe` → direct copy)
+  * No hash-named duplicates in working directory
+* **uninstall:** `SyncOption::Remove` now properly applied — no more full-bucket scans
+* **reinstall:** Bucket-qualified queries, `--assume-yes` respected for uninstall, auto-confirm install
+* **PS preamble:** Complete Scoop-compatible variables: `$bucketsdir`, `$bucket`, `$cmd`
+* **notes:** Manifest `notes` field displayed after package install
+* **bucket list:** Shows HEAD commit author date (`2026/7/25 17:00:56` format)
+* **version:** Build timestamp in `hok --version` output
+* **held:** Upgrade summary shows held package warnings
+* **extract:** Inline progress bars for both internal (sevenz-rust2/zip) and external (7z.exe) paths
+* **git:** `reset_head` now properly updates working tree after fetch (fast-forward check, no silent skip)
+
+### Fixes
+
+* **hok-shim:** `SetConsoleCtrlHandler(NULL, TRUE)` → real handler function (MSDN compliance)
+* **hok-shim:** `ShellExecuteW` → `ShellExecuteExW` (elevation waits + forwards exit code)
+* **hok-shim:** `expand_dp0` wrapping_sub panic on empty args in .shim files
+* **sort:** Case-insensitive sorting for packages, buckets, and candidates
+* **output:** `-h` no longer shows smashed-together examples in `about` field
+* **i18n:** Shim command arg help text correctly translated (was in SKIP list)
+* **i18n:** Duplicate `args` key in shim YAML removed, `name` translation restored
+* **last_update:** Timestamp format aligned with Scoop (`[DateTime]::Now.ToString('o')`)
+* **export:** All installed packages and bucket URLs are now correctly exported
+* **transaction:** Removed packages shown in confirm prompt
+* **cancel:** "All up to date" message suppressed when user cancels transaction
+* **cleanup:** Failure count only counts successful removals; retry hint shown
+* **test:** Installer.file execution test uses `cmd.exe /c` and PowerShell (no direct exe assumptions)
+
+### Performance
+
+* **sync:** Resolve and install no longer perform full-bucket scans for exact queries
+* **deps:** `hok-i18n-derive` as workspace member (minimal overhead at build time)
+
+### Tests
+
+* hok-shim: 36 unit tests for parser functions, path resolution, env expansion
+* libscoop: 65 unit tests (installer.file, URL fragment, variable expansion, etc.)
+* Total: 101 tests, all passing
 
 ### Features
 
