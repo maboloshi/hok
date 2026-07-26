@@ -1,6 +1,5 @@
 use clap::Parser;
 use libscoop::{operation, QueryOption, Session};
-use std::path::Path;
 use std::process::Command;
 
 use crate::{output, Result};
@@ -41,55 +40,37 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             output::prompt(rust_i18n::t!("output.select_prompt"));
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
-            let parsed = input.trim().parse::<usize>();
-            if parsed.is_err() {
-                output::err(rust_i18n::t!("cmd.cat_invalid"));
-                return Ok(());
-            }
-
-            let num = parsed.unwrap();
-            if num >= length {
-                output::err(rust_i18n::t!("cmd.cat_invalid"));
-                return Ok(());
-            }
+            let num = match input.trim().parse::<usize>() {
+                Ok(n) if n < length => n,
+                _ => {
+                    output::err(rust_i18n::t!("cmd.cat_invalid"));
+                    return Ok(());
+                }
+            };
             &result[num]
         };
 
         let path = package.manifest().path();
         output::info(format!("{}", path.display()));
-        match is_program_available("bat.exe") {
-            false => {
-                let content = std::fs::read_to_string(path)?;
-                println!("{}", content.trim());
-            }
-            true => {
-                let config = session.config();
-                let mut cat_args = vec!["--no-paging"];
-                let cat_style = config.cat_style();
-                if !cat_style.is_empty() {
-                    cat_args.push("--style");
-                    cat_args.push(cat_style);
-                }
-                cat_args.push("--language");
-                cat_args.push("json");
 
-                let mut child = Command::new("bat.exe").arg(path).args(cat_args).spawn()?;
-                child.wait()?;
+        // Use bat.exe for syntax-highlighted output if available
+        // (install via: hok install bat)
+        if libscoop::internal::os::is_program_available("bat.exe") {
+            let config = session.config();
+            let mut args = vec!["--no-paging"];
+            let cat_style = config.cat_style();
+            if !cat_style.is_empty() {
+                args.push("--style");
+                args.push(cat_style);
             }
+            args.push("--language");
+            args.push("json");
+            let mut child = Command::new("bat.exe").arg(path).args(args).spawn()?;
+            child.wait()?;
+        } else {
+            let content = std::fs::read_to_string(path)?;
+            println!("{}", content.trim());
         }
     }
     Ok(())
-}
-
-/// Check if a given executable is available on the system
-fn is_program_available(exe: &str) -> bool {
-    if let Ok(path) = std::env::var("PATH") {
-        for p in path.split(';') {
-            let path = Path::new(p).join(exe);
-            if std::fs::metadata(path).is_ok() {
-                return true;
-            }
-        }
-    }
-    false
 }
