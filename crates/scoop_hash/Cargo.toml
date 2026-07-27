@@ -12,23 +12,8 @@ rust-version = "1.60.0"
 readme = "README.md"
 
 [[bench]]
-name = "md5"
-path = "benches/md5.rs"
-harness = false
-
-[[bench]]
-name = "sha1"
-path = "benches/sha1.rs"
-harness = false
-
-[[bench]]
-name = "sha256"
-path = "benches/sha256.rs"
-harness = false
-
-[[bench]]
-name = "sha512"
-path = "benches/sha512.rs"
+name = "all"
+path = "benches/all.rs"
 harness = false
 
 [dependencies]

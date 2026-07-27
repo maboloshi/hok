@@ -68,6 +68,17 @@ impl Default for ChecksumBuilder {
     }
 }
 
+/// Macro to generate a `ChecksumBuilder::*` method for a given hash algorithm.
+macro_rules! checksum_method {
+    ($(#[$doc:meta])* fn $name:ident($ctor:ident)) => {
+        $(#[$doc])*
+        pub fn $name(self) -> ChecksumBuilder {
+            let algo: Box<dyn Hasher> = Box::new($ctor::new());
+            self.set_algo(algo)
+        }
+    };
+}
+
 impl ChecksumBuilder {
     /// Creates a new ChecksumBuilder instance.
     ///
@@ -100,28 +111,24 @@ impl ChecksumBuilder {
         }
     }
 
-    /// Use the md5 hash algorithm.
-    pub fn md5(self) -> ChecksumBuilder {
-        let algo: Box<dyn Hasher> = Box::new(Md5::new());
-        self.set_algo(algo)
+    checksum_method! {
+        /// Use the md5 hash algorithm.
+        fn md5(Md5)
     }
 
-    /// Use the sha1 hash algorithm.
-    pub fn sha1(self) -> ChecksumBuilder {
-        let algo: Box<dyn Hasher> = Box::new(Sha1::new());
-        self.set_algo(algo)
+    checksum_method! {
+        /// Use the sha1 hash algorithm.
+        fn sha1(Sha1)
     }
 
-    /// Use the sha256 hash algorithm.
-    pub fn sha256(self) -> ChecksumBuilder {
-        let algo: Box<dyn Hasher> = Box::new(Sha256::new());
-        self.set_algo(algo)
+    checksum_method! {
+        /// Use the sha256 hash algorithm.
+        fn sha256(Sha256)
     }
 
-    /// Use the sha512 hash algorithm.
-    pub fn sha512(self) -> ChecksumBuilder {
-        let algo: Box<dyn Hasher> = Box::new(Sha512::new());
-        self.set_algo(algo)
+    checksum_method! {
+        /// Use the sha512 hash algorithm.
+        fn sha512(Sha512)
     }
 
     fn set_algo(mut self, algo: Box<dyn Hasher>) -> ChecksumBuilder {
