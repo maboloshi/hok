@@ -1,7 +1,5 @@
 use clap::Parser;
 use libscoop::{operation, Session};
-use scoop_hash::ChecksumBuilder;
-use std::io::Read;
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -56,7 +54,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     output::ok();
 
     output::progress(rust_i18n::t!("cmd.computing_hash"), "");
-    let hash = compute_file_hash(&dest)?;
+    let hash = scoop_hash::compute_file_hash(&dest, "sha256")?;
     output::ok();
 
     // Generate manifest
@@ -98,19 +96,4 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     Ok(())
-}
-
-fn compute_file_hash(path: &std::path::Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| anyhow::anyhow!("open: {}", e))?;
-    let builder = ChecksumBuilder::new();
-    let mut hasher = builder.build();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf)
-            .map_err(|e| anyhow::anyhow!("read: {}", e))?;
-        if n == 0 { break; }
-        hasher.consume(&buf[..n]);
-    }
-    Ok(hasher.finalize())
 }

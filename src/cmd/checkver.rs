@@ -1,8 +1,6 @@
 use clap::Parser;
 use libscoop::{operation, Manifest, Session};
 use regex::Regex;
-use scoop_hash::ChecksumBuilder;
-use std::io::Read;
 use std::path::PathBuf;
 
 use crate::{output, util, Result};
@@ -438,7 +436,7 @@ fn download_and_hash_multi(
 
                 // Determine algorithm from the extraction (default sha256)
                 let algo = ext.get("algorithm").and_then(|a| a.as_str()).unwrap_or("sha256");
-                compute_hash(&dest, algo)?
+                scoop_hash::compute_file_hash(&dest, algo)?
             } else {
                 // Fetch hash page and extract
                 let hash_url = ext["url"].as_str().unwrap_or(url);
@@ -453,7 +451,7 @@ fn download_and_hash_multi(
             let dest = tmp_dir.join(filename);
             operation::download_file(session, url, &dest)
                 .map_err(|e| anyhow::anyhow!("download {}: {}", url, e))?;
-            compute_hash(&dest, "sha256")?
+            scoop_hash::compute_file_hash(&dest, "sha256")?
         };
 
         hashes.push(hash);
@@ -533,21 +531,6 @@ fn is_hex_hash(s: &str) -> bool {
     valid_len && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
 }
 
-/// Compute hash of a file on disk using the given algorithm name.
-fn compute_hash(path: &std::path::Path, algo: &str) -> Result<String> {
-    let builder = ChecksumBuilder::new()
-        .algo(algo)
-        .map_err(|_| anyhow::anyhow!("unsupported hash algorithm: {}", algo))?;
-    let mut hasher = builder.build();
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; 65536];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 { break; }
-        hasher.consume(&buf[..n]);
-    }
-    Ok(hasher.finalize())
-}
 
 fn json_str_array(items: &[String]) -> serde_json::Value {
     serde_json::Value::Array(

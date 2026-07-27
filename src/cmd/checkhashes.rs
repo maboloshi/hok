@@ -1,8 +1,6 @@
 use clap::Parser;
 use libscoop::operation;
 use libscoop::{Manifest, Session};
-use scoop_hash::ChecksumBuilder;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::{output, util, Result};
@@ -101,7 +99,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
 
         // Compute hash
-        let actual_hash = match compute_hash(&cache_path, hash_str.algorithm()) {
+        let actual_hash = match scoop_hash::compute_file_hash(&cache_path, hash_str.algorithm()) {
             Ok(h) => h,
             Err(e) => {
                 output::err(rust_i18n::t!("cmd.err_hash", e = e));
@@ -136,23 +134,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Compute hash of a file using specified algorithm name.
-fn compute_hash(path: &Path, algo: &str) -> Result<String> {
-    let mut file = std::fs::File::open(path)?;
-    let builder = ChecksumBuilder::new()
-        .algo(algo)
-        .map_err(|_| anyhow::anyhow!("unsupported hash algorithm: {}", algo))?;
-    let mut hasher = builder.build();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.consume(&buf[..n]);
-    }
-    Ok(hasher.finalize())
-}
 
 /// Update hash in a manifest JSON file, preserving original formatting.
 fn update_json_hash(path: &Path, algo: &str, actual_hash: &str) -> Result<()> {

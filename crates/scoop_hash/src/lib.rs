@@ -5,6 +5,8 @@
 //! implementations — battle-tested, pure Rust, no C deps.
 
 use std::error::Error as StdError;
+use std::io::Read;
+use std::path::Path;
 
 mod rustcrypto;
 use rustcrypto::{Digest, Md5, Sha1, Sha256, Sha512};
@@ -158,4 +160,23 @@ impl Checksum {
     pub fn check(self, input: &str) -> bool {
         input == self.finalize()
     }
+}
+
+/// Compute the hash of a file using the given algorithm.
+///
+/// Supported algorithms: `md5`, `sha1`, `sha256`, `sha512`.
+/// Returns the hash as a lowercase hex string.
+pub fn compute_file_hash(path: &Path, algo: &str) -> std::io::Result<String> {
+    let builder = ChecksumBuilder::new()
+        .algo(algo)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsupported hash algorithm"))?;
+    let mut hasher = builder.build();
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 { break; }
+        hasher.consume(&buf[..n]);
+    }
+    Ok(hasher.finalize())
 }
