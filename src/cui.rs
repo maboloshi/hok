@@ -104,8 +104,7 @@ impl BucketUpdateUI {
 
     /// Add a bucket progress to the UI.
     pub fn add(&mut self, name: &str) {
-        self.data.insert(name.to_owned(), BucketState::Started);
-        self.draw();
+        self.set_state(name, BucketState::Started);
     }
 
     /// Set the bucket progress to failed.
@@ -117,7 +116,12 @@ impl BucketUpdateUI {
 
     /// Set the bucket progress to successed.
     pub fn succeed(&mut self, name: &str) {
-        self.data.insert(name.to_owned(), BucketState::Successed);
+        self.set_state(name, BucketState::Successed);
+    }
+
+    /// Insert state and redraw (shared by `add` / `succeed`).
+    fn set_state(&mut self, name: &str, state: BucketState) {
+        self.data.insert(name.to_owned(), state);
         self.draw();
     }
 
