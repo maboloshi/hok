@@ -736,6 +736,27 @@ macro_rules! arch_specific_field {
     }};
 }
 
+/// Generate an accessor method that reads a field via `arch_specific_field!`
+/// and applies `devectorize()`.
+macro_rules! arch_accessor {
+    // Standard pattern — wrapped in Option
+    ($(#[$doc:meta])* fn $name:ident() -> Option<$ret:ty>) => {
+        $(#[$doc])*
+        pub fn $name(&self) -> Option<$ret> {
+            let ret = arch_specific_field!(self, $name);
+            ret.map(|v| v.devectorize())
+        }
+    };
+    // With `unwrap_or_default` — return type is not Option-wrapped
+    ($(#[$doc:meta])* fn $name:ident() -> $ret:ty, unwrap_or_default) => {
+        $(#[$doc])*
+        pub fn $name(&self) -> $ret {
+            let ret = arch_specific_field!(self, $name);
+            ret.map(|v| v.devectorize()).unwrap_or_default()
+        }
+    };
+}
+
 impl Manifest {
     /// Create a [`Manifest`] representation of a manfest JSON file with the
     /// given path.
@@ -845,10 +866,9 @@ impl Manifest {
         self.inner.architecture.as_ref()
     }
 
-    /// Get `bin` field of this manifest.
-    pub fn bin(&self) -> Option<Vec<Vec<&str>>> {
-        let ret = arch_specific_field!(self, bin);
-        ret.map(|v| v.devectorize())
+    arch_accessor! {
+        /// Get `bin` field of this manifest.
+        fn bin() -> Option<Vec<Vec<&str>>>
     }
 
     #[inline]
@@ -868,10 +888,9 @@ impl Manifest {
         self.inner.cookie.as_ref()
     }
 
-    /// Returns `env_add_path` defined in this manifest.
-    pub fn env_add_path(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, env_add_path);
-        ret.map(|v| v.devectorize())
+    arch_accessor! {
+        /// Returns `env_add_path` defined in this manifest.
+        fn env_add_path() -> Option<Vec<&str>>
     }
 
     /// Returns `env_set` defined in this manifest.
@@ -879,10 +898,9 @@ impl Manifest {
         arch_specific_field!(self, env_set)
     }
 
-    /// Returns `extract_dir` defined in this manifest.
-    pub fn extract_dir(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, extract_dir);
-        ret.map(|v| v.devectorize())
+    arch_accessor! {
+        /// Returns `extract_dir` defined in this manifest.
+        fn extract_dir() -> Option<Vec<&str>>
     }
 
     /// Returns `extract_to` defined in this manifest.
@@ -901,25 +919,13 @@ impl Manifest {
         self.inner.suggest.as_ref()
     }
 
-    pub fn pre_install(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, pre_install);
-        ret.map(|v| v.devectorize())
-    }
+    arch_accessor! { fn pre_install() -> Option<Vec<&str>> }
 
-    pub fn post_install(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, post_install);
-        ret.map(|v| v.devectorize())
-    }
+    arch_accessor! { fn post_install() -> Option<Vec<&str>> }
 
-    pub fn pre_uninstall(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, pre_uninstall);
-        ret.map(|v| v.devectorize())
-    }
+    arch_accessor! { fn pre_uninstall() -> Option<Vec<&str>> }
 
-    pub fn post_uninstall(&self) -> Option<Vec<&str>> {
-        let ret = arch_specific_field!(self, post_uninstall);
-        ret.map(|v| v.devectorize())
-    }
+    arch_accessor! { fn post_uninstall() -> Option<Vec<&str>> }
 
     /// Returns `notes` defined in this manifest.
     pub fn notes(&self) -> Option<Vec<&str>> {
@@ -955,27 +961,22 @@ impl Manifest {
         })
     }
 
-    /// Extract download urls from this manifest:
-    ///
-    /// - For `amd64` return "64bit" urls if available else noarch urls;
-    /// - For `ia32` return "32bit" urls if available else noarch urls;
-    /// - For `aarch64` return "arm64" urls if available else noarch urls.
-    pub fn url(&self) -> Vec<&str> {
-        let ret = arch_specific_field!(self, url);
-        // The unwrap is safe, according to the manifest schema, for a valid
-        // manifest, at least one of the noarch url field or arch-specific url
-        // field is required to be provided.
-        ret.map(|v| v.devectorize()).unwrap_or_default()
+    arch_accessor! {
+        /// Extract download urls from this manifest:
+        ///
+        /// - For `amd64` return "64bit" urls if available else noarch urls;
+        /// - For `ia32` return "32bit" urls if available else noarch urls;
+        /// - For `aarch64` return "arm64" urls if available else noarch urls.
+        fn url() -> Vec<&str>, unwrap_or_default
     }
 
-    /// Extract file hashes from this manifest, in following order:
-    ///
-    /// - For `amd64` return "64bit" hashes if available else noarch hashes;
-    /// - For `ia32` return "32bit" hashes if available else noarch hashes;
-    /// - For `aarch64` return "arm64" hashes if available else noarch hashes.
-    pub fn hash(&self) -> Vec<&HashString> {
-        let ret = arch_specific_field!(self, hash);
-        ret.map(|v| v.devectorize()).unwrap_or_default()
+    arch_accessor! {
+        /// Extract file hashes from this manifest, in following order:
+        ///
+        /// - For `amd64` return "64bit" hashes if available else noarch hashes;
+        /// - For `ia32` return "32bit" hashes if available else noarch hashes;
+        /// - For `aarch64` return "arm64" hashes if available else noarch hashes.
+        fn hash() -> Vec<&HashString>, unwrap_or_default
     }
 
     /// Returns the dependencies of this manifest.
