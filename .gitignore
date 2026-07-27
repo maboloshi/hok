@@ -17,3 +17,9 @@ sandbox.wsb
 # OS
 Thumbs.db
 .DS_Store
+
+# Generated analysis reports
+*_report.txt
+*_drywall.txt
+*_duplicates.txt
+Cargo.lock.txt
