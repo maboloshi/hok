@@ -102,7 +102,8 @@ pub fn extract(
         "bz2" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Bzip2), emitter),
         "xz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Xz), emitter),
         "zst" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Zstd), emitter),
-        "rar" | "lzh" => extract_with_unarc(cache_path, &effective_dest, extract_dir, fmt, emitter),
+        "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
+        "lzh" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
         "iso" | "unknown" => unreachable!(), // handled by needs_fallback
         _ => Err(Error::ExtractionFailed(format!("unsupported format: {}", fmt))),
     }
@@ -286,46 +287,54 @@ fn extract_tar(
     Ok(())
 }
 
-// ─── RAR / LZH extraction via unarc-rs unified API ───────────────────
+// ─── RAR extraction via unrar crate ─────────────────────────────────
 
-fn extract_with_unarc(
+fn extract_rar(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    _fmt: &str,
     emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
-    use unarc_rs::unified::ArchiveFormat as UnarcFormat;
+    use unrar::Archive;
 
-    let mut archive = UnarcFormat::open_path(src)
-        .map_err(|e| Error::ExtractionFailed(format!("cannot open archive: {}", e)))?;
+    let mut archive = Archive::new(src).open_for_processing()
+        .map_err(|e| Error::ExtractionFailed(format!("cannot open rar: {}", e)))?;
 
-    while let Some(entry) = archive
-        .next_entry()
-        .map_err(|e| Error::ExtractionFailed(format!("archive entry error: {}", e)))?
-    {
-        let name = entry.name().to_string();
+    loop {
+        let entry = match archive.read_header() {
+            Ok(Some(e)) => e,
+            Ok(None) => break,
+            Err(e) => return Err(Error::ExtractionFailed(format!("rar read header: {}", e))),
+        };
+
+        let name = entry.entry().filename.to_string_lossy().to_string();
         if let Some(f) = filter {
             if !f.iter().any(|d| name.starts_with(d)) {
-                archive
-                    .skip(&entry)
-                    .map_err(|e| Error::ExtractionFailed(format!("skip error: {}", e)))?;
+                archive = entry.skip()
+                    .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
                 continue;
             }
         }
         if let Some(tx) = emitter {
             let _ = tx.send(Event::PackageExtractProgress(name.clone()));
         }
+
         let target = strip_dir(&name, filter).unwrap_or(name);
         let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
-        }
 
-        let mut out = std::fs::File::create(&target_path)?;
-        archive
-            .read_to(&entry, &mut out)
-            .map_err(|e| Error::ExtractionFailed(format!("extract error: {}", e)))?;
+        if entry.entry().is_directory() {
+            crate::internal::fs::ensure_dir(&target_path)?;
+            archive = entry.skip()
+                .map_err(|e| Error::ExtractionFailed(format!("rar skip dir: {}", e)))?;
+        } else {
+            if let Some(parent) = target_path.parent() {
+                crate::internal::fs::ensure_dir(parent)?;
+            }
+            let (data, rest) = entry.read()
+                .map_err(|e| Error::ExtractionFailed(format!("rar read: {}", e)))?;
+            std::fs::write(&target_path, &data)?;
+            archive = rest;
+        }
     }
     Ok(())
 }

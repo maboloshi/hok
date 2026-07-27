@@ -32,7 +32,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lzma-rs = "0.3"
-unarc-rs = "0.6"
+unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
 bzip2 = "0.6.1"
 
