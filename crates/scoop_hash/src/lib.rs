@@ -35,7 +35,13 @@ macro_rules! impl_hasher_for {
             }
 
             fn sum(self: Box<Self>) -> String {
-                format!("{:x}", self.inner.finalize())
+                use std::fmt::Write;
+                let digest = self.inner.finalize();
+                let mut hex = String::with_capacity(digest.len() * 2);
+                for byte in digest.iter() {
+                    let _ = write!(hex, "{:02x}", byte);
+                }
+                hex
             }
         }
     };
