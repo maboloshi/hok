@@ -47,11 +47,6 @@ fn detect_format(filename: &str) -> Option<&'static str> {
     None
 }
 
-/// Check whether the format requires falling back to the external 7z.exe.
-fn needs_fallback(fmt: &str) -> bool {
-    matches!(fmt, "iso" | "unknown")
-}
-
 /// Extract an archive file to the destination directory.
 ///
 /// * `cache_path` — Path to the downloaded archive file.
@@ -89,11 +84,6 @@ pub fn extract(
     let fmt = detect_format(&filename)
         .ok_or_else(|| Error::ExtractionFailed(format!("unknown archive format: {}", filename)))?;
 
-    // Fallback for unsupported formats (ISO, etc.)
-    if needs_fallback(fmt) {
-        return extract_with_7z_exe(cache_path, &effective_dest, emitter);
-    }
-
     match fmt {
         "7z" => extract_7z(cache_path, &effective_dest, extract_dir, emitter),
         "zip" => extract_zip(cache_path, &effective_dest, extract_dir, emitter),
@@ -103,8 +93,8 @@ pub fn extract(
         "xz" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Xz), emitter),
         "zst" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Zstd), emitter),
         "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
-        "lzh" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
-        "iso" | "unknown" => unreachable!(), // handled by needs_fallback
+        "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
+        "unknown" => unreachable!(), // matched by detect_format but not expected here
         _ => Err(Error::ExtractionFailed(format!("unsupported format: {}", fmt))),
     }
 }
