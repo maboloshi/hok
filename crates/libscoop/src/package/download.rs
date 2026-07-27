@@ -554,24 +554,16 @@ mod tests {
 
     #[test]
     fn test_chunk_cover_all_bytes() {
-        let size = 100u64;
-        let chunks = 5u64;
-        let chunk_size = size / chunks;
-        let mut covered = vec![false; size as usize];
-        for i in 0..chunks {
-            let start = i * chunk_size;
-            let end = if i == chunks - 1 { size - 1 } else { (i + 1) * chunk_size - 1 };
-            for b in start..=end {
-                covered[b as usize] = true;
-            }
-        }
-        assert!(covered.iter().all(|&c| c));
+        check_chunks_cover_all(100, 5);
     }
 
     #[test]
     fn test_chunk_remainder() {
-        let size = 10u64;
-        let chunks = 3u64;
+        check_chunks_cover_all(10, 3);
+    }
+
+    /// Verify that `chunks` evenly cover all `size` bytes without gaps.
+    fn check_chunks_cover_all(size: u64, chunks: u64) {
         let chunk_size = size / chunks;
         let mut covered = vec![false; size as usize];
         for i in 0..chunks {
