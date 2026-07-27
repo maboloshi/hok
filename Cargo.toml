@@ -24,7 +24,6 @@ indicatif = "0.17.9"
 json5 = "0.4"
 jsonpath-rust = "1.0"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
-remove_dir_all = "0.7.0"
 serde = "1.0"
 serde_json = { version = "1.0.120", features = ["preserve_order"] }
 scoop-hash = { version = "0.2.0-alpha.1", path = "./crates/scoop_hash" }

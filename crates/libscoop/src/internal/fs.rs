@@ -21,7 +21,7 @@ pub fn ensure_dir<P: AsRef<Path> + ?Sized>(path: &P) -> io::Result<()> {
 /// Remove given `path` recursively.
 #[inline]
 pub fn remove_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
-    remove_dir_all::remove_dir_all(path)
+    std::fs::remove_dir_all(path.as_ref())
 }
 
 /// Remove all files and subdirectories in given `path`.
@@ -31,10 +31,19 @@ pub fn remove_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
 #[inline(always)]
 pub fn empty_dir<P: AsRef<Path> + ?Sized>(path: &P) -> io::Result<()> {
     let path = path.as_ref();
-    match path.exists() {
-        true => remove_dir_all::remove_dir_contents(path),
-        false => Ok(()),
+    if !path.exists() {
+        return Ok(());
     }
+    for entry in path.read_dir()? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            std::fs::remove_dir_all(&entry_path)?;
+        } else {
+            std::fs::remove_file(&entry_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Read all JSON files in the given `path` (parallelly) and return a list of

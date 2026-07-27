@@ -1145,7 +1145,6 @@ dependencies = [
  "jsonpath-rust",
  "libscoop",
  "regex",
- "remove_dir_all",
  "rust-i18n",
  "scoop-hash",
  "serde",
@@ -1585,7 +1584,6 @@ dependencies = [
  "lzma-rs",
  "rayon",
  "regex",
- "remove_dir_all",
  "rusqlite",
  "scoop-hash",
  "serde",
@@ -2209,19 +2207,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "remove_dir_all"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "882f368737489ea543bc5c340e6f3d34a28c39980bd9a979e47322b26f60ac40"
-dependencies = [
- "libc",
- "log",
- "num_cpus",
- "rayon",
- "winapi",
-]
 
 [[package]]
 name = "ring"

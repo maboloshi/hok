@@ -206,7 +206,7 @@ pub fn bucket_remove(session: &Session, name: &str) -> Fallible<()> {
         return Err(Error::BucketNotFound(name.to_owned()));
     }
 
-    Ok(remove_dir_all::remove_dir_all(path.as_path())?)
+    Ok(std::fs::remove_dir_all(path.as_path())?)
 }
 
 /// Get a list of downloaded cache files.
