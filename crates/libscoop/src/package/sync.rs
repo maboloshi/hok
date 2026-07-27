@@ -1232,9 +1232,7 @@ mod tests {
     /// Test that installer.file execution path works correctly.
     #[test]
     fn test_installer_file_execution() {
-        let tmp = std::env::temp_dir().join("hok_test_installer_file");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::test_utils::tmpdir("installer_file");
 
         // Test 1: capture exit code via cmd.exe /c
         let exit_code = crate::internal::os::run_gui(
@@ -1265,9 +1263,7 @@ mod tests {
     /// Test URL fragment rename: url#/installer.exe → copy directly as installer.exe
     #[test]
     fn test_url_fragment_rename() {
-        let tmp = std::env::temp_dir().join("hok_test_fragment_rename");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::test_utils::tmpdir("fragment_rename");
 
         // Simulate cache file with hash-based name
         let cache_file = tmp.join("pkg#1.0#abc1234.exe");
@@ -1309,9 +1305,7 @@ mod tests {
     }
 
     fn setup_expand_vars_test(test_name: &str) -> (crate::Session, Package, std::path::PathBuf, TestDirGuard) {
-        let tmp = std::env::temp_dir().join(format!("hok_test_expand_vars_{}", test_name));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = crate::test_utils::tmpdir(&format!("expand_vars_{}", test_name));
         let guard = TestDirGuard(tmp.clone());
         let root = &tmp;
 

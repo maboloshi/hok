@@ -520,12 +520,7 @@ mod tests {
 
     // ─── Integration tests ────────────────────────────────────────
 
-    fn tmpdir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("hok_test_{}", name));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_utils::tmpdir;
 
     fn create_test_zip(path: &std::path::Path) {
         use zip::write::FileOptions;
