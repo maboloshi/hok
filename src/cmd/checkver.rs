@@ -290,7 +290,7 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
 
     let au = match manifest.autoupdate() {
         Some(a) => a,
-        None => { write_json(path, &root)?; return Ok(()); }
+        None => { libscoop::internal::fs::write_json(path, &root)?; return Ok(()); }
     };
 
     let tmp_dir = std::env::temp_dir().join("hok-autoupdate");
@@ -536,13 +536,6 @@ fn json_str_array(items: &[String]) -> serde_json::Value {
     serde_json::Value::Array(
         items.iter().map(|s| serde_json::Value::String(s.clone())).collect()
     )
-}
-
-fn write_json(path: &PathBuf, root: &serde_json::Value) -> Result<()> {
-    let formatted = serde_json::to_string_pretty(root)
-        .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
-    std::fs::write(path, formatted.as_bytes())?;
-    Ok(())
 }
 
 /// Extract a string from XML content using XPath.
