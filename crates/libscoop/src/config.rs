@@ -700,23 +700,19 @@ mod default {
         path.eq(default)
     }
 
-    /// Check if the given `path` is equal to the `default` Scoop root path.
-    #[inline]
-    pub(super) fn is_default_root_path<P: AsRef<Path>>(path: P) -> bool {
-        is_default(root_path().as_path(), path.as_ref())
+    /// Generate an `is_default_*` accessor that compares a path to a default path function.
+    macro_rules! is_default_accessor {
+        ($name:ident, $path_fn:ident) => {
+            #[inline]
+            pub(super) fn $name<P: AsRef<Path>>(path: P) -> bool {
+                is_default($path_fn().as_path(), path.as_ref())
+            }
+        };
     }
 
-    /// Check if the given `path` is equal to the `default` Scoop cache path.
-    #[inline]
-    pub(super) fn is_default_cache_path<P: AsRef<Path>>(path: P) -> bool {
-        is_default(cache_path().as_path(), path.as_ref())
-    }
-
-    /// Check if the given `path` is equal to the `default` Scoop global path.
-    #[inline]
-    pub(super) fn is_default_global_path<P: AsRef<Path>>(path: P) -> bool {
-        is_default(global_path().as_path(), path.as_ref())
-    }
+    is_default_accessor!(is_default_root_path, root_path);
+    is_default_accessor!(is_default_cache_path, cache_path);
+    is_default_accessor!(is_default_global_path, global_path);
 }
 
 
