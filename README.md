@@ -111,6 +111,15 @@ cargo build
 cargo run -- help
 ```
 
+## Code Quality
+
+This fork maintains a strong focus on dependency hygiene. Notable improvements over upstream:
+
+- **Removed heavy dependencies**: `chrono → jiff`, `curl-static → ureq`, `futures` runtime, `sysinfo`, `once_cell`, `remove_dir_all`
+- **Eliminated duplicate crate versions**: `unarc-rs` replaced (removed `sevenz-rust2 v0.20` + `zip v8` duplicates), `thiserror v1+v2` unified, `md-5/sha1/sha2 v0.10+v0.11` unified
+- **Code deduplication**: Macroized repetitive accessor patterns (×16), extracted shared helpers (×5), consolidated 4 benchmark files into 1
+- **Zero external C build dependencies for decompression**: All archive formats (7z, zip, tar, gz, bz2, xz, zst) handled by pure Rust crates; RAR via `unrar` (C++ unrar library); LZH/ISO via 7z.exe fallback
+
 ## Performance
 
 Hok (also the libscoop backend) aims to provide a faster yet powerful alternative

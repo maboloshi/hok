@@ -23,6 +23,43 @@
 | `curl` + static-curl | `ureq`（纯 Rust HTTP） | 去掉了 libcurl 的 C 编译，完全纯 Rust |
 | `once_cell` | std（LazyLock/OnceCell） | Rust 1.70+ 已标准化，无需第三方 |
 | scoop_hash selfcontained | rustcrypto 后端 | 手写 MD5/SHA1/SHA256/SHA512 ~4700 行是维护债务 |
+| `remove_dir_all` | `std::fs::remove_dir_all`（Rust 1.74+） | 原生支持 Windows 长路径，无需第三方 |
+| `unarc-rs` | `unrar` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
+| `thiserror` 1 + 2 并存 | 统一升级到 v2 | 消除依赖树中同一 crate 两个 major 版本的冗余 |
+| `md-5`/`sha1`/`sha2` 0.10 + 0.11 并存 | 统一升级到 v0.11 | 同上，消除 RustCrypto digest 双版本 |
+
+### 代码去重
+
+本轮对项目内重复代码做了系统性清理：
+
+| 类型 | 改动 | 效果 |
+|------|------|------|
+| 跨文件函数提取 | `compute_file_hash`、`encode_wide`、`write_json` 统一到库内 | 删 3 份本地副本，改一处即生效 |
+| 宏化模式化方法 | Manifest 9 个访问器、ChecksumBuilder 4 个方法、`is_default_*` 3 个方法 | 47 行重复 → 9 行宏调用 |
+| 测试辅助提取 | `tmpdir()` 共享化 | 4 处重复的 tempdir 创建合并 |
+| 基准文件合并 | 4 个算法各自的 bench 文件合一 | 229 行 → 109 行 |
+
+### 依赖现状
+
+当前编译依赖约 20 个 crate，全部为功能刚需：
+
+| 分类 | Crate | 说明 |
+|------|-------|------|
+| **压缩 — 纯 Rust** | `sevenz-rust2`, `zip`, `tar`, `flate2`, `bzip2`, `lzma-rs`, `zstd` | 各对应一种归档/压缩格式 |
+| **压缩 — C++ 后端** | `unrar` | RARLab 官方库，RAR 无纯 Rust 替代 |
+| **压缩 — 外部进程** | 7z.exe（运行时降级） | 兜底 LZH / ISO 等罕见格式 |
+| **Windows 专用** | `junction`, `winreg`, `innospect`, `shortcuts-rs` | Win32 API 的 Rust 封装 |
+| **网络** | `ureq` | 比 `reqwest` 轻量，纯 Rust |
+| **Git** | `git2` | libgit2 C 绑定（试过 `gix`，依赖树更大） |
+| **SQLite 缓存** | `rusqlite` (bundled) | 兼容 Scoop，无纯 Rust SQLite 替代 |
+| **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |
+| **CLI 框架** | `clap`, `clap_complete`, `clap-verbosity-flag` | — |
+| **终端渲染** | `crossterm`, `indicatif` | 终端颜色 + 进度条 |
+| **其他** | `anyhow`, `thiserror`, `regex`, `jiff`, `dirs`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
+
+**已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`
+
+**重复版本已消除：** `sevenz-rust2`、`zip`、`thiserror`、`md-5`/`sha1`/`sha2` 在依赖树中各只保留一个版本。
 
 ### 功能补全
 
