@@ -280,7 +280,7 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
     }
 }
 
-fn encode_wide(s: &str) -> Vec<u16> {
+pub fn encode_wide(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(s)
         .encode_wide()

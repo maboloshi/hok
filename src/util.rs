@@ -1,42 +1,29 @@
 use std::path::Path;
+use libscoop::internal::os::encode_wide;
 
 /// Open a URL in the default system browser.
-///
-/// On Windows uses `ShellExecuteW` directly (zero extra dependencies).
 #[cfg(windows)]
 pub fn open_url(url: &str) -> std::io::Result<()> {
-    let wide = encode_wide(url);
-    let verb = encode_wide("open");
-
-    let ret = unsafe {
-        shell_execute_w(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            wide.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1, // SW_SHOWNORMAL
-        )
-    };
-
-    if ret as isize <= 32 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    shell_open(url)
 }
 
 /// Open a file or directory with the system default handler.
-///
-/// On Windows uses `ShellExecuteW`. Respects the `$EDITOR` environment variable
-/// when set (for text files), otherwise opens with the OS default program.
 #[cfg(windows)]
 pub fn open_file(path: &Path) -> std::io::Result<()> {
-    let wide = encode_wide(&path.as_os_str().to_string_lossy());
+    shell_open(&path.as_os_str().to_string_lossy())
+}
+
+/// Shell-open a path via `ShellExecuteW` (shared by `open_url` / `open_file`).
+// Safety: `file` is converted to a null-terminated UTF-16 string.
+#[cfg(windows)]
+fn shell_open(file: &str) -> std::io::Result<()> {
+    let wide = encode_wide(file);
     let verb = encode_wide("open");
 
+    // Safety: lpOperation and lpFile point to valid null-terminated UTF-16
+    // strings. lpParameters and lpDirectory are null. hwnd is null (no parent).
     let ret = unsafe {
-        shell_execute_w(
+        ShellExecuteW(
             std::ptr::null_mut(),
             verb.as_ptr(),
             wide.as_ptr(),
@@ -51,15 +38,6 @@ pub fn open_file(path: &Path) -> std::io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-#[cfg(windows)]
-fn encode_wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 // Safety: lpOperation, lpFile, lpParameters, lpDirectory must point to
@@ -76,19 +54,6 @@ extern "system" {
         lp_directory: *const u16,
         n_show_cmd: i32,
     ) -> isize;
-}
-
-/// Alias for `ShellExecuteW` that doesn't collide with the macro-like linkage.
-#[cfg(windows)]
-unsafe fn shell_execute_w(
-    hwnd: *mut std::ffi::c_void,
-    lp_operation: *const u16,
-    lp_file: *const u16,
-    lp_parameters: *const u16,
-    lp_directory: *const u16,
-    n_show_cmd: i32,
-) -> isize {
-    ShellExecuteW(hwnd, lp_operation, lp_file, lp_parameters, lp_directory, n_show_cmd)
 }
 
 /// Patch a JSON field value in raw text, preserving original formatting.
