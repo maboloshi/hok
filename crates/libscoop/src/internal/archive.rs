@@ -268,10 +268,16 @@ fn extract_tar(
             }
             let target = strip_dir(&path, filter).unwrap_or(path);
             let target_path = dest.join(&target);
+            if entry.header().entry_type().is_dir() {
+                crate::internal::fs::ensure_dir(&target_path)?;
+                continue;
+            }
             if let Some(parent) = target_path.parent() {
                 crate::internal::fs::ensure_dir(parent)?;
             }
-            entry.unpack(dest)?;
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data)?;
+            std::fs::write(&target_path, &data)?;
         }
     } else {
         let mut archive = TarArchive::new(reader);
