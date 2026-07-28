@@ -26,7 +26,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release
+        run: |
+          cargo build -p hok-shim --release
+          cargo build -p hok --release
 
       - name: Upload assets
         env:
