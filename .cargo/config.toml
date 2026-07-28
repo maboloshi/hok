@@ -1,8 +1,32 @@
-# On Windows MSVC, statically link the C runtime so that the resulting EXE does
-# not depend on the vcruntime DLL.
+# ═══════════════════════════════════════════════════════════
+# Release build optimization config
+# ═══════════════════════════════════════════════════════════
+#
+# Prerequisites:
+#   - Rust 1.84+ (for bundled rust-lld.exe)
+#   - LLVM/clang-cl in PATH (scoop install llvm)
+#
+# Portability:
+#   - Binary is portable (no target-cpu=native).
+#   - "linker = rust-lld.exe": requires Rust 1.84+.
+#   - "CC = clang-cl": requires LLVM in PATH.
+#
+# These settings are only active for x86_64-pc-windows-msvc builds.
+# Other targets (i686, aarch64) use stock settings + static CRT.
+
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+linker = "rust-lld.exe"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-Clink-arg=/OPT:REF",
+    "-Clink-arg=/OPT:ICF",
+]
+
 [target.i686-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+CC = "clang-cl"
