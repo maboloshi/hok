@@ -1,47 +1,51 @@
-// Build hok-shim and embed it into libscoop.
-// The hok-shim binary is built and included via include_bytes! at compile time.
-
+use std::env;
+use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 fn main() {
-    // Determine hok project root (parent of the crates/ directory)
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let hok_root = Path::new(&manifest_dir).parent().unwrap().parent().unwrap().to_owned();
+    embed_hok_shim();
+}
 
-    // Build hok-shim release binary
-    let status = Command::new("cargo")
-        .args(["build", "-p", "hok-shim", "--release"])
-        .current_dir(&hok_root)
-        .status()
-        .expect("failed to run cargo build for hok-shim");
-    assert!(status.success(), "hok-shim build failed");
+fn embed_hok_shim() {
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let shim_name = if cfg!(windows) { "hok-shim.exe" } else { "hok-shim" };
 
-    // Generate the embedded code
-    let out_dir = std::env::var("OUT_DIR").unwrap();
-    let dest = Path::new(&out_dir).join("embedded_shim.rs");
-    // Use a relative path from the OUT_DIR to the built binary.
-    // Since target/release is at workspace root, and OUT_DIR is
-    // somewhere deep in target/debug/build/libscoop-<hash>/out,
-    // we need a relative path that works. The simplest: use a
-    // path relative to the CARGO_MANIFEST_DIR (libscoop root).
-    // But include_bytes! requires a path that exists at compile time.
-    //
-    // OUT_DIR is stable during the build, so we can copy the shim
-    // there and include it.
-    let shim_src = hok_root.join("target").join("release").join("hok-shim.exe");
-    let shim_dest = Path::new(&out_dir).join("hok-shim.exe");
-    std::fs::copy(&shim_src, &shim_dest).expect("failed to copy hok-shim.exe to OUT_DIR");
+    // CARGO_MANIFEST_DIR = crates/libscoop/ → workspace root = crates/libscoop/../../
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_dir = Path::new(&manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root");
 
-    std::fs::write(
-        &dest,
-        "pub const HOK_SHIM_BYTES: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/hok-shim.exe\"));\n",
+    let debug_path = workspace_dir.join("target/debug").join(&shim_name);
+    let release_path = workspace_dir.join("target/release").join(&shim_name);
+
+    // Prefer release binary, fall back to debug
+    let shim_src = if release_path.exists() {
+        release_path
+    } else if debug_path.exists() {
+        debug_path
+    } else {
+        panic!(
+            "hok-shim binary not found at {}\n  Run `cargo build -p hok-shim` first.",
+            release_path.display()
+        );
+    };
+
+    let shim_dest = Path::new(&out_dir).join(&shim_name);
+    fs::copy(&shim_src, &shim_dest).expect("copy hok-shim to OUT_DIR");
+
+    let embedded = Path::new(&out_dir).join("embedded_shim.rs");
+    // Use include_bytes! on the copy in OUT_DIR (stable at compile time)
+    fs::write(
+        &embedded,
+        format!(
+            "pub const HOK_SHIM_BYTES: &[u8] = include_bytes!({:?});\n",
+            shim_dest.display()
+        ),
     )
-    .expect("failed to write embedded_shim.rs");
+    .unwrap();
 
-    // Rerun if hok-shim source, Cargo.toml, or this build.rs changes
-    let shim_src_dir = hok_root.join("crates").join("hok-shim").join("src");
-    println!("cargo:rerun-if-changed={}", shim_src_dir.join("main.rs").display());
-    println!("cargo:rerun-if-changed={}", hok_root.join("crates").join("hok-shim").join("Cargo.toml").display());
-    println!("cargo:rerun-if-changed={}", Path::new(&manifest_dir).join("build.rs").display());
+    println!("cargo:rerun-if-changed={}", shim_src.display());
+    println!("cargo:rerun-if-changed=build.rs");
 }

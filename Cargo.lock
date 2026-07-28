@@ -1378,6 +1378,7 @@ dependencies = [
  "flate2",
  "flume",
  "git2",
+ "hok-shim",
  "innospect",
  "jiff",
  "junction",

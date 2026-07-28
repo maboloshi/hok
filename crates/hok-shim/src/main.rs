@@ -470,6 +470,7 @@ unsafe fn do_elevate(path: &U16Buf, args: &U16Buf, user_tail: &U16Buf, cwd: &U16
 
     // SHELLEXECUTEINFOW (104 bytes on x64)
     #[repr(C)]
+    #[allow(non_snake_case)]
     struct SEI { cbSize: u32, fMask: u32, hwnd: isize, lpVerb: *const u16,
                  lpFile: *const u16, lpParameters: *const u16, lpDirectory: *const u16,
                  nShow: i32, hInstApp: isize, lpIDList: isize, lpClass: *const u16,
@@ -507,7 +508,7 @@ unsafe extern "system" fn ignore_ctrl_c(_: u32) -> i32 { 1 }
 
 unsafe fn entry() -> i32 {
     // Swallow Ctrl+C — the child inherits the console and handles it
-    SetConsoleCtrlHandler(ignore_ctrl_c as isize, 1);
+    SetConsoleCtrlHandler(ignore_ctrl_c as *const () as isize, 1);
 
     // ── Parse .shim file ───────────────────────────────────────────
     let shim_dir = get_shim_dir();

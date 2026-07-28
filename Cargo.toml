@@ -46,6 +46,7 @@ path = "./crates/libscoop"
 
 [profile.release]
 debug = false
+# "fat" LTO + codegen-units=1 = 极致优化（适合发版）
 lto = "fat"
 panic = "abort"
 opt-level = 3

@@ -46,5 +46,8 @@ winreg = "0.52"
 innospect = "0.1"
 shortcuts-rs = "1.1.1"
 
+[build-dependencies]
+hok-shim = { path = "../hok-shim" }
+
 [features]
 default = []
