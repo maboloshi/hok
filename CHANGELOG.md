@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.2.0-beta.2](https://github.com/maboloshi/hok/compare/v0.2.0-beta.1...v0.2.0-beta.2) (2026-07-28)
+
+### Features
+
+* **format-json:** New `hok formatjson` command — lenient manifest parser,
+  4-space indent, CRLF line endings, preserve field order ([1f52037](https://github.com/maboloshi/hok/commit/1f52037))
+* **format-json:** Preserve JSON formatting when updating hashes/versions
+  (text patching, no AST round-trip)
+
+### Code Refactoring
+
+* **deps:** Replace `unarc-rs` with `unrar` + 7z.exe fallback — eliminate
+  duplicate `sevenz-rust2 v0.20` + `zip v8`, remove entire stale crypto chain
+  ([fde869f](https://github.com/maboloshi/hok/commit/fde869f))
+* **deps:** Upgrade `thiserror` v1+v2 → unified v2, `md-5`/`sha1`/`sha2`
+  v0.10+v0.11 → unified v0.11 ([57429e3](https://github.com/maboloshi/hok/commit/57429e3), [e3ca3df](https://github.com/maboloshi/hok/commit/e3ca3df))
+* **deps:** Remove `remove_dir_all` dependency — use
+  `std::fs::remove_dir_all` (Rust 1.74+) ([4622c53](https://github.com/maboloshi/hok/commit/4622c53))
+* **shim:** Replace string-based shim command with `clap Subcommand`
+  ([7aff6cb](https://github.com/maboloshi/hok/commit/7aff6cb))
+* **cat:** Remove `bat.exe` external dependency, always print directly
+  ([a93a72d](https://github.com/maboloshi/hok/commit/a93a72d))
+* **os:** Remove dead unix cfg from `running_apps` — project is Windows-only
+  ([83fac96](https://github.com/maboloshi/hok/commit/83fac96))
+* **fs:** Remove dead code from `fs.rs` ([f86543a](https://github.com/maboloshi/hok/commit/f86543a))
+* **os:** Extract `is_pwsh_available` into shared `libscoop::internal::os`
+  ([5735be4](https://github.com/maboloshi/hok/commit/5735be4))
+* **code dedup:** Macroize 9 Manifest accessor methods via `arch_accessor!`,
+  ChecksumBuilder methods, 3 `is_default_*` methods; consolidate 4 benchmark
+  files into 1; deduplicate `encode_wide`/`open_file`/`open_url`;
+  extract `compute_file_hash` to `scoop_hash`; extract shared `tmpdir()` test
+  helper; merge `BucketUpdateUI::add`/`succeed` via `set_state` helper
+  ([473cb90](https://github.com/maboloshi/hok/commit/473cb90), [6256dc1](https://github.com/maboloshi/hok/commit/6256dc1), [40a6709](https://github.com/maboloshi/hok/commit/40a6709),
+  [682131d](https://github.com/maboloshi/hok/commit/682131d), [b2e228d](https://github.com/maboloshi/hok/commit/b2e228d), [69ee0ba](https://github.com/maboloshi/hok/commit/69ee0ba),
+  [9a1aa6f](https://github.com/maboloshi/hok/commit/9a1aa6f), [fc73aa3](https://github.com/maboloshi/hok/commit/fc73aa3), [f2e202f](https://github.com/maboloshi/hok/commit/f2e202f))
+* **archive:** Route ISO files directly to 7z.exe, remove `needs_fallback`
+  ([dfb3bc2](https://github.com/maboloshi/hok/commit/dfb3bc2))
+
+### Bug Fixes
+
+* **archive:** `extract_tar` with `extract_dir` now writes to stripped path
+  instead of original ([cd52246](https://github.com/maboloshi/hok/commit/cd52246))
+* **alias:** Fix i18n for add/remove messages, fix UTF-8 truncation
+  ([6c1df4c](https://github.com/maboloshi/hok/commit/6c1df4c))
+* **checkver:** Show app name in error messages, strip v-prefix correctly,
+  respect `--timeout`, add PowerShell timeout, uniform indent
+  ([00cee15](https://github.com/maboloshi/hok/commit/00cee15))
+* **checkurls:** Ensure newline before error output for clean line
+  separation ([4b348e8](https://github.com/maboloshi/hok/commit/4b348e8))
+* **build:** Move hok-shim embedding to `libscoop/build.rs`, fix release
+  build ([2bbfe85](https://github.com/maboloshi/hok/commit/2bbfe85))
+
+### Performance
+
+* **release:** Optimize release build with rust-lld + clang-cl for thinner
+  binaries ([acc7aaa](https://github.com/maboloshi/hok/commit/acc7aaa))
+
+### CI
+
+* **release:** Restore release workflow — manual dispatch + build + upload
+  ([8ea27bb](https://github.com/maboloshi/hok/commit/8ea27bb))
+
 ## [0.2.0-beta.1](https://github.com/maboloshi/hok/compare/v0.2.0-alpha.2...v0.2.0-beta.1) (2026-07-26)
 
 ### ⚠ BREAKING CHANGES
