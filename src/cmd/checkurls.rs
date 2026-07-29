@@ -3,7 +3,7 @@ use libscoop::{operation, Manifest, Session};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::{output, Result};
+use crate::{output, util, Result};
 
 /// Check manifest URLs for validity
 #[derive(Debug, Parser)]
@@ -49,7 +49,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut total_invalid = 0u32;
 
     // Recursively collect all .json files
-    let manifest_paths: Vec<PathBuf> = walkdir_files(dir);
+    let manifest_paths: Vec<PathBuf> = util::walkdir_files(dir);
 
     for path in &manifest_paths {
         if path.extension().map(|e| e != "json").unwrap_or(true) {
@@ -156,23 +156,4 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Recursively collect all files under a directory.
-fn walkdir_files(dir: &PathBuf) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.clone()];
-    while let Some(current) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&current) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().map_or(false, |e| e == "json") {
-                    files.push(path);
-                }
-            }
-        }
-    }
-    files
 }

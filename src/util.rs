@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use libscoop::internal::os::encode_wide;
 
 /// Open a URL in the default system browser.
@@ -156,4 +156,25 @@ pub fn url_decoded(s: &str) -> String {
         }
     }
     result
+}
+
+/// Recursively collect all `.json` files under a directory.
+///
+/// Uses an explicit stack to avoid deep recursion on deeply nested trees.
+pub fn walkdir_files(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().map_or(false, |e| e == "json") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
 }

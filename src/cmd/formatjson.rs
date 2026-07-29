@@ -1,8 +1,9 @@
 use clap::Parser;
+use regex::Regex;
 use serde::Serialize;
 use std::path::PathBuf;
 
-use crate::{output, Result};
+use crate::{output, util, Result};
 
 /// Format manifest JSON files in a bucket directory
 #[derive(Debug, Parser)]
@@ -16,6 +17,27 @@ pub struct Args {
     app: Vec<String>,
 }
 
+/// Convert a simple glob pattern (supporting `*` and `?`) to a regex.
+fn glob_to_regex(pattern: &str) -> String {
+    let escaped = regex::escape(pattern);
+    let re_str = escaped
+        .replace(r"\*", ".*")
+        .replace(r"\?", ".");
+    format!("^{re_str}$")
+}
+
+/// Check whether `name` (the file stem) matches the given app pattern.
+fn app_matches(name: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') {
+        // Has wildcards → convert glob to regex and match
+        let re_str = glob_to_regex(pattern);
+        Regex::new(&re_str).map_or(false, |re| re.is_match(name))
+    } else {
+        // No wildcards → exact stem match (same as PS -Filter "app.json")
+        name == pattern
+    }
+}
+
 pub fn execute(args: Args) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
@@ -23,38 +45,34 @@ pub fn execute(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let pattern = if args.app.is_empty() || args.app[0] == "*" {
-        None
+    // Determine app filter patterns
+    let patterns: Vec<&str> = if args.app.is_empty() || args.app[0] == "*" {
+        Vec::new()
     } else {
-        Some(args.app.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        args.app.iter().map(|s| s.as_str()).collect()
     };
 
-    let entries = std::fs::read_dir(dir)?;
+    let entries = util::walkdir_files(dir);
     let mut count = 0u32;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
-
-        // Apply app filter
-        if let Some(ref patterns) = pattern {
+    for path in &entries {
+        // Apply app filter on the file stem
+        if !patterns.is_empty() {
             let name = path.file_stem().unwrap().to_string_lossy();
-            if !patterns.iter().any(|p| name.contains(*p)) {
+            if !patterns.iter().any(|p| app_matches(&name, p)) {
                 continue;
             }
         }
 
         // Read, validate, and reformat
-        let content = match std::fs::read_to_string(&path) {
+        let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
         };
 
         let cleaned = content.trim_start_matches('\u{FEFF}');
 
-        let value: serde_json::Value = match json5::from_str(&cleaned) {
+        let value: serde_json::Value = match json5::from_str(cleaned) {
             Ok(v) => v,
             Err(e) => {
                 output::err(format!("{}: parse error: {}", path.display(), e));
@@ -66,7 +84,8 @@ pub fn execute(args: Args) -> Result<()> {
         let mut buf = Vec::new();
         let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
         let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
-        value.serialize(&mut ser)
+        value
+            .serialize(&mut ser)
             .map_err(|e| anyhow::anyhow!("serialize error: {}", e))?;
         let mut formatted = String::from_utf8(buf)
             .map_err(|e| anyhow::anyhow!("utf8 error: {}", e))?;
@@ -77,7 +96,7 @@ pub fn execute(args: Args) -> Result<()> {
 
         // Only write if the content changed
         if formatted != content {
-            std::fs::write(&path, formatted.as_bytes())?;
+            std::fs::write(path, formatted.as_bytes())?;
             output::done(format!("{}", path.display()));
             count += 1;
         }
