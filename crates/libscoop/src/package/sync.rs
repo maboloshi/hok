@@ -776,12 +776,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 /// directory. Returns an error if so, to prevent install/upgrade/uninstall
 /// while the app is in use (matches PS1's test_running_process).
 fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<()> {
-    let config = session.config();
-    let apps_dir = if session.is_global() {
-        config.global_path().join("apps")
-    } else {
-        config.root_path().join("apps")
-    };
+    let apps_dir = session.effective_root_path().join("apps");
     let running = internal::os::running_apps(&apps_dir).unwrap_or_default();
     if running.iter().any(|p| p.eq_ignore_ascii_case(name)) {
         return Err(Error::Custom(format!(
@@ -808,11 +803,7 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
 
 fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
-    let apps_dir = if session.is_global() {
-        config.global_path().join("apps")
-    } else {
-        config.root_path().join("apps")
-    };
+    let apps_dir = session.effective_root_path().join("apps");
 
     // Check if the app is currently running before installing/upgrading
     check_not_running(session, pkg.name(), "installing")?;
@@ -1129,11 +1120,7 @@ fn commit_remove(session: &Session, packages: &[Package], purge: bool, ignore_fa
 
 fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
     let config = session.config();
-    let root_dir = if session.is_global() {
-        config.global_path().to_path_buf()
-    } else {
-        config.root_path().to_path_buf()
-    };
+    let root_dir = session.effective_root_path();
 
     debug!("remove: {} - starting", package.name());
 
