@@ -215,7 +215,21 @@ impl Bucket {
 
 /// Helper function to interate entries in a directory in parallel.
 fn par_read_dir(path: &Path) -> std::io::Result<impl ParallelIterator<Item = DirEntry>> {
-    Ok(path.read_dir()?.par_bridge().filter_map(|de| de.ok()))
+    let dir = path.read_dir()?;
+    let path = path.to_owned();
+    Ok(dir
+        .par_bridge()
+        .filter_map(move |de| match de {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                warn!(
+                    "failed to read directory entry in {} (err: {})",
+                    path.display(),
+                    err
+                );
+                None
+            }
+        }))
 }
 
 /// Helper function to check if a directory entry is a manifest file.
