@@ -772,6 +772,26 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
+/// Check if the given package's process is currently running under the apps
+/// directory. Returns an error if so, to prevent install/upgrade/uninstall
+/// while the app is in use (matches PS1's test_running_process).
+fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<()> {
+    let config = session.config();
+    let apps_dir = if session.is_global() {
+        config.global_path().join("apps")
+    } else {
+        config.root_path().join("apps")
+    };
+    let running = internal::os::running_apps(&apps_dir).unwrap_or_default();
+    if running.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+        return Err(Error::Custom(format!(
+            "'{}' is still running! Close the app(s) before {}.",
+            name, action
+        )));
+    }
+    Ok(())
+}
+
 fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
     for &pkg in packages.iter() {
         if let Err(e) = commit_one_install(session, pkg) {
@@ -795,14 +815,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     };
 
     // Check if the app is currently running before installing/upgrading
-    let running = internal::os::running_apps(&apps_dir)
-        .unwrap_or_default();
-    if running.iter().any(|p| p.eq_ignore_ascii_case(pkg.name())) {
-        return Err(Error::Custom(format!(
-            "'{}' is still running! Close the app(s) before upgrading.",
-            pkg.name()
-        )));
-    }
+    check_not_running(session, pkg.name(), "installing")?;
 
     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
@@ -1125,15 +1138,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     debug!("remove: {} - starting", package.name());
 
     // Check if the app is currently running before proceeding
-    let apps_dir = root_dir.join("apps");
-    let running = internal::os::running_apps(&apps_dir)
-        .unwrap_or_default();
-    if running.iter().any(|p| p.eq_ignore_ascii_case(package.name())) {
-        return Err(Error::Custom(format!(
-            "'{}' is still running! Close the app(s) before uninstalling.",
-            package.name()
-        )));
-    }
+    check_not_running(session, package.name(), "uninstalling")?;
 
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
