@@ -998,6 +998,67 @@ impl Manifest {
         urls
     }
 
+    /// Collect ALL hashes from this manifest (noarch + all architectures).
+    ///
+    /// Unlike `hash()` which only returns hashes for the current platform,
+    /// this method returns hashes from noarch, 32bit, 64bit, and arm64.
+    /// Used by checkhashes to validate all hashes.
+    pub fn all_hashes(&self) -> Vec<&HashString> {
+        let mut hashes: Vec<&HashString> = Vec::new();
+        // Add noarch hashes
+        if let Some(ref h) = self.inner.hash {
+            for s in h.devectorize() {
+                hashes.push(s);
+            }
+        }
+        // Add architecture-specific hashes
+        if let Some(ref arch) = self.inner.architecture {
+            for spec_opt in [&arch.ia32, &arch.amd64, &arch.aarch64] {
+                if let Some(spec) = spec_opt {
+                    if let Some(ref h) = spec.hash {
+                        for s in h.devectorize() {
+                            hashes.push(s);
+                        }
+                    }
+                }
+            }
+        }
+        hashes
+    }
+
+    /// Collect the JSON pointer paths and hash counts for all hash segments,
+    /// in the same order as `all_hashes()` / `all_urls()`.
+    ///
+    /// Each entry is `(json_pointer, count)`, e.g.:
+    /// `("/hash", 2)` for two top-level hashes,
+    /// `("/architecture/64bit/hash", 1)` for one 64bit hash.
+    pub fn all_hash_segments(&self) -> Vec<(String, usize)> {
+        let mut segments = Vec::new();
+        // Top-level hashes
+        if let Some(ref h) = self.inner.hash {
+            let count = h.devectorize().len();
+            if count > 0 {
+                segments.push(("/hash".to_string(), count));
+            }
+        }
+        // Architecture-specific hashes
+        if let Some(ref arch) = self.inner.architecture {
+            for (arch_name, spec_opt) in
+                [("32bit", &arch.ia32), ("64bit", &arch.amd64), ("arm64", &arch.aarch64)]
+            {
+                if let Some(spec) = spec_opt {
+                    if let Some(ref h) = spec.hash {
+                        let count = h.devectorize().len();
+                        if count > 0 {
+                            segments.push((format!("/architecture/{arch_name}/hash"), count));
+                        }
+                    }
+                }
+            }
+        }
+        segments
+    }
+
     arch_accessor! {
         /// Extract file hashes from this manifest, in following order:
         ///
