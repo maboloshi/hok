@@ -1113,6 +1113,17 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 
     debug!("remove: {} - starting", package.name());
 
+    // Check if the app is currently running before proceeding
+    let apps_dir = root_dir.join("apps");
+    let running = internal::os::running_apps(&apps_dir)
+        .unwrap_or_default();
+    if running.iter().any(|p| p.eq_ignore_ascii_case(package.name())) {
+        return Err(Error::Custom(format!(
+            "'{}' is still running! Close the app(s) before uninstalling.",
+            package.name()
+        )));
+    }
+
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
     }

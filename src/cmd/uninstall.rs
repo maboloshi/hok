@@ -1,7 +1,8 @@
 use clap::Parser;
+use libscoop::internal::os::is_admin;
 use libscoop::{operation, Session, SyncOption};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -16,15 +17,28 @@ pub struct Args {
     #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
     escape_hold: bool,
     /// Skip package integrity check
-    #[arg(long, action = clap::ArgAction::SetTrue)]
+    #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
     no_hash_check: bool,
     /// Uninstall a globally installed app (from $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]
     global: bool,
+    /// Remove all persistent data
+    #[arg(short = 'p', long, action = clap::ArgAction::SetTrue)]
+    purge: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    session.set_global(args.global);
+
+    if args.global && !is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to uninstall global apps");
+    }
+
     let mut options = vec![SyncOption::Remove];
+
+    if args.purge {
+        options.push(SyncOption::Purge);
+    }
 
     if args.escape_hold {
         options.push(SyncOption::EscapeHold);
@@ -38,12 +52,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(SyncOption::NoHashCheck);
     }
 
-    session.set_global(args.global);
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let handle = crate::eventloop::run_event_loop(session, Default::default());
 
     operation::package_sync(session, queries, options)?;
     handle.join().unwrap();
+
+    for name in &args.package {
+        output::done(format!("'{name}' was uninstalled."));
+    }
 
     Ok(())
 }
