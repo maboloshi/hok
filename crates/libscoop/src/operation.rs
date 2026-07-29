@@ -22,7 +22,7 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     bucket::{Bucket, BucketUpdateProgressContext},
@@ -140,7 +140,9 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
 
                 match internal::git::reset_head(repo, proxy) {
                     Ok(_) => {
-                        *flag.lock().unwrap() = true;
+                        if let Ok(mut guard) = flag.lock() {
+                            *guard = true;
+                        }
 
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
@@ -162,19 +164,21 @@ pub fn bucket_update(session: &Session) -> Fallible<()> {
         let _ = handle.join();
     }
 
-    if *any_bucket_updated.lock().unwrap() {
-        // Scoop format: [DateTime]::Now.ToString('o')
-        // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
-        let now = jiff::Timestamp::now();
-        let zoned = now.to_zoned(jiff::tz::TimeZone::system());
-        let nsec = now.subsec_nanosecond() / 100; // 100-nanosecond ticks → 7 digits
-        let time = format!(
-            "{}.{:07}{}",
-            zoned.strftime("%Y-%m-%dT%H:%M:%S"),
-            nsec,
-            zoned.strftime("%:z"),
-        );
-        config.set("last_update", time.as_str())?;
+    if let Ok(guard) = any_bucket_updated.lock() {
+        if *guard {
+            // Scoop format: [DateTime]::Now.ToString('o')
+            // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
+            let now = jiff::Timestamp::now();
+            let zoned = now.to_zoned(jiff::tz::TimeZone::system());
+            let nsec = now.subsec_nanosecond() / 100; // 100-nanosecond ticks → 7 digits
+            let time = format!(
+                "{}.{:07}{}",
+                zoned.strftime("%Y-%m-%dT%H:%M:%S"),
+                nsec,
+                zoned.strftime("%:z"),
+            );
+            config.set("last_update", time.as_str())?;
+        }
     }
 
     // Drop the mutable config borrow before calling open(), which needs
@@ -232,7 +236,7 @@ pub fn cache_list(session: &Session, query: &str) -> Fallible<Vec<CacheFile>> {
             files = entires
                 .filter_map(|de| {
                     if let Ok(entry) = de {
-                        let is_file = entry.file_type().unwrap().is_file();
+                        let is_file = entry.file_type().map_or(false, |t| t.is_file());
                         if is_file {
                             if let Ok(item) = CacheFile::from(entry.path()) {
                                 if !is_wildcard_query {
@@ -310,6 +314,7 @@ pub fn head_url_ext(
         let matched: std::collections::HashMap<String, String> = hosts.iter()
             .filter(|h| {
                 regex::Regex::new(h.match_pattern())
+                    .inspect_err(|e| warn!("invalid regex pattern '{}': {e}", h.match_pattern()))
                     .ok()
                     .map_or(false, |re| re.is_match(url))
             })
@@ -484,7 +489,7 @@ pub fn package_query(
 ///
 /// Removes all version directories except the current one for each package.
 /// If `names` is empty, cleans up all installed packages.
-/// Returns a list of (package_name, old_versions_removed_count).
+/// Returns a list of (package_name, removed_count, failed_count).
 pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool) -> Fallible<Vec<(String, usize, usize)>> {
     let config = session.config();
     let apps_dir = if session.is_global() {
@@ -638,5 +643,7 @@ pub fn refresh_manifest_cache(session: &Session) {
     }
     if let Ok(conn) = internal::manifest_cache::open(session) {
         let _ = internal::manifest_cache::populate(&conn, session);
+    } else {
+        warn!("failed to open manifest cache");
     }
 }
