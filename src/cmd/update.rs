@@ -48,9 +48,20 @@ pub struct Args {
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     pub global: bool,
+    /// Hide extraneous messages
+    #[arg(short = 'q', long, action = ArgAction::SetTrue)]
+    pub quiet: bool,
+    /// Update all installed packages (alternative to '*')
+    #[arg(short = 'a', long, action = ArgAction::SetTrue)]
+    pub all: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    // --all is a shorthand for upgrading all packages (like passing '*')
+    if args.all && args.package.is_empty() {
+        return execute_upgrade(session, &[String::from("*")], &args);
+    }
+
     if !args.package.is_empty() {
         return execute_upgrade(session, &args.package, &args);
     }
@@ -117,7 +128,13 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
         anyhow::bail!("ERROR: you need admin rights to install global apps");
     }
 
-    let mut options = vec![SyncOption::OnlyUpgrade];
+    // When --force is set, skip OnlyUpgrade so that packages already at the
+    // latest version are still reinstalled (matching PS1's "force update").
+    let mut options = if args.force {
+        vec![]
+    } else {
+        vec![SyncOption::OnlyUpgrade]
+    };
 
     if args.assume_yes {
         options.push(SyncOption::AssumeYes);

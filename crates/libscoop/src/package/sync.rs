@@ -793,6 +793,17 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     } else {
         config.root_path().join("apps")
     };
+
+    // Check if the app is currently running before installing/upgrading
+    let running = internal::os::running_apps(&apps_dir)
+        .unwrap_or_default();
+    if running.iter().any(|p| p.eq_ignore_ascii_case(pkg.name())) {
+        return Err(Error::Custom(format!(
+            "'{}' is still running! Close the app(s) before upgrading.",
+            pkg.name()
+        )));
+    }
+
     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
 
