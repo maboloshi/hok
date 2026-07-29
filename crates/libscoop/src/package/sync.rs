@@ -967,9 +967,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 1. Copy manifest from bucket to current/manifest.json
     // Use bucket path (manifest.path() may be virtual when loaded from cache)
     let bucket_path = config.root_path().join("buckets").join(pkg.bucket());
-    let manifest_src = bucket_path.join("bucket").join(format!("{}.json", pkg.name()));
-    let manifest_fallback = bucket_path.join(format!("{}.json", pkg.name()));
-    let manifest_src = if manifest_src.exists() { manifest_src } else { manifest_fallback };
+    let manifest_src = {
+        let primary = bucket_path.join("bucket").join(format!("{}.json", pkg.name()));
+        let fallback = bucket_path.join(format!("{}.json", pkg.name()));
+        if primary.exists() { primary } else { fallback }
+    };
     let manifest_dst = current_dir.join("manifest.json");
     match std::fs::copy(&manifest_src, manifest_dst) {
         Ok(_) => {},
