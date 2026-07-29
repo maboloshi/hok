@@ -32,31 +32,31 @@ use crate::{output, util, Result};
 pub struct Args {
     /// Bucket directory to scan for manifests
     #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    pub(crate) dir: PathBuf,
 
     /// Specific app(s) to check (supports wildcards, default: all)
     #[arg(default_value = "*")]
-    app: Vec<String>,
+    pub(crate) app: Vec<String>,
 
     /// Update manifest with new version and trigger autoupdate
     #[arg(short = 'u', long, action = clap::ArgAction::SetTrue)]
-    update: bool,
+    pub(crate) update: bool,
 
     /// Force update even when version is unchanged (useful for hash updates)
     #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    force_update: bool,
+    pub(crate) force_update: bool,
 
     /// Skip manifests that are already up-to-date
     #[arg(short = 's', long = "skip-updated", action = clap::ArgAction::SetTrue)]
-    skip_updated: bool,
+    pub(crate) skip_updated: bool,
 
     /// Update manifest to specific version (skip version detection)
     #[arg(short = 'V', long)]
-    version: Option<String>,
+    pub(crate) version: Option<String>,
 
     /// Request timeout in seconds
     #[arg(short = 't', long, default_value = "30")]
-    timeout: u64,
+    pub(crate) timeout: u64,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {

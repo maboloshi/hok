@@ -967,6 +967,7 @@ name = "hok"
 version = "0.2.0-beta.2"
 dependencies = [
  "anyhow",
+ "base64",
  "clap 4.5.23",
  "clap-verbosity-flag",
  "clap_complete",

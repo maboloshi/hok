@@ -144,6 +144,11 @@ cmd:
   no_download_urls: "no download URLs"
   held_skip: "'%{name}' is held to version %{version}"
   reinstall_not_installed: "'%{name}' is not installed. Use 'hok install' to install it."
+  auto_err_token: "GITHUB_TOKEN is required for ci-auto-pr"
+  auto_err_mode: "Must specify --push or --request"
+  auto_err_upstream: "--request requires --upstream (<user>/<repo>:<branch>)"
+  auto_pr_header: "ci-auto-pr"
+  auto_pr_no_changes: "No manifests updated."
 cli:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
@@ -397,6 +402,18 @@ cli_help:
       app: Package name(s) to check
   which:
     about: Show the shim location(s) of a command
+  ciautopr:
+    about: "Auto-update manifests and create pull-requests via GitHub API (zero external binary, CI mode)"
+    args:
+      dir: Bucket directory to scan for manifests
+      upstream: "Upstream repository with target branch (<user>/<repo>:<branch>)"
+      push: Push updates directly to origin branch
+      request: Create pull-requests for each update
+      origin_branch: Origin (local) branch name
+      message: "Commit message format (<app> and <version> are replaced)"
+      skip_updated: Skip manifests that are already up-to-date
+      special: Force update on these special snowflakes (comma-separated)
+      token: "GitHub Token (default from GITHUB_TOKEN env var)"
 
 # Command aliases (for shell completions)
 cli_alias:

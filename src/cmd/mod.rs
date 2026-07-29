@@ -10,6 +10,7 @@ use tracing_subscriber::{
 use crate::i18n::{self, LanguageChoice};
 
 mod alias;
+mod auto_pr;
 mod bucket;
 mod cache;
 mod cat;
@@ -88,6 +89,9 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     Alias(alias::Args),
+    /// CI auto-pr: auto-update manifests and create PRs via GitHub API
+    #[clap(name = "ci-auto-pr")]
+    CiAutoPr(auto_pr::Args),
     Bucket(bucket::Args),
     Cache(cache::Args),
     Cat(cat::Args),
@@ -176,6 +180,7 @@ pub fn start() -> Result<()> {
 
     match args.command {
         Command::Alias(args) => alias::execute(args, &session),
+        Command::CiAutoPr(args) => auto_pr::execute(args, &session),
         Command::Bucket(args) => bucket::execute(args, &session),
         Command::Cache(args) => cache::execute(args, &session),
         Command::Cat(args) => cat::execute(args, &session),
