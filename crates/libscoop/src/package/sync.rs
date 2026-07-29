@@ -899,28 +899,26 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
-    if pkg.has_install_script() {
+    if pkg.manifest().pre_install().is_some() {
         debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
         run_script(session, pkg, &working_dir, "pre_install", "install",
             pkg.manifest().pre_install())?;
     }
 
     // 3. installer, $dir = version dir)
-    if pkg.has_install_script() {
-        if let Some(installer) = pkg.manifest().installer() {
-            if let Some(script) = installer.script() {
-                debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
-                run_script(session, pkg, &working_dir, "installer", "install", Some(script))?;
-            } else if let Some(file) = installer.file() {
-                debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
-                let exe_path = working_dir.join(file);
-                let raw_args: Vec<&str> = installer.args().unwrap_or_default();
-                let expanded = expand_installer_vars(&raw_args, session, pkg, &working_dir, "install");
-                let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-                crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir))
-                    .map_err(|e| Error::Custom(format!(
-                        "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
-            }
+    if let Some(installer) = pkg.manifest().installer() {
+        if let Some(script) = installer.script() {
+            debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
+            run_script(session, pkg, &working_dir, "installer", "install", Some(script))?;
+        } else if let Some(file) = installer.file() {
+            debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
+            let exe_path = working_dir.join(file);
+            let raw_args: Vec<&str> = installer.args().unwrap_or_default();
+            let expanded = expand_installer_vars(&raw_args, session, pkg, &working_dir, "install");
+            let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
+            crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir))
+                .map_err(|e| Error::Custom(format!(
+                    "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
         }
     }
 
@@ -943,7 +941,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     persist::link(session, pkg)?;
 
     // 7. post_install (Scoop order: last hook)
-    if pkg.has_install_script() {
+    if pkg.manifest().post_install().is_some() {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         run_script(session, pkg, &working_dir, "post_install", "install",
             pkg.manifest().post_install())?;
