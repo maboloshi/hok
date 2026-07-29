@@ -117,6 +117,9 @@ pub enum Event {
     /// Package shortcut creation has made some progress.
     PackageShortcutAddProgress(String),
 
+    /// Package shortcut already exists and will be overwritten.
+    PackageShortcutConflict(String),
+
     /// Package shortcut creation has finished.
     PackageShortcutAddDone,
 
@@ -174,14 +177,17 @@ pub enum Event {
     /// Package shortcut removal has made some progress.
     PackageShortcutRemoveProgress(String),
 
+    /// Package shortcut was not found during removal.
+    PackageShortcutNotFound(String),
+
     /// Package shortcut removal has finished.
     PackageShortcutRemoveDone,
 
     /// Package sync operation has finished.
     PackageSyncDone,
+
     /// PowerShell script emitted output (stdout line).
     ScriptOutput(String),
-
 
     /// Version information for a resolved package (old -> new).
     PackageVersionKnown {
@@ -206,6 +212,7 @@ pub enum Event {
         /// Target path
         to: String,
     },
+
     /// PowerShell script execution finished.
     ScriptDone {
         /// Whether the script exited successfully.

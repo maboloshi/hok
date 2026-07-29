@@ -45,6 +45,8 @@ detail:
   loading_cache: "Loading %{filename} from cache."
   unlinking: "Unlinking %{path}"
   linking: "Linking %{from} => %{to}"
+  shortcut_conflict: "shortcut already exists and will be overwritten: %{path}"
+  shortcut_not_found: "shortcut not found: %{path}"
 reinstall:
   released: "Packages released."
   reheld: "Packages re-held."

@@ -162,6 +162,14 @@ pub fn run_event_loop(
                     output::detail(rust_i18n::t!("detail.shortcut_done"));
                 }
 
+                // --- Shortcut warnings ---
+                Event::PackageShortcutConflict(path) => {
+                    output::warn(rust_i18n::t!("detail.shortcut_conflict", path = path));
+                }
+                Event::PackageShortcutNotFound(path) => {
+                    output::warn(rust_i18n::t!("detail.shortcut_not_found", path = path));
+                }
+
                 // --- Environment operations ---
                 Event::PackageEnvPathRemoveStart => {
                     output::detail(rust_i18n::t!("detail.removing_env_path"));

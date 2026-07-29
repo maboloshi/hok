@@ -45,6 +45,12 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let mut link_path = SCOOP_SHORTCUT_DIR.join(shortcut[1]);
             link_path.set_extension("lnk");
 
+            if link_path.exists() {
+                if let Some(tx) = session.emitter() {
+                    let _ = tx.send(Event::PackageShortcutConflict(link_path.to_string_lossy().into_owned()));
+                }
+            }
+
             create_shortcut(&target_str, &link_path, args, icon)?;
 
             if let Some(tx) = session.emitter() {
@@ -101,7 +107,13 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                 let _ = tx.send(Event::PackageShortcutRemoveProgress(shortcut_name));
             }
 
-            let _ = std::fs::remove_file(&path);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+            } else {
+                if let Some(tx) = session.emitter() {
+                    let _ = tx.send(Event::PackageShortcutNotFound(path.to_string_lossy().into_owned()));
+                }
+            }
         }
 
         if let Some(tx) = session.emitter() {

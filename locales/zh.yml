@@ -45,6 +45,8 @@ detail:
   loading_cache: "正在从缓存加载 %{filename}"
   unlinking: "正在移除链接 %{path}"
   linking: "正在创建链接 %{from} => %{to}"
+  shortcut_conflict: "快捷方式已存在，将被覆盖: %{path}"
+  shortcut_not_found: "快捷方式未找到: %{path}"
 reinstall:
   released: "包已释放。"
   reheld: "包已重新锁定。"
