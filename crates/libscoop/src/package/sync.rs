@@ -316,6 +316,54 @@ impl Default for Transaction {
     }
 }
 
+/// Send the transaction to the frontend for confirmation and wait for the result.
+///
+/// Returns `Ok(true)` if confirmed, `Ok(false)` if rejected or no emitter is
+/// available (the channel sender is dropped before the response arrives).
+fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible<bool> {
+    let tx = match session.emitter() {
+        Some(tx) => tx,
+        None => return Ok(true),
+    };
+
+    if tx
+        .send(Event::PromptTransactionNeedConfirm(transaction.clone()))
+        .is_err()
+    {
+        return Ok(true);
+    }
+
+    let rx = session.receiver().ok_or_else(|| {
+        Error::Custom("event bus not initialized".to_owned())
+    })?;
+
+    while let Ok(event) = rx.recv() {
+        if let Event::PromptTransactionNeedConfirmResult(ret) = event {
+            return Ok(ret);
+        }
+    }
+
+    Err(Error::Custom("event bus closed unexpectedly".to_owned()))
+}
+
+/// Removes the given file paths when dropped. Ensures cleanup even when
+/// the calling function returns early via `?`.
+struct TempFileGuard(Vec<std::path::PathBuf>);
+
+impl TempFileGuard {
+    fn new(paths: Vec<std::path::PathBuf>) -> Self {
+        Self(paths)
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// Execute a PowerShell script defined in a package manifest.
 ///
 /// `script_lines` is an array of PowerShell command lines that will be joined
@@ -400,6 +448,9 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     let marker_path = working_dir.join("hok_extract_markers.txt");
     let _ = std::fs::remove_file(&marker_path); // clean from previous runs
 
+    // Ensure both temp files are cleaned up on return, even via `?`
+    let _guard = TempFileGuard::new(vec![script_path.clone(), marker_path.clone()]);
+
     // Prefer pwsh.exe (PowerShell Core, faster startup)
     let ps_exe = if crate::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
 
@@ -459,10 +510,6 @@ $cmd = $env:SCOOP_PACKAGE_CMD
             }
         }
     }
-    let _ = std::fs::remove_file(&marker_path);
-
-    // Clean up temp script file
-    let _ = std::fs::remove_file(&script_path);
 
     Ok(())
 }
@@ -669,27 +716,8 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         transaction.set_download_size(download_size);
     }
 
-    if !assume_yes {
-        if let Some(tx) = session.emitter() {
-            if tx
-                .send(Event::PromptTransactionNeedConfirm(transaction.clone()))
-                .is_ok()
-            {
-                let rx = session.receiver().unwrap();
-                let mut confirmed = false;
-
-                while let Ok(event) = rx.recv() {
-                    if let Event::PromptTransactionNeedConfirmResult(ret) = event {
-                        confirmed = ret;
-                        break;
-                    }
-                }
-
-                if !confirmed {
-                    return Ok(());
-                }
-            }
-        }
+    if !assume_yes && !confirm_transaction(session, &transaction)? {
+        return Ok(());
     }
 
     if !should_offline {
@@ -1070,27 +1098,8 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
     transaction.set_remove(packages);
 
     let assume_yes = options.contains(&SyncOption::AssumeYes);
-    if !assume_yes {
-        if let Some(tx) = session.emitter() {
-            if tx
-                .send(Event::PromptTransactionNeedConfirm(transaction.clone()))
-                .is_ok()
-            {
-                let rx = session.receiver().unwrap();
-                let mut confirmed = false;
-
-                while let Ok(event) = rx.recv() {
-                    if let Event::PromptTransactionNeedConfirmResult(ret) = event {
-                        confirmed = ret;
-                        break;
-                    }
-                }
-
-                if !confirmed {
-                    return Ok(());
-                }
-            }
-        }
+    if !assume_yes && !confirm_transaction(session, &transaction)? {
+        return Ok(());
     }
 
     if let Some(packages) = transaction.remove_view() {
@@ -1466,5 +1475,76 @@ mod tests {
         let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
         assert_eq!(expanded[0], "directory");
         assert_eq!(expanded[1], "scoopdirectory");
+    }
+
+    /// Test that TempFileGuard removes files on Drop.
+    #[test]
+    fn test_temp_file_guard_cleanup() {
+        let dir = crate::test_utils::tmpdir("temp_file_guard");
+        let path1 = dir.join("test1.txt");
+        let path2 = dir.join("test2.txt");
+
+        std::fs::write(&path1, b"hello").unwrap();
+        std::fs::write(&path2, b"world").unwrap();
+        assert!(path1.exists());
+        assert!(path2.exists());
+
+        {
+            let _guard = TempFileGuard::new(vec![path1.clone(), path2.clone()]);
+            // Guard is alive — files should still exist
+            assert!(path1.exists());
+            assert!(path2.exists());
+        }
+        // Guard dropped — files should be removed
+        assert!(!path1.exists());
+        assert!(!path2.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Helper to create a session with an active event bus for confirm tests.
+    fn setup_confirm_test() -> (Session, flume::Sender<Event>, flume::Receiver<Event>) {
+        let session = Session::new();
+        let bus = session.event_bus();
+        let frontend_tx = bus.sender();   // outer_tx → session.inner_rx
+        let frontend_rx = bus.receiver(); // outer_rx ← session.inner_tx
+        (session, frontend_tx, frontend_rx)
+    }
+
+    /// Test that confirm_transaction returns true when the frontend accepts.
+    #[test]
+    fn test_confirm_transaction_accepted() {
+        let (session, frontend_tx, frontend_rx) = setup_confirm_test();
+
+        // Pre-send the acceptance response (buffered channel)
+        frontend_tx
+            .send(Event::PromptTransactionNeedConfirmResult(true))
+            .unwrap();
+
+        let transaction = Transaction::default();
+        let result = confirm_transaction(&session, &transaction).unwrap();
+        assert!(result, "should return true when frontend accepts");
+
+        // Verify the request was actually emitted
+        let request = frontend_rx.recv().unwrap();
+        assert!(
+            matches!(request, Event::PromptTransactionNeedConfirm(_)),
+            "should have emitted PromptTransactionNeedConfirm"
+        );
+    }
+
+    /// Test that confirm_transaction returns false when the frontend rejects.
+    #[test]
+    fn test_confirm_transaction_rejected() {
+        let (session, frontend_tx, _frontend_rx) = setup_confirm_test();
+
+        // Pre-send the rejection response
+        frontend_tx
+            .send(Event::PromptTransactionNeedConfirmResult(false))
+            .unwrap();
+
+        let transaction = Transaction::default();
+        let result = confirm_transaction(&session, &transaction).unwrap();
+        assert!(!result, "should return false when frontend rejects");
     }
 }
