@@ -170,6 +170,11 @@ pub fn run_event_loop(
                     output::warn(rust_i18n::t!("detail.shortcut_not_found", path = path));
                 }
 
+                // --- Session warnings ---
+                Event::ConfigLoadFallback => {
+                    output::warn(rust_i18n::t!("detail.config_fallback"));
+                }
+
                 // --- Environment operations ---
                 Event::PackageEnvPathRemoveStart => {
                     output::detail(rust_i18n::t!("detail.removing_env_path"));

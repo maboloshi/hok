@@ -55,12 +55,18 @@ impl Session {
 
         // Config loading failed, create a new default config and return.
         let config = RefCell::new(Config::init());
-        Session {
+        let session = Session {
             config,
             event_bus: OnceCell::new(),
             user_agent: OnceCell::new(),
             global: Cell::new(false),
+        };
+        // Initialize event bus and emit fallback warning
+        let _ = session.event_bus();
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::ConfigLoadFallback);
         }
+        session
     }
 
     /// Create a new session with the given config path.

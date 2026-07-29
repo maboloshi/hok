@@ -183,6 +183,9 @@ pub enum Event {
     /// Package shortcut removal has finished.
     PackageShortcutRemoveDone,
 
+    /// All config paths failed, falling back to default config.
+    ConfigLoadFallback,
+
     /// Package sync operation has finished.
     PackageSyncDone,
 
