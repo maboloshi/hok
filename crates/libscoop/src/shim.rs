@@ -1,9 +1,23 @@
 #![allow(dead_code)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"));
+
+/// Generate an alternative filename for conflict resolution.
+///
+/// If the file has a non-empty extension: `stem.ext.pkg` (e.g. `foo.ps1.scoop`)
+/// If the file has no extension:         `stem.pkg` (e.g. `foo.scoop`)
+fn alt_filename(path: &Path, pkg: &str) -> PathBuf {
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => {
+            path.with_file_name(format!("{}.{}.{}", stem, ext, pkg))
+        }
+        _ => path.with_file_name(format!("{}.{}", stem, pkg)),
+    }
+}
 
 #[derive(Debug)]
 pub struct Shim<'a> {
@@ -110,27 +124,39 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
             if shim.ty == ShimType::Exe {
                 // Use the embedded hok-shim.exe as the native .exe shim
-                let shim_name = format!("{}.exe", shim.name);
-                let shim_dest = shims_dir.join(&shim_name);
+                let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
+                let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
 
-                // Write the embedded shim (replace if exists)
-                std::fs::write(&shim_dest, HOK_SHIM_BYTES)?;
+                // Handle conflicts: if .exe or .shim already exist (from another package),
+                // rename them to alt names before writing ours
+                if shim_exe.exists() {
+                    let alt_exe = shim_exe.with_file_name(format!("{}.{}.exe", shim.name, pkg_name));
+                    std::fs::rename(&shim_exe, &alt_exe)?;
+                }
+                if shim_meta.exists() {
+                    let alt_meta = shim_meta.with_file_name(format!("{}.{}.shim", shim.name, pkg_name));
+                    std::fs::rename(&shim_meta, &alt_meta)?;
+                }
+
+                // Write the embedded shim
+                std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
 
                 // Write .shim metadata file
                 let target_rel = format!(
                     r#"~\..\apps\{}\current\{}"#,
                     pkg_name, shim.real_name
                 );
-                let shim_meta = if let Some(args) = &shim.args {
+                let meta_content = if let Some(args) = &shim.args {
                     format!("path = \"{target_rel}\"\r\nargs = \"{}\"\r\n", args.join(" "))
                 } else {
                     format!("path = \"{target_rel}\"\r\n")
                 };
-                let meta_path = shims_dir.join(format!("{}.shim", shim.name));
-                std::fs::write(&meta_path, shim_meta.as_bytes())?;
+                std::fs::write(&shim_meta, meta_content.as_bytes())?;
 
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageShimAddProgress(shim_name));
+                    let _ = tx.send(Event::PackageShimAddProgress(
+                        shim_exe.file_name().unwrap().to_string_lossy().to_string(),
+                    ));
                 }
             } else {
                 // Use script-based shim (.cmd, .ps1, etc.)
@@ -141,10 +167,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                     // Check if the shim already exists (from another package)
                     let dest = if full_path.exists() {
                         // Add package name suffix to avoid conflict
-                        let stem = full_path.file_stem().unwrap().to_str().unwrap();
-                        let ext = full_path.extension().map(|e| e.to_str().unwrap()).unwrap_or("");
-                        let alt_name = format!("{}.{}.{}", stem, ext, pkg_name);
-                        full_path.with_file_name(&alt_name)
+                        alt_filename(&full_path, pkg_name)
                     } else {
                         full_path
                     };
@@ -170,8 +193,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 /// Generate shim files content for a given shim definition.
 ///
 /// Returns a list of `(target_path, content)` pairs.
-fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf, String)> {
-    let shims_dir = std::path::PathBuf::from(""); // caller joins with actual dir
+fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> {
     let mut result = Vec::new();
 
     // The target path relative to the shims dir: ..\apps\pkgname\current\real_name
@@ -195,11 +217,11 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
                 "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
             );
-            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
 
             // .shim metadata file (Scoop-compatible format)
             let shim_meta = format!("path = \"~\\..\\apps\\{}\\current\\{}\"\r\n", pkg_name, shim.real_name);
-            result.push((shims_dir.join(format!("{}.shim", shim.name)), shim_meta));
+            result.push((PathBuf::from(format!("{}.shim", shim.name)), shim_meta));
         }
         ShimType::Batch | ShimType::Bash => {
             // .cmd file: direct batch redirect
@@ -207,7 +229,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
                 "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
             );
-            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
         }
         ShimType::PowerShell => {
             // .ps1 shim: PowerShell script
@@ -220,14 +242,14 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
                     .map(|a| a.join(" "))
                     .unwrap_or_default()
             );
-            result.push((shims_dir.join(format!("{}.ps1", shim.name)), ps_content));
+            result.push((PathBuf::from(format!("{}.ps1", shim.name)), ps_content));
 
             // .cmd wrapper: batch that calls PowerShell
             let cmd_content = format!(
                 "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{}.ps1\" %*\r\n",
                 shim.name
             );
-            result.push((shims_dir.join(format!("{}.cmd", shim.name)), cmd_content));
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), cmd_content));
         }
         ShimType::Java => {
             // .cmd file: calls java -jar
@@ -235,7 +257,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
                 "@echo off\r\njava -jar \"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
             );
-            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
         }
         ShimType::Python => {
             // .cmd file: calls python
@@ -243,7 +265,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(std::path::PathBuf
                 "@echo off\r\npython \"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
             );
-            result.push((shims_dir.join(format!("{}.cmd", shim.name)), content));
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
         }
     }
 
@@ -269,7 +291,6 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         }
 
         for shim in bins.into_iter().map(Shim::new) {
-            let mut shim_path = shims_dir.join(shim.name);
             let exts = match shim.ty {
                 ShimType::Exe => vec!["exe", "shim"],
                 ShimType::PowerShell => vec!["cmd", "ps1", ""],
@@ -277,10 +298,24 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             };
 
             for ext in exts.into_iter() {
-                let alt_ext = format!("{}.{}", ext, pkg_name);
-                shim_path.set_extension(alt_ext);
+                // Build the main file path: {name}.{ext}
+                let mut shim_path = shims_dir.join(shim.name);
+                if !ext.is_empty() {
+                    shim_path.set_extension(ext);
+                }
 
-                if shim_path.exists() {
+                // Alt file path (created by another package's conflict): {name}.{ext}.{pkg}
+                let alt_path = alt_filename(&shim_path, pkg_name);
+
+                if alt_path.exists() {
+                    if let Some(tx) = session.emitter() {
+                        let shim_name =
+                            alt_path.file_name().unwrap().to_string_lossy().to_string();
+                        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
+                    }
+
+                    std::fs::remove_file(&alt_path)?;
+                } else if shim_path.exists() {
                     if let Some(tx) = session.emitter() {
                         let shim_name =
                             shim_path.file_name().unwrap().to_string_lossy().to_string();
@@ -288,22 +323,8 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                     }
 
                     std::fs::remove_file(&shim_path)?;
-                } else {
-                    // this is for removing the `pkg_name` suffix added by the
-                    // `alt_ext` above
-                    shim_path.set_extension("");
 
-                    shim_path.set_extension(ext);
-
-                    if let Some(tx) = session.emitter() {
-                        let shim_name =
-                            shim_path.file_name().unwrap().to_string_lossy().to_string();
-                        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
-                    }
-
-                    let _ = std::fs::remove_file(&shim_path);
-
-                    // restore alter shim
+                    // restore alter shim from another package
                     let fname = shim_path.file_name().unwrap().to_str().unwrap();
                     let mut alt_shims = shims_dir_entries
                         .iter()
@@ -332,9 +353,9 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                     }
 
                     let alt_shim = alt_shims.first().unwrap();
-                    let alt_path = alt_shim.path();
-                    let alt_path_new = alt_path.with_file_name(fname);
-                    std::fs::rename(&alt_path, &alt_path_new)?;
+                    let alt_old_path = alt_shim.path();
+                    let alt_new_path = alt_old_path.with_file_name(fname);
+                    std::fs::rename(&alt_old_path, &alt_new_path)?;
                 }
             }
         }
