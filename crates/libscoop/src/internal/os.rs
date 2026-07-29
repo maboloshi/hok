@@ -67,7 +67,33 @@ struct PROCESSENTRY32W {
     szExeFile: [u16; 260], // MAX_PATH
 }
 
+// ─── Shell32 FFI for admin/privilege checks ─────────────────────────────────
+
+#[link(name = "shell32")]
+extern "system" {
+    /// Returns a non-zero value if the current process is running under a
+    /// user account that has administrator privileges; zero otherwise.
+    /// https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-isuseranadmin
+    fn IsUserAnAdmin() -> i32;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
+
+/// Check whether the current process has administrator privileges.
+///
+/// Uses `IsUserAnAdmin()` from `shell32.dll` on Windows.
+/// Always returns `false` on non-Windows platforms.
+pub fn is_admin() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: IsUserAnAdmin() has no parameters and no failure mode.
+        unsafe { IsUserAnAdmin() != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
 
 pub fn os_is_arch64() -> bool {
     match std::mem::size_of::<&char>() {

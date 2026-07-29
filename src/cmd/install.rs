@@ -1,7 +1,8 @@
 use clap::{ArgAction, Parser};
-use libscoop::{operation, Session, SyncOption};
+use libscoop::internal::os::is_admin;
+use libscoop::{operation, QueryOption, Session, SyncOption};
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Install package(s)
 #[derive(Debug, Parser)]
@@ -38,7 +39,7 @@ pub struct Args {
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
     no_upgrade: bool,
     /// Skip package integrity check
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
     no_hash_check: bool,
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
@@ -89,11 +90,103 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     session.set_global(args.global);
+
+    if args.global && !is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to install global apps");
+    }
+
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+
+    // Prune already-installed packages (matching PS1's prune_installed behavior)
+    let (to_install, already_installed) = prune_installed(session, &queries)?;
+    for name in &already_installed {
+        output::warn(format!("'{name}' is already installed. Skipping."));
+    }
+    if to_install.is_empty() {
+        return Ok(());
+    }
+
     let handle = crate::eventloop::run_event_loop(session, Default::default());
 
-    operation::package_sync(session, queries, options)?;
+    operation::package_sync(session, to_install.clone(), options)?;
     handle.join().unwrap();
 
+    // Show suggestions from manifests of installed packages
+    show_suggestions(session, &to_install)?;
+
     Ok(())
+}
+
+/// Query installed packages and display their `suggest` field entries.
+fn show_suggestions(session: &Session, packages: &[&str]) -> Result<()> {
+    let installed = match operation::package_query(
+        session,
+        packages.to_vec(),
+        vec![QueryOption::Explicit],
+        true,
+    ) {
+        Ok(pkgs) => pkgs,
+        Err(_) => return Ok(()),
+    };
+
+    for pkg in &installed {
+        let manifest = pkg.manifest();
+        if let Some(suggest) = manifest.suggest() {
+            let name = pkg.name();
+            output::info(format!("Suggestions for '{name}':"));
+            for (key, values) in suggest {
+                let vals = values
+                    .devectorize()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                output::info(format!("  {key}: {vals}"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Query installed packages and split into those that need installing vs those
+/// already installed. Returns `(to_install, already_installed)`.
+fn prune_installed<'s>(
+    session: &Session,
+    queries: &[&'s str],
+) -> Result<(Vec<&'s str>, Vec<String>)> {
+    // Query installed packages matching the given queries (exact match)
+    let installed = match operation::package_query(
+        session,
+        queries.to_vec(),
+        vec![QueryOption::Explicit],
+        true,
+    ) {
+        Ok(pkgs) => pkgs,
+        Err(_) => return Ok((queries.to_vec(), vec![])),
+    };
+
+    let mut already_installed = Vec::new();
+    let mut to_install = Vec::new();
+
+    for q in queries {
+        let installed_names: Vec<&str> = installed
+            .iter()
+            .filter(|p| {
+                // Match by exact name (case-insensitive) or bucket/name
+                let q_normalized = q.to_lowercase();
+                let p_name = p.name().to_lowercase();
+                let p_ident = p.ident().to_lowercase();
+                q_normalized == p_name || q_normalized == p_ident
+            })
+            .map(|p| p.name())
+            .collect();
+
+        if installed_names.is_empty() {
+            to_install.push(*q);
+        } else {
+            already_installed.push(installed_names[0].to_string());
+        }
+    }
+
+    Ok((to_install, already_installed))
 }
