@@ -1,4 +1,10 @@
 #![allow(dead_code)]
+
+// Known gaps vs Scoop original:
+// - JAR shim: no pushd/popd (some jars depend on CWD)
+// - GUI .exe: no PE-subsystem detection (console window for GUI apps)
+// - CLI subcommands add/rm/alter: not implemented (managed via package lifecycle)
+
 use std::path::{Path, PathBuf};
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
@@ -108,8 +114,7 @@ impl Shim<'_> {
 
 /// Add shims for a package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
-    let config = session.config();
-    let shims_dir = config.root_path().join("shims");
+    let shims_dir = session.effective_root_path().join("shims");
     internal::fs::ensure_dir(&shims_dir)?;
 
     if let Some(bins) = package.manifest().bin() {
@@ -123,6 +128,10 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let shim = Shim::new(def);
 
             if shim.ty == ShimType::Exe {
+                // TODO: GUI detection — read PE subsystem of target; if GUI, skip hok-shim.exe
+                // and use ShellExecuteExW path, or mark shim.exe as GUI subsystem.
+                // Currently all .exe shims launch with a console window.
+
                 // Use the embedded hok-shim.exe as the native .exe shim
                 let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
                 let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
@@ -233,26 +242,29 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
         }
         ShimType::PowerShell => {
             // .ps1 shim: PowerShell script
+            let target_backslash = target_rel.replace('/', "\\");
+            let arg_str = shim
+                .args
+                .as_ref()
+                .map(|a| a.join(" "))
+                .unwrap_or_default();
             let ps_content = format!(
-                "& \"$PSScriptRoot\\{0}\" {1} @args\r\n",
-                target_rel.replace('/', "\\"),
-                shim
-                    .args
-                    .as_ref()
-                    .map(|a| a.join(" "))
-                    .unwrap_or_default()
+                "if ($MyInvocation.ExpectingInput) {{ $input | & \"$PSScriptRoot\\{0}\" {1} @args }} else {{ & \"$PSScriptRoot\\{0}\" {1} @args }}\r\nexit $LASTEXITCODE\r\n",
+                target_backslash,
+                arg_str,
             );
             result.push((PathBuf::from(format!("{}.ps1", shim.name)), ps_content));
 
-            // .cmd wrapper: batch that calls PowerShell
+            // .cmd wrapper: batch that calls PowerShell with pwsh fallback
             let cmd_content = format!(
-                "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{}.ps1\" %*\r\n",
-                shim.name
+                "@echo off\r\nwhere /q pwsh.exe\r\nif %errorlevel% equ 0 (\r\n    pwsh -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{0}.ps1\" %*\r\n) else (\r\n    powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{0}.ps1\" %*\r\n)\r\n",
+                shim.name,
             );
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), cmd_content));
         }
         ShimType::Java => {
             // .cmd file: calls java -jar
+            // TODO: add @pushd %~dp0 before java and @popd after (some jars depend on CWD)
             let content = format!(
                 "@echo off\r\njava -jar \"%~dp0{}\"{} %*\r\n",
                 target_rel, arg_suffix
@@ -276,8 +288,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
 pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     assert!(package.is_installed());
 
-    let config = session.config();
-    let shims_dir = config.root_path().join("shims");
+    let shims_dir = session.effective_root_path().join("shims");
 
     if let Some(bins) = package.manifest().bin() {
         let pkg_name = package.name();
