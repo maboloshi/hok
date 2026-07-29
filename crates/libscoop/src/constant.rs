@@ -47,7 +47,7 @@ pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// regex to match valid Scoop cache filename:
 /// "app#version#filenamified_url"
 pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"(?P<name>[0-9a-zA-Z-_.]+)#(?P<version>[0-9a-zA-Z-.]+)#(?P<url>.*)";
+    let pattern = r"(?P<name>[0-9a-zA-Z._-]+)#(?P<version>[0-9a-zA-Z.-]+)#(?P<url>.*)";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
@@ -62,7 +62,7 @@ pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
 /// - **sha256**: `^(sha256:)?[a-fA-F0-9]{64}$`
 /// - **sha512**: `^sha512:[a-fA-F0-9]{128}$`
 pub static REGEX_HASH: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"^md5:[a-fA-F0-9]{32}|sha1:[a-fA-F0-9]{40}|(sha256:)?[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128}$";
+    let pattern = r"^(?:md5:[a-fA-F0-9]{32}|sha1:[a-fA-F0-9]{40}|(?:sha256:)?[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128})$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
