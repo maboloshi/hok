@@ -91,6 +91,7 @@ cmd:
   checkver_sourceforge_err: "无法提取 SourceForge 项目"
   checkver_no_url: "没有 checkver URL"
   checkver_no_extract: "无法提取版本号"
+  checkver_version_wildcard: "不能将 --version 与通配符应用模式一起使用"
   checkurls_err_dir: "错误: '%{path}' 不是目录"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
   cleanup_no_old: "没有旧版本需要清理。"
@@ -238,6 +239,10 @@ cli_help:
       app: "要检查的特定应用（支持通配符，默认为全部）"
       dir: 要扫描清单的仓库目录
       update: 用新版本更新清单并触发自动更新
+      force-update: 即使版本不变也强制更新（用于哈希更新场景）
+      skip-updated: 跳过已是最新的清单
+      version: 更新清单到指定版本（跳过版本检测）
+      timeout: 请求超时秒数
   cleanup:
     about: 通过删除旧版本清理应用
     args:

@@ -127,7 +127,7 @@ pub struct ConfigInner {
     force_update: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    gh_token: Option<String>,
+    pub gh_token: Option<String>,
 
     #[serde(alias = "globalPath")]
     #[serde(default = "default::global_path")]

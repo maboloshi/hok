@@ -91,6 +91,7 @@ cmd:
   checkver_sourceforge_err: "could not extract SourceForge project"
   checkver_no_url: "no checkver url"
   checkver_no_extract: "could not extract version"
+  checkver_version_wildcard: "cannot use --version with wildcard app pattern"
   checkurls_err_dir: "error: '%{path}' is not a directory"
   checkurls_summary: "Checked %{total} URLs: %{valid} valid, %{invalid} invalid."
   cleanup_no_old: "No old versions to clean up."
@@ -238,6 +239,10 @@ cli_help:
       app: "Specific app(s) to check (supports wildcards, default: all)"
       dir: Bucket directory to scan for manifests
       update: Update manifest with new version and trigger autoupdate
+      force-update: Force update even when version is unchanged (useful for hash updates)
+      skip-updated: Skip manifests that are already up-to-date
+      version: Update manifest to specific version (skip version detection)
+      timeout: Request timeout in seconds
   cleanup:
     about: Cleanup apps by removing old versions
     args:
