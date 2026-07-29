@@ -1,4 +1,5 @@
 use clap::Parser;
+use libscoop::internal::os::is_admin;
 use libscoop::{operation, Session, SyncOption};
 
 use crate::{eventloop, output, Result};
@@ -16,14 +17,22 @@ pub struct Args {
     #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
     ignore_cache: bool,
     /// Skip package integrity check
-    #[arg(long, action = clap::ArgAction::SetTrue)]
+    #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
     no_hash_check: bool,
     /// Ignore failures to ensure a complete transaction
     #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
     ignore_failure: bool,
+    /// Install globally (to $SCOOP_GLOBAL)
+    #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]
+    global: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    session.set_global(args.global);
+    if args.global && !is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to install global apps");
+    }
+
     let mut hold_set = std::collections::BTreeSet::new();
     let mut exact_queries = Vec::new();
 

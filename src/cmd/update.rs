@@ -1,4 +1,5 @@
 use clap::{ArgAction, Parser};
+use libscoop::internal::os::is_admin;
 use libscoop::{operation, Event, Session, SyncOption};
 
 use crate::{output, Result};
@@ -27,7 +28,7 @@ pub struct Args {
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     pub escape_hold: bool,
     /// Skip package integrity check
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
     pub no_hash_check: bool,
     /// Force update even within cooldown period
     #[arg(long, action = ArgAction::SetTrue)]
@@ -44,6 +45,9 @@ pub struct Args {
     /// Ignore cache and force download
     #[arg(short = 'D', long, action = ArgAction::SetTrue)]
     pub ignore_cache: bool,
+    /// Install globally (to $SCOOP_GLOBAL)
+    #[arg(short = 'g', long, action = ArgAction::SetTrue)]
+    pub global: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
@@ -107,6 +111,12 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
     if queries.is_empty() {
         queries.push("*");
     }
+
+    session.set_global(args.global);
+    if args.global && !is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to install global apps");
+    }
+
     let mut options = vec![SyncOption::OnlyUpgrade];
 
     if args.assume_yes {

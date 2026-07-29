@@ -22,8 +22,11 @@ pub struct Args {
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
     /// Skip package integrity check
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
     no_hash_check: bool,
+    /// Install globally (to $SCOOP_GLOBAL)
+    #[arg(short = 'g', long, action = ArgAction::SetTrue)]
+    global: bool,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
@@ -34,6 +37,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         assume_yes: args.assume_yes,
         escape_hold: args.escape_hold,
         no_hash_check: args.no_hash_check,
+        global: args.global,
         force: false,
         independent: false,
         no_upgrade: false,
