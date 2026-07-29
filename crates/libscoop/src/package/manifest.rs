@@ -970,6 +970,34 @@ impl Manifest {
         fn url() -> Vec<&str>, unwrap_or_default
     }
 
+    /// Collect ALL URLs from this manifest (noarch + all architectures).
+    ///
+    /// Unlike `url()` which only returns URLs for the current platform,
+    /// this method returns URLs from noarch, 32bit, 64bit, and arm64.
+    /// Used by checkurls to validate all download URLs.
+    pub fn all_urls(&self) -> Vec<&str> {
+        let mut urls: Vec<&str> = Vec::new();
+        // Add noarch URLs
+        if let Some(ref u) = self.inner.url {
+            for s in u.devectorize() {
+                urls.push(s);
+            }
+        }
+        // Add architecture-specific URLs
+        if let Some(ref arch) = self.inner.architecture {
+            for spec_opt in [&arch.ia32, &arch.amd64, &arch.aarch64] {
+                if let Some(spec) = spec_opt {
+                    if let Some(ref u) = spec.url {
+                        for s in u.devectorize() {
+                            urls.push(s);
+                        }
+                    }
+                }
+            }
+        }
+        urls
+    }
+
     arch_accessor! {
         /// Extract file hashes from this manifest, in following order:
         ///

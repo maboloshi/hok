@@ -226,6 +226,34 @@ pub struct PrivateHosts {
     headers: String,
 }
 
+impl PrivateHosts {
+    /// The host match pattern (regex matched against the request URL).
+    pub fn match_pattern(&self) -> &str {
+        &self.match_
+    }
+
+    /// The HTTP headers string (newline-separated key=value pairs).
+    pub fn headers(&self) -> &str {
+        &self.headers
+    }
+
+    /// Parse headers into a map (key=value, newline-separated).
+    pub fn parse_headers(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for line in self.headers.lines() {
+            let line = line.trim();
+            if let Some(eq_pos) = line.find('=') {
+                let key = line[..eq_pos].trim().to_string();
+                let val = line[eq_pos + 1..].trim().to_string();
+                if !key.is_empty() {
+                    map.insert(key, val);
+                }
+            }
+        }
+        map
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum IsolatedPath {
@@ -326,6 +354,12 @@ impl Config {
     #[inline]
     pub fn proxy(&self) -> Option<&str> {
         self.proxy.as_deref()
+    }
+
+    /// Get the `PRIVATE_HOSTS` config (private hosts with custom headers).
+    #[inline]
+    pub fn private_hosts(&self) -> Option<&Vec<PrivateHosts>> {
+        self.private_hosts.as_ref()
     }
 
     /// Get the `cat_style` config.

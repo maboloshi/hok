@@ -289,6 +289,46 @@ pub fn head_url(session: &Session, url: &str, timeout_secs: u64) -> Fallible<boo
         .map_err(|e| Error::Custom(e.to_string()))
 }
 
+/// HEAD request with full Scoop-compatible headers (Referer, UA, Cookie, PRIVATE_HOSTS).
+///
+/// Returns detailed result including status code and error message.
+/// Matches Scoop's `test_dl` function in bin/checkurls.ps1.
+pub fn head_url_ext(
+    session: &Session,
+    url: &str,
+    timeout_secs: u64,
+    cookies: Option<&std::collections::HashMap<String, String>>,
+) -> internal::network::HeadResult {
+    let config = session.config();
+    let proxy = config.proxy();
+
+    // Build Referer: strip_filename equivalent
+    let referer = internal::network::strip_filename(url);
+
+    // Build PRIVATE_HOSTS extra headers
+    let extra_headers = config.private_hosts().and_then(|hosts| {
+        let matched: std::collections::HashMap<String, String> = hosts.iter()
+            .filter(|h| {
+                regex::Regex::new(h.match_pattern())
+                    .ok()
+                    .map_or(false, |re| re.is_match(url))
+            })
+            .flat_map(|h| h.parse_headers())
+            .collect();
+        if matched.is_empty() { None } else { Some(matched) }
+    });
+
+    internal::network::head_url_ext(
+        url,
+        proxy,
+        timeout_secs,
+        Some("Scoop/1.0 (+http://scoop.sh/)"),
+        Some(&referer),
+        cookies,
+        extra_headers.as_ref(),
+    )
+}
+
 /// Download a file via HTTP GET and save to a local path, using the session's proxy.
 pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
     let config = session.config();

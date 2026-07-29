@@ -1,5 +1,6 @@
 use clap::Parser;
 use libscoop::{operation, Manifest, Session};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -15,8 +16,8 @@ pub struct Args {
     #[arg(default_value = "*")]
     app: Vec<String>,
 
-    /// Request timeout in seconds
-    #[arg(short = 't', long, default_value = "30")]
+    /// Request timeout in seconds (Scoop default: 5)
+    #[arg(short = 't', long, default_value = "5")]
     timeout: u64,
 
     /// Only show invalid URLs (suppress valid ones)
@@ -31,14 +32,26 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
-    let _proxy = session.config().proxy().map(|s| s.to_owned());
+    // Scoop-style header: [U]RLs [O]kay [F]ailed
+    // The ps1 prints: '[' + 'U' (cyan) + ']RLs | [' + 'O' (green) + ']kay |  | [' + 'F' (red) + ']ailed |  |  |'
+    use crossterm::style::Stylize;
+    eprintln!(
+        "{} {} {}",
+        format!("[{}]", "U".cyan()).to_string(),
+        format!("RLs   [{}]", "O".green()).to_string(),
+        format!("[{}]", "F".red()).to_string(),
+    );
+    eprintln!();
 
+    let mut total_manifests = 0u32;
     let mut total_urls = 0u32;
-    let mut valid = 0u32;
-    let mut invalid = 0u32;
+    let mut total_valid = 0u32;
+    let mut total_invalid = 0u32;
 
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
+    // Recursively collect all .json files
+    let manifest_paths: Vec<PathBuf> = walkdir_files(dir);
+
+    for path in &manifest_paths {
         if path.extension().map(|e| e != "json").unwrap_or(true) {
             continue;
         }
@@ -48,14 +61,23 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             continue;
         }
 
-        let manifest = match Manifest::parse(&path) {
+        let manifest = match Manifest::parse(path) {
             Ok(m) => m,
             Err(_) => continue,
         };
 
-        let urls: Vec<String> = manifest
-            .url()
-            .into_iter()
+        // Collect ALL URLs (noarch + all architectures), matching Scoop's behavior:
+        // - If manifest.url exists → use those; otherwise collect from architecture specs
+        let raw_urls: Vec<String> = if manifest.url().is_empty() {
+            // Scoop: script:url $manifest '64bit', '32bit', 'arm64'
+            manifest.all_urls().into_iter().map(|s| s.to_string()).collect()
+        } else {
+            manifest.url().into_iter().map(|s| s.to_string()).collect()
+        };
+
+        // Scoop: Trim renaming suffix (#/filename) to prevent 40x responses
+        let urls: Vec<String> = raw_urls
+            .iter()
             .map(|u| u.split('#').next().unwrap_or(u).to_string())
             .collect();
 
@@ -63,44 +85,94 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             continue;
         }
 
-        if !args.skip_valid {
-            print!("{} ... ", name);
-        }
+        total_manifests += 1;
 
-        let mut all_valid = true;
+        let manifest_cookies: Option<HashMap<String, String>> =
+            manifest.cookie().map(|c| c.clone());
+
+        let mut ok_count = 0u32;
+        let mut failed_count = 0u32;
+        let mut errors: Vec<String> = Vec::new();
+
         for url in &urls {
             total_urls += 1;
-            match operation::head_url(session, url, args.timeout) {
-                Ok(true) => valid += 1,
-                Ok(false) => {
-                    invalid += 1;
-                    all_valid = false;
-                    if !args.skip_valid {
-                        println!();
-                        output::err(format!("not found: {url}"));
-                    } else {
-                        output::named(&name, url);
-                    }
+            let result = operation::head_url_ext(session, url, args.timeout,
+                manifest_cookies.as_ref());
+
+            match result.error {
+                None => {
+                    // Scoop check: $status -eq 'OK' -or $status -eq 'OpeningData'
+                    // HTTP 2xx/3xx = OK. 3xx redirects are also OK (OpeningData for FTP)
+                    ok_count += 1;
+                    total_valid += 1;
                 }
-                Err(e) => {
-                    invalid += 1;
-                    all_valid = false;
-                    if !args.skip_valid {
-                        println!();
-                        output::err(format!("{e}: {url}"));
-                    } else {
-                        output::err(format!("{name} {e} ({url})"));
-                    }
+                Some(ref msg) => {
+                    failed_count += 1;
+                    total_invalid += 1;
+                    errors.push(format!("{} ({})", msg, url));
                 }
             }
         }
 
-        if all_valid && !args.skip_valid {
-            println!("ok ({} urls)", urls.len());
+        if ok_count == urls.len() as u32 && args.skip_valid {
+            continue;
+        }
+
+        // Scoop-style output: [urls][ok][failed] name
+        eprint!("[{}]", urls.len().to_string().cyan());
+        eprint!("[{}]",
+            if ok_count == urls.len() as u32 {
+                ok_count.to_string().green()
+            } else if ok_count == 0 {
+                ok_count.to_string().red()
+            } else {
+                ok_count.to_string().yellow()
+            }
+        );
+        eprint!("[{}]",
+            if failed_count == 0 {
+                failed_count.to_string().green()
+            } else {
+                failed_count.to_string().red()
+            }
+        );
+        eprintln!(" {}", name);
+
+        // Print detailed errors (Scoop: dark red indented lines)
+        for err in &errors {
+            eprintln!("{} > {}", "       ".to_string(), err.clone().dark_red());
         }
     }
 
-    output::info(rust_i18n::t!("cmd.checkurls_summary", total = total_urls, valid = valid, invalid = invalid));
+    if total_manifests == 0 {
+        output::info(rust_i18n::t!("cmd.checkurls_no_manifests"));
+    } else {
+        output::info(rust_i18n::t!(
+            "cmd.checkurls_summary",
+            total = total_urls,
+            valid = total_valid,
+            invalid = total_invalid
+        ));
+    }
 
     Ok(())
+}
+
+/// Recursively collect all files under a directory.
+fn walkdir_files(dir: &PathBuf) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().map_or(false, |e| e == "json") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
 }

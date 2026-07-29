@@ -94,6 +94,7 @@ cmd:
   checkver_version_wildcard: "不能将 --version 与通配符应用模式一起使用"
   checkurls_err_dir: "错误: '%{path}' 不是目录"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
+  checkurls_no_manifests: "没有需要检查的清单。"
   cleanup_no_old: "没有旧版本需要清理。"
   cleanup_removed: "已清理 %{count} 个旧版本"
   cleanup_removed_failed: "已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）"
