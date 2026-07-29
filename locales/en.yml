@@ -171,6 +171,7 @@ error:
   package_hold_broken_install: "package '%{name}' is broken"
   custom: "%{msg}"
   extraction_failed: "failed to extract archive: %{reason}"
+  path_traversal_detected: "path traversal detected: %{detail}"
   cyclic_dependency: "Cyclic dependency detected"
   hash: "Hash error"
   git: "Git error"

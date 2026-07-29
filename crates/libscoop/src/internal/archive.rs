@@ -1,8 +1,7 @@
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::process::Command;
 
-use crate::constant::REGEX_ARCHIVE_7Z;
 use crate::error::Fallible;
 use crate::event::Event;
 use crate::Error;
@@ -40,10 +39,6 @@ fn detect_format(filename: &str) -> Option<&'static str> {
     if filename.ends_with(".iso") {
         return Some("iso");
     }
-    if REGEX_ARCHIVE_7Z.is_match(filename) {
-        // unmatched ... but still a recognized archive
-        return Some("unknown");
-    }
     None
 }
 
@@ -66,9 +61,9 @@ pub fn extract(
     innosetup: bool,
     emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
-    // Compute effective extract_to path
+    // Compute effective extract_to path (join all subdirs components)
     let effective_dest = match extract_to {
-        Some(subdirs) if !subdirs.is_empty() => dest_dir.join(&subdirs[0]),
+        Some(subdirs) if !subdirs.is_empty() => dest_dir.join(subdirs.join("/")),
         _ => dest_dir.to_path_buf(),
     };
     crate::internal::fs::ensure_dir(&effective_dest)?;
@@ -94,7 +89,6 @@ pub fn extract(
         "zst" => extract_tar(cache_path, &effective_dest, extract_dir, Some(Compression::Zstd), emitter),
         "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
         "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
-        "unknown" => unreachable!(), // matched by detect_format but not expected here
         _ => Err(Error::ExtractionFailed(format!("unsupported format: {}", fmt))),
     }
 }
@@ -113,16 +107,18 @@ enum Compression {
 fn extract_7z(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Option<Sender<Event>>) -> Fallible<()> {
     use sevenz_rust2::{ArchiveReader, Password};
 
+    // Fast path: open as standard 7z archive directly (streaming, no full file load).
+    if let Ok(file) = std::fs::File::open(src) {
+        if let Ok(reader) = ArchiveReader::new(file, Password::empty()) {
+            return extract_7z_entries(reader, dest, filter, emitter);
+        }
+    }
+
+    // PE/SFX: read into memory and search for embedded 7z data.
+    // Many installers append the real 7z archive after the PE stub.
     let file_data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
-    // Try standard 7z from memory (fast path for real .7z files).
-    if let Ok(reader) = ArchiveReader::new(std::io::Cursor::new(&file_data[..]), Password::empty()) {
-        return extract_7z_entries(reader, dest, filter, emitter);
-    }
-
-    // PE/SFX: search for embedded 7z data in PE executables.
-    // Many installers append the real 7z archive after the PE stub.
     if file_data.starts_with(b"MZ") {
         const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
         if let Some(pos) = file_data.windows(MAGIC_7Z.len()).position(|w| w == MAGIC_7Z) {
@@ -170,6 +166,9 @@ fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
             .read_file(name)
             .map_err(|e| Error::ExtractionFailed(format!("failed to read '{name}': {e}")))?;
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
+        if Path::new(&target).components().any(|c| c == Component::ParentDir) {
+            return Err(Error::PathTraversalDetected(format!("7z: {}", target)));
+        }
         let target_path = dest.join(&target);
         if let Some(parent) = target_path.parent() {
             crate::internal::fs::ensure_dir(parent)?;
@@ -187,7 +186,7 @@ fn extract_zip(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Optio
 
     let file = File::open(src)?;
     let mut archive =
-        ZipArchive::new(file).map_err(|e| Error::ExtractionFailed(format!("zip error: {}", e)))?;
+        ZipArchive::new(file).map_err(|e| Error::ExtractionFailed(format!("zip error for {}: {}", src.display(), e)))?;
     let total = archive.len();
 
     for i in 0..total {
@@ -207,6 +206,9 @@ fn extract_zip(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: &Optio
             let _ = tx.send(Event::PackageExtractProgress(format!("{} ({}/{})", name, i + 1, total)));
         }
         let target = strip_dir(&name, filter).unwrap_or(name);
+        if Path::new(&target).components().any(|c| c == Component::ParentDir) {
+            return Err(Error::PathTraversalDetected(format!("zip: {}", target)));
+        }
         let target_path = dest.join(&target);
         if let Some(parent) = target_path.parent() {
             crate::internal::fs::ensure_dir(parent)?;
@@ -258,6 +260,9 @@ fn extract_tar(
                 let _ = tx.send(Event::PackageExtractProgress(path.clone()));
             }
             let target = strip_dir(&path, filter).unwrap_or(path);
+            if Path::new(&target).components().any(|c| c == Component::ParentDir) {
+                return Err(Error::PathTraversalDetected(format!("tar: {}", target)));
+            }
             let target_path = dest.join(&target);
             if entry.header().entry_type().is_dir() {
                 crate::internal::fs::ensure_dir(&target_path)?;
@@ -310,6 +315,9 @@ fn extract_rar(
         }
 
         let target = strip_dir(&name, filter).unwrap_or(name);
+        if Path::new(&target).components().any(|c| c == Component::ParentDir) {
+            return Err(Error::PathTraversalDetected(format!("rar: {}", target)));
+        }
         let target_path = dest.join(&target);
 
         if entry.entry().is_directory() {
@@ -415,6 +423,9 @@ fn extract_innosetup(src: &Path, dest: &Path, filter: Option<&[&str]>, emitter: 
             let _ = tx.send(Event::PackageExtractProgress(name.to_string()));
         }
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
+        if Path::new(&target).components().any(|c| c == Component::ParentDir) {
+            return Err(Error::PathTraversalDetected(format!("innosetup: {}", target)));
+        }
         let target_path = dest.join(&target);
         if let Some(parent) = target_path.parent() {
             crate::internal::fs::ensure_dir(parent)?;

@@ -171,6 +171,7 @@ error:
   package_hold_broken_install: "软件包 '%{name}' 损坏"
   custom: "%{msg}"
   extraction_failed: "解压归档失败: %{reason}"
+  path_traversal_detected: "检测到路径穿越: %{detail}"
   cyclic_dependency: "检测到循环依赖"
   hash: "哈希错误"
   git: "Git 错误"

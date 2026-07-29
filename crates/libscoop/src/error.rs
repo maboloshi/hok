@@ -92,6 +92,10 @@ pub enum Error {
     #[error("failed to extract archive: {0}")]
     ExtractionFailed(String),
 
+    /// Path traversal detected in archive entry name.
+    #[error("path traversal detected: {0}")]
+    PathTraversalDetected(String),
+
     /// Cycle dependency error
     #[error(transparent)]
     CyclicDependency(#[from] CyclicError),
@@ -148,6 +152,7 @@ impl Error {
             Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
             Error::Custom(_) => "error.custom",
             Error::ExtractionFailed(_) => "error.extraction_failed",
+            Error::PathTraversalDetected(_) => "error.path_traversal_detected",
             Error::CyclicDependency(_) => "error.cyclic_dependency",
             Error::Hash(_) => "error.hash",
             Error::Git(_) => "error.git",
@@ -188,6 +193,7 @@ mod tests {
     #[test]
     fn test_error_key_technical() {
         assert_eq!(Error::ExtractionFailed("corrupt".into()).error_key(), "error.extraction_failed");
+        assert_eq!(Error::PathTraversalDetected("foo/../bar".into()).error_key(), "error.path_traversal_detected");
         assert_eq!(Error::Custom("something".into()).error_key(), "error.custom");
         assert_eq!(Error::InvalidAnswer.error_key(), "error.invalid_answer");
         assert_eq!(Error::UserAgentAlreadySet.error_key(), "error.user_agent_already_set");
