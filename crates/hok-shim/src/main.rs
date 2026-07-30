@@ -30,19 +30,19 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[cfg(not(test))]
 #[no_mangle]
-pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+pub unsafe extern "C" fn shim_memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     for i in 0..n { *dst.add(i) = *src.add(i); }
     dst
 }
 #[cfg(not(test))]
 #[no_mangle]
-pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
+pub unsafe extern "C" fn shim_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     for i in 0..n { *dst.add(i) = c as u8; }
     dst
 }
 #[cfg(not(test))]
 #[no_mangle]
-pub unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+pub unsafe extern "C" fn shim_memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
     for i in 0..n {
         let diff = (*a.add(i) as i32) - (*b.add(i) as i32);
         if diff != 0 { return diff; }
@@ -788,4 +788,5 @@ mod tests {
         String::from_utf16_lossy(slice)
     }
 }
+
 
