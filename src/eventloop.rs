@@ -4,6 +4,41 @@
 //! while the main thread runs the sync operation. Download progress bars,
 //! cursor management, and interactive prompts are handled here; all other
 //! event rendering is delegated to an [`EventHandler`].
+//!
+//! # Design
+//!
+//! - **Separation of concerns**: The loop handles only UI‑critical interactions
+//!   (progress bars, confirmations, candidate selection). All other events are
+//!   forwarded to a user‑provided [`EventHandler`] trait object.
+//! - **Non‑blocking**: Runs in a dedicated thread, so the sync operation
+//!   (e.g. `package_sync`) can proceed concurrently.
+//! - **Cursor safety**: Uses [`CursorGuard`] (RAII) to hide the cursor during
+//!   progress updates and restore it on panic or normal exit.
+//!
+//! # Extending the Event Loop
+//!
+//! - **To add new interactive logic** (e.g., a new user prompt) **for all commands**:
+//!   add a new match arm in `run_event_loop` for the corresponding [`Event`] variant.
+//!   Remember to temporarily show the cursor (`cursor::Show`) before reading input.
+//! - **To customise output for existing events** (e.g., log formatting) **without
+//!   changing interactive behaviour**: implement a custom [`EventHandler`] and pass
+//!   it to `run_event_loop` instead of using `run_event_loop_default`.
+//! - **To change global defaults** (progress bars, auto‑confirm): modify
+//!   [`EventLoopConfig`] or `run_event_loop_default` as needed.
+//!
+//! # Important Notes
+//!
+//! - Always use `continue` after processing an event if you **do not** want the
+//!   event to be passed to the [`EventHandler`] as well.
+//! - Avoid long‑running operations inside match arms; they block the event loop.
+//!   Offload heavy work to separate threads if necessary.
+//! - When sending responses back to `libscoop` via `tx.send()`, ignore potential
+//!   errors (the receiver may have closed) – use `let _ = tx.send(...)`.
+//! - If you add new fields to [`EventLoopConfig`], ensure all callers (like `update`,
+//!   `remove` commands) set them or rely on `Default`.
+//!
+//! For detailed examples, see the documentation of [`EventHandler`] and the
+//! implementations in the `scoop_handler` module.
 
 use crate::{cui, output, util};
 use crossterm::{
