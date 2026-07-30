@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::fs::OpenOptions;
+use serde_json::ser::PrettyFormatter;
 use std::io;
 use std::path::Path;
 
@@ -50,12 +50,14 @@ where
     let path = path.as_ref();
     ensure_dir(path.parent().unwrap())?;
 
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    Ok(serde_json::to_writer_pretty(file, &data)?)
+    // Use 4 spaces for indentation
+    let formatter = PrettyFormatter::with_indent(b"    ");
+    let mut buf = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    data.serialize(&mut ser)?;
+
+    std::fs::write(path, &buf)?;
+    Ok(())
 }
 
 /// Remove a symlink at `lnk`.

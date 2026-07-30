@@ -194,21 +194,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Extract version
         let extract_result = extract_version(&raw, cv, effective_jsonpath.as_deref(), effective_regex.as_deref());
 
-        // Auto-strip leading v/V prefix (common for GitHub tags)
-        let (ver, captures) = match extract_result {
-            Some((ref ver, ref caps)) => {
-                let stripped = ver.trim_start_matches(|c: char| c == 'v' || c == 'V');
-                if stripped != ver && stripped == &current {
-                    (stripped.to_string(), caps.clone())
-                } else {
-                    (ver.clone(), caps.clone())
-                }
-            }
+        // Auto-strip leading v/V prefix
+        let (mut ver, captures) = match extract_result {
+            Some((ref ver, ref caps)) => (ver.clone(), caps.clone()),
             None => {
                 output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_extract")));
                 continue;
             }
         };
+
+        // If the user has not defined replace, the leading v/V will be automatically removed (global default behavior).
+        if cv.replace.is_none() {
+            ver = ver.trim_start_matches(|c: char| c == 'v' || c == 'V').to_string();
+        }
 
         // ForceUpdate implies Update (matching Scoop behavior)
         let do_update = args.update || args.force_update;
@@ -354,8 +352,8 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| anyhow::anyhow!("parse: {}", e))?;
-    let old_root = root.clone(); // snapshot before modifications
 
+    // Update version
     root["version"] = serde_json::Value::String(new_version.to_string());
 
     // Build variable substitution (matching Scoop's Get-VersionSubstitution)
@@ -436,9 +434,7 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
         let hashes = download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir)?;
 
         root["url"] = json_str_array(&substituted);
-        if !hashes.is_empty() {
-            root["hash"] = json_str_array(&hashes);
-        }
+        root["hash"] = json_str_array(&hashes);
     }
 
     // ── Per-architecture URLs ──────────────────────────────────────────────
@@ -457,9 +453,7 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
 
                 if let Some(obj) = root.pointer_mut(&ptr) {
                     obj["url"] = json_str_array(&substituted);
-                    if !hashes.is_empty() {
-                        obj["hash"] = json_str_array(&hashes);
-                    }
+                    obj["hash"] = json_str_array(&hashes);
                 }
             }
         }
@@ -473,45 +467,8 @@ fn apply_autoupdate(session: &Session, path: &PathBuf, manifest: &Manifest, new_
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
-    // ── Patch changed fields in original text (preserve formatting) ─────────
-    let mut patched = content;
-    let mut changed = false;
-
-    // version
-    if let Some(p) = util::patch_json_field(&patched, "version", &old_root["version"], &root["version"]) {
-        patched = p; changed = true;
-    }
-
-    // Top-level fields
-    for key in &["url", "hash", "extract_dir"] {
-        let old_v = &old_root[key];
-        let new_v = &root[key];
-        if !old_v.is_null() && !new_v.is_null() && old_v != new_v {
-            if let Some(p) = util::patch_json_field(&patched, key, old_v, new_v) {
-                patched = p; changed = true;
-            }
-        }
-    }
-
-    // Per-architecture fields
-    for arch in &["32bit", "64bit", "arm64"] {
-        for key in &["url", "hash"] {
-            let old_ptr = format!("/architecture/{arch}/{key}");
-            let old_v = old_root.pointer(&old_ptr);
-            let new_v = root.pointer(&old_ptr);
-            if let (Some(o), Some(n)) = (old_v, new_v) {
-                if o != n {
-                    if let Some(p) = util::patch_json_field(&patched, key, o, n) {
-                        patched = p; changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    if changed {
-        std::fs::write(path, patched.as_bytes())?;
-    }
+    // Write the complete updated JSON (preserving order, 4-space indentation)
+    libscoop::internal::fs::write_json(path, &root)?;
     Ok(())
 }
 
@@ -964,9 +921,13 @@ fn is_hex_hash(s: &str) -> bool {
 
 
 fn json_str_array(items: &[String]) -> serde_json::Value {
-    serde_json::Value::Array(
-        items.iter().map(|s| serde_json::Value::String(s.clone())).collect()
-    )
+    if items.len() == 1 {
+        serde_json::Value::String(items[0].clone())
+    } else {
+        serde_json::Value::Array(
+            items.iter().map(|s| serde_json::Value::String(s.clone())).collect()
+        )
+    }
 }
 
 /// Extract $matchHead/$matchTail from a version string (matching Scoop behavior).

@@ -1,10 +1,9 @@
 use clap::Parser;
 use libscoop::operation;
 use libscoop::{Manifest, Session};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::{output, util, Result};
+use crate::{output, Result};
 
 /// Verify and update manifest hashes
 #[derive(Debug, Parser)]
@@ -217,101 +216,76 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // ── Hash mismatch or force update ────────────────────────────────
         if args.update || args.force {
-            // Read the JSON content for text patching
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    output::err(format!("{name}: read error: {e}"));
-                    failed += 1;
-                    continue;
+            if mismatches.is_empty() && !args.force {
+                if !args.skip_correct {
+                    output::ok();
                 }
-            };
-            let old_root: serde_json::Value = match serde_json::from_str(&content) {
-                Ok(v) => v,
-                Err(e) => {
-                    output::err(format!("{name}: parse error: {e}"));
-                    failed += 1;
-                    continue;
-                }
-            };
-
-            let mut patched = content;
-            let mut any_change = false;
-
-            // Group entries by path and update each group
-            let mut path_order: Vec<&str> = Vec::new();
-            let mut seen = HashSet::new();
-            for entry in &entries {
-                if seen.insert(&entry.path) {
-                    path_order.push(&entry.path);
-                }
+                passed += 1;
+                continue;
             }
 
-            for path_prefix in &path_order {
-                let group_indices: Vec<usize> = entries.iter()
-                    .enumerate()
-                    .filter(|(_, e)| &e.path == path_prefix)
-                    .map(|(idx, _)| idx)
-                    .collect();
+            // ── Need to update hashes ──────────────────────────────────────────────
+            let content = std::fs::read_to_string(path)?;
+            let mut root: serde_json::Value = serde_json::from_str(&content)?;
 
-                if group_indices.is_empty() {
-                    continue;
-                }
+            // Group entries by path
+            let mut path_map: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+            for (i, entry) in entries.iter().enumerate() {
+                path_map.entry(&entry.path).or_insert_with(Vec::new).push(i);
+            }
 
-                // Get old JSON value at this path
-                let old_val = match old_root.pointer(path_prefix) {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                // Build new value: match original format (single string or array)
-                let old_single = old_val.is_string();
-                let new_hashes: Vec<String> = group_indices.iter()
-                    .map(|idx| actual_hashes[*idx].clone())
-                    .collect();
-
-                let new_val = if old_single {
+            // Update each path's hash array/value
+            for (path_prefix, indices) in path_map {
+                let new_hashes: Vec<String> = indices.iter().map(|&idx| actual_hashes[idx].clone()).collect();
+                let new_val = if new_hashes.len() == 1 {
                     serde_json::Value::String(new_hashes[0].clone())
                 } else {
-                    serde_json::Value::Array(
-                        new_hashes.into_iter().map(serde_json::Value::String).collect()
-                    )
+                    serde_json::Value::Array(new_hashes.into_iter().map(serde_json::Value::String).collect())
                 };
 
-                if old_val == &new_val {
-                    continue; // unchanged
-                }
-
-                // Text-patch this "hash" field
-                if let Some(p) = util::patch_json_field(&patched, "hash", old_val, &new_val) {
-                    patched = p;
-                    any_change = true;
+                if let Some(obj) = root.pointer_mut(path_prefix) {
+                    *obj = new_val;
+                } else {
+                    // Should not happen if entries are consistent with manifest
+                    output::err(format!("{name}: path {} not found in JSON", path_prefix));
+                    failed += 1;
+                    continue;
                 }
             }
 
-            if any_change {
-                std::fs::write(path, patched.as_bytes())?;
-            }
+            // Write updated JSON
+            libscoop::internal::fs::write_json(path, &root)?;
 
-            // Report per-entry changes
-            for (i, _entry) in &mismatches {
-                let expected = manifest.all_hashes()[*i];
-                let expected_str = format_hash_value(expected.algorithm(), expected.value());
-                let actual = &actual_hashes[*i];
-                if *actual != expected_str || args.force {
+            // Report changes
+            if !args.force {
+                // mismatch updates
+                for (i, _entry) in &mismatches {
+                    let actual = &actual_hashes[*i];
+                    output::change(
+                        rust_i18n::t!("cmd.checkhashes_mismatch_upd"),
+                        "->",
+                        &actual[..std::cmp::min(12, actual.len())],
+                    );
+                }
+            } else {
+                // force rehash
+                for (i, _entry) in mismatches.iter().copied().chain(
+                    // Also include entries that were correct but force updated
                     if args.force {
-                        output::change(
-                            rust_i18n::t!("cmd.checkhashes_rehashed"),
-                            "->",
-                            &actual[..std::cmp::min(12, actual.len())],
-                        );
+                        (0..entries.len())
+                            .filter(|i| !mismatches.iter().any(|(idx, _)| idx == i))
+                            .map(|i| (i, &entries[i]))
+                            .collect::<Vec<_>>()
                     } else {
-                        output::change(
-                            rust_i18n::t!("cmd.checkhashes_mismatch_upd"),
-                            "->",
-                            &actual[..std::cmp::min(12, actual.len())],
-                        );
+                        Vec::new()
                     }
+                ) {
+                    let actual = &actual_hashes[i];
+                    output::change(
+                        rust_i18n::t!("cmd.checkhashes_rehashed"),
+                        "->",
+                        &actual[..std::cmp::min(12, actual.len())],
+                    );
                 }
             }
             updated += 1;
