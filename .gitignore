@@ -23,3 +23,6 @@ Thumbs.db
 *_drywall.txt
 *_duplicates.txt
 Cargo.lock.txt
+
+# Auto-generated command registry
+/src/cmd/__cmd_reg__.rs
