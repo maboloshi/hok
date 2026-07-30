@@ -368,3 +368,13 @@ fn format_hash_value(algo: &str, hash: &str) -> String {
         _ => hash.to_string(), // sha256 is bare
     }
 }
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        execute(args, session)
+    }
+}

@@ -2,6 +2,7 @@ use clap::Parser;
 use libscoop::Manifest;
 use std::path::PathBuf;
 
+use libscoop::Session;
 use crate::{output, Result};
 
 /// Check bucket manifests missing checkver and autoupdate
@@ -71,4 +72,14 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, _session: &Session) -> Result<()> {
+        execute(args)
+    }
 }

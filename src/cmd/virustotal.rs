@@ -121,3 +121,13 @@ fn check_virustotal(url: &str, api_key: &str) -> Result<ScanStats> {
 
     Err(anyhow::anyhow!("VT analysis timed out"))
 }
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        execute(args, session)
+    }
+}

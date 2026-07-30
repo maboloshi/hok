@@ -3,6 +3,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::path::PathBuf;
 
+use libscoop::Session;
 use crate::{output, util, Result};
 
 /// Format manifest JSON files in a bucket directory
@@ -109,4 +110,14 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     Ok(())
+}
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, _session: &Session) -> Result<()> {
+        execute(args)
+    }
 }

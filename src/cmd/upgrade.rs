@@ -1,6 +1,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::Session;
 
+use crate::cmd::shared_args::Cmd;
 use crate::Result;
 
 /// Upgrade installed package(s)
@@ -35,22 +36,32 @@ pub struct Args {
     all: bool,
 }
 
+impl Cmd for Args {
+    type Args = Self;
+
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        let update_args = super::update::Args {
+            package: args.package,
+            ignore_failure: args.ignore_failure,
+            offline: args.offline,
+            assume_yes: args.assume_yes,
+            escape_hold: args.escape_hold,
+            no_hash_check: args.no_hash_check,
+            global: args.global,
+            quiet: args.quiet,
+            all: args.all,
+            force: false,
+            independent: false,
+            no_upgrade: false,
+            no_replace: false,
+            ignore_cache: false,
+        };
+        super::update::execute_upgrade(session, &update_args.package, &update_args)
+    }
+}
+
+/// Module-level execute for dispatch compatibility.
+#[inline]
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let update_args = super::update::Args {
-        package: args.package,
-        ignore_failure: args.ignore_failure,
-        offline: args.offline,
-        assume_yes: args.assume_yes,
-        escape_hold: args.escape_hold,
-        no_hash_check: args.no_hash_check,
-        global: args.global,
-        quiet: args.quiet,
-        all: args.all,
-        force: false,
-        independent: false,
-        no_upgrade: false,
-        no_replace: false,
-        ignore_cache: false,
-    };
-    super::update::execute_upgrade(session, &update_args.package, &update_args)
+    <Args as Cmd>::execute(args, session)
 }
