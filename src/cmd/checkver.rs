@@ -59,6 +59,8 @@ pub struct Args {
     pub(crate) timeout: u64,
 }
 
+// ─── Execute ────────────────────────────────────────────────────────────────
+
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let dir = &args.dir;
     if !dir.is_dir() {
@@ -239,6 +241,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
+// ─── URL helpers ────────────────────────────────────────────────────────────
+
 fn is_github_checkver(cv: &libscoop::Checkver) -> bool {
     // Check by regex pattern (set by deserializer for checkver: "github" / checkver.github: "owner/repo")
     if cv.regex.as_deref().map_or(false, |r| r.contains("/releases/tag/")) {
@@ -265,6 +269,8 @@ fn extract_sourceforge_project(homepage: &str) -> Option<String> {
     let caps = re.captures(homepage)?;
     caps.get(1).map(|m| m.as_str().to_string())
 }
+
+// ─── Version extraction ─────────────────────────────────────────────────────
 
 /// Extract version + capture groups from page content.
 fn extract_version(content: &str, cv: &libscoop::Checkver, jsonpath_override: Option<&str>, regex_override: Option<&str>) -> Option<(String, Vec<String>)> {

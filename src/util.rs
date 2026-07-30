@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use libscoop::internal::os::encode_wide;
 
+// ─── Shell open (Windows FFI) ──────────────────────────────────────────────
+
 /// Open a URL in the default system browser.
 #[cfg(windows)]
 pub fn open_url(url: &str) -> std::io::Result<()> {
@@ -56,6 +58,8 @@ extern "system" {
     ) -> isize;
 }
 
+// ─── Human-readable size ────────────────────────────────────────────────────
+
 /// Convert bytes to KB/MB/GB representation.
 pub fn humansize(length: u64, with_unit: bool) -> String {
     let gb: f64 = 2.0_f64.powf(30_f64);
@@ -95,8 +99,8 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
     }
 }
 
-// ─── URL Utility Functions ────────────────────────────────────────────────
-// These are shared URL helpers extracted from checkver.rs for reuse across commands.
+// ─── URL utility functions ─────────────────────────────────────────────────
+// These are shared URL helpers extracted for reuse across commands.
 
 /// Extract the filename portion of a URL (last path segment).
 #[allow(dead_code)]
@@ -136,6 +140,8 @@ pub fn url_decoded(s: &str) -> String {
     }
     result
 }
+
+// ─── Directory walking ──────────────────────────────────────────────────────
 
 /// Recursively collect all `.json` files under a directory.
 ///
