@@ -100,7 +100,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let mut remove_opts = opts.to_vec();
     remove_opts.push(SyncOption::Remove);
-    let handle = eventloop::run_event_loop(session, Default::default());
+    let handle = eventloop::run_event_loop_default(session);
     operation::package_sync(session, queries.to_vec(), remove_opts)?;
     handle.join().unwrap();
     Ok(())
@@ -112,7 +112,11 @@ fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Resu
         auto_confirm: true,
         ..Default::default()
     };
-    let handle = eventloop::run_event_loop(session, config);
+    let handle = eventloop::run_event_loop(
+        session,
+        config,
+        Box::new(crate::scoop_handler::ScoopHandler::new()),
+    );
     operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
     handle.join().unwrap();
     Ok(())

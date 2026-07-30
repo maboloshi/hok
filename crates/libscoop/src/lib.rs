@@ -38,6 +38,7 @@ mod constant;
 mod env;
 mod error;
 mod event;
+mod handler;
 pub mod internal;
 mod package;
 mod persist;
@@ -52,6 +53,7 @@ pub mod operation;
 
 pub use error::Error;
 pub use event::Event;
+pub use handler::EventHandler;
 pub use internal::compare_versions;
 pub use package::manifest::{Checkver, Manifest};
 pub use package::{QueryOption, SyncOption};

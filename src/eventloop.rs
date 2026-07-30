@@ -1,15 +1,16 @@
 //! Unified event loop for package sync operations.
 //!
-//! Handles all Event variants emitted by libscoop during install, update,
-//! upgrade, and uninstall operations. Scoop mode shows all sub-steps;
-//! pacman mode shows only major events with detail hidden behind --detail.
+//! Spawns a dedicated thread to receive events from libscoop's event bus
+//! while the main thread runs the sync operation. Download progress bars,
+//! cursor management, and interactive prompts are handled here; all other
+//! event rendering is delegated to an [`EventHandler`].
 
 use crate::{cui, output, util};
 use crossterm::{
     cursor,
     ExecutableCommand,
 };
-use libscoop::{Event, Session};
+use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
 
 /// Controls event loop behavior.
@@ -47,9 +48,12 @@ impl Drop for CursorGuard {
 ///
 /// Spawns a dedicated thread to process events while the current thread
 /// calls `operation::package_sync` (or equivalent).
+///
+/// The `handler` is called for each event to render output.
 pub fn run_event_loop(
     session: &Session,
     config: EventLoopConfig,
+    mut handler: Box<dyn EventHandler>,
 ) -> std::thread::JoinHandle<()> {
     let rx = session.event_bus().receiver();
     let tx = session.event_bus().sender();
@@ -65,165 +69,26 @@ pub fn run_event_loop(
         let mut user_cancelled = false;
         while let Ok(event) = rx.recv() {
             match event {
-                // --- Resolve phase ---
-                Event::PackageResolveStart => {
-                    output::status(rust_i18n::t!("status.resolving"));
-                }
-                Event::PackageResolveDone => {
-                    output::done(rust_i18n::t!("status.resolving_done"));
-                }
-
-                // --- Download sizing ---
-                Event::PackageDownloadSizingStart => {
-                    output::status(rust_i18n::t!("status.sizing"));
-                }
-                Event::PackageDownloadSizingDone => {}
-
-                // --- Download ---
-                Event::PackageDownloadStart => {
-                    output::status(rust_i18n::t!("status.downloading"));
-                }
-                Event::PackageDownloadProgress(ctx) => {
+                // Download progress — update progress bars (handled here)
+                Event::PackageDownloadProgress(ref ctx) => {
                     if let Some(ref mut dp) = dlprogress {
-                        let ident = ctx.ident.to_owned();
-                        let url = ctx.url.to_owned();
-                        let filename = ctx.filename.to_owned();
-                        dp.update(ident, url, filename, ctx.dltotal, ctx.dlnow);
+                        dp.update(
+                            ctx.ident.to_owned(),
+                            ctx.url.to_owned(),
+                            ctx.filename.to_owned(),
+                            ctx.dltotal,
+                            ctx.dlnow,
+                        );
                     }
-                }
-                Event::PackageDownloadDone => {}
-
-                // --- Integrity check ---
-                Event::PackageIntegrityCheckStart => {
-                    output::status(rust_i18n::t!("status.checking_hash"));
-                }
-                Event::PackageIntegrityCheckProgress(ctx) => {
-                    output::status(rust_i18n::t!("detail.checking_hash_item", ctx = ctx));
-                }
-                Event::PackageIntegrityCheckDone => {
-                    output::ok();
-                }
-                // --- Extraction ---
-                Event::PackageExtractStart(ctx) => {
-                    print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
-                    let _ = std::io::stdout().flush();
-                }
-                Event::PackageExtractProgress(ctx) => {
-                    print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
-                    let _ = std::io::stdout().flush();
-                }
-                Event::PackageExtractDone => {
-                    println!();
-                    output::detail(rust_i18n::t!("detail.extract_done"));
+                    continue;
                 }
 
-                // --- Commit (install/update/uninstall) ---
-                Event::PackageCommitStart(ctx) => {
-                    output::status(ctx);
-                }
-                Event::PackageCommitDone(ctx) => {
-                    committed += 1;
-                    output::done(ctx);
-                }
-
-                // --- Shim operations ---
-                Event::PackageShimRemoveStart => {}
-                Event::PackageShimRemoveProgress(ctx) => {
-                    output::detail(rust_i18n::t!("detail.removing_shim", ctx = ctx));
-                }
-                Event::PackageShimRemoveDone => {
-                    output::detail(rust_i18n::t!("detail.shim_removed"));
-                }
-
-                Event::PackageShimAddStart(ctx) => {
-                    output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
-                }
-                Event::PackageShimAddProgress(ctx) => {
-                    output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
-                }
-                Event::PackageShimAddDone => {
-                    output::detail(rust_i18n::t!("detail.shim_done"));
-                }
-
-                // --- Shortcut operations ---
-                Event::PackageShortcutRemoveStart => {}
-                Event::PackageShortcutRemoveProgress(ctx) => {
-                    output::detail(rust_i18n::t!("detail.removing_shortcut", ctx = ctx));
-                }
-                Event::PackageShortcutRemoveDone => {
-                    output::detail(rust_i18n::t!("detail.shortcut_removed"));
-                }
-
-                Event::PackageShortcutAddStart => {}
-                Event::PackageShortcutAddProgress(ctx) => {
-                    output::detail(rust_i18n::t!("detail.creating_shortcut", ctx = ctx));
-                }
-                Event::PackageShortcutAddDone => {
-                    output::detail(rust_i18n::t!("detail.shortcut_done"));
-                }
-
-                // --- Shortcut warnings ---
-                Event::PackageShortcutConflict(path) => {
-                    output::warn(rust_i18n::t!("detail.shortcut_conflict", path = path));
-                }
-                Event::PackageShortcutNotFound(path) => {
-                    output::warn(rust_i18n::t!("detail.shortcut_not_found", path = path));
-                }
-
-                // --- Session warnings ---
-                Event::ConfigLoadFallback => {
-                    output::warn(rust_i18n::t!("detail.config_fallback"));
-                }
-
-                // --- Environment operations ---
-                Event::PackageEnvPathRemoveStart => {
-                    output::detail(rust_i18n::t!("detail.removing_env_path"));
-                }
-                Event::PackageEnvPathRemoveDone => {
-                    output::detail(rust_i18n::t!("detail.env_path_removed"));
-                }
-
-                Event::PackageEnvVarRemoveStart => {
-                    output::detail(rust_i18n::t!("detail.removing_env_var"));
-                }
-                Event::PackageEnvVarRemoveDone => {
-                    output::detail(rust_i18n::t!("detail.env_var_removed"));
-                }
-
-                // --- Persist ---
-                Event::PackagePersistPurgeStart => {
-                    output::detail(rust_i18n::t!("detail.removing_persist"));
-                }
-                Event::PackagePersistPurgeDone => {
-                    output::detail(rust_i18n::t!("detail.persist_done"));
-                }
-
-                // --- PS module ---
-                Event::PackagePsModuleRemoveStart(ctx) => {
-                    output::detail(rust_i18n::t!("detail.removing_psmodule", ctx = ctx));
-                }
-                Event::PackagePsModuleRemoveDone => {
-                    output::detail(rust_i18n::t!("detail.psmodule_removed"));
-                }
-
-                // --- PowerShell script output ---
-                Event::ScriptOutput(line) => {
-                    println!("  {line}");
-                }
-                Event::ScriptDone { success, stderr } => {
-                    if !success && !stderr.is_empty() {
-                        eprintln!("  script failed: {stderr}");
-                    }
-                }
-
-                // --- Post-install notes ---
-                Event::PackageNotes(note) => {
-                    output::info(note);
-                }
-
-                // --- Interactive prompts ---
-                Event::PromptPackageCandidate(pkgs) => {
-                    let name = pkgs[0].split_once('/').map(|x| x.1).unwrap_or(&pkgs[0]);
+                // Interactive prompt: select from multiple package candidates
+                Event::PromptPackageCandidate(ref pkgs) => {
+                    let name = pkgs[0]
+                        .split_once('/')
+                        .map(|x| x.1)
+                        .unwrap_or(&pkgs[0]);
                     println!("Found multiple candidates for package '{}':\n", name);
                     for (i, pkg) in pkgs.iter().enumerate() {
                         println!("  {}: {}", i, pkg);
@@ -243,12 +108,16 @@ pub fn run_event_loop(
                     };
                     let _ = std::io::stdout().execute(cursor::Hide);
                     let _ = tx.send(Event::PromptPackageCandidateResult(index));
+                    continue;
                 }
-                Event::PromptTransactionNeedConfirm(transaction) => {
+
+                // Interactive prompt: confirm the transaction
+                Event::PromptTransactionNeedConfirm(ref transaction) => {
                     if config.auto_confirm {
                         let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true));
                         continue;
                     }
+
                     if let Some(install) = transaction.install_view() {
                         output::header(rust_i18n::t!("cmd.header_installed"));
                         let out = install
@@ -323,35 +192,10 @@ pub fn run_event_loop(
                     user_cancelled = !answer;
                     let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
                     let _ = std::io::stdout().execute(cursor::Hide);
+                    continue;
                 }
 
-
-                // --- Version info ---
-                Event::PackageVersionKnown { name, old_version, new_version } => {
-                    if old_version.is_empty() {
-                        output::info(format!("{}: {}", name, new_version));
-                    } else {
-                        output::info(format!("{}: {} -> {}", name, old_version, new_version));
-                    }
-                }
-
-                // --- Cache hit ---
-                Event::PackageCacheHit(filename) => {
-                    output::status(rust_i18n::t!("detail.loading_cache", filename = filename));
-                }
-
-                // --- Symlink operations ---
-                Event::PackageSymlinkRemove(path) => {
-                    output::detail(rust_i18n::t!("detail.unlinking", path = path));
-                }
-                Event::PackageSymlinkCreate { from, to } => {
-                    output::detail(rust_i18n::t!("detail.linking", from = from, to = to));
-                }
-                // --- Held package skipped ---
-                Event::PackageHeld { name, version } => {
-                    output::warn(rust_i18n::t!("cmd.held_skip", name = name, version = version));
-                }
-                // --- Sync done ---
+                // Sync done — track committed count
                 Event::PackageSyncDone => {
                     if committed == 0 && !user_cancelled {
                         output::info(rust_i18n::t!("cmd.outdated"));
@@ -359,10 +203,28 @@ pub fn run_event_loop(
                     break;
                 }
 
-                // --- Future events ---
+                // Commit tracking
+                Event::PackageCommitDone(_) => {
+                    committed += 1;
+                }
+
+                // All other events — delegate to the handler for rendering
                 _ => {}
             }
-        }
-    })
 
+            // Let the handler render this event
+            handler.handle(&event);
+        }
+
+        handler.on_finished();
+    })
+}
+
+/// Convenience helper: runs the event loop with a default Scoop-style handler.
+pub fn run_event_loop_default(session: &Session) -> std::thread::JoinHandle<()> {
+    run_event_loop(
+        session,
+        EventLoopConfig::default(),
+        Box::new(crate::scoop_handler::ScoopHandler::new()),
+    )
 }

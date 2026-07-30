@@ -156,7 +156,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
         options.push(SyncOption::NoHashCheck);
     }
 
-    let handle = crate::eventloop::run_event_loop(session, Default::default());
+    let handle = crate::eventloop::run_event_loop_default(session);
 
     operation::package_sync(session, queries, options)?;
     handle.join().unwrap();

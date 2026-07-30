@@ -12,6 +12,7 @@ mod cmd;
 mod cui;
 mod output;
 mod eventloop;
+mod scoop_handler;
 mod util;
 
 type Result<T> = anyhow::Result<T>;
