@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser};
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{operation, Session};
 
 use crate::{output, Result};
 
@@ -28,19 +28,14 @@ pub struct Args {
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    let mut options = vec![];
 
-    if args.with_binary {
-        options.push(QueryOption::Binary);
-    }
-
-    if args.with_description {
-        options.push(QueryOption::Description);
-    }
-
-    if args.explicit {
-        options.push(QueryOption::Explicit);
-    }
+    // Build QueryArgs from individual fields, then convert to options
+    let qargs = crate::cmd::shared_args::QueryArgs {
+        explicit: args.explicit,
+        with_binary: args.with_binary,
+        with_description: args.with_description,
+    };
+    let options = qargs.to_query_options();
 
     let packages = operation::package_query(session, queries, options, false)?;
 
