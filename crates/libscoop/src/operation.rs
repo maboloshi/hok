@@ -647,3 +647,48 @@ pub fn refresh_manifest_cache(session: &Session) {
         warn!("failed to open manifest cache");
     }
 }
+
+/// Prune already-installed packages from a list of queries.
+///
+/// Returns `(to_install, already_installed)` where `to_install` contains
+/// queries that are not yet installed, and `already_installed` contains
+/// the names of packages that are already installed.
+///
+/// # Errors
+///
+/// Returns an error if the installed package list cannot be queried.
+pub fn package_prune_installed<'s>(
+    session: &Session,
+    queries: &[&'s str],
+) -> Fallible<(Vec<&'s str>, Vec<String>)> {
+    let installed = package_query(
+        session,
+        queries.to_vec(),
+        vec![QueryOption::Explicit],
+        true,
+    )?;
+
+    let mut already_installed = Vec::new();
+    let mut to_install = Vec::new();
+
+    for q in queries {
+        let installed_names: Vec<&str> = installed
+            .iter()
+            .filter(|p| {
+                let q_normalized = q.to_lowercase();
+                let p_name = p.name().to_lowercase();
+                let p_ident = p.ident().to_lowercase();
+                q_normalized == p_name || q_normalized == p_ident
+            })
+            .map(|p| p.name())
+            .collect();
+
+        if installed_names.is_empty() {
+            to_install.push(*q);
+        } else {
+            already_installed.push(installed_names[0].to_string());
+        }
+    }
+
+    Ok((to_install, already_installed))
+}

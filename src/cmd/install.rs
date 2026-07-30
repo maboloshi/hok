@@ -70,7 +70,7 @@ impl Cmd for Args {
         let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
         // Prune already-installed packages (matching PS1's prune_installed behavior)
-        let (to_install, already_installed) = prune_installed(session, &queries)?;
+        let (to_install, already_installed) = operation::package_prune_installed(session, &queries)?;
         for name in &already_installed {
             output::warn(format!("'{name}' is already installed. Skipping."));
         }
@@ -140,48 +140,6 @@ fn show_suggestions(session: &Session, packages: &[&str]) -> Result<()> {
         }
     }
 
+
     Ok(())
-}
-
-/// Query installed packages and split into those that need installing vs those
-/// already installed. Returns `(to_install, already_installed)`.
-fn prune_installed<'s>(
-    session: &Session,
-    queries: &[&'s str],
-) -> Result<(Vec<&'s str>, Vec<String>)> {
-    // Query installed packages matching the given queries (exact match)
-    let installed = match operation::package_query(
-        session,
-        queries.to_vec(),
-        vec![QueryOption::Explicit],
-        true,
-    ) {
-        Ok(pkgs) => pkgs,
-        Err(_) => return Ok((queries.to_vec(), vec![])),
-    };
-
-    let mut already_installed = Vec::new();
-    let mut to_install = Vec::new();
-
-    for q in queries {
-        let installed_names: Vec<&str> = installed
-            .iter()
-            .filter(|p| {
-                // Match by exact name (case-insensitive) or bucket/name
-                let q_normalized = q.to_lowercase();
-                let p_name = p.name().to_lowercase();
-                let p_ident = p.ident().to_lowercase();
-                q_normalized == p_name || q_normalized == p_ident
-            })
-            .map(|p| p.name())
-            .collect();
-
-        if installed_names.is_empty() {
-            to_install.push(*q);
-        } else {
-            already_installed.push(installed_names[0].to_string());
-        }
-    }
-
-    Ok((to_install, already_installed))
 }
