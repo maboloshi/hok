@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "hok"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "anyhow",
  "base64",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "hok-shim"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 
 [[package]]
 name = "http"
@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "libscoop"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "bzip2",
  "dirs",
@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "scoop-hash"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "criterion",
  "md-5",

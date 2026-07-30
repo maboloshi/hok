@@ -1,5 +1,86 @@
 # Changelog
 
+## [0.2.0-beta.3](https://github.com/maboloshi/hok/compare/v0.2.0-beta.2...v0.2.0-beta.3) (2026-07-30)
+
+### Features
+
+* **checkver:** Align with Scoop — script mode, github detection, hash modes, and more
+  ([6468bb3](https://github.com/maboloshi/hok/commit/6468bb3))
+* **checkurls:** Full alignment with original Scoop checkurls.ps1 — recursive scan, timeout,
+  error reporting ([af0294d](https://github.com/maboloshi/hok/commit/af0294d))
+* **checkhashes:** Full alignment with original Scoop checkhashes.ps1 — hash verification
+  and update ([3a7bd05](https://github.com/maboloshi/hok/commit/3a7bd05))
+* **formatjson:** Recursive scan, glob filtering, extract shared walkdir_files helper
+  ([9d0d017](https://github.com/maboloshi/hok/commit/9d0d017))
+* **ci-auto-pr:** New `hok ci-auto-pr` subcommand for GitHub API-based auto PR workflow
+  ([1f88c9b](https://github.com/maboloshi/hok/commit/1f88c9b))
+* **install:** Align with upstream scoop-install behavior
+  ([d7cd23b](https://github.com/maboloshi/hok/commit/d7cd23b))
+* **uninstall:** Align with upstream and add running-process guard
+  ([3149095](https://github.com/maboloshi/hok/commit/3149095))
+* **update,upgrade,reinstall:** Add `--global` and `-s` short flag
+  ([8c7f058](https://github.com/maboloshi/hok/commit/8c7f058))
+* **update,upgrade:** Align with upstream scoop-update.ps1
+  ([2a845d2](https://github.com/maboloshi/hok/commit/2a845d2))
+
+### Bug Fixes
+
+* **archive:** Resolve path traversal, unreachable panic, 7z memory, and i18n issues
+  ([9e9fbde](https://github.com/maboloshi/hok/commit/9e9fbde))
+* **libscoop:** Correct regex patterns in constant.rs
+  ([d750141](https://github.com/maboloshi/hok/commit/d750141))
+* **libscoop:** Address code review findings in operation.rs
+  ([5ee3b7f](https://github.com/maboloshi/hok/commit/5ee3b7f))
+* **libscoop(bucket):** Log warning instead of silently dropping failed directory entries
+  in par_read_dir ([972020d](https://github.com/maboloshi/hok/commit/972020d))
+* **shim:** Resolve alt-filename inconsistency and .exe conflict handling
+  ([d0d9c89](https://github.com/maboloshi/hok/commit/d0d9c89))
+* **hok-shim:** Use `ALTERNATENAME` to avoid LLD duplicate symbol errors
+  ([d89f24e](https://github.com/maboloshi/hok/commit/d89f24e))
+* **session:** Log an `output::warn` when all configuration paths fail to load and
+  revert to default config ([57a1be4](https://github.com/maboloshi/hok/commit/57a1be4))
+* **shortcut:** Improved deletion error handling and shared shortcut conflict warnings
+  ([3871515](https://github.com/maboloshi/hok/commit/3871515))
+
+### Code Refactoring
+
+* **command framework:** Migrate all commands to `Cmd` trait + `SyncArgs`
+  ([5694ef1](https://github.com/maboloshi/hok/commit/5694ef1))
+* **event/output:** Decouple event and output systems
+  ([b05d053](https://github.com/maboloshi/hok/commit/b05d053))
+* **command framework:** Infrastructure for future command extensions
+  ([33faa5f](https://github.com/maboloshi/hok/commit/33faa5f))
+* **formatjson:** Replace JSON text patching with direct `Value` manipulation
+  ([3c6fe59](https://github.com/maboloshi/hok/commit/3c6fe59))
+* **sync:** Extract `confirm_transaction`, add `TempFileGuard` Drop guard
+  ([7901cd0](https://github.com/maboloshi/hok/commit/7901cd0))
+* **sync:** Clean up shadowed `manifest_src` variable
+  ([ae4fd56](https://github.com/maboloshi/hok/commit/ae4fd56))
+* **sync:** Remove redundant `has_install_script` gating in `commit_one_install`
+  ([5fbaf59](https://github.com/maboloshi/hok/commit/5fbaf59))
+* **sync:** Deduplicate `root_dir`/`apps_dir` via `session.effective_root_path()`
+  ([eb150fa](https://github.com/maboloshi/hok/commit/eb150fa))
+* **sync:** Extract `check_not_running` helper, deduplicate running-process guard
+  ([972f311](https://github.com/maboloshi/hok/commit/972f311))
+* **install:** Move `prune_installed` from `cmd/install` to `libscoop::operation`
+  ([c276e6b](https://github.com/maboloshi/hok/commit/c276e6b))
+* **checkver/util:** Add section markers to checkver.rs and util.rs
+  ([8ef688d](https://github.com/maboloshi/hok/commit/8ef688d))
+
+### Documentation
+
+* Add standardized `//!` module header documentation for 34 source files
+  ([c85995d](https://github.com/maboloshi/hok/commit/c85995d))
+* **eventloop:** Add comprehensive extension guide to module header
+  ([db5b909](https://github.com/maboloshi/hok/commit/db5b909))
+* **shim:** Annotate known gaps vs Scoop as TODO comments
+  ([215c21f](https://github.com/maboloshi/hok/commit/215c21f))
+
+### Miscellaneous Chores
+
+* **search:** Use `QueryArgs::to_query_options()` in search.rs
+  ([5e7098b](https://github.com/maboloshi/hok/commit/5e7098b))
+
 ## [0.2.0-beta.2](https://github.com/maboloshi/hok/compare/v0.2.0-beta.1...v0.2.0-beta.2) (2026-07-28)
 
 ### Features
