@@ -1,3 +1,21 @@
+//! Archive extraction for downloaded packages.
+//!
+//! Detects the archive format from the filename extension and extracts
+//! it to the target directory using external tools (7z) or built-in
+//! support (zip, tar).
+//!
+//! # Design
+//!
+//! - **Format detection**: [`detect_format()`] maps extensions (`.7z`,
+//!   `.zip`, `.tar`, `.gz`, `.xz`, etc.) to archive types.
+//! - **External tools**: 7z archives use the `7z` executable; other
+//!   formats are handled natively.
+//! - **Path traversal protection**: Extraction checks that extracted
+//!   entries do not escape the target directory (via
+//!   `std::path::Component::ParentDir` checks).
+//! - **Event emission**: Progress events are sent via the event bus
+//!   during extraction of multi-file archives.
+
 use std::io::Read;
 use std::path::{Component, Path};
 use std::process::Command;

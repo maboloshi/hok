@@ -1,3 +1,22 @@
+//! Check for new package versions (checkver).
+//!
+//! Scans manifests and checks upstream URLs for newer versions by
+//! extracting version information from HTTP responses, HTML pages,
+//! GitHub releases, etc. Supports regex-based version extraction
+//! and custom checkver scripts.
+//!
+//! # Design
+//!
+//! - **Multi-source version detection**: Handles plain URL downloads,
+//!   GitHub API releases, and regex-based HTML scraping for version
+//!   discovery.
+//! - **Batch processing**: Scans an entire bucket directory, processing
+//!   multiple manifests in sequence while reporting progress per-package.
+//! - **Manifest updating**: When `--update` is set, new versions are
+//!   written directly into the manifest JSON files.
+//! - **Known gaps vs Scoop**: See the `TODO` block below for unimplemented
+//!   features (ThrowError, custom useragent, etc.).
+
 use clap::Parser;
 use libscoop::{operation, Manifest, Session};
 use regex::Regex;

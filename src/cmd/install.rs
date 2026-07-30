@@ -1,3 +1,14 @@
+//! Install package(s) command.
+//!
+//! Thin CLI wrapper around [`operation::install`]. Parses package names and
+//! sync options from the command line, checks for administrator privileges
+//! (for global install), and dispatches to the install pipeline.
+//!
+//! # Note
+//!
+//! This file is intentionally thin — all complex lifecycle logic lives in
+//! `libscoop::operation` and `libscoop::package::sync`.
+
 use clap::{ArgAction, Parser};
 use libscoop::internal::os::is_admin;
 use libscoop::{operation, QueryOption, Session};

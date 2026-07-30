@@ -1,3 +1,20 @@
+//! CI auto-PR: auto-update manifests and create pull requests via GitHub API.
+//!
+//! Designed to run in CI environments (GitHub Actions). Scans bucket manifests
+//! for outdated versions, updates them, and creates pull requests — all through
+//! the GitHub API without requiring a `git` or `hub` binary.
+//!
+//! # Design
+//!
+//! - **GitHub API only**: Uses `ureq` for HTTP calls to GitHub's REST and
+//!   Contents APIs. No local git operations needed.
+//! - **Per-manifest PR creation**: Each updated manifest gets its own PR
+//!   with auto-generated title, body, and branch name derived from the
+//!   package name and version.
+//! - **Fork-based workflow**: Designed for the ScoopInstaller fork + PR
+//!   workflow — commits go to a fork branch, then a PR is opened against
+//!   the upstream default branch.
+
 use clap::Parser;
 use libscoop::Session;
 use std::collections::HashMap;

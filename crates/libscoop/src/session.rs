@@ -1,3 +1,37 @@
+//! Core session type — a handle to global Scoop state.
+//!
+//! [`Session`] is the primary entry point of `libscoop`. Almost every public
+//! operation takes a `&Session` reference as its first argument. A session
+//! owns the configuration, the event bus, and global flags — but **no**
+//! operation state (which is ephemeral and held by the callers).
+//!
+//! # Design
+//!
+//! - **Handle, not a singleton**: Multiple sessions can coexist, though
+//!   typically only one is created per process (by the binary entry point).
+//!   Each session loads its config independently.
+//! - **Config fallback chain**: [`Session::new()`] iterates over
+//!   [`possible_config_paths()`]; the first successful load wins. If all
+//!   paths fail, a default config is created and a `ConfigLoadFallback`
+//!   event is emitted.
+//! - **Lazy event bus**: The event bus (`EventBus`) is created on first
+//!   access via [`OnceCell`], so sessions that never interact with the
+//!   frontend avoid the allocation.
+//! - **Global flag**: [`Session::set_global()`] / [`is_global()`] control
+//!   whether operations use the system-wide Scoop root (`global_path`) or
+//!   the user-local root (`root_path`). Checked by operations at runtime.
+//! - **Config borrowing**: `config()` returns a `Ref<Config>` (immutable);
+//!   `config_mut()` (crate-internal) returns a `RefMut<Config>` and fails
+//!   with `ConfigInUse` if the config is already borrowed.
+//!
+//! # Thread safety
+//!
+//! `Session` is `Sync + Send` because all mutable fields use either
+//! `RefCell` (config) with runtime borrow-checking, `Cell` (global flag)
+//! for `Copy` types, or `OnceCell` (event bus, user agent) for write-once.
+//! Callers must ensure `config_mut()` is not called while `config()` is
+//! held on the same thread.
+
 use flume::{Receiver, Sender};
 use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
 use std::path::Path;

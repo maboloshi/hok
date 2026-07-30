@@ -1,3 +1,22 @@
+//! Package query engine — search and filter packages across buckets.
+//!
+//! Provides functions to query available and installed packages by name,
+//! description, or binary name, with regex support.
+//!
+//! # Design
+//!
+//! - **Parallel scanning**: Bucket manifests are scanned in parallel via
+//!   `rayon` for performance. The manifest cache (`internal::manifest_cache`)
+//!   is checked first to avoid re-parsing unchanged files.
+//! - **Flexible query options**: [`QueryOption`] controls search scope
+//!   (`Description`, `Binary`, `Explicit`) and whether to include
+//!   upgradability status (`Upgradable`, `UpgradableAll`).
+//! - **Multi-bucket with isolation**: Installed packages from the
+//!   `__isolated__` bucket (URL/path installs) are included alongside
+//!   regular buckets.
+//! - **Regex matching**: Package names are matched as regex patterns
+//!   by default; `Explicit` mode disables regex for exact matching.
+
 use rayon::prelude::{ParallelBridge, ParallelIterator};
 use regex::{Regex, RegexBuilder};
 use tracing::{debug, info};

@@ -1,7 +1,21 @@
-use std::path::{Path, PathBuf};
-use libscoop::internal::os::encode_wide;
+//! Shell-open utilities (Windows FFI) for the Hok binary.
+//!
+//! Provides [`open_url()`] and [`open_file()`] for opening URLs in the
+//! default browser and files/directories with the system default handler,
+//! implemented via `ShellExecuteW` on Windows.
+//!
+//! # Design
+//!
+//! - **Windows-only**: These functions are conditionally compiled with
+//!   `#[cfg(windows)]` and use raw Win32 FFI.
+//! - **Shared backend**: Both `open_url` and `open_file` delegate to a
+//!   common [`shell_open()`] function that handles UTF-16 encoding and
+//!   `ShellExecuteW` invocation.
+//! - **Minimal dependency**: Uses `libscoop::internal::os::encode_wide`
+//!   for UTF-16 conversion rather than pulling in a separate crate.
 
-// ─── Shell open (Windows FFI) ──────────────────────────────────────────────
+use libscoop::internal::os::encode_wide;
+use std::path::{Path, PathBuf};
 
 /// Open a URL in the default system browser.
 #[cfg(windows)]

@@ -1,3 +1,19 @@
+//! Directed Acyclic Graph for dependency resolution.
+//!
+//! Provides [`DepGraph`] — a generic DAG implementation used by the
+//! package resolver to compute a deterministic, dependency-first
+//! execution order.
+//!
+//! # Design
+//!
+//! - **Generic over node type**: `DepGraph<T>` works with any hashable,
+//!   equatable, cloneable, displayable key type (typically `String` for
+//!   package names).
+//! - **Cycle detection**: [`DepGraph::resolve_order()`] returns a
+//!   [`CyclicError`] if a cycle is detected, preventing infinite loops.
+//! - **Kahn's algorithm**: Topological sorting uses Kahn's algorithm
+//!   (BFS-based) for O(V+E) complexity.
+
 #![allow(dead_code)]
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::error::Error;

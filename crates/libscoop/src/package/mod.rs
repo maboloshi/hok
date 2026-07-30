@@ -1,3 +1,26 @@
+//! Package representation and module organisation.
+//!
+//! Defines the core [`Package`] struct — the runtime representation of a
+//! Scoop package — and re-exports key types from sub-modules (`Manifest`,
+//! `QueryOption`, `SyncOption`, etc.).
+//!
+//! # Design
+//!
+//! - **Lazy fields**: `origin` (`OnceCell<OriginateFrom>`), `install_state`
+//!   (`OnceCell<InstallState>`), and `upgradable` are resolved on first
+//!   access, avoiding unnecessary work when the information is not needed.
+//! - **Version comparison**: [`Version`] implements a Scoop-compatible
+//!   version ordering via custom comparison logic.
+//! - **Serialize / Deserialize**: `Package` is serialisable for caching
+//!   installed-package state to disk.
+//!
+//! Sub-modules handle specific lifecycle phases:
+//! - [`manifest`] — Parsing and validation of manifest JSON files.
+//! - [`download`] — Concurrent, resumable package downloads.
+//! - [`query`] — Searching and filtering packages across buckets.
+//! - [`resolve`] — Dependency resolution using a DAG.
+//! - [`sync`] — The full install / upgrade / uninstall pipeline.
+
 pub(crate) mod download;
 pub(crate) mod manifest;
 pub(crate) mod query;

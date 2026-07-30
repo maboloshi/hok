@@ -1,3 +1,22 @@
+//! Error types for the `libscoop` crate.
+//!
+//! Defines [`Error`] — an exhaustive, `thiserror`-derived enum covering
+//! all fallible operations in the library. Also exports the [`Fallible`]
+//! type alias (`Result<T, Error>`).
+//!
+//! # Design
+//!
+//! - **Thiserror**: All variants use `#[error("...")]` for human-readable
+//!   messages and `#[from]` for automatic conversion from lower-level errors.
+//! - **Non-exhaustive**: `Error` is `#[non_exhaustive]` so that adding new
+//!   variants is not a breaking change for external consumers.
+//! - **Context-rich variants**: Errors like `HashMismatch` and
+//!   `ExtractionFailed` carry structured context structs rather than raw
+//!   strings, enabling callers to inspect and format details.
+//! - **Crate-internal helpers**: [`unknown_error()`] and [`box_error()`]
+//!   are convenience constructors for wrapping arbitrary errors into the
+//!   `Error` type (for cases where `#[from]` is insufficient).
+
 use std::path::PathBuf;
 
 use crate::{internal::dag::CyclicError, package::HashMismatchContext};

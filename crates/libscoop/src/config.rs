@@ -1,3 +1,29 @@
+//! Scoop configuration management.
+//!
+//! Provides [`Config`] — a thin wrapper around a JSON config file — and
+//! [`ConfigBuilder`] for loading config from a path.
+//!
+//! # Design
+//!
+//! - **JSON-backed**: Scoop's native config format is JSON. This module
+//!   reads and writes it via `serde_json`. Unknown fields are preserved
+//!   transparently during (de)serialisation to avoid erasing Scoop settings
+//!   that Hok does not natively support.
+//! - **Builder pattern**: [`ConfigBuilder`] sets the config path and loads
+//!   it; [`Config`] provides typed accessors for known keys plus a
+//!   catch-all `get()` / `set()` for arbitrary keys.
+//! - **Path discovery**: [`possible_config_paths()`] returns the known
+//!   config file locations (user-local and global), searched in order by
+//!   [`Session::new()`].
+//! - **Defaults**: If no config file exists, [`Config::init()`] creates a
+//!   blank config with sensible defaults.
+//!
+//! # Thread safety
+//!
+//! `Config` is typically accessed via `Session::config()` which returns a
+//! `Ref<Config>`. For mutation, `Session::config_mut()` provides `RefMut`.
+//! Both enforce Rust's borrowing rules at runtime.
+
 use std::collections::HashMap;
 use std::io::Read;
 use std::ops::Deref;

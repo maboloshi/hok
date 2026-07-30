@@ -1,3 +1,17 @@
+//! Windows Start Menu shortcut management.
+//!
+//! Creates and removes shortcuts in the `Scoop Apps` folder under the
+//! user's Start Menu (`~\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Scoop Apps`).
+//!
+//! # Design
+//!
+//! - **Directory determined once**: The shortcut directory path is
+//!   resolved once via [`LazyLock`] at startup.
+//! - **Per-package shortcuts**: [`add()`] reads `shortcuts` from the
+//!   package manifest and creates each entry; [`remove()`] cleans them up.
+//! - **Conflict detection**: An event is emitted when a shortcut already
+//!   exists and will be overwritten.
+
 use std::sync::LazyLock;
 use std::path::{Path, PathBuf};
 

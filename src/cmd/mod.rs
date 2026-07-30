@@ -1,3 +1,38 @@
+//! CLI command dispatch and argument parsing.
+//!
+//! Defines the top-level [`Cli`] struct and [`Command`] enum via `clap`,
+//! and the [`start()`] entry point that drives the whole binary.
+//!
+//! # Design
+//!
+//! - **Auto-discovered commands**: `build.rs` scans `src/cmd/` for `.rs`
+//!   files and generates `__cmd_reg__.rs` (included below). Adding a new
+//!   command is as simple as dropping a file into that directory — no
+//!   manual registration needed.
+//! - **i18n before parse**: Language is detected from CLI args *before*
+//!   `Cli::parse()` so that help text appears in the correct language.
+//!   The [`I18nHelp`] derive macro patches the clap command tree.
+//! - **Config-driven initialisation**: After parsing, session config is
+//!   read to apply `output_style`, `language`, and `no_color` — the CLI
+//!   `--lang` / `--no-color` flags take precedence over config values.
+//! - **Double-pass language init**: First pass detects `--lang` from raw
+//!   args for help text; second pass (after parse) re-initialises if the
+//!   user explicitly chose a language or the config specifies one.
+//!
+//! # Adding a new command
+//!
+//! 1. Create `src/cmd/<name>.rs` with a public `execute()` function.
+//! 2. Add a variant to the [`Command`] enum in this file.
+//! 3. Add the match arm in the `start()` dispatch block.
+//!    (Build-time command registration is separate — see `build.rs`.)
+//!
+//! # Important Notes
+//!
+//! - Logger init (`setup_logger`) must happen after `i18n::init_language()`
+//!   because log output may need translated strings.
+//! - `HOK_LOG_LEVEL` env var overrides the log level for `libscoop` only;
+//!   other crates use `RUST_LOG` or the default filter.
+
 use clap::{crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;

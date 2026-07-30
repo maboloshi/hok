@@ -67,6 +67,5 @@ inherits = "release"
 debug = true
 strip = false
 
-
-
-
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

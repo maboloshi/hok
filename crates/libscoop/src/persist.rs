@@ -1,3 +1,19 @@
+//! Persistent-data linking for package upgrades.
+//!
+//! Scoop preserves user data across reinstalls/upgrades by storing it
+//! in a `persist` directory and linking it back after extraction. This
+//! module implements that logic.
+//!
+//! # Design
+//!
+//! - **Three-way logic**: For each `persist` entry:
+//!   1. Persist target exists → link (user data preserved as-is).
+//!   2. Source exists → move to persist dir, then link.
+//!   3. Neither → create empty target (file if name has extension,
+//!      directory otherwise), then link.
+//! - **Link types**: Directories use junctions; files use hard links.
+//!   This matches Scoop's behaviour for transparent data access.
+
 use crate::{error::Fallible, internal, package::Package, Session};
 
 /// Link persistent data for a package.

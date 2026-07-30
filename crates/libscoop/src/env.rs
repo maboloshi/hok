@@ -1,3 +1,17 @@
+//! Environment variable clean-up for package removal.
+//!
+//! Removes environment variables and `PATH` entries that were set by a
+//! package during installation. This is called during uninstall/cleanup.
+//!
+//! # Design
+//!
+//! - **Uses internal env module**: Delegates to [`internal::env`] for
+//!   the actual Windows Registry operations.
+//! - **Isolated path support**: Respects Scoop's `use_isolated_path`
+//!   config, which can use a custom env var name instead of `PATH`.
+//! - **Event emission**: Fires `PackageEnvVarRemoveStart/Done` and
+//!   `PackageEnvPathRemoveStart/Done` events for the event loop.
+
 use crate::{config, error::Fallible, internal, package::Package, Error, Event, Session};
 
 /// Unset all environment variables defined by a given package.

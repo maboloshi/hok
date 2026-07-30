@@ -1,3 +1,19 @@
+//! Dependency resolution for package operations.
+//!
+//! Uses the DAG from [`internal::dag`] to resolve package dependencies
+//! into a deterministic, dependency-first execution order.
+//!
+//! # Design
+//!
+//! - **Lazy full scan**: Most packages have no dependencies, so a costly
+//!   full-bucket scan is only triggered when at least one package declares
+//!   dependencies. The scan queries all synced packages at once for
+//!   efficient subsequent lookups.
+//! - **Unique ordering**: The output is guaranteed to have no duplicates
+//!   and is sorted so that dependencies appear before their dependents.
+//! - **Cycle detection**: The [`DepGraph`] detects cyclic dependencies
+//!   and returns a [`CyclicError`] if any are found.
+
 use crate::{
     error::Fallible,
     event,

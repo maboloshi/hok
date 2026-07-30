@@ -1,3 +1,20 @@
+//! Global constants, built-in lists, and compiled regular expressions.
+//!
+//! Centralises all shared static values used across the crate, including:
+//! - Event bus capacity and default user agent
+//! - Built-in bucket list and priority ordering
+//! - Compiled regex patterns for cache files, manifest fields, URLs, etc.
+//! - Scoop directory structure paths
+//!
+//! # Design
+//!
+//! - **Lazy initialisation**: Regex patterns and collections use
+//!   [`LazyLock`] so they are compiled/allocated once on first access.
+//! - **Single source of truth**: All magic strings and magic numbers that
+//!   appear in multiple modules should be defined here.
+//! - **`#[allow(dead_code)]`**: Some constants are defined for completeness
+//!   (matching Scoop's behaviour) but may not yet be referenced by Hok.
+
 #![allow(dead_code)]
 use std::sync::LazyLock;
 use regex::{Regex, RegexBuilder};

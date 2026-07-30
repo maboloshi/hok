@@ -1,3 +1,26 @@
+//! Internal implementation details — not part of the public API.
+//!
+//! This module organises low-level utilities used across `libscoop`:
+//!
+//! - [`archive`] — Archive extraction (7z, zip, tar, ...)
+//! - [`dag`] — Directed Acyclic Graph for dependency resolution
+//! - [`env`] — Windows Registry-backed environment variable management
+//! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
+//! - [`git`] — Git operations via `libgit2`
+//! - [`manifest_cache`] — SQLite-based manifest cache
+//! - [`network`] — HTTP networking via `ureq`
+//! - [`os`] — OS-level utilities (process info, disk space, FFI)
+//! - [`path`] — Path manipulation and normalisation
+//!
+//! It also exports [`compare_versions()`], a Scoop-compatible semantic
+//! version comparator used across the package lifecycle.
+//!
+//! # Note
+//!
+//! Items in this module are `pub` (not `pub(crate)`) only because Rust's
+//! visibility rules require it for re-exporting; they are **not** part of
+//! the stable API and may change without notice.
+
 pub mod archive;
 pub mod dag;
 pub mod env;

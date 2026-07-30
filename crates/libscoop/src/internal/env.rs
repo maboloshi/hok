@@ -1,3 +1,18 @@
+//! Environment variable management via the Windows Registry.
+//!
+//! Reads and writes persistent environment variables (user scope) stored
+//! in `HKEY_CURRENT_USER\Environment`. Used by package operations to
+//! manage `PATH` entries and other environment changes.
+//!
+//! # Design
+//!
+//! - **Registry-backed**: Uses `winreg` to access Windows' persistent
+//!   environment storage — the only reliable way to make environment
+//!   changes that survive a process restart.
+//! - **Sub-module split**: The `windows` sub-module contains the raw
+//!   Registry access; the parent module wraps it in higher-level helpers
+//!   like [`get_path_like_env()`].
+
 use std::path::PathBuf;
 
 use crate::error::Fallible;

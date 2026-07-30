@@ -51,3 +51,6 @@ hok-shim = { path = "../hok-shim" }
 
 [features]
 default = []
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

@@ -1,3 +1,18 @@
+//! Verify and update manifest hashes (checkhashes).
+//!
+//! Downloads files referenced by manifests and verifies their checksums
+//! against the declared hashes. Optionally updates the manifest with
+//! freshly computed hashes.
+//!
+//! # Design
+//!
+//! - **Batch verification**: Scans all manifests in a bucket directory
+//!   (or specified apps) and verifies hashes in parallel.
+//! - **Update mode**: When `--update` is set, replaces manifest hashes
+//!   with the newly computed values after successful download.
+//! - **Supports all hash types**: MD5, SHA1, SHA256, SHA512, as supported
+//!   by the `scoop_hash` crate.
+
 use clap::Parser;
 use libscoop::operation;
 use libscoop::{Manifest, Session};

@@ -1,3 +1,15 @@
+//! PowerShell module management for package lifecycle.
+//!
+//! Removes PowerShell modules that were installed by a package during
+//! uninstall/cleanup.
+//!
+//! # Design
+//!
+//! - **Single operation**: Currently only supports `remove()`. Module
+//!   installation happens during package sync (in `sync.rs`) by copying
+//!   the module from the manifest.
+//! - **Event emission**: Fires `PackagePsModuleRemoveStart/Done` events.
+
 use crate::{error::Fallible, package::Package, Event, Session};
 
 /// Remove PowerShell module imported by a given package.

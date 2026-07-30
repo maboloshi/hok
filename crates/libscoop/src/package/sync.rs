@@ -1,3 +1,30 @@
+//! Package synchronisation — install, upgrade, and uninstall.
+//!
+//! This is the largest and most complex module in `libscoop`. It
+//! orchestrates the full package lifecycle: download, integrity check,
+//! extraction, shim/shortcut creation, persist-linking, and script
+//! execution — all driven by events emitted to the frontend.
+//!
+//! # Design
+//!
+//! - **Event-driven pipeline**: Every sub-step (download, extract, shim,
+//!   etc.) emits start/progress/done events. The frontend (event loop)
+//!   receives these to update UI and send back responses (confirm,
+//!   select candidate).
+//! - **Transaction model**: A [`Transaction`] is built upfront containing
+//!   the full list of packages to install/upgrade/remove, along with
+//!   download sizes and version info. The user confirms the transaction
+//!   before any destructive action.
+//! - **SyncOption flags**: [`SyncOption`] controls behaviour: `AssumeYes`
+//!   skips prompts, `DownloadOnly` stops after caching, `SkipHashCheck`
+//!   bypasses integrity verification, etc.
+//! - **Lifecycle phases**: Each operation (install, upgrade, uninstall)
+//!   follows a sequence: resolve → download → check → extract → config
+//!   → shim → shortcut → persist → cleanup. Some phases are skipped
+//!   depending on the operation type.
+//! - **Concurrent downloads**: Multiple package downloads run concurrently
+//!   via the `download` module, with progress aggregated per-package.
+
 use scoop_hash::ChecksumBuilder;
 use std::cell::OnceCell;
 use std::io::Read;

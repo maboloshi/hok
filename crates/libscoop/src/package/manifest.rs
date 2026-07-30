@@ -1,3 +1,25 @@
+//! Scoop manifest parsing and data structures.
+//!
+//! A [manifest] is a JSON file that defines everything Scoop needs to
+//! know about a package: version, download URLs, hashes, scripts,
+//! dependencies, shortcuts, etc.
+//!
+//! # Design
+//!
+//! - **Schema-compatible**: Follows the [official Scoop manifest schema].
+//!   Custom `Deserialize` implementations handle Scoop's flexible formats
+//!   (e.g. a field that can be a single string or an array).
+//! - **Two-layer structure**: [`Manifest`] wraps a [`ManifestSpec`] plus
+//!   the file path and hash; `ManifestSpec` holds the actual JSON data.
+//! - **Path resolution**: `Manifest::resolve_*` methods expand relative
+//!   paths in manifest fields against the manifest's own directory.
+//! - **Hash support**: [`HashString`] represents a single hash value,
+//!   knowing its algorithm (MD5, SHA1, SHA256, SHA512) from the string
+//!   format.
+//!
+//! [manifest]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
+//! [official Scoop manifest schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
+
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};

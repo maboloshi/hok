@@ -1,3 +1,39 @@
+//! Event types and the event bus for session-backend communication.
+//!
+//! Defines the [`Event`] enum — all possible events that can be emitted
+//! during Scoop operations — and the [`EventBus`] that carries them.
+//!
+//! # Design
+//!
+//! - **Full-duplex channel**: The event bus wraps two `flume` channels:
+//!   - *Outbound* (`inner_tx` → `outer_rx`): Session backend → frontend.
+//!     Events flow *out* of the session to the caller (e.g. progress, prompts).
+//!   - *Inbound* (`outer_tx` → `inner_rx`): Frontend → session backend.
+//!     Responses flow *in* (e.g. `PromptTransactionNeedConfirmResult`).
+//!   The public API exposes only `sender()` and `receiver()` on the outer
+//!   (frontend-facing) side; the inner side is `pub(crate)`.
+//!
+//! - **Non-exhaustive enum**: `Event` is marked `#[non_exhaustive]` so that
+//!   adding new variants is not a breaking change for external implementors
+//!   of [`EventHandler`].
+//!
+//! - **Naming convention**: Every event pair follows `Action + Start / Done`,
+//!   with optional `Progress` in between (e.g. `PackageDownloadStart`,
+//!   `PackageDownloadProgress`, `PackageDownloadDone`). Prompt events use
+//!   a paired `PromptXxx` + `PromptXxxResult` pattern.
+//!
+//! # Extending
+//!
+//! To add a new event:
+//! 1. Add the variant(s) to the [`Event`] enum.
+//! 2. Emit it from the relevant operation via `session.emitter()`.
+//! 3. Handle it in [`eventloop::run_event_loop`] and/or in
+//!    [`EventHandler::handle`].
+//!
+//! If the event needs a response from the frontend, also add a `Result`
+//! variant and use the inbound channel (`EventBus::sender()`) to send it
+//! back.
+
 use flume::{bounded, Receiver, Sender};
 
 use crate::{

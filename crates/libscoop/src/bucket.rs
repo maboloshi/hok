@@ -1,3 +1,29 @@
+//! Scoop bucket representation and management.
+//!
+//! A Scoop bucket is a directory (often a git repository) containing
+//! package manifests in JSON format. This module provides [`Bucket`]
+//! for inspecting individual buckets and free functions for listing,
+//! adding, and removing buckets from a [`Session`].
+//!
+//! # Design
+//!
+//! - **Bucket as a folder**: A bucket is fundamentally a local path with
+//!   manifest JSON files. The git remote is optional — local-only buckets
+//!   (without a remote) are supported and simply skip updates.
+//! - **Lazy metadata**: `remote_url` and `updated_at` are [`OnceLock`]
+//!   fields, resolved on first access to avoid unnecessary git operations.
+//! - **Concurrent listing**: [`bucket_list()`] uses `rayon` to parallelise
+//!   bucket directory scanning for performance.
+//! - **Known buckets**: [`is_known_bucket()`] checks against a built-in
+//!   list (see `constant.rs`) to allow shorthand names like `"extras"`.
+//!
+//! # Important Notes
+//!
+//! - Buckets are identified by their **local directory name**, not by
+//!   their remote URL. Renaming a bucket folder changes its identity.
+//! - The `Bucket` struct is `Clone + Debug` and is designed to be cheaply
+//!   cloneable (it holds only a path, a name, and two `OnceLock`s).
+
 use rayon::prelude::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 use std::fs::DirEntry;
 use std::sync::OnceLock;

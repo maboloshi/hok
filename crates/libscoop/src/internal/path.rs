@@ -1,3 +1,17 @@
+//! Path manipulation utilities.
+//!
+//! Provides Scoop-compatible path normalisation and segment-level
+//! operations used across the codebase.
+//!
+//! # Design
+//!
+//! - **Normalisation**: [`normalize_path()`] resolves `.` and `..`
+//!   segments, converts backslashes to forward slashes, and produces
+//!   a canonical representation for comparison and display.
+//! - **Segment helpers**: [`leaf()`] returns the final path component;
+//!   [`leaf_base()`] strips the extension; [`without_leaf()`] returns
+//!   the parent path.
+
 #![allow(dead_code)]
 use std::sync::LazyLock;
 use regex::{Regex, RegexBuilder};

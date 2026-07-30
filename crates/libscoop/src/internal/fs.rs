@@ -1,3 +1,17 @@
+//! File-system utilities.
+//!
+//! Thin wrappers around common `std::fs` operations used throughout
+//! the codebase: directory creation, recursive removal, file copying,
+//! and JSON serialisation with pretty-printing.
+//!
+//! # Design
+//!
+//! - **Error-returning helpers**: [`ensure_dir()`], [`remove_dir()`],
+//!   and [`write_json_with_pretty_formatter()`] return `Fallible` for
+//!   ergonomic use with `?`.
+//! - **Atomic write**: [`write_json_with_pretty_formatter()`] writes
+//!   to a temporary file and then renames it for atomicity.
+
 use serde::Serialize;
 use serde_json::ser::PrettyFormatter;
 use std::io;

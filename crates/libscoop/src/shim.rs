@@ -1,9 +1,25 @@
-#![allow(dead_code)]
+//! Shim generation for Scoop packages.
+//!
+//! A "shim" is a tiny executable that acts as a proxy for the real program,
+//! adjusting environment variables (especially `PATH`) and arguments before
+//! launching the target. This module handles creating and removing shims
+//! for installed packages.
+//!
+//! # Design
+//!
+//! - **Embedded shim binary**: The actual shim launcher is compiled as a
+//!   separate crate (`hok-shim`) and embedded into the library at build time
+//!   via `include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"))`.
+//! - **Shim info file (`.shim`)**: Alongside each shim, a metadata file is
+//!   written containing the target path, arguments, and shim type. This is
+//!   read by `hok-shim-ref` at runtime.
+//! - **Conflict resolution**: When two packages provide the same shim name,
+//!   the second one gets an alternative filename via [`alt_filename()`]
+//!   (e.g. `foo.ps1.scoop` for a PowerShell script from the "scoop" package).
+//! - **Known gaps vs Scoop**: JAR shims are simpler (no `pushd`/`popd`);
+//!   GUI `.exe` detection (PE subsystem) is not implemented.
 
-// Known gaps vs Scoop original:
-// - JAR shim: no pushd/popd (some jars depend on CWD)
-// - GUI .exe: no PE-subsystem detection (console window for GUI apps)
-// - CLI subcommands add/rm/alter: not implemented (managed via package lifecycle)
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 

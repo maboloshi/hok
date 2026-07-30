@@ -1,3 +1,36 @@
+//! Console UI components for progress display.
+//!
+//! Provides two independent UI systems for different phases of operations:
+//!
+//! - [`MultiProgressUI`] — Download progress bars powered by `indicatif`.
+//!   Supports multiple concurrent downloads, each tracked by an identifier.
+//!   Progress is aggregated per-identifier when the same package downloads
+//!   from multiple URLs.
+//!
+//! - [`BucketUpdateUI`] — Lightweight terminal output for bucket update
+//!   status. Uses raw crossterm commands (`Clear`, `MoveToPreviousLine`)
+//!   to render a sorted, auto-refreshing list of bucket names with
+//!   colour-coded status (green = success, red = failure).
+//!
+//! # Design
+//!
+//! - **Separation of concerns**: Download progress uses `indicatif` (rich,
+//!   multi-bar); bucket updates use raw terminal commands (simple, fast).
+//!   They never share state — each is constructed and used independently.
+//! - **No event loop coupling**: These are pure UI components. The event
+//!   loop (`eventloop.rs`) calls into them; they do not know about events.
+//! - **Best-effort rendering**: All `stdout` writes use `let _ = ...` /
+//!   `.unwrap()`; rendering failures are silently ignored since they are
+//!   non-fatal to the operation.
+//!
+//! # Important Notes
+//!
+//! - `MultiProgressUI::update()` can be called from any thread; `indicatif`
+//!   handles internal synchronisation.
+//! - `BucketUpdateUI::draw()` moves the cursor upward after rendering, so
+//!   callers must ensure the terminal supports cursor movement.
+//! - The bucket list is sorted alphabetically for stable display order.
+
 use crossterm::{
     cursor,
     style::{Print, Stylize},

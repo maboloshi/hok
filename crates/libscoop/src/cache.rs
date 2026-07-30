@@ -1,3 +1,9 @@
+//! Scoop download cache file representation.
+//!
+//! Cache files follow the naming convention `app#version#filenamified_url`.
+//! The [`CacheFile`] struct parses and validates this pattern, providing
+//! typed accessors for `package_name()`, `version()`, and `path()`.
+
 use std::path::{Path, PathBuf};
 
 use crate::constant::REGEX_CACHE_FILE;
