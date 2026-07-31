@@ -111,6 +111,11 @@ cargo build
 cargo run -- help
 ```
 
+## Quality
+
+- System regression matrix: [`docs/system-regression-matrix.md`](docs/system-regression-matrix.md)
+- Regression report template: [`docs/system-regression-report-template.md`](docs/system-regression-report-template.md)
+
 ## Code Quality
 
 This fork maintains a strong focus on dependency hygiene. Notable improvements over upstream:
