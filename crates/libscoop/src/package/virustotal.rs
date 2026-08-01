@@ -17,9 +17,9 @@
 //! # Notes
 //!
 //! - API requests will poll up to 5 times (with a 3-second interval between each) to wait for analysis to complete.
-//! - Network errors or timeouts will be returned as `anyhow::Error`.
+//! - Network errors or timeouts will be returned as [`crate::Error`].
 
-use anyhow::Result;
+use crate::{error::Fallible, Error};
 
 /// Scan statistics returned by VirusTotal.
 #[derive(Debug, Clone)]
@@ -45,7 +45,7 @@ pub struct ScanStats {
 ///
 /// Returns an error if the HTTP request fails, the JSON response is unexpected,
 /// or the analysis does not complete within the polling window (5 × 3 s).
-pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
+pub fn check_url(url: &str, api_key: &str) -> Fallible<ScanStats> {
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(30)))
         .build()
@@ -57,16 +57,16 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
         .post("https://www.virustotal.com/api/v3/urls")
         .header("x-apikey", api_key)
         .send_json(&submit_body)
-        .map_err(|e| anyhow::anyhow!("VT submit error: {}", e))?;
+        .map_err(|e| Error::Custom(format!("VT submit error: {}", e)))?;
 
     let submit_json: serde_json::Value = submit_resp
         .into_body()
         .read_json()
-        .map_err(|e| anyhow::anyhow!("VT response error: {}", e))?;
+        .map_err(|e| Error::Custom(format!("VT response error: {}", e)))?;
 
     let analysis_id = submit_json["data"]["id"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("VT: no analysis ID in response"))?;
+        .ok_or_else(|| Error::Custom("VT: no analysis ID in response".to_owned()))?;
 
     // Step 2: poll for analysis results (up to 5 attempts with 3 s delay)
     let analysis_url = format!("https://www.virustotal.com/api/v3/analyses/{}", analysis_id);
@@ -78,12 +78,12 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
             .get(&analysis_url)
             .header("x-apikey", api_key)
             .call()
-            .map_err(|e| anyhow::anyhow!("VT poll error: {}", e))?;
+            .map_err(|e| Error::Custom(format!("VT poll error: {}", e)))?;
 
         let json: serde_json::Value = resp
             .into_body()
             .read_json()
-            .map_err(|e| anyhow::anyhow!("VT parse error: {}", e))?;
+            .map_err(|e| Error::Custom(format!("VT parse error: {}", e)))?;
 
         let status = json["data"]["attributes"]["status"].as_str().unwrap_or("");
         if status == "completed" {
@@ -97,8 +97,8 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
         }
     }
 
-    Err(anyhow::anyhow!(
-        "VT analysis timed out after 5 polling attempts"
+    Err(Error::Custom(
+        "VT analysis timed out after 5 polling attempts".to_owned(),
     ))
 }
 

@@ -29,7 +29,6 @@ jsonpath-rust = "1.0"
 json5 = "0.4"
 sxd-document = "0.3"
 sxd-xpath = "0.4"
-anyhow = "1.0"
 base64 = "0.22"
 rust-i18n = "3.1.5"
 

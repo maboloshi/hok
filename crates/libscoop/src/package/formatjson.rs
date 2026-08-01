@@ -25,7 +25,7 @@
 //! - Supports glob wildcard filtering (`*`, `?`).
 //! - If the input file contains a BOM (`\u{FEFF}`), it will be automatically stripped.
 
-use anyhow::Result;
+use crate::{error::Fallible, Error};
 use regex::Regex;
 use serde::Serialize;
 use std::path::Path;
@@ -71,12 +71,12 @@ pub fn app_matches(name: &str, pattern: &str) -> bool {
 ///
 /// `Ok(true)` if the file was modified, `Ok(false)` if it was already
 /// correctly formatted, or an error on I/O / parse failure.
-pub fn format_manifest_file(path: &Path) -> Result<bool> {
+pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
     let content = std::fs::read_to_string(path)?;
     let cleaned = content.trim_start_matches('\u{FEFF}');
 
     let value: serde_json::Value = json5::from_str(cleaned)
-        .map_err(|e| anyhow::anyhow!("{}: parse error: {}", path.display(), e))?;
+        .map_err(|e| Error::Custom(format!("{}: parse error: {}", path.display(), e)))?;
 
     let formatted = to_scoop_json(&value)?;
 
@@ -90,14 +90,15 @@ pub fn format_manifest_file(path: &Path) -> Result<bool> {
 /// Serialise a JSON value to a string with 4-space indentation and CRLF endings.
 ///
 /// Matches the Scoop convention for manifest formatting.
-pub fn to_scoop_json(value: &serde_json::Value) -> Result<String> {
+pub fn to_scoop_json(value: &serde_json::Value) -> Fallible<String> {
     let mut buf = Vec::new();
     let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, fmt);
     value
         .serialize(&mut ser)
-        .map_err(|e| anyhow::anyhow!("serialize error: {}", e))?;
-    let mut formatted = String::from_utf8(buf).map_err(|e| anyhow::anyhow!("utf8 error: {}", e))?;
+        .map_err(|e| Error::Custom(format!("serialize error: {}", e)))?;
+    let mut formatted =
+        String::from_utf8(buf).map_err(|e| Error::Custom(format!("utf8 error: {}", e)))?;
     formatted = formatted.replace('\n', "\r\n");
     if !formatted.ends_with("\r\n") {
         formatted.push_str("\r\n");

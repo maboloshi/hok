@@ -1374,7 +1374,6 @@ dependencies = [
 name = "libscoop"
 version = "0.2.0-beta.3"
 dependencies = [
- "anyhow",
  "base64",
  "bzip2",
  "dirs",
