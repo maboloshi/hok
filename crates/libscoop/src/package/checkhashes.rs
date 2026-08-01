@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::{error::Fallible, operation, Manifest, Session};
 use crate::package::manifest_walker;

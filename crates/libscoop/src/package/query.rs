@@ -210,15 +210,15 @@ fn fill_install_state(package: &Package, apps_dir: &Path, name: &str) {
     );
 }
 
-fn load_bucket_manifest(session: &Session, bucket: &str, name: &str) -> Option<Manifest> {
-    let bucket_path = session.config().root_path().join("buckets").join(bucket);
+fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -> Option<Manifest> {
+    let bucket_path = root_path.join("buckets").join(bucket);
     let bucket = Bucket::from(&bucket_path).ok()?;
     let manifest_path = bucket.path_of_manifest(name)?;
     Manifest::parse(manifest_path).ok()
 }
 
 fn maybe_fill_upgradable(
-    session: &Session,
+    root_path: &Path,
     package: &Package,
     name: &str,
     bucket: &str,
@@ -241,7 +241,7 @@ fn maybe_fill_upgradable(
         return true;
     }
 
-    let Some(origin_manifest) = load_bucket_manifest(session, bucket, name) else {
+    let Some(origin_manifest) = load_bucket_manifest(root_path, bucket, name) else {
         return !filter_non_upgradable;
     };
 
@@ -267,6 +267,7 @@ pub(crate) fn query_installed(
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let apps_dir = session.effective_root_path().join("apps");
+    let root_path = session.config().root_path().to_path_buf();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let mut ret = vec![];
@@ -331,7 +332,7 @@ pub(crate) fn query_installed(
                                 package.fill_install_state(state.clone());
 
                                 if !maybe_fill_upgradable(
-                                    session,
+                                    &root_path,
                                     &package,
                                     name,
                                     bucket,
@@ -441,6 +442,7 @@ fn query_synced_cached(
 
     let entries = manifest_cache::query(&conn, None, None)?;
     let apps_dir = session.effective_root_path().join("apps");
+    let root_path = session.config().root_path().to_path_buf();
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
@@ -459,7 +461,7 @@ fn query_synced_cached(
         // Prefer reading manifest files directly to avoid stale cache.
         // Cache is populated once during bucket update, but the user
         // may have edited the file since then.
-        let manifest = match load_bucket_manifest(session, bucket, name)
+        let manifest = match load_bucket_manifest(&root_path, bucket, name)
             .or_else(|| manifest_cache::entry_to_manifest(entry))
         {
             Some(m) => m,
