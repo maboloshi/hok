@@ -171,9 +171,18 @@ fn test_all_urls_arch_order_matches_scoop() {
 
     let hashes = manifest.all_hashes();
     assert_eq!(hashes.len(), 3);
-    assert_eq!(hashes[0].value(), "5286e507eb9b2a45bfb49a7356e1edfb24393266245b918f0895ca7bb5087f81");
-    assert_eq!(hashes[1].value(), "bd8e7b1994254ba3ef0639e8d7ee1ef3b40c9a756fc8827fad97e2d1e00fc37a");
-    assert_eq!(hashes[2].value(), "4e9fbda47af4d60b0e3448586ed897937139874d24f3294705fdf36c918c01bf");
+    assert_eq!(
+        hashes[0].value(),
+        "5286e507eb9b2a45bfb49a7356e1edfb24393266245b918f0895ca7bb5087f81"
+    );
+    assert_eq!(
+        hashes[1].value(),
+        "bd8e7b1994254ba3ef0639e8d7ee1ef3b40c9a756fc8827fad97e2d1e00fc37a"
+    );
+    assert_eq!(
+        hashes[2].value(),
+        "4e9fbda47af4d60b0e3448586ed897937139874d24f3294705fdf36c918c01bf"
+    );
 
     let segments = manifest.all_hash_segments();
     assert_eq!(

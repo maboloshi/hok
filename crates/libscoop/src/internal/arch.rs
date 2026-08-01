@@ -126,11 +126,7 @@ impl Arch {
     /// Deterministic architecture resolution from raw environment inputs.
     ///
     /// Extracted for unit testing; [`current()`] is a thin wrapper over this.
-    pub fn from_env(
-        arm_program_files: bool,
-        arch_w6432: Option<&str>,
-        arch: Option<&str>,
-    ) -> Arch {
+    pub fn from_env(arm_program_files: bool, arch_w6432: Option<&str>, arch: Option<&str>) -> Arch {
         if arm_program_files {
             return Arch::Aarch64;
         }
@@ -223,7 +219,10 @@ mod tests {
         assert_eq!(Arch::parse("i686").unwrap(), Arch::Ia32);
         assert_eq!(Arch::parse("arm64").unwrap(), Arch::Aarch64);
         assert_eq!(Arch::parse("aarch64").unwrap(), Arch::Aarch64);
-        assert!(Arch::parse("mips").is_err(), "invalid architecture rejected");
+        assert!(
+            Arch::parse("mips").is_err(),
+            "invalid architecture rejected"
+        );
     }
 
     #[test]

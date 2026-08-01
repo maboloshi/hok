@@ -864,11 +864,7 @@ impl Manifest {
         checksum.consume(json.as_bytes());
         let hash = checksum.finalize();
 
-        Ok(Manifest {
-            path,
-            inner,
-            hash,
-        })
+        Ok(Manifest { path, inner, hash })
     }
 
     /// Return the `version` of this manifest.
@@ -1529,8 +1525,14 @@ mod tests {
             }"#,
         );
         let deps = m.dependencies();
-        assert!(deps.contains(&"main/7zip".to_owned()), "explicit dep preserved");
-        assert!(deps.contains(&"7zip".to_owned()), "helper appended bucket-less");
+        assert!(
+            deps.contains(&"main/7zip".to_owned()),
+            "explicit dep preserved"
+        );
+        assert!(
+            deps.contains(&"7zip".to_owned()),
+            "helper appended bucket-less"
+        );
         // Deduplication: exactly one `7zip`
         assert_eq!(deps.iter().filter(|d| *d == "7zip").count(), 1);
     }
@@ -1579,9 +1581,18 @@ mod tests {
             }"#,
         );
         let deps = m.dependencies();
-        assert!(deps.contains(&"innounp".to_owned()), "innosetup → innounp (bucket-less)");
-        assert!(deps.contains(&"dark".to_owned()), "Expand-DarkArchive → dark");
-        assert!(!deps.iter().any(|d| d.starts_with("main/")), "helpers carry no bucket prefix");
+        assert!(
+            deps.contains(&"innounp".to_owned()),
+            "innosetup → innounp (bucket-less)"
+        );
+        assert!(
+            deps.contains(&"dark".to_owned()),
+            "Expand-DarkArchive → dark"
+        );
+        assert!(
+            !deps.iter().any(|d| d.starts_with("main/")),
+            "helpers carry no bucket prefix"
+        );
     }
 
     #[test]
