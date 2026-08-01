@@ -1384,6 +1384,7 @@ dependencies = [
  "hok-shim",
  "innospect",
  "jiff",
+ "json5",
  "jsonpath-rust",
  "junction",
  "lzma-rs",

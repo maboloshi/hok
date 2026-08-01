@@ -114,9 +114,9 @@ mod tests {
         // Build a session whose apps dir doesn't exist
         let session = crate::Session::new();
         // check_installed won't panic on a missing apps dir
-        let result = std::panic::catch_unwind(|| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _ = check_installed(&session);
-        });
+        }));
         assert!(result.is_ok(), "check_installed should not panic");
     }
 }

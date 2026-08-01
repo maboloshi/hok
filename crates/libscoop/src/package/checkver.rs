@@ -917,7 +917,7 @@ fn find_hash_in_rdf(content: &str, _basename: &str) -> Option<String> {
     // Simplified RDF parsing: look for `<rdf:Content ... about="...basename...">` and extract `<sha256:...>`
     // Scoop uses proper XML parsing: $xml.RDF.Content | Where-Object { $_.about -eq $basename }
     let re = Regex::new(
-        r#"(?s)<[^:]*:Content[^>]*about="[^"]*{}[^"]*"[^>]*>.*?<(?:sha256|digest)[^>]*>(.+?)</"#,
+        r#"(?s)<[^:]*:Content[^>]*about="[^"]*"[^>]*>.*?<(?:sha256|digest)[^>]*>(.+?)</"#,
     )
     .ok()?;
     let caps = re.captures(content)?;
@@ -1318,7 +1318,7 @@ mod tests {
     #[test]
     fn is_github_regex_match() {
         let cv = Checkver {
-            regex: Some(r"releases/tag/v?([\d.]+)".to_string()),
+            regex: Some(r"/releases/tag/v?([\d.]+)".to_string()),
             ..checkver_default()
         };
         assert!(is_github_checkver(&cv));
