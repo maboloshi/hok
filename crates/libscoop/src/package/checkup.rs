@@ -1,9 +1,9 @@
 //! Installed package health checker.
 //!
-//! 扫描已安装包目录，检查每个包的文件结构是否完整（`current` 软链接、
-//! `install.json`、`manifest.json`），并返回发现的问题列表。
+//! Scan the installed packages directory, check whether the file structure of each package is complete (`current` symlink,
+//! `install.json`, `manifest.json`), and return a list of discovered issues.
 //!
-//! # 使用方式
+//! # Usage
 //!
 //! ```no_run
 //! use libscoop::package::checkup;
@@ -16,10 +16,10 @@
 //! }
 //! ```
 //!
-//! # 注意事项
+//! # Notes
 //!
-//! - 函数会跳过名为 `scoop` 的目录（Scoop 自身保留目录）。
-//! - 仅检查文件结构完整性，不验证文件内容。
+//! - The function will skip directories named `scoop` (Scoop's own reserved directory).
+//! - Only checks file structure integrity, does not verify file contents.
 
 use crate::Session;
 

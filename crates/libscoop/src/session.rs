@@ -152,15 +152,15 @@ impl Session {
 
     /// Get the effective root path based on the global flag.
     ///
-    /// 根据 [`is_global()`] 的值返回对应的 Scoop 根目录：
-    /// - `is_global() == true` → 返回全局安装根目录 (`global_path`)
-    /// - `is_global() == false` → 返回用户级安装根目录 (`root_path`)
+    /// Returns the corresponding Scoop root directory based on the value of [`is_global()`]:
+    /// - `is_global() == true` → returns the global installation root directory (`global_path`)
+    /// - `is_global() == false` → returns the user-level installation root directory (`root_path`)
     ///
-    /// # ⚠️ 推荐使用此方法
+    /// # ⚠️ Recommended to use this method
     ///
-    /// 凡是需要解析包目录（`apps/`）、bucket 路径等的代码，应优先调用
-    /// `effective_root_path()` 而不是手动判断 `is_global()` 后分别调用
-    /// `config().root_path()` 或 `config().global_path()`，以避免遗漏全局模式。
+    /// Whenever code needs to resolve package directories (`apps/`), bucket paths, etc., it should prioritize calling
+    /// `effective_root_path()` rather than manually checking `is_global()` and then separately calling
+    /// `config().root_path()` or `config().global_path()`, to avoid missing the global mode.
     ///
     /// # Example
     ///

@@ -1,21 +1,21 @@
 //! URL string helpers.
 //!
-//! 提供对 URL 字符串进行常见解析操作的工具函数，例如提取文件名、
-//! 提取 basename 以及解码 percent-encoding。
+//! Provides utility functions for common parsing operations on URL strings, such as extracting the filename,
+//! extracting the basename, and decoding percent-encoding.
 //!
-//! # 使用说明
+//! # Usage
 //!
-//! 这些函数均为纯函数（无 I/O、无网络），可在任何线程中安全调用。
+//! These functions are pure functions (no I/O, no network) and can be safely called from any thread.
 //!
-//! # 注意事项
+//! # Notes
 //!
-//! - [`remote_filename`] 先对 URL 进行 percent-decode，再提取最后一段路径；
-//!   与 [`basename`] 不同，后者不做解码、且会去掉扩展名。
-//! - 这些函数不验证 URL 的合法性；无效 URL 通常会返回整个输入字符串。
+//! - [`remote_filename`] first percent-decodes the URL, then extracts the last path segment;
+//!   unlike [`basename`], which does not decode and strips the extension.
+//! - These functions do not validate the URL; invalid URLs typically return the entire input string.
 
-/// 提取 URL 的文件名部分（最后一段路径，经 percent-decode 处理）。
+/// Extracts the filename portion of a URL (the last path segment, percent-decoded).
 ///
-/// # 示例
+/// # Example
 ///
 /// ```
 /// # use libscoop::internal::url::remote_filename;
@@ -27,9 +27,9 @@ pub fn remote_filename(url: &str) -> String {
     decoded.rsplit('/').next().unwrap_or(&decoded).to_string()
 }
 
-/// 提取 URL 的 basename（文件名去掉扩展名后的部分，不做 percent-decode）。
+/// Extract the basename of the URL (the part after removing the file extension, without percent-decoding).
 ///
-/// # 示例
+/// # Example
 ///
 /// ```
 /// # use libscoop::internal::url::basename;
@@ -44,11 +44,11 @@ pub fn basename(url: &str) -> String {
     }
 }
 
-/// 对 URL percent-encoding 进行解码，将 `%XX` 替换为对应字节字符。
+/// Decode URL percent-encoding, replacing `%XX` with the corresponding byte character.
 ///
-/// 对于无效的 `%XX` 序列（非十六进制字符），原样保留输入字符。
+/// For invalid `%XX` sequences (non-hexadecimal characters), the input character is preserved as-is.
 ///
-/// # 示例
+/// # Example
 ///
 /// ```
 /// # use libscoop::internal::url::decoded;

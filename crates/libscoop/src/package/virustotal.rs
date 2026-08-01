@@ -1,11 +1,11 @@
 //! VirusTotal URL scanning integration.
 //!
-//! 通过 VirusTotal REST API v3 对下载 URL 进行恶意软件扫描。
+//! Scan downloaded URLs for malware via the VirusTotal REST API v3.
 //!
-//! # 使用方式
+//! # Usage
 //!
-//! 需要通过 `VT_API_KEY` 环境变量或配置文件中的 `virustotal_api_key`
-//! 字段提供 API 密钥。
+//! An API key must be provided via the `VT_API_KEY` environment variable or the `virustotal_api_key`
+//! field in the configuration file.
 //!
 //! ```no_run
 //! use libscoop::package::virustotal::{check_url, ScanStats};
@@ -14,10 +14,10 @@
 //! println!("Total engines: {}, Malicious: {}", stats.total, stats.malicious);
 //! ```
 //!
-//! # 注意事项
+//! # Notes
 //!
-//! - API 请求会轮询最多 5 次（每次间隔 3 秒）等待分析完成。
-//! - 网络错误或超时将以 `anyhow::Error` 形式返回。
+//! - API requests will poll up to 5 times (with a 3-second interval between each) to wait for analysis to complete.
+//! - Network errors or timeouts will be returned as `anyhow::Error`.
 
 use anyhow::Result;
 

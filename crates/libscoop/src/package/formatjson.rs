@@ -1,13 +1,13 @@
 //! Manifest JSON formatting utilities.
 //!
-//! 对 Scoop manifest JSON 文件进行标准化格式化：
-//! 解析为 JSON 值后，使用 4 空格缩进 + CRLF 行尾重新序列化，
-//! 与 Scoop 官方约定保持一致。
+//! Standardize formatting for Scoop manifest JSON files:
+//! After parsing into a JSON value, re-serialize with 4-space indentation + CRLF line endings,
+//! consistent with Scoop's official conventions.
 //!
-//! # 使用方式
+//! # Usage
 //!
-//! 通常与 [`crate::package::manifest_walker::discover`] 配合使用，
-//! 批量扫描 bucket 目录中的 manifest 并格式化。
+//! Typically used in conjunction with [`crate::package::manifest_walker::discover`],
+//! to batch-scan manifests in a bucket directory and format them.
 //!
 //! ```no_run
 //! use std::path::Path;
@@ -19,11 +19,11 @@
 //! }
 //! ```
 //!
-//! # 注意事项
+//! # Notes
 //!
-//! - 仅当文件内容确实发生变化时才执行写入（避免不必要的磁盘写入）。
-//! - 支持 glob 通配符过滤（`*`、`?`）。
-//! - 输入文件若包含 BOM（`\u{FEFF}`）会自动剥离。
+//! - Only write when the file content has actually changed (avoid unnecessary disk writes).
+//! - Supports glob wildcard filtering (`*`, `?`).
+//! - If the input file contains a BOM (`\u{FEFF}`), it will be automatically stripped.
 
 use anyhow::Result;
 use regex::Regex;

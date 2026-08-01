@@ -1,25 +1,25 @@
 //! GitHub API client utilities (REST and GraphQL).
 //!
-//! 提供与 GitHub REST v3 和 GraphQL v4 API 交互的可复用、带认证的辅助函数，
-//! 主要供 `auto_pr` 流水线使用，但也可被其他模块复用。
+//! Provides reusable, authenticated helper functions for interacting with the GitHub REST v3 and GraphQL v4 APIs,
+//! primarily for use by the `auto_pr` pipeline, but also reusable by other modules.
 //!
-//! # 认证
+//! # Authentication
 //!
-//! 所有函数都需要一个有效的 GitHub 个人访问令牌（PAT）或安装令牌作为 `token` 参数。
-//! 令牌需具备以下权限（根据调用的函数）：
-//! - `contents:write` — 提交文件到分支
-//! - `pull-requests:write` — 创建 Pull Request
+//! All functions require a valid GitHub personal access token (PAT) or installation token as the `token` parameter.
+//! The token must have the following permissions (depending on the function called):
+//! - `contents:write` — Commit files to a branch
+//! - `pull-requests:write` — Create a Pull Request
 //!
-//! # 返回值
+//! # Return Values
 //!
-//! - REST 函数返回 `Result<serde_json::Value>`，成功时包含完整的 JSON 响应体。
-//! - [`graphql_commit_push`] 返回所创建 commit 的 HTML URL。
+//! - REST functions return `Result<serde_json::Value>`, containing the full JSON response body on success.
+//! - [`graphql_commit_push`] returns the HTML URL of the created commit.
 //!
-//! # 注意事项
+//! # Notes
 //!
-//! - 所有请求超时为 30 秒（GraphQL 为 60 秒）。
-//! - 在 HTTP 4xx/5xx 响应时会以 `anyhow::Error` 形式返回带状态码的错误消息。
-//! - 令牌不会被记录到日志中（日志中显示为 `******`）。
+//! - All requests have a 30-second timeout (60 seconds for GraphQL).
+//! - On HTTP 4xx/5xx responses, an error message with the status code is returned as `anyhow::Error`.
+//! - Tokens are never logged (shown as `******` in logs).
 
 use anyhow::Result;
 use base64::Engine as _;

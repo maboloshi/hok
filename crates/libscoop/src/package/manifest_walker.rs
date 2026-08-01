@@ -65,15 +65,15 @@ mod tests {
         dir
     }
 
-    /// 空目录返回空列表。
+    /// An empty directory returns an empty list.
     #[test]
     fn empty_dir_returns_empty() {
         let dir = tmpdir("empty");
         let result = discover(&dir).unwrap();
-        assert!(result.is_empty(), "空目录应返回空列表");
+        assert!(result.is_empty(), "An empty directory should return an empty list.");
     }
 
-    /// 顶级 .json 文件被发现（package.json 除外）。
+    /// Top-level .json files were found (excluding package.json)。
     #[test]
     fn discovers_top_level_json_files() {
         let dir = tmpdir("top_level");
@@ -82,7 +82,7 @@ mod tests {
         fs::write(dir.join("package.json"), "{}").unwrap(); // should be excluded
 
         let result = discover(&dir).unwrap();
-        assert_eq!(result.len(), 2, "应发现 2 个 manifest，package.json 应被排除");
+        assert_eq!(result.len(), 2, "2 manifests should be found, package.json should be excluded");
         let names: Vec<_> = result
             .iter()
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
@@ -92,7 +92,7 @@ mod tests {
         assert!(!names.contains(&"package.json"));
     }
 
-    /// 分类子目录中的 manifest 也被递归发现。
+    /// Manifest files in categorized subdirectories are also discovered recursively.
     #[test]
     fn discovers_manifests_in_subdirectories() {
         let dir = tmpdir("subdirs");
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(result.len(), 2);
     }
 
-    /// 非 .json 文件被忽略。
+    /// Non-.json files are ignored.
     #[test]
     fn ignores_non_json_files() {
         let dir = tmpdir("non_json");
@@ -118,7 +118,7 @@ mod tests {
         assert!(result[0].file_name().unwrap() == "app.json");
     }
 
-    /// 结果按路径排序。
+    /// Results are sorted by path.
     #[test]
     fn results_are_sorted() {
         let dir = tmpdir("sorted");
@@ -132,11 +132,11 @@ mod tests {
         assert!(result[1] < result[2]);
     }
 
-    /// 不存在的目录返回 Err。
+    /// Non-existent directory returns Err.
     #[test]
     fn nonexistent_dir_returns_error() {
         let dir = std::path::PathBuf::from("/tmp/hok_mw_test_nonexistent_dir_xyz_abc");
         let result = discover(&dir);
-        assert!(result.is_err(), "不存在的目录应返回 Err");
+        assert!(result.is_err(), "A non-existent directory should return Err.");
     }
 }
