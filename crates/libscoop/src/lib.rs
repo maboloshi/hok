@@ -40,7 +40,7 @@ mod error;
 mod event;
 mod handler;
 pub mod internal;
-mod package;
+pub mod package;
 mod persist;
 mod psmodule;
 mod session;

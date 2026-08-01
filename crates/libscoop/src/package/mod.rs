@@ -21,6 +21,7 @@
 //! - [`resolve`] — Dependency resolution using a DAG.
 //! - [`sync`] — The full install / upgrade / uninstall pipeline.
 
+pub mod checkurls;
 pub(crate) mod download;
 pub(crate) mod manifest;
 pub(crate) mod manifest_cache;

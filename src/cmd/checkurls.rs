@@ -1,9 +1,8 @@
 use clap::Parser;
-use libscoop::{operation, Manifest, Session};
-use std::collections::HashMap;
+use libscoop::{package::checkurls, Session};
 use std::path::PathBuf;
 
-use crate::{output, util, Result};
+use crate::{output, Result};
 
 /// Check manifest URLs for validity
 #[derive(Debug, Parser)]
@@ -43,115 +42,46 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     );
     eprintln!();
 
-    let mut total_manifests = 0u32;
-    let mut total_urls = 0u32;
-    let mut total_valid = 0u32;
-    let mut total_invalid = 0u32;
+    let report = checkurls::check_urls(session, dir, &args.app, args.timeout, args.skip_valid)?;
 
-    // Recursively collect all .json files
-    let manifest_paths: Vec<PathBuf> = util::walkdir_files(dir);
-
-    for path in &manifest_paths {
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
-
-        let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        if args.app[0] != "*" && !args.app.iter().any(|p| name.contains(p.as_str())) {
-            continue;
-        }
-
-        let manifest = match Manifest::parse(path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        // Collect ALL URLs (noarch + all architectures), matching Scoop's behavior:
-        // - If manifest.url exists → use those; otherwise collect from architecture specs
-        let raw_urls: Vec<String> = if manifest.url().is_empty() {
-            // Scoop: script:url $manifest '64bit', '32bit', 'arm64'
-            manifest.all_urls().into_iter().map(|s| s.to_string()).collect()
-        } else {
-            manifest.url().into_iter().map(|s| s.to_string()).collect()
-        };
-
-        // Scoop: Trim renaming suffix (#/filename) to prevent 40x responses
-        let urls: Vec<String> = raw_urls
-            .iter()
-            .map(|u| u.split('#').next().unwrap_or(u).to_string())
-            .collect();
-
-        if urls.is_empty() {
-            continue;
-        }
-
-        total_manifests += 1;
-
-        let manifest_cookies: Option<HashMap<String, String>> =
-            manifest.cookie().map(|c| c.clone());
-
-        let mut ok_count = 0u32;
-        let mut failed_count = 0u32;
-        let mut errors: Vec<String> = Vec::new();
-
-        for url in &urls {
-            total_urls += 1;
-            let result = operation::head_url_ext(session, url, args.timeout,
-                manifest_cookies.as_ref());
-
-            match result.error {
-                None => {
-                    // Scoop check: $status -eq 'OK' -or $status -eq 'OpeningData'
-                    // HTTP 2xx/3xx = OK. 3xx redirects are also OK (OpeningData for FTP)
-                    ok_count += 1;
-                    total_valid += 1;
-                }
-                Some(ref msg) => {
-                    failed_count += 1;
-                    total_invalid += 1;
-                    errors.push(format!("{} ({})", msg, url));
-                }
-            }
-        }
-
-        if ok_count == urls.len() as u32 && args.skip_valid {
-            continue;
-        }
-
-        // Scoop-style output: [urls][ok][failed] name
-        eprint!("[{}]", urls.len().to_string().cyan());
+    for result in &report.results {
+        eprint!("[{}]", result.total_urls.to_string().cyan());
         eprint!("[{}]",
-            if ok_count == urls.len() as u32 {
-                ok_count.to_string().green()
-            } else if ok_count == 0 {
-                ok_count.to_string().red()
+            if result.ok_count == result.total_urls {
+                result.ok_count.to_string().green()
+            } else if result.ok_count == 0 {
+                result.ok_count.to_string().red()
             } else {
-                ok_count.to_string().yellow()
+                result.ok_count.to_string().yellow()
             }
         );
         eprint!("[{}]",
-            if failed_count == 0 {
-                failed_count.to_string().green()
+            if result.failed_count == 0 {
+                result.failed_count.to_string().green()
             } else {
-                failed_count.to_string().red()
+                result.failed_count.to_string().red()
             }
         );
-        eprintln!(" {}", name);
+        eprintln!(" {}", result.name);
 
-        // Print detailed errors (Scoop: dark red indented lines)
-        for err in &errors {
-            eprintln!("{} > {}", "       ".to_string(), err.clone().dark_red());
+        for err in &result.errors {
+            eprintln!(
+                "{} > {} ({})",
+                "       ".to_string(),
+                err.message.clone().dark_red(),
+                err.url
+            );
         }
     }
 
-    if total_manifests == 0 {
+    if report.total_manifests == 0 {
         output::info(rust_i18n::t!("cmd.checkurls_no_manifests"));
     } else {
         output::info(rust_i18n::t!(
             "cmd.checkurls_summary",
-            total = total_urls,
-            valid = total_valid,
-            invalid = total_invalid
+            total = report.total_urls,
+            valid = report.total_valid,
+            invalid = report.total_invalid
         ));
     }
 
