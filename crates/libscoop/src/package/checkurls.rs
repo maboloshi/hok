@@ -123,6 +123,7 @@ pub fn check_urls(
 /// Scoop manifest URLs may contain `#/dl.7z` or similar fragment hints that
 /// instruct the downloader to rename the file. This helper strips the fragment
 /// so that the resulting string is a plain HTTP URL suitable for a HEAD check.
+#[allow(dead_code)]
 pub(crate) fn strip_url_fragment(raw: &str) -> &str {
     raw.split('#').next().unwrap_or(raw)
 }
@@ -131,6 +132,7 @@ pub(crate) fn strip_url_fragment(raw: &str) -> &str {
 ///
 /// Returns `true` when the first filter is `"*"` (wildcard) or when any
 /// filter is a substring of `name`.
+#[allow(dead_code)]
 pub(crate) fn app_filter_matches(name: &str, app_filters: &[String]) -> bool {
     if app_filters.first().map(|s| s.as_str()) == Some("*") {
         return true;
