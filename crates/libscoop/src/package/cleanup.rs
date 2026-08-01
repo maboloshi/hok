@@ -112,3 +112,101 @@ pub fn cleanup(
 
     Ok(results)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a temp root with a session rooted at it, plus a drop guard.
+    fn setup(test_name: &str) -> (Session, PathBufGuard) {
+        let root = crate::test_utils::tmpdir(&format!("cleanup_{}", test_name));
+        let session = crate::test_utils::test_session(&root);
+        (session, PathBufGuard(root))
+    }
+
+    struct PathBufGuard(std::path::PathBuf);
+    impl Drop for PathBufGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Create `apps/<name>/<version>/` dirs and point `apps/<name>/current`
+    /// at `<version>` via a directory symlink.
+    fn install_versions(root: &std::path::Path, name: &str, versions: &[&str], current: &str) {
+        let pkg_dir = root.join("apps").join(name);
+        for v in versions {
+            std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
+        }
+        internal::fs::symlink_dir(pkg_dir.join(current), pkg_dir.join("current")).unwrap();
+    }
+
+    #[test]
+    fn cleanup_removes_old_versions_keeps_current() {
+        let (session, root) = setup("old_versions");
+        install_versions(&root.0, "app", &["1.0.0", "0.9.0", "0.8.0"], "1.0.0");
+
+        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+
+        assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
+        assert!(root.0.join("apps/app/1.0.0").exists(), "current kept");
+        assert!(!root.0.join("apps/app/0.9.0").exists(), "old removed");
+        assert!(!root.0.join("apps/app/0.8.0").exists(), "old removed");
+    }
+
+    #[test]
+    fn cleanup_no_old_versions_returns_empty() {
+        let (session, root) = setup("only_current");
+        install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
+
+        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+
+        assert!(results.is_empty(), "nothing to clean");
+    }
+
+    #[test]
+    fn cleanup_empty_names_scans_all() {
+        let (session, root) = setup("scan_all");
+        install_versions(&root.0, "app1", &["2.0.0", "1.0.0"], "2.0.0");
+        install_versions(&root.0, "app2", &["1.5.0", "1.0.0"], "1.5.0");
+
+        let results = cleanup(&session, &[], false).unwrap();
+
+        let mut cleaned = results
+            .iter()
+            .map(|(n, r, f)| (n.as_str(), *r, *f))
+            .collect::<Vec<_>>();
+        cleaned.sort();
+        assert_eq!(cleaned, vec![("app1", 1, 0), ("app2", 1, 0)]);
+    }
+
+    #[test]
+    fn cleanup_missing_package_errors_without_ignore() {
+        let (session, _root) = setup("missing");
+
+        let err = cleanup(&session, &["nope".to_owned()], false).unwrap_err();
+
+        assert!(matches!(err, Error::PackageNotFound(name) if name == "nope"));
+    }
+
+    #[test]
+    fn cleanup_missing_package_skipped_with_ignore() {
+        let (session, root) = setup("missing_ignored");
+        install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
+
+        let results = cleanup(&session, &["nope".to_owned(), "app".to_owned()], true).unwrap();
+
+        assert!(results.is_empty(), "missing skipped, nothing to clean");
+    }
+
+    #[test]
+    fn cleanup_broken_package_without_current_is_skipped() {
+        let (session, root) = setup("broken");
+        // apps/app exists but has no `current` symlink
+        std::fs::create_dir_all(root.0.join("apps/app/1.0.0")).unwrap();
+
+        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+
+        assert!(results.is_empty(), "broken package skipped");
+    }
+}

@@ -272,3 +272,230 @@ pub(crate) fn resolve_cascade(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    const BASE_MANIFEST: &str =
+        r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#;
+
+    /// Create a temp root with a session rooted at it, plus a drop guard.
+    fn setup(test_name: &str) -> (Session, PathBufGuard) {
+        let root = crate::test_utils::tmpdir(&format!("resolve_{}", test_name));
+        let session = crate::test_utils::test_session(&root);
+        (session, PathBufGuard(root))
+    }
+
+    struct PathBufGuard(std::path::PathBuf);
+    impl Drop for PathBufGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn pkg(bucket: &str, name: &str, depends: &[&str]) -> Package {
+        let deps = if depends.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#", "depends": [{}]"#,
+                depends
+                    .iter()
+                    .map(|d| format!("\"{}\"", d))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let json = format!(
+            r#"{{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"{}}}"#,
+            deps
+        );
+        let manifest = crate::package::Manifest::from_json(name, &json).unwrap();
+        Package::from(name, bucket, manifest)
+    }
+
+    /// Helper to write a bucket manifest with optional `depends`.
+    fn write_manifest(root: &Path, bucket: &str, name: &str, depends: &[&str]) {
+        let deps = if depends.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#", "depends": [{}]"#,
+                depends
+                    .iter()
+                    .map(|d| format!("\"{}\"", d))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let json = format!(
+            r#"{{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"{}}}"#,
+            deps
+        );
+        crate::test_utils::write_bucket_manifest(root, bucket, name, &json);
+    }
+
+    // ── resolve_dependencies ──────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_orders_dependencies_first() {
+        let (session, root) = setup("order");
+        write_manifest(&root.0, "main", "a", &["main/b"]);
+        write_manifest(&root.0, "main", "b", &[]);
+
+        let mut packages = vec![pkg("main", "a", &["main/b"])];
+        resolve_dependencies(&session, &mut packages).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["b", "a"],
+            "dependency must come before dependent"
+        );
+    }
+
+    #[test]
+    fn resolve_no_deps_is_identity() {
+        let (session, _root) = setup("no_deps");
+
+        let mut packages = vec![pkg("main", "solo", &[])];
+        resolve_dependencies(&session, &mut packages).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["solo"]);
+    }
+
+    #[test]
+    fn resolve_missing_dependency_errors() {
+        let (session, root) = setup("missing_dep");
+        write_manifest(&root.0, "main", "a", &["ghost"]);
+
+        let mut packages = vec![pkg("main", "a", &["ghost"])];
+        let err = resolve_dependencies(&session, &mut packages).unwrap_err();
+
+        assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
+    }
+
+    #[test]
+    fn resolve_multilevel_dependencies_expanded() {
+        let (session, root) = setup("multilevel");
+        write_manifest(&root.0, "main", "a", &["main/b"]);
+        write_manifest(&root.0, "main", "b", &["main/c"]);
+        write_manifest(&root.0, "main", "c", &[]);
+
+        let mut packages = vec![pkg("main", "a", &["main/b"])];
+        resolve_dependencies(&session, &mut packages).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["c", "b", "a"],
+            "transitive deps expanded, deps first"
+        );
+    }
+
+    #[test]
+    fn resolve_duplicate_inputs_deduped() {
+        let (session, root) = setup("dedup");
+        write_manifest(&root.0, "main", "a", &["main/b"]);
+        write_manifest(&root.0, "main", "b", &[]);
+
+        let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "b", &[])];
+        resolve_dependencies(&session, &mut packages).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["b", "a"], "no duplicates, deps first");
+    }
+
+    #[test]
+    fn resolve_multiple_candidates_prefers_installed() {
+        let (session, root) = setup("multi_installed");
+        // Same package name in two buckets
+        write_manifest(&root.0, "main", "a", &[]);
+        write_manifest(&root.0, "alt", "a", &[]);
+        // alt/a is the installed one
+        crate::test_utils::mark_installed(&root.0, "a", "alt", BASE_MANIFEST, false);
+        write_manifest(&root.0, "main", "b", &["a"]);
+
+        let mut packages = vec![pkg("main", "b", &["a"])];
+        resolve_dependencies(&session, &mut packages).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["a", "b"]);
+        assert_eq!(buckets, vec!["alt", "main"], "installed candidate wins");
+    }
+
+    #[test]
+    fn resolve_multiple_candidates_without_emitter_errors() {
+        let (session, root) = setup("multi_no_emitter");
+        write_manifest(&root.0, "main", "a", &[]);
+        write_manifest(&root.0, "alt", "a", &[]);
+        write_manifest(&root.0, "main", "b", &["a"]);
+
+        let mut packages = vec![pkg("main", "b", &["a"])];
+        let err = resolve_dependencies(&session, &mut packages).unwrap_err();
+
+        assert!(matches!(err, Error::PackageMultipleCandidates(name) if name == "a"));
+    }
+
+    // ── resolve_cascade ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cascade_appends_unneeded_dependency() {
+        let (session, root) = setup("cascade_unneeded");
+        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
+        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, false);
+
+        // a depends on b, and nothing else depends on b → b becomes unneeded
+        let mut packages = vec![pkg("main", "a", &["b"])];
+        resolve_cascade(&session, &mut packages, false).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn cascade_keeps_dependency_needed_by_others() {
+        let (session, root) = setup("cascade_needed");
+        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
+        // c depends on b (read from its installed manifest.json)
+        let c_manifest = r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT", "depends": ["b"]}"#;
+        crate::test_utils::mark_installed(&root.0, "c", "main", c_manifest, false);
+        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, false);
+
+        // a depends on b, but c also depends on b → b stays
+        let mut packages = vec![pkg("main", "a", &["b"])];
+        resolve_cascade(&session, &mut packages, false).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["a"], "b is still needed by c");
+    }
+
+    #[test]
+    fn cascade_held_dependency_blocks_without_escape() {
+        let (session, root) = setup("cascade_held");
+        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
+        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
+
+        let mut packages = vec![pkg("main", "a", &["b"])];
+        let err = resolve_cascade(&session, &mut packages, false).unwrap_err();
+
+        assert!(matches!(err, Error::PackageCascadeRemoveHold(name) if name == "b"));
+    }
+
+    #[test]
+    fn cascade_held_dependency_removed_when_escaping() {
+        let (session, root) = setup("cascade_escape");
+        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
+        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
+
+        let mut packages = vec![pkg("main", "a", &["b"])];
+        resolve_cascade(&session, &mut packages, true).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+}
