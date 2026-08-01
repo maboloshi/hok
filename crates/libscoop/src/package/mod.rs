@@ -28,6 +28,7 @@ pub mod checkver;
 pub(crate) mod download;
 pub(crate) mod manifest;
 pub(crate) mod manifest_cache;
+pub(crate) mod manifest_walker;
 pub mod missing_checkver;
 pub(crate) mod query;
 pub(crate) mod resolve;
