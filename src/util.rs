@@ -113,48 +113,6 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
     }
 }
 
-// ─── URL utility functions ─────────────────────────────────────────────────
-// These are shared URL helpers extracted for reuse across commands.
-
-/// Extract the filename portion of a URL (last path segment).
-#[allow(dead_code)]
-pub fn url_remote_filename(url: &str) -> String {
-    let decoded = url_decoded(url);
-    decoded.rsplit('/').next().unwrap_or(&decoded).to_string()
-}
-
-/// Extract basename from a URL (filename without extension).
-#[allow(dead_code)]
-pub fn url_basename(url: &str) -> String {
-    let filename = url.rsplit('/').next().unwrap_or(url);
-    let dot = filename.rfind('.');
-    match dot {
-        Some(pos) => filename[..pos].to_string(),
-        None => filename.to_string(),
-    }
-}
-
-/// Decode URL percent-encoding.
-#[allow(dead_code)]
-pub fn url_decoded(s: &str) -> String {
-    let mut result = String::new();
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-                continue;
-            }
-            result.push('%');
-            result.push_str(&hex);
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 // ─── Directory walking ──────────────────────────────────────────────────────
 
 /// Recursively collect all `.json` files under a directory.

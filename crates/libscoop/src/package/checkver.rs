@@ -33,37 +33,6 @@ mod output {
     }
 }
 
-mod util {
-    pub fn url_remote_filename(url: &str) -> String {
-        let decoded = url_decoded(url);
-        decoded.rsplit('/').next().unwrap_or(&decoded).to_string()
-    }
-    pub fn url_basename(url: &str) -> String {
-        let filename = url.rsplit('/').next().unwrap_or(url);
-        match filename.rfind('.') {
-            Some(pos) => filename[..pos].to_string(),
-            None => filename.to_string(),
-        }
-    }
-    fn url_decoded(s: &str) -> String {
-        let mut result = String::new();
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '%' {
-                let hex: String = chars.by_ref().take(2).collect();
-                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                    result.push(byte as char);
-                    continue;
-                }
-                result.push('%');
-                result.push_str(&hex);
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    }
-}
 use anyhow::Result;
 
 // ---------------------------------------------------------------------------
@@ -556,7 +525,7 @@ fn apply_autoupdate(
     // ── Compute $basename from first URL after initial substitution ─────────
     if let Some(urls) = &au.url {
         let first_url = sub_first(urls.devectorize().first().copied().unwrap_or(""));
-        let basename = util::url_basename(&first_url);
+        let basename = crate::internal::url::basename(&first_url);
         vars.push(("$basename".to_string(), basename));
     }
 
@@ -728,7 +697,7 @@ fn download_and_hash_multi(
                     "fosshub" => {
                         // Scoop: fetch the download page itself, find sha256 with regex
                         // Regex: <filename>.*?"sha256":"([a-fA-F0-9]{64})"
-                        let filename = util::url_remote_filename(url);
+                        let filename = crate::internal::url::remote_filename(url);
                         let page = operation::download_page(session, url, 30)
                             .map_err(|e| anyhow::anyhow!("fetch fosshub page {}: {}", url, e))?;
                         let regex_str = format!(r#"{filename}.*?"sha256":"([a-fA-F0-9]+)""#);
@@ -763,7 +732,7 @@ fn download_and_hash_multi(
                             operation::download_page(session, &sf_page_url, 30).map_err(|e| {
                                 anyhow::anyhow!("fetch sourceforge page {}: {}", sf_page_url, e)
                             })?;
-                        let basename = util::url_remote_filename(url);
+                        let basename = crate::internal::url::remote_filename(url);
                         let regex_str = format!(r#""{basename}":.*?"sha1":\s*"([a-fA-F0-9]+)""#);
                         let re = Regex::new(&regex_str)
                             .map_err(|e| anyhow::anyhow!("bad sourceforge regex: {}", e))?;
@@ -903,7 +872,7 @@ fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Resu
     // Scoop (find_hash_in_rdf):
     //   $digest = $xml.RDF.Content | Where-Object { [String]$_.about -eq $basename }
     //   return format_hash $digest.sha256
-    let basename = util::url_remote_filename(url);
+    let basename = crate::internal::url::remote_filename(url);
     find_hash_in_rdf(&page, &basename).ok_or_else(|| {
         anyhow::anyhow!(
             "could not find hash for '{}' in RDF at {}",

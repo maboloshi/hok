@@ -29,6 +29,7 @@ pub mod github;
 pub mod network;
 pub mod os;
 pub mod path;
+pub mod url;
 
 /// Compare two semantic version strings.
 ///
