@@ -240,6 +240,7 @@ impl Bucket {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn extract_name_and_bucket(path: &Path) -> Fallible<(String, String)> {
     static RE: LazyLock<Regex> = LazyLock::new(|| {
         // FIXME: Uppercase <name> is not a good idea, the support is going to be dropped.
