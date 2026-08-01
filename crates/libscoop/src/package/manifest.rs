@@ -22,20 +22,25 @@
 //! [manifest]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
 //! [official Scoop manifest schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
 
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-use crate::constant::{REGEX_ARCHIVE_7Z, REGEX_HASH, SPDX_LIST};
+use crate::constant::{REGEX_ARCHIVE_7Z, REGEX_HASH};
 use crate::error::Fallible;
 use crate::internal;
+
+#[path = "manifest_parse.rs"]
+mod manifest_parse;
+#[path = "manifest_license.rs"]
+mod manifest_license;
+
+pub use manifest_license::License;
 
 /// A [`Manifest`] basically defines a package that is available to be installed
 /// via Scoop. It's a JSON file containing all the specification needed by Scoop
@@ -159,16 +164,7 @@ pub struct ManifestSpec {
     pub notes: Option<Vectorized<String>>,
 }
 
-/// License information of a Scoop package.
-#[derive(Clone, Debug, Serialize)]
-pub struct License {
-    /// The identifier of the license, which is intended to be a SPDX license.
-    identifier: String,
 
-    /// The url to the license text.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-}
 
 /// A [`Vectorized<T>`] represents a derivative [`Vec<T>`] data structure which
 /// can be constructed from either an array of T **or a single T**. That means
@@ -188,7 +184,7 @@ pub struct License {
 /// a tow times wrapped vector of strings. `bin` and `persist` are these kind
 /// of fields.
 #[derive(Clone, Debug)]
-pub struct Vectorized<T>(Vec<T>);
+pub struct Vectorized<T>(pub(crate) Vec<T>);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Architecture {
@@ -426,67 +422,6 @@ pub enum HashExtractionMode {
     Sourceforge,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-//  Custom (De)serializers
-////////////////////////////////////////////////////////////////////////////////
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for Vectorized<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct VectorizedVisitor<T>(PhantomData<T>);
-        impl<'de, T> Visitor<'de> for VectorizedVisitor<T>
-        where
-            T: Deserialize<'de>,
-        {
-            type Value = Vec<T>;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("single item or array of items")
-            }
-
-            #[inline]
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                T::deserialize(serde_json::Value::String(s.to_owned()))
-                    .map(|val| vec![val])
-                    .map_err(|e| de::Error::custom(e))
-            }
-
-            fn visit_seq<S>(self, mut seq: S) -> Result<Self::Value, S::Error>
-            where
-                S: SeqAccess<'de>,
-            {
-                let mut ret = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-                while let Some(item) = seq.next_element()? {
-                    ret.push(item)
-                }
-                Ok(ret)
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
-                let mut remap = serde_json::Map::with_capacity(map.size_hint().unwrap_or(0));
-                while let Some((k, v)) = map.next_entry()? {
-                    remap.insert(k, v);
-                }
-                T::deserialize(serde_json::Value::Object(remap))
-                    .map(|val| vec![val])
-                    .map_err(de::Error::custom)
-            }
-        }
-
-        Ok(Vectorized(
-            deserializer.deserialize_any(VectorizedVisitor(PhantomData))?,
-        ))
-    }
-}
-
 impl<T: Serialize> Serialize for Vectorized<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -502,236 +437,6 @@ impl<T: Serialize> Serialize for Vectorized<T> {
             1 => serializer.serialize_some(&self.0[0]),
             _ => serializer.collect_seq(self.0.iter()),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for License {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct LicenseVisitor;
-        impl<'de> Visitor<'de> for LicenseVisitor {
-            type Value = License;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a license string or a map with identifier field")
-            }
-
-            #[inline]
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                // Note: intentionally NOT validated against the SPDX list —
-                // Scoop's schema allows non-SPDX identifiers such as
-                // `Freeware`, `Proprietary`, `Public Domain` and `Shareware`.
-                // See `License::is_spdx()` for soft checking.
-                Ok(License::new(s.to_owned(), None))
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::MapAccess<'de>,
-            {
-                let mut identifier: Result<String, A::Error> =
-                    Err(de::Error::missing_field("identifier"));
-                let mut url = None;
-
-                // It is needed to explicitly specify types `<String, String>`
-                // of the key and value for the `next_entry` method here,
-                // otherwise the deserializer will complain about the invalid
-                // type of the key, which is basically similar to:
-                // https://github.com/influxdata/pbjson/issues/55
-                while let Some((key, value)) = map.next_entry::<String, String>()? {
-                    match key.as_str() {
-                        "identifier" => identifier = Ok(value),
-                        "url" => url = Some(value),
-                        _ => {
-                            // skip invalid fields
-                            map.next_value::<serde_json::Value>()?;
-                            continue;
-                        }
-                    }
-                }
-
-                Ok(License::new(identifier?, url))
-            }
-        }
-
-        deserializer.deserialize_any(LicenseVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for Sourceforge {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct SourceforgeVisitor;
-        impl<'de> Visitor<'de> for SourceforgeVisitor {
-            type Value = Sourceforge;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a valid sourceforge check string or map with path field")
-            }
-
-            #[inline]
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                let (project, path) = match s.split_once('/') {
-                    Some((a, b)) => (Some(a.to_owned()), b.to_owned()),
-                    None => (None, s.to_owned()),
-                };
-                Ok(Sourceforge { project, path })
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::MapAccess<'de>,
-            {
-                let mut project = None;
-                let mut path: Result<String, A::Error> = Err(de::Error::missing_field("path"));
-
-                while let Some((key, value)) = map.next_entry::<String, String>()? {
-                    match key.as_str() {
-                        "project" => project = Some(value),
-                        "path" => path = Ok(value),
-                        _ => {
-                            // skip invalid fields
-                            map.next_value::<serde_json::Value>()?;
-                            continue;
-                        }
-                    }
-                }
-
-                Ok(Sourceforge {
-                    project,
-                    path: path?,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(SourceforgeVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for HashString {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct HashStringVisitor;
-        impl<'de> Visitor<'de> for HashStringVisitor {
-            type Value = HashString;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a valid hash string")
-            }
-
-            #[inline]
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                HashString::new(s).map_err(|e| E::custom(e))
-            }
-        }
-
-        deserializer.deserialize_any(HashStringVisitor)
-    }
-}
-
-impl<'de> Deserialize<'de> for Checkver {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct CheckverVisitor;
-        impl<'de> Visitor<'de> for CheckverVisitor {
-            type Value = Checkver;
-
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a checkver string or a checkver map")
-            }
-
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                let regex = match s {
-                    "github" => Some("/releases/tag/(?:v|V)?([\\d.]+)".to_owned()),
-                    _ => Some(s.to_owned()),
-                };
-
-                Ok(Checkver {
-                    regex,
-                    url: None,
-                    jsonpath: None,
-                    xpath: None,
-                    reverse: None,
-                    replace: None,
-                    useragent: None,
-                    script: None,
-                    sourceforge: None,
-                })
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::MapAccess<'de>,
-            {
-                let mut regex = None;
-                let mut url = None;
-                let mut jsonpath = None;
-                let mut xpath = None;
-                let mut reverse = None;
-                let mut replace = None;
-                let mut useragent = None;
-                let mut script = None;
-                let mut sourceforge = None;
-
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "github" => {
-                            let prefix = map.next_value::<String>()?;
-                            url = Some(format!("{}/releases/latest", prefix));
-                            regex = Some("/releases/tag/(?:v|V)?([\\d.]+)".to_owned());
-                        }
-                        "re" | "regex" => regex = Some(map.next_value()?),
-                        "url" => url = Some(map.next_value()?),
-                        "jp" | "jsonpath" => jsonpath = Some(map.next_value()?),
-                        "xpath" => xpath = Some(map.next_value()?),
-                        "reverse" => reverse = Some(map.next_value()?),
-                        "replace" => replace = Some(map.next_value()?),
-                        "useragent" => useragent = Some(map.next_value()?),
-                        "script" => script = Some(map.next_value()?),
-                        "sourceforge" => sourceforge = Some(map.next_value()?),
-                        _ => {
-                            // skip invalid fields
-                            map.next_value::<serde_json::Value>()?;
-                            continue;
-                        }
-                    }
-                }
-
-                Ok(Checkver {
-                    regex,
-                    url,
-                    jsonpath,
-                    xpath,
-                    reverse,
-                    replace,
-                    useragent,
-                    script,
-                    sourceforge,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(CheckverVisitor)
     }
 }
 
@@ -1226,48 +931,6 @@ impl Manifest {
     }
 }
 
-impl License {
-    /// Create a [`License`] representation.
-    pub fn new(identifier: String, url: Option<String>) -> License {
-        Self { identifier, url }
-    }
-
-    /// Return the identifier of this license.
-    #[inline]
-    pub fn identifier(&self) -> &str {
-        &self.identifier
-    }
-
-    /// Check if this license is a valid SPDX identifier.
-    #[inline]
-    pub fn is_spdx(&self) -> bool {
-        SPDX_LIST.contains(self.identifier())
-    }
-
-    /// Return the url to the license text of this license.
-    #[inline]
-    pub fn url(&self) -> Option<&str> {
-        self.url.as_deref()
-    }
-}
-
-impl fmt::Display for License {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let url = self.url();
-
-        if let Some(url) = url {
-            write!(f, "{} ({})", self.identifier, url)
-        } else if self.is_spdx() {
-            write!(
-                f,
-                "{} (https://spdx.org/licenses/{}.html)",
-                self.identifier, self.identifier
-            )
-        } else {
-            write!(f, "{}", self.identifier)
-        }
-    }
-}
 
 impl HashString {
     /// Create a [`HashString`] representation.
@@ -1425,6 +1088,7 @@ impl From<Vectorized<Vectorized<String>>> for Vec<Vec<String>> {
         veced.0.into_iter().map(|v| v.0).collect()
     }
 }
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InstallInfo {
