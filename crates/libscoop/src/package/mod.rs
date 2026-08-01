@@ -21,6 +21,7 @@
 //! - [`resolve`] — Dependency resolution using a DAG.
 //! - [`sync`] — The full install / upgrade / uninstall pipeline.
 
+pub mod auto_pr;
 pub mod checkhashes;
 pub mod checkurls;
 pub mod checkver;

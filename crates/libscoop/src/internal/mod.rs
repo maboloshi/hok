@@ -25,6 +25,7 @@ pub mod dag;
 pub mod env;
 pub mod fs;
 pub mod git;
+pub mod github;
 pub mod network;
 pub mod os;
 pub mod path;
