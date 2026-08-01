@@ -11,16 +11,19 @@
 //!   (e.g. a field that can be a single string or an array).
 //! - **Two-layer structure**: [`Manifest`] wraps a [`ManifestSpec`] plus
 //!   the file path and hash; `ManifestSpec` holds the actual JSON data.
-//! - **Path resolution**: `Manifest::resolve_*` methods expand relative
-//!   paths in manifest fields against the manifest's own directory.
+//! - **Runtime architecture**: architecture-specific fields are selected at
+//!   runtime from the host OS (see [`crate::internal::arch`]), mirroring
+//!   Scoop's `Get-DefaultArchitecture`, not at compile time.
 //! - **Hash support**: [`HashString`] represents a single hash value,
 //!   knowing its algorithm (MD5, SHA1, SHA256, SHA512) from the string
-//!   format.
+//!   format. An empty hash (`""`) is a valid "no verification" value used
+//!   by real-world Scoop manifests.
 //!
 //! [manifest]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
 //! [official Scoop manifest schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
 
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -30,7 +33,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-use crate::constant::{REGEX_HASH, SPDX_LIST};
+use crate::constant::{REGEX_ARCHIVE_7Z, REGEX_HASH, SPDX_LIST};
 use crate::error::Fallible;
 use crate::internal;
 
@@ -356,6 +359,13 @@ pub struct AutoupdateArchitecture {
 
 #[derive(Clone, Debug, Serialize)]
 pub enum HashString {
+    /// Empty hash — the manifest explicitly does not verify this URL.
+    ///
+    /// Scoop uses `""` in real-world manifests for URLs without a fixed
+    /// checksum (e.g. `wget`'s `cacert.pem`); a missing hash only produces a
+    /// warning during `check_hash` in the original implementation.
+    #[serde(rename = "")]
+    Empty,
     Md5(String),
     Sha1(String),
     Sha256(String),
@@ -483,7 +493,12 @@ impl<T: Serialize> Serialize for Vectorized<T> {
         S: Serializer,
     {
         match self.0.len() {
-            0 => serializer.serialize_none(),
+            // Serialize an empty vector as `[]` (not `null`) to preserve the
+            // JSON semantics of the manifest field.
+            0 => {
+                let seq = serializer.serialize_seq(Some(0))?;
+                seq.end()
+            }
             1 => serializer.serialize_some(&self.0[0]),
             _ => serializer.collect_seq(self.0.iter()),
         }
@@ -508,7 +523,10 @@ impl<'de> Deserialize<'de> for License {
             where
                 E: de::Error,
             {
-                // TODO: validate SPDX identifier
+                // Note: intentionally NOT validated against the SPDX list —
+                // Scoop's schema allows non-SPDX identifiers such as
+                // `Freeware`, `Proprietary`, `Public Domain` and `Shareware`.
+                // See `License::is_spdx()` for soft checking.
                 Ok(License::new(s.to_owned(), None))
             }
 
@@ -727,29 +745,38 @@ macro_rules! arch_specific_field {
         let mut ret = $self.inner.$field.as_ref();
 
         if let Some(arch) = $self.inner.architecture.as_ref() {
-            if cfg!(target_arch = "x86") {
-                if let Some(ia32) = &arch.ia32 {
-                    let $field = ia32.$field.as_ref();
-                    if $field.is_some() {
-                        ret = $field;
+            // Architecture is selected at runtime from the host OS (Scoop's
+            // `Get-DefaultArchitecture`, honouring the `default_architecture`
+            // config override), plus the ARM64 fallback of Scoop's
+            // `Get-SupportedArchitecture`: on ARM64 hosts whose manifest has
+            // no `arm64` field, Windows 11 → 64bit, Windows 10 → 32bit.
+            let current = crate::internal::arch::Arch::supported(
+                crate::internal::arch::Arch::current(),
+                arch.aarch64.is_none(),
+            );
+            match current {
+                crate::internal::arch::Arch::Ia32 => {
+                    if let Some(ia32) = &arch.ia32 {
+                        let $field = ia32.$field.as_ref();
+                        if $field.is_some() {
+                            ret = $field;
+                        }
                     }
                 }
-            }
-
-            if cfg!(target_arch = "x86_64") {
-                if let Some(amd64) = &arch.amd64 {
-                    let $field = amd64.$field.as_ref();
-                    if $field.is_some() {
-                        ret = $field;
+                crate::internal::arch::Arch::Amd64 => {
+                    if let Some(amd64) = &arch.amd64 {
+                        let $field = amd64.$field.as_ref();
+                        if $field.is_some() {
+                            ret = $field;
+                        }
                     }
                 }
-            }
-
-            if cfg!(target_arch = "aarch64") {
-                if let Some(aarch64) = &arch.aarch64 {
-                    let $field = aarch64.$field.as_ref();
-                    if $field.is_some() {
-                        ret = $field;
+                crate::internal::arch::Arch::Aarch64 => {
+                    if let Some(aarch64) = &arch.aarch64 {
+                        let $field = aarch64.$field.as_ref();
+                        if $field.is_some() {
+                            ret = $field;
+                        }
                     }
                 }
             }
@@ -809,10 +836,11 @@ impl Manifest {
             warn!("failed to parse manifest {} (err: {})", path.display(), e);
         })?;
         let path = internal::path::normalize_path(path);
-        // let mut checksum = scoop_hash::Checksum::new("sha256");
-        // checksum.consume(&bytes);
-        // let hash = checksum.result();
-        let hash = String::from("0");
+
+        // SHA256 of the manifest file itself (kept for cache validation).
+        let mut checksum = scoop_hash::ChecksumBuilder::new().sha256().build();
+        checksum.consume(&bytes);
+        let hash = checksum.finalize();
 
         Ok(Manifest { path, inner, hash })
     }
@@ -830,10 +858,16 @@ impl Manifest {
     pub fn from_json(name: &str, json: &str) -> Fallible<Manifest> {
         let inner: ManifestSpec = serde_json::from_str(json)?;
         let path = PathBuf::from(name);
+
+        // SHA256 of the manifest JSON, consistent with `parse()`.
+        let mut checksum = scoop_hash::ChecksumBuilder::new().sha256().build();
+        checksum.consume(json.as_bytes());
+        let hash = checksum.finalize();
+
         Ok(Manifest {
             path,
             inner,
-            hash: String::new(),
+            hash,
         })
     }
 
@@ -995,8 +1029,10 @@ impl Manifest {
     /// Collect ALL URLs from this manifest (noarch + all architectures).
     ///
     /// Unlike `url()` which only returns URLs for the current platform,
-    /// this method returns URLs from noarch, 32bit, 64bit, and arm64.
-    /// Used by checkurls to validate all download URLs.
+    /// this method returns URLs from noarch, 64bit, 32bit, and arm64 — in
+    /// the same fixed order as Scoop's `bin/checkhashes.ps1`
+    /// (64bit → 32bit → arm64). Used by checkurls to validate all download
+    /// URLs.
     pub fn all_urls(&self) -> Vec<&str> {
         let mut urls: Vec<&str> = Vec::new();
         // Add noarch URLs
@@ -1005,9 +1041,9 @@ impl Manifest {
                 urls.push(s);
             }
         }
-        // Add architecture-specific URLs
+        // Add architecture-specific URLs (64bit → 32bit → arm64)
         if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.ia32, &arch.amd64, &arch.aarch64]
+            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
                 .into_iter()
                 .flatten()
             {
@@ -1024,8 +1060,9 @@ impl Manifest {
     /// Collect ALL hashes from this manifest (noarch + all architectures).
     ///
     /// Unlike `hash()` which only returns hashes for the current platform,
-    /// this method returns hashes from noarch, 32bit, 64bit, and arm64.
-    /// Used by checkhashes to validate all hashes.
+    /// this method returns hashes from noarch, 64bit, 32bit, and arm64 — in
+    /// the same fixed order as Scoop's `bin/checkhashes.ps1`
+    /// (64bit → 32bit → arm64). Used by checkhashes to validate all hashes.
     pub fn all_hashes(&self) -> Vec<&HashString> {
         let mut hashes: Vec<&HashString> = Vec::new();
         // Add noarch hashes
@@ -1034,9 +1071,9 @@ impl Manifest {
                 hashes.push(s);
             }
         }
-        // Add architecture-specific hashes
+        // Add architecture-specific hashes (64bit → 32bit → arm64)
         if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.ia32, &arch.amd64, &arch.aarch64]
+            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
                 .into_iter()
                 .flatten()
             {
@@ -1056,6 +1093,9 @@ impl Manifest {
     /// Each entry is `(json_pointer, count)`, e.g.:
     /// `("/hash", 2)` for two top-level hashes,
     /// `("/architecture/64bit/hash", 1)` for one 64bit hash.
+    ///
+    /// Architecture segments are emitted 64bit → 32bit → arm64, matching
+    /// Scoop's `bin/checkhashes.ps1`.
     pub fn all_hash_segments(&self) -> Vec<(String, usize)> {
         let mut segments = Vec::new();
         // Top-level hashes
@@ -1065,11 +1105,11 @@ impl Manifest {
                 segments.push(("/hash".to_string(), count));
             }
         }
-        // Architecture-specific hashes
+        // Architecture-specific hashes (64bit → 32bit → arm64)
         if let Some(ref arch) = self.inner.architecture {
             for (arch_name, spec_opt) in [
-                ("32bit", &arch.ia32),
                 ("64bit", &arch.amd64),
+                ("32bit", &arch.ia32),
                 ("arm64", &arch.aarch64),
             ] {
                 if let Some(spec) = spec_opt {
@@ -1113,41 +1153,48 @@ impl Manifest {
             deps.extend(raw_depends.into_iter().map(|s| s.to_owned()));
         }
 
-        if self.innosetup() {
-            deps.insert("main/innounp".to_owned());
-        }
-
+        // Implicit "installation helpers", mirroring Scoop's
+        // `Get-InstallationHelper` (lib/depends.ps1): helpers are *appended*
+        // to the declared dependencies and deduplicated — existing
+        // declarations are never removed. Helper names carry no bucket
+        // prefix, matching the original implementation.
+        //
+        // Known differences from Scoop, noted for future alignment:
+        // - Scoop gates `7zip` on config `USE_EXTERNAL_7ZIP` and `lessmsi` on
+        //   `USE_LESSMSI` (default off); Hok has no such config yet, so
+        //   `lessmsi` is always appended when triggered.
+        // - The archive-URL check is an approximation of Scoop's
+        //   `Test-7zipRequirement` pattern.
+        let urls = self.url();
         let hook_scripts = [
             self.pre_install(),
             self.post_install(),
             self.installer().map(|i| i.script()).unwrap_or_default(),
-            self.uninstaller().map(|u| u.script()).unwrap_or_default(),
-            self.pre_uninstall(),
-            self.post_uninstall(),
         ];
+        let script = hook_scripts
+            .into_iter()
+            .flatten() // Option<Vec<&str>> → Vec<&str>
+            .flatten() // Vec<&str> → &str
+            .collect::<Vec<_>>()
+            .join("\r\n");
 
-        hook_scripts.into_iter().for_each(|s| {
-            if let Some(script_block) = s {
-                let s = script_block.join("\r\n");
+        let url_is_archive = urls.iter().any(|u| REGEX_ARCHIVE_7Z.is_match(u));
+        let url_is_msi = urls
+            .iter()
+            .any(|u| u.to_ascii_lowercase().ends_with(".msi"));
 
-                if s.contains("Expand-7zipArchive") {
-                    deps.remove("main/7zip");
-                    deps.insert("7zip".to_owned());
-                }
-                if s.contains("Expand-MsiArchive") {
-                    deps.remove("lessmsi");
-                    deps.insert("main/lessmsi".to_owned());
-                }
-                if s.contains("Expand-InnoArchive") {
-                    deps.remove("innounp");
-                    deps.insert("main/innounp".to_owned());
-                }
-                if s.contains("Expand-DarkArchive") {
-                    deps.remove("dark");
-                    deps.insert("main/dark".to_owned());
-                }
-            }
-        });
+        if url_is_archive || script.contains("Expand-7zipArchive") {
+            deps.insert("7zip".to_owned());
+        }
+        if url_is_msi || script.contains("Expand-MsiArchive") {
+            deps.insert("lessmsi".to_owned());
+        }
+        if self.innosetup() || script.contains("Expand-InnoArchive") {
+            deps.insert("innounp".to_owned());
+        }
+        if script.contains("Expand-DarkArchive") {
+            deps.insert("dark".to_owned());
+        }
 
         deps.into_iter().collect()
     }
@@ -1229,6 +1276,15 @@ impl fmt::Display for License {
 impl HashString {
     /// Create a [`HashString`] representation.
     pub fn new(raw: &str) -> Fallible<HashString> {
+        // An empty hash means "no verification" in Scoop (see `check_hash` in
+        // lib/download.ps1 — a missing hash only warns). Real-world manifests
+        // (e.g. ScoopInstaller/Main `wget.json`) use `""` for URLs without a
+        // fixed checksum, so accept it instead of failing to parse the whole
+        // manifest.
+        if raw.is_empty() {
+            return Ok(HashString::Empty);
+        }
+
         if !REGEX_HASH.is_match(raw) {
             let msg = format!("invalid hash string: {}", raw);
             return Err(crate::Error::Custom(msg));
@@ -1256,8 +1312,12 @@ impl HashString {
     /// - `sha1`
     /// - `sha256`
     /// - `sha512`
+    ///
+    /// For [`HashString::Empty`] (no verification) the value is unused;
+    /// `sha256` is returned as a conservative default.
     pub fn algorithm(&self) -> &str {
         match self {
+            HashString::Empty => "sha256",
             HashString::Md5(_) => "md5",
             HashString::Sha1(_) => "sha1",
             HashString::Sha256(_) => "sha256",
@@ -1266,8 +1326,12 @@ impl HashString {
     }
 
     /// Return the hash value.
+    ///
+    /// For [`HashString::Empty`] this returns an empty string, so callers can
+    /// uniformly treat an empty value as "skip verification".
     pub fn value(&self) -> &str {
         match self {
+            HashString::Empty => "",
             HashString::Md5(s) => s,
             HashString::Sha1(s) => s,
             HashString::Sha256(s) => s,
@@ -1279,6 +1343,7 @@ impl HashString {
 impl fmt::Display for HashString {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match self {
+            HashString::Empty => String::new(),
             HashString::Md5(s) => format!("md5:{}", s),
             HashString::Sha1(s) => format!("sha1:{}", s),
             HashString::Sha256(s) => format!("sha256:{}", s),
@@ -1417,5 +1482,120 @@ impl InstallInfo {
     #[inline]
     pub fn url(&self) -> Option<&str> {
         self.url.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_from(json: &str) -> Manifest {
+        Manifest::from_json("test-pkg", json).unwrap()
+    }
+
+    #[test]
+    fn test_hashstring_empty_is_valid() {
+        let empty = HashString::new("").unwrap();
+        assert!(matches!(empty, HashString::Empty));
+        assert_eq!(empty.value(), "");
+        assert_eq!(empty.to_string(), "");
+        // An empty hash in a manifest parses fine (wget-style "no verification")
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "hash": ""
+            }"#,
+        );
+        assert_eq!(m.hash().len(), 1);
+        assert!(m.hash()[0].value().is_empty());
+    }
+
+    #[test]
+    fn test_dependencies_preserve_explicit_and_append_helpers() {
+        // Explicit `main/7zip` must be preserved (never removed), and the
+        // script trigger appends the bucket-less `7zip` helper.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "depends": ["main/7zip"],
+                "url": "https://example.com/pkg.exe",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "post_install": "Expand-7zipArchive foo.7z $dir"
+            }"#,
+        );
+        let deps = m.dependencies();
+        assert!(deps.contains(&"main/7zip".to_owned()), "explicit dep preserved");
+        assert!(deps.contains(&"7zip".to_owned()), "helper appended bucket-less");
+        // Deduplication: exactly one `7zip`
+        assert_eq!(deps.iter().filter(|d| *d == "7zip").count(), 1);
+    }
+
+    #[test]
+    fn test_dependencies_archive_url_triggers_7zip() {
+        // An archive URL alone triggers the 7zip helper, even without scripts.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.7z",
+                "hash": "a927ce340e91aea1f1dcb86937bcd6cfadfd550986b1bcc8ae2edbe23844277a"
+            }"#,
+        );
+        assert!(m.dependencies().contains(&"7zip".to_owned()));
+    }
+
+    #[test]
+    fn test_dependencies_msi_url_triggers_lessmsi() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.msi",
+                "hash": "297dfcca1435c5e6b31e3e1eedac0c61f1f24f9d27d9795e9d9e586378e12f94"
+            }"#,
+        );
+        assert!(m.dependencies().contains(&"lessmsi".to_owned()));
+    }
+
+    #[test]
+    fn test_dependencies_innosetup_and_dark() {
+        // innosetup: true triggers `innounp`; script triggers `dark`.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "innosetup": true,
+                "url": "https://example.com/pkg.exe",
+                "hash": "d26b6c2b94cc18657c3327b6bbab07a2d8c43a7dbd51ba2f2996b6157f0b26a2",
+                "pre_install": "Expand-DarkArchive appx $dir"
+            }"#,
+        );
+        let deps = m.dependencies();
+        assert!(deps.contains(&"innounp".to_owned()), "innosetup → innounp (bucket-less)");
+        assert!(deps.contains(&"dark".to_owned()), "Expand-DarkArchive → dark");
+        assert!(!deps.iter().any(|d| d.starts_with("main/")), "helpers carry no bucket prefix");
+    }
+
+    #[test]
+    fn test_dependencies_no_false_positives() {
+        // Plain .exe URL and no helper scripts → no implicit helpers.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.exe",
+                "hash": "9ae8b12d46852aa08a97d46767d3aca42271b9307c25ec2d4f27c34536244e27"
+            }"#,
+        );
+        assert!(m.dependencies().is_empty());
     }
 }

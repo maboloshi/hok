@@ -90,7 +90,7 @@ fn test_manifest_from_json() {
         "homepage": "https://example.com",
         "license": "MIT",
         "url": "https://example.com/pkg.zip",
-        "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        "hash": "1ccb3628a61f815d96838b33b607f7c19026d84927382647bb3a8775880c5b82"
     }"#;
     let manifest = Manifest::from_json("test-pkg", json).unwrap();
     assert_eq!(manifest.version(), "99.99.99");
@@ -119,15 +119,14 @@ fn test_manifest_roundtrip_url_hash_count() {
 
 #[test]
 fn test_scoop_wget_manifest() {
-    // Real-world Scoop manifest: wget
-    // Note: wget.json contains empty hash strings for some URLs.
-    // Our HashString parser rejects empty strings, so this test
-    // verifies the expected behavior.
-    let result = Manifest::parse(scoop_fixture("manifest/wget.json"));
-    assert!(
-        result.is_err(),
-        "wget manifest has empty hash strings which our parser rejects"
-    );
+    // Real-world Scoop manifest: wget.json contains an empty hash string ("")
+    // for the cacert.pem URL, meaning "no verification" (original Scoop's
+    // check_hash only warns). Our parser must accept it.
+    let manifest = Manifest::parse(scoop_fixture("manifest/wget.json")).unwrap();
+    let hashes = manifest.all_hashes();
+    // 64bit (2) + 32bit (2), each with [real_hash, ""]
+    assert_eq!(hashes.len(), 4);
+    assert!(hashes.iter().any(|h| h.value().is_empty()));
 }
 
 #[test]
@@ -151,6 +150,39 @@ fn test_scoop_broken_schema() {
     assert!(
         result.is_err() || result.is_ok(),
         "schema may be valid depending on strictness"
+    );
+}
+
+#[test]
+fn test_all_urls_arch_order_matches_scoop() {
+    // Architecture segments must be emitted 64bit → 32bit → arm64, in the
+    // same fixed order as Scoop's bin/checkhashes.ps1.
+    let manifest = Manifest::parse(fixture_path("arch-order.json")).unwrap();
+
+    let urls = manifest.all_urls();
+    assert_eq!(
+        urls,
+        vec![
+            "https://example.com/pkg-64.zip",
+            "https://example.com/pkg-32.zip",
+            "https://example.com/pkg-arm64.zip",
+        ]
+    );
+
+    let hashes = manifest.all_hashes();
+    assert_eq!(hashes.len(), 3);
+    assert_eq!(hashes[0].value(), "5286e507eb9b2a45bfb49a7356e1edfb24393266245b918f0895ca7bb5087f81");
+    assert_eq!(hashes[1].value(), "bd8e7b1994254ba3ef0639e8d7ee1ef3b40c9a756fc8827fad97e2d1e00fc37a");
+    assert_eq!(hashes[2].value(), "4e9fbda47af4d60b0e3448586ed897937139874d24f3294705fdf36c918c01bf");
+
+    let segments = manifest.all_hash_segments();
+    assert_eq!(
+        segments,
+        vec![
+            ("/architecture/64bit/hash".to_string(), 1),
+            ("/architecture/32bit/hash".to_string(), 1),
+            ("/architecture/arm64/hash".to_string(), 1),
+        ]
     );
 }
 

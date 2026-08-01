@@ -1,0 +1,19 @@
+{
+    "version": "1.0.0",
+    "homepage": "https://example.com",
+    "license": "MIT",
+    "architecture": {
+        "32bit": {
+            "url": "https://example.com/pkg-32.zip",
+            "hash": "bd8e7b1994254ba3ef0639e8d7ee1ef3b40c9a756fc8827fad97e2d1e00fc37a"
+        },
+        "64bit": {
+            "url": "https://example.com/pkg-64.zip",
+            "hash": "5286e507eb9b2a45bfb49a7356e1edfb24393266245b918f0895ca7bb5087f81"
+        },
+        "arm64": {
+            "url": "https://example.com/pkg-arm64.zip",
+            "hash": "4e9fbda47af4d60b0e3448586ed897937139874d24f3294705fdf36c918c01bf"
+        }
+    }
+}
