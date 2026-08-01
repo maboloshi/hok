@@ -15,7 +15,8 @@
 //! - **Manifest updating**: When `--update` is set, new versions are
 //!   written directly into the manifest JSON files.
 //! - **Known gaps vs Scoop**: See the `TODO` block below for unimplemented
-//!   features (ThrowError, custom useragent, etc.).
+//!   features (ThrowError, etc.). UA / Referer / PRIVATE_HOSTS header
+//!   injection is provided by `operation::download_page`.
 
 use crate::{operation, package::manifest_walker, Manifest, Session};
 use regex::Regex;
@@ -42,19 +43,13 @@ use anyhow::Result;
 //    of just printed to stderr. Currently all errors use output::err().
 //    Scoop ref: bin/checkver.ps1 (param $ThrowError, used at line 412-418)
 //
-// 2. useragent   — Per-manifest custom User-Agent header for checkver HTTP
-//    requests. The manifest's checkver.useragent field exists in the struct
-//    but is not used. Must substitute $version etc. before setting.
-//    Scoop ref: bin/checkver.ps1 (lines 117-121)
-//
-// 3. Referer     — All HTTP requests should include a Referer header derived
-//    from the request URL (strip_filename). Currently neither operation::
-//    download_page nor the ureq helpers set this header.
-//    Scoop ref: bin/checkver.ps1 (line 246)
-//
-// 4. PRIVATE_HOSTS — Config-level custom HTTP headers matched by host regex.
-//    Scoop reads `scoop config PRIVATE_HOSTS` and applies headers per request.
-//    Scoop ref: bin/checkver.ps1 (lines 240-244)
+// ✅ Resolved gaps (network-layer unification):
+//   - User-Agent — operation::download_page() now injects UA from session
+//     (previously build_agent() in download.rs ignored its `_user_agent` param).
+//   - Referer — operation::download_page() now sets Referer via strip_filename.
+//   - PRIVATE_HOSTS — operation::download_page() now applies extra headers
+//     matched by host regex (used by checkurls).
+//   Scoop refs: bin/checkver.ps1 (lines 117-121, 246, 240-244)
 // ---------------------------------------------------------------------------
 
 /// Check manifest for a newer version
@@ -227,8 +222,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         } else if url.contains("api.github.com") {
             // Use authenticated request for GitHub API to avoid rate limits
             let page = match gh_token.as_deref() {
-                Some(token) => download_page_with_token(&url, token, args.timeout),
-                None => operation::download_page(session, &url, args.timeout)
+                Some(token) => operation::download_page(session, &url, args.timeout, Some(token))
+                    .map_err(|e| anyhow::Error::msg(e.to_string())),
+                None => operation::download_page(session, &url, args.timeout, None)
                     .map_err(|e| anyhow::Error::msg(e.to_string())),
             };
             match page {
@@ -242,7 +238,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
             }
         } else {
-            match operation::download_page(session, &url, args.timeout) {
+            match operation::download_page(session, &url, args.timeout, None) {
                 Ok(t) => t,
                 Err(e) => {
                     output::err(format!(
@@ -676,21 +672,21 @@ fn download_and_hash_multi(
                     "extract" | "" if has_url => {
                         let hash_url = ext["url"].as_str().unwrap_or(url);
                         let page_url = sub_url(hash_url, url);
-                        let page = operation::download_page(session, &page_url, 30)
+                        let page = operation::download_page(session, &page_url, 30, None)
                             .map_err(|e| anyhow::anyhow!("fetch hash page {}: {}", page_url, e))?;
                         extract_hash_from_page(&page, ext)?
                     }
                     // ── json: fetch JSON + jsonpath extraction ──────────────────────
                     "json" if has_jp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page = operation::download_page(session, hash_url, 30)
+                        let page = operation::download_page(session, hash_url, 30, None)
                             .map_err(|e| anyhow::anyhow!("fetch json {}: {}", hash_url, e))?;
                         extract_hash_from_page(&page, ext)?
                     }
                     // ── xpath: fetch XML + xpath extraction ─────────────────────────
                     "xpath" if has_xp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page = operation::download_page(session, hash_url, 30)
+                        let page = operation::download_page(session, hash_url, 30, None)
                             .map_err(|e| anyhow::anyhow!("fetch xml {}: {}", hash_url, e))?;
                         extract_hash_from_page(&page, ext)?
                     }
@@ -703,7 +699,7 @@ fn download_and_hash_multi(
                         // Scoop: fetch the download page itself, find sha256 with regex
                         // Regex: <filename>.*?"sha256":"([a-fA-F0-9]{64})"
                         let filename = crate::internal::url::remote_filename(url);
-                        let page = operation::download_page(session, url, 30)
+                        let page = operation::download_page(session, url, 30, None)
                             .map_err(|e| anyhow::anyhow!("fetch fosshub page {}: {}", url, e))?;
                         let regex_str = format!(r#"{filename}.*?"sha256":"([a-fA-F0-9]+)""#);
                         let re = Regex::new(&regex_str)
@@ -733,8 +729,8 @@ fn download_and_hash_multi(
                         })?;
                         let sf_page_url =
                             format!("https://sourceforge.net/projects/{project}/files/{file_path}");
-                        let page =
-                            operation::download_page(session, &sf_page_url, 30).map_err(|e| {
+                        let page = operation::download_page(session, &sf_page_url, 30, None)
+                            .map_err(|e| {
                                 anyhow::anyhow!("fetch sourceforge page {}: {}", sf_page_url, e)
                             })?;
                         let basename = crate::internal::url::remote_filename(url);
@@ -768,9 +764,10 @@ fn download_and_hash_multi(
                             format!("https://api.github.com/repos/{owner}/{repo}/releases");
                         let gh_token = session.config().gh_token.clone();
                         let page = if let Some(token) = gh_token {
-                            download_page_with_token(&api_url, &token, 30)?
+                            operation::download_page(session, &api_url, 30, Some(&token))
+                                .map_err(|e| anyhow::anyhow!("{}", e))?
                         } else {
-                            operation::download_page(session, &api_url, 30)?
+                            operation::download_page(session, &api_url, 30, None)?
                         };
                         // Parse JSON and query via jsonpath
                         use jsonpath_rust::JsonPath;
@@ -870,7 +867,7 @@ fn download_file_compute_hash(
 /// Fetch RDF XML and extract hash by basename (matching Scoop's find_hash_in_rdf).
 fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Result<String> {
     let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-    let page = operation::download_page(session, hash_url, 30)
+    let page = operation::download_page(session, hash_url, 30, None)
         .map_err(|e| anyhow::anyhow!("fetch rdf {}: {}", hash_url, e))?;
 
     // Parse RDF XML and find Content entry matching the basename
@@ -901,7 +898,7 @@ fn fetch_metalink_hash(session: &Session, url: &str, _ext: &serde_json::Value) -
 
     // Step 2: fallback to .meta4 file
     let meta4_url = format!("{}.meta4", url);
-    let page = operation::download_page(session, &meta4_url, 30)
+    let page = operation::download_page(session, &meta4_url, 30, None)
         .map_err(|e| anyhow::anyhow!("fetch metalink {}: {}", meta4_url, e))?;
 
     // Extract first SHA256 hash from .meta4 XML
@@ -1163,28 +1160,6 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
         Value::Nodeset(nodes) => nodes.iter().next().map(|n| n.string_value()),
         Value::Boolean(b) => Some(b.to_string()),
     }
-}
-
-/// Download a page with a Bearer token authorization header (used for GitHub API).
-fn download_page_with_token(url: &str, token: &str, timeout_secs: u64) -> Result<String> {
-    use std::io::Read;
-
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
-        .build()
-        .new_agent();
-    let resp = agent
-        .get(url)
-        .header("Authorization", &format!("Bearer {}", token))
-        .header("User-Agent", "hok")
-        .call()
-        .map_err(|e| anyhow::anyhow!("request failed: {}", e))?;
-    let mut body = Vec::new();
-    resp.into_body()
-        .into_reader()
-        .read_to_end(&mut body)
-        .map_err(|e| anyhow::anyhow!("read failed: {}", e))?;
-    String::from_utf8(body).map_err(|e| anyhow::anyhow!("UTF-8 decode: {}", e))
 }
 
 /// Execute a checkver PowerShell script and capture the version from stdout.

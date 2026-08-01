@@ -178,7 +178,13 @@ impl<'a> PackageSet<'a> {
         let min_split_size = config.aria2_min_split_size();
 
         // Build agent once (shared for all downloads)
-        let agent = build_agent(proxy, user_agent, 120);
+        let agent_opts = internal::network::RequestOptions {
+            proxy,
+            timeout_secs: 120,
+            user_agent: Some(user_agent),
+            ..internal::network::RequestOptions::default()
+        };
+        let agent = internal::network::build_agent(&agent_opts).map_err(crate::Error::Custom)?;
         let agent = &agent;
 
         for cache in package_caches.values() {
@@ -380,7 +386,6 @@ impl<'a> PackageSet<'a> {
             .unwrap_or(DEFAULT_USER_AGENT);
 
         let package_caches = self.caches.get_mut().unwrap();
-        let agent = build_agent(proxy, user_agent, 30);
 
         let mut total = 0u64;
         let mut estimated = false;
@@ -399,31 +404,58 @@ impl<'a> PackageSet<'a> {
                     .get_mut(filename)
                     .expect("failed to get cache info");
 
-                // HEAD request via ureq
-                let mut req = agent.head(*url);
-                if !cookie.is_empty() {
-                    let cookie_val = cookie
-                        .iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    req = req.header("Cookie", &cookie_val);
-                }
-
-                let code = match req.call() {
-                    Ok(resp) => resp.status().as_u16(),
-                    Err(e) => {
-                        debug!("HEAD failed for {}: {}", url, e);
-                        info.estimated = true;
-                        estimated = true;
-                        package_cache.update_valid_state();
-                        continue;
-                    }
+                // HEAD request via the unified network layer
+                let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
+                    None
+                } else {
+                    Some(
+                        cookie
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
+                    )
                 };
+                let opts = internal::network::RequestOptions {
+                    proxy,
+                    timeout_secs: 30,
+                    user_agent: Some(user_agent),
+                    cookies: cookie_map.as_ref(),
+                    ..internal::network::RequestOptions::default()
+                };
+                let result = internal::network::head(url, &opts);
+                let code = result.status_code;
 
                 if code == 200 {
-                    info.remote_size =
-                        get_content_length_from_agent(&agent, url, &cookie).unwrap_or(0);
+                    // Get Content-Length via a dedicated HEAD (need the raw header)
+                    if let Ok(cl_agent) =
+                        internal::network::build_agent(&internal::network::RequestOptions {
+                            proxy,
+                            timeout_secs: 30,
+                            ..internal::network::RequestOptions::default()
+                        })
+                    {
+                        let mut cl_req = cl_agent.head(*url);
+                        if !cookie.is_empty() {
+                            let cookie_val = cookie
+                                .iter()
+                                .map(|(k, v)| format!("{}={}", k, v))
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            cl_req = cl_req.header("Cookie", &cookie_val);
+                        }
+                        info.remote_size = cl_req
+                            .call()
+                            .ok()
+                            .and_then(|resp| {
+                                resp.headers()
+                                    .get("Content-Length")?
+                                    .to_str()
+                                    .ok()?
+                                    .parse::<u64>()
+                                    .ok()
+                            })
+                            .unwrap_or(0);
+                    }
                     if info.remote_size != info.local_size {
                         total += info.remote_size;
                     }
@@ -442,41 +474,6 @@ impl<'a> PackageSet<'a> {
 
         Ok(DownloadSize { total, estimated })
     }
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-fn build_agent(proxy: Option<&str>, _user_agent: &str, timeout_secs: u64) -> ureq::Agent {
-    let mut cfg = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
-    if let Some(proxy_url) = proxy {
-        if let Ok(p) = ureq::Proxy::new(proxy_url) {
-            cfg = cfg.proxy(Some(p));
-        }
-    }
-    cfg.build().new_agent()
-}
-
-fn get_content_length_from_agent(
-    agent: &ureq::Agent,
-    url: &str,
-    cookie: &[(&str, &str)],
-) -> Option<u64> {
-    let mut req = agent.head(url);
-    if !cookie.is_empty() {
-        let cookie_val = cookie
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("; ");
-        req = req.header("Cookie", &cookie_val);
-    }
-    let resp = req.call().ok()?;
-    resp.headers()
-        .get("Content-Length")?
-        .to_str()
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
 }
 
 fn download_range(

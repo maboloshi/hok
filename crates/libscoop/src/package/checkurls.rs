@@ -83,8 +83,7 @@ pub fn check_urls(
 
         for url in &urls {
             report.total_urls += 1;
-            let result =
-                operation::head_url_ext(session, url, timeout_secs, manifest_cookies.as_ref());
+            let result = operation::head_url(session, url, timeout_secs, manifest_cookies.as_ref());
 
             match result.error {
                 None => {

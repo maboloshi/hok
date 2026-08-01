@@ -2,10 +2,23 @@
 //!
 //! Replaced `curl` (libcurl bindings, static C build) to avoid C compilation
 //! overhead and align with the project's "pure Rust first" policy.
+//!
+//! # Architecture
+//!
+//! All configurable options are bundled into [`RequestOptions`]; the two core
+//! functions [`head`] and [`download`] accept it by reference.  Simple callers
+//! that only need a proxy and timeout can use [`RequestOptions::default()`].
+//!
+//! Internal helpers [`build_agent`] and [`apply_headers`] are `pub(crate)` so
+//! that `package/download.rs` can reuse them without duplicating logic.
 
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 /// Result of a HEAD request, with status code and optional error message.
 #[derive(Debug, Clone)]
@@ -15,76 +28,88 @@ pub struct HeadResult {
     pub error: Option<String>,
 }
 
-/// Check if a URL returns a successful HTTP status (2xx or 3xx).
-pub fn head_url(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<bool, String> {
-    let agent = agent(proxy, timeout_secs)?;
-    let resp = agent.head(url).call().map_err(|e| e.to_string())?;
-    let code = resp.status().as_u16();
-    Ok((200..400).contains(&code))
+// ---------------------------------------------------------------------------
+// Options
+// ---------------------------------------------------------------------------
+
+/// All configurable parameters for an HTTP request.
+///
+/// Every field is optional — use [`Default::default()`] or struct literal
+/// syntax to construct a value with only the fields you need.
+#[derive(Clone, Default)]
+pub struct RequestOptions<'a> {
+    pub proxy: Option<&'a str>,
+    pub timeout_secs: u64,
+    pub user_agent: Option<&'a str>,
+    pub referer: Option<&'a str>,
+    pub cookies: Option<&'a HashMap<String, String>>,
+    pub extra_headers: Option<&'a HashMap<String, String>>,
+    pub token: Option<&'a str>,
 }
 
-/// HEAD request with full control: custom headers, returns detailed result.
-///
-/// Supports:
-/// - Custom User-Agent
-/// - Referer header (strip_filename equivalent)
-/// - Cookie header
-/// - Additional custom headers (for PRIVATE_HOSTS support)
-pub fn head_url_ext(
-    url: &str,
-    proxy: Option<&str>,
-    timeout_secs: u64,
-    user_agent: Option<&str>,
-    referer: Option<&str>,
-    cookies: Option<&HashMap<String, String>>,
-    extra_headers: Option<&HashMap<String, String>>,
-) -> HeadResult {
+// ---------------------------------------------------------------------------
+// Internal helpers (pub(crate) for download.rs reuse)
+// ---------------------------------------------------------------------------
+
+/// Build a [`ureq::Agent`] from the proxy and timeout in `opts`.
+pub(crate) fn build_agent(opts: &RequestOptions) -> Result<ureq::Agent, String> {
     let mut cfg =
-        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs)));
-    if let Some(proxy_url) = proxy {
-        let p = match ureq::Proxy::new(proxy_url) {
-            Ok(p) => p,
-            Err(e) => {
-                return HeadResult {
-                    url: url.to_string(),
-                    status_code: 0,
-                    error: Some(format!("proxy error: {e}")),
-                }
-            }
-        };
+        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(opts.timeout_secs)));
+    if let Some(proxy_url) = opts.proxy {
+        let p = ureq::Proxy::new(proxy_url).map_err(|e| e.to_string())?;
         cfg = cfg.proxy(Some(p));
     }
-    let agent = cfg.build().new_agent();
+    Ok(cfg.build().new_agent())
+}
 
-    let mut req = agent.head(url);
-
-    // Custom User-Agent (Scoop compatibility)
-    if let Some(ua) = user_agent {
+/// Inject common HTTP headers into a request based on the given options.
+pub(crate) fn apply_headers<B>(
+    mut req: ureq::RequestBuilder<B>,
+    opts: &RequestOptions,
+) -> ureq::RequestBuilder<B> {
+    if let Some(ua) = opts.user_agent {
         req = req.header("User-Agent", ua);
     }
-
-    // Referer: strip_filename semantics (dirname of URL)
-    if let Some(r) = referer {
+    if let Some(r) = opts.referer {
         req = req.header("Referer", r);
     }
-
-    // Cookie header from manifest
-    if let Some(cookies_map) = cookies {
-        let cookie_str: Vec<String> = cookies_map
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
+    if let Some(cookies) = opts.cookies {
+        let cookie_str: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
         if !cookie_str.is_empty() {
             req = req.header("Cookie", cookie_str.join("; "));
         }
     }
-
-    // Extra headers (PRIVATE_HOSTS, etc.)
-    if let Some(extra) = extra_headers {
+    if let Some(token) = opts.token {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+    if let Some(extra) = opts.extra_headers {
         for (k, v) in extra {
             req = req.header(k.as_str(), v.as_str());
         }
     }
+    req
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// Perform an HTTP HEAD request with full option control.
+///
+/// Returns a [`HeadResult`] that always succeeds at the `Result` level —
+/// network errors are captured inside the struct's `error` field.
+pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
+    let agent = match build_agent(opts) {
+        Ok(a) => a,
+        Err(e) => {
+            return HeadResult {
+                url: url.to_string(),
+                status_code: 0,
+                error: Some(format!("proxy error: {e}")),
+            };
+        }
+    };
+    let req = apply_headers(agent.head(url), opts);
 
     match req.call() {
         Ok(resp) => {
@@ -107,27 +132,24 @@ pub fn head_url_ext(
     }
 }
 
-/// Download a URL's content as bytes via HTTP GET.
-pub fn download_file(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<Vec<u8>, String> {
-    let agent = agent(proxy, timeout_secs)?;
-    let resp = agent.get(url).call().map_err(|e| e.to_string())?;
+/// Download a URL's content as bytes via HTTP GET with full option control.
+pub fn download(url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
+    let agent = build_agent(opts)?;
+    let req = apply_headers(agent.get(url), opts);
+
     let mut body = Vec::new();
-    resp.into_body()
+    req.call()
+        .map_err(|e| format!("request failed: {e}"))?
+        .into_body()
         .into_reader()
         .read_to_end(&mut body)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("read failed: {e}"))?;
     Ok(body)
 }
 
-fn agent(proxy: Option<&str>, timeout_secs: u64) -> Result<ureq::Agent, String> {
-    let mut cfg =
-        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs)));
-    if let Some(proxy_url) = proxy {
-        let p = ureq::Proxy::new(proxy_url).map_err(|e| e.to_string())?;
-        cfg = cfg.proxy(Some(p));
-    }
-    Ok(cfg.build().new_agent())
-}
+// ---------------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------------
 
 /// Strip filename from a URL to produce a Referer value.
 /// Matches Scoop's `strip_filename` in lib/core.ps1.
