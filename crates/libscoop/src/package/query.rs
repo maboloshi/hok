@@ -19,6 +19,7 @@
 
 use rayon::prelude::{ParallelBridge, ParallelIterator};
 use regex::{Regex, RegexBuilder};
+use std::path::Path;
 use tracing::{debug, info};
 
 use crate::{
@@ -87,6 +88,176 @@ impl Matcher for RegexMatcher {
     }
 }
 
+type QueryMatchers<'a> = Vec<(Option<String>, Box<dyn Matcher + Send + Sync + 'a>)>;
+
+fn has_extra_query(options: &[QueryOption]) -> bool {
+    options.contains(&QueryOption::Binary) || options.contains(&QueryOption::Description)
+}
+
+fn build_matchers<'a>(
+    queries: &[&'a str],
+    is_wildcard_query: bool,
+    is_explicit_mode: bool,
+) -> Fallible<QueryMatchers<'a>> {
+    if is_wildcard_query {
+        return Ok(vec![]);
+    }
+
+    let mut matchers: QueryMatchers<'a> = vec![];
+    for query in queries {
+        let (bucket_prefix, name) = query
+            .split_once('/')
+            .map(|(b, n)| (Some(b.to_owned()), n))
+            .unwrap_or((None, *query));
+
+        if is_explicit_mode {
+            matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
+        } else {
+            let re = RegexBuilder::new(name)
+                .case_insensitive(true)
+                .multi_line(true)
+                .build()?;
+            matchers.push((bucket_prefix, Box::new(RegexMatcher(re))));
+        }
+    }
+
+    Ok(matchers)
+}
+
+fn name_prefiltered_out(
+    name: &str,
+    is_wildcard_query: bool,
+    matchers: &QueryMatchers<'_>,
+    options: &[QueryOption],
+) -> bool {
+    !is_wildcard_query
+        && !has_extra_query(options)
+        && !matchers.iter().any(|(_, matcher)| matcher.is_match(name))
+}
+
+fn manifest_matches(
+    name: &str,
+    bucket: &str,
+    manifest: &Manifest,
+    is_wildcard_query: bool,
+    is_explicit_mode: bool,
+    matchers: &QueryMatchers<'_>,
+    options: &[QueryOption],
+) -> bool {
+    if is_wildcard_query {
+        return true;
+    }
+
+    let prefixed_name_matched = matchers
+        .iter()
+        .filter(|(_, matcher)| matcher.is_match(name))
+        .any(|(prefix, _)| prefix.is_none() || prefix.as_deref().unwrap() == bucket);
+
+    if prefixed_name_matched {
+        return true;
+    }
+
+    if is_explicit_mode {
+        return false;
+    }
+
+    if options.contains(&QueryOption::Description)
+        && matchers.iter().any(|(_, matcher)| {
+            manifest
+                .description()
+                .map(|description| matcher.is_match(description))
+                .unwrap_or(false)
+        })
+    {
+        return true;
+    }
+
+    if options.contains(&QueryOption::Binary) {
+        let binaries = manifest.shims().unwrap_or_default();
+        if matchers
+            .iter()
+            .any(|(_, matcher)| binaries.iter().any(|binary| matcher.is_match(binary)))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn load_install_state(apps_dir: &Path, name: &str) -> Option<InstallState> {
+    let mut path = apps_dir.join(name);
+    path.push("current");
+    path.push("install.json");
+
+    let install_info = InstallInfo::parse(&path).ok()?;
+    path.pop();
+    path.push("manifest.json");
+    let install_manifest = Manifest::parse(path).ok()?;
+
+    Some(InstallState::Installed(InstallStateInstalled {
+        version: install_manifest.version().to_owned(),
+        bucket: install_info.bucket().map(|s| s.to_owned()),
+        arch: install_info.arch().to_owned(),
+        held: install_info.is_held(),
+        url: install_info.url().map(|s| s.to_owned()),
+    }))
+}
+
+fn fill_install_state(package: &Package, apps_dir: &Path, name: &str) {
+    package.fill_install_state(
+        load_install_state(apps_dir, name).unwrap_or(InstallState::NotInstalled),
+    );
+}
+
+fn load_bucket_manifest(session: &Session, bucket: &str, name: &str) -> Option<Manifest> {
+    let bucket_path = session.config().root_path().join("buckets").join(bucket);
+    let bucket = Bucket::from(&bucket_path).ok()?;
+    let manifest_path = bucket.path_of_manifest(name)?;
+    Manifest::parse(manifest_path).ok()
+}
+
+fn maybe_fill_upgradable(
+    session: &Session,
+    package: &Package,
+    name: &str,
+    bucket: &str,
+    current_version: &str,
+    state: &InstallState,
+    options: &[QueryOption],
+) -> bool {
+    let filter_non_upgradable = options.contains(&QueryOption::Upgradable);
+    let check_upgradable = filter_non_upgradable || options.contains(&QueryOption::UpgradableCheck);
+
+    if !check_upgradable {
+        return true;
+    }
+
+    if bucket == ISOLATED_PACKAGE_BUCKET {
+        if filter_non_upgradable {
+            info!("ignored isolated package '{}'", name);
+            return false;
+        }
+        return true;
+    }
+
+    let Some(origin_manifest) = load_bucket_manifest(session, bucket, name) else {
+        return !filter_non_upgradable;
+    };
+
+    let is_upgradable =
+        compare_versions(origin_manifest.version(), current_version) == std::cmp::Ordering::Greater;
+
+    if !is_upgradable {
+        return !filter_non_upgradable;
+    }
+
+    let origin_pkg = Package::from(name, bucket, origin_manifest);
+    origin_pkg.fill_install_state(state.clone());
+    package.fill_upgradable(origin_pkg);
+    true
+}
+
 /// Search installed packages.
 pub(crate) fn query_installed(
     session: &Session,
@@ -95,33 +266,8 @@ pub(crate) fn query_installed(
 ) -> Fallible<Vec<Package>> {
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
-    let root_path = if session.is_global() {
-        session.config().global_path().to_owned()
-    } else {
-        session.config().root_path().to_owned()
-    };
-    let apps_dir = root_path.join("apps");
-    // build matchers
-    let mut matchers: Vec<(Option<String>, Box<dyn Matcher + Send + Sync>)> = vec![];
-
-    if !is_wildcard_query {
-        for query in queries {
-            let (bucket_prefix, name) = query
-                .split_once('/')
-                .map(|(b, n)| (Some(b.to_owned()), n))
-                .unwrap_or((None, query));
-
-            if is_explicit_mode {
-                matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
-            } else {
-                let re = RegexBuilder::new(name)
-                    .case_insensitive(true)
-                    .multi_line(true)
-                    .build()?;
-                matchers.push((bucket_prefix, Box::new(RegexMatcher(re))));
-            }
-        }
-    }
+    let apps_dir = session.effective_root_path().join("apps");
+    let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let mut ret = vec![];
     match apps_dir.read_dir() {
@@ -146,20 +292,7 @@ pub(crate) fn query_installed(
                             return None;
                         }
 
-                        // Here we can do some pre-filtering by package name, if there
-                        // isn't any wildcard query and no extra query requested on
-                        // package description or binaries. This could save some query
-                        // time by avoiding parsing manifest and install info files.
-                        let extra_query = options.contains(&QueryOption::Binary)
-                            || options.contains(&QueryOption::Description);
-                        let name_matched = if is_wildcard_query {
-                            // name is always matched for wildcard query
-                            true
-                        } else {
-                            matchers.iter().any(|(_, m)| m.is_match(name))
-                        };
-
-                        if !is_wildcard_query && !extra_query && !name_matched {
+                        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
                             return None;
                         }
 
@@ -172,49 +305,15 @@ pub(crate) fn query_installed(
                                 let bucket =
                                     install_info.bucket().unwrap_or(ISOLATED_PACKAGE_BUCKET);
 
-                                let mut unmatched = true;
-
-                                if is_wildcard_query {
-                                    unmatched = false;
-                                } else {
-                                    let prefixed_name_matched = matchers
-                                        .iter()
-                                        .filter(|&(_, m)| m.is_match(name))
-                                        .any(|(prefix, _)| {
-                                            // either no bucket prefix or the bucket
-                                            // is also matched.
-                                            prefix.is_none() || prefix.as_deref().unwrap() == bucket
-                                        });
-
-                                    if prefixed_name_matched {
-                                        unmatched = false;
-                                    }
-
-                                    if unmatched && !is_explicit_mode {
-                                        if options.contains(&QueryOption::Description) {
-                                            let description =
-                                                manifest.description().unwrap_or_default();
-                                            let description_matched = matchers
-                                                .iter()
-                                                .any(|(_, m)| m.is_match(description));
-                                            if description_matched {
-                                                unmatched = false;
-                                            }
-                                        }
-
-                                        if options.contains(&QueryOption::Binary) {
-                                            let binaries = manifest.shims().unwrap_or_default();
-                                            let binary_matched = matchers.iter().any(|(_, m)| {
-                                                binaries.iter().any(|&b| m.is_match(b))
-                                            });
-                                            if binary_matched {
-                                                unmatched = false;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if unmatched {
+                                if !manifest_matches(
+                                    name,
+                                    bucket,
+                                    &manifest,
+                                    is_wildcard_query,
+                                    is_explicit_mode,
+                                    &matchers,
+                                    options,
+                                ) {
                                     return None;
                                 }
 
@@ -231,103 +330,16 @@ pub(crate) fn query_installed(
                                 let package = Package::from(name, bucket, manifest);
                                 package.fill_install_state(state.clone());
 
-                                // The query has finished, the package has been found
-                                // and crafted. We can now apply some extra filters.
-                                //
-                                // Filter out packages that are not upgradable when
-                                // the upgradable option is requested.
-                                if options.contains(&QueryOption::Upgradable) {
-                                    if bucket == ISOLATED_PACKAGE_BUCKET {
-                                        info!("ignored isolated package '{}'", name);
-                                        // isolated packages are not upgradable currently,
-                                        // we may support it by live checking the origin
-                                        // manifest via the path/url in install_info.
-                                        return None;
-                                    }
-
-                                    let mut bucket_path = root_path.join("buckets");
-                                    bucket_path.push(bucket);
-
-                                    if let Ok(origin_bucket) = Bucket::from(&bucket_path) {
-                                        if let Some(origin_manifest_path) =
-                                            origin_bucket.path_of_manifest(name)
-                                        {
-                                            if let Ok(origin_manifest) =
-                                                Manifest::parse(origin_manifest_path)
-                                            {
-                                                let origin_version = origin_manifest.version();
-                                                let is_upgradable = compare_versions(
-                                                    origin_version,
-                                                    &current_version,
-                                                )
-                                                    == std::cmp::Ordering::Greater;
-                                                if is_upgradable {
-                                                    let origin_pkg = Package::from(
-                                                        name,
-                                                        bucket,
-                                                        origin_manifest,
-                                                    );
-                                                    origin_pkg.fill_install_state(state.clone());
-
-                                                    package.fill_upgradable(origin_pkg);
-                                                } else {
-                                                    // the package is not upgradable,
-                                                    // since the upgradable option is
-                                                    // requested, we should skip it.
-                                                    return None;
-                                                }
-                                            }
-                                        } else {
-                                            // the package is not upgradable because
-                                            // the origin manifest is not found. This
-                                            // could happen when the package is deleted
-                                            // or deprecated from the origin bucket.
-                                            return None;
-                                        }
-                                    } else {
-                                        // the package is not upgradable because the
-                                        // origin bucket is not reachable. This could
-                                        // happen when the bucket is removed or renamed.
-                                        return None;
-                                    }
-                                }
-
-                                // UpgradableCheck: same version check but without filtering.
-                                // Populates upgradable info when found; keeps the package
-                                // either way.
-                                if options.contains(&QueryOption::UpgradableCheck)
-                                    && !options.contains(&QueryOption::Upgradable)
-                                {
-                                    if bucket != ISOLATED_PACKAGE_BUCKET {
-                                        let mut bucket_path = root_path.join("buckets");
-                                        bucket_path.push(bucket);
-
-                                        if let Ok(origin_bucket) = Bucket::from(&bucket_path) {
-                                            if let Some(origin_manifest_path) =
-                                                origin_bucket.path_of_manifest(name)
-                                            {
-                                                if let Ok(origin_manifest) =
-                                                    Manifest::parse(origin_manifest_path)
-                                                {
-                                                    let origin_version = origin_manifest.version();
-                                                    let is_upgradable = compare_versions(
-                                                        origin_version,
-                                                        &current_version,
-                                                    )
-                                                        == std::cmp::Ordering::Greater;
-                                                    if is_upgradable {
-                                                        let origin_pkg = Package::from(
-                                                            name,
-                                                            bucket,
-                                                            origin_manifest,
-                                                        );
-                                                        origin_pkg.fill_install_state(state);
-                                                        package.fill_upgradable(origin_pkg);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                if !maybe_fill_upgradable(
+                                    session,
+                                    &package,
+                                    name,
+                                    bucket,
+                                    &current_version,
+                                    &state,
+                                    options,
+                                ) {
+                                    return None;
                                 }
 
                                 return Some(package);
@@ -360,32 +372,8 @@ pub(crate) fn query_synced(
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let buckets = crate::bucket::bucket_added(session)?;
-    let apps_dir = if session.is_global() {
-        session.config().global_path().join("apps")
-    } else {
-        session.config().root_path().join("apps")
-    };
-    // build matchers
-    let mut matchers: Vec<(Option<String>, Box<dyn Matcher + Send + Sync>)> = vec![];
-
-    if !is_wildcard_query {
-        for query in queries {
-            let (bucket_prefix, name) = query
-                .split_once('/')
-                .map(|(b, n)| (Some(b.to_owned()), n))
-                .unwrap_or((None, query));
-
-            if is_explicit_mode {
-                matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
-            } else {
-                let re = RegexBuilder::new(name)
-                    .case_insensitive(true)
-                    .multi_line(true)
-                    .build()?;
-                matchers.push((bucket_prefix, Box::new(RegexMatcher(re))));
-            }
-        }
-    }
+    let apps_dir = session.effective_root_path().join("apps");
+    let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let packages = buckets
         .iter()
@@ -399,95 +387,27 @@ pub(crate) fn query_synced(
                         let filename = entry.file_name();
                         let name = filename.to_str().unwrap().strip_suffix(".json").unwrap();
 
-                        // Here we can do some pre-filtering by package name, if there
-                        // isn't any wildcard query and no extra query requested on
-                        // package description or binaries. This could save some query
-                        // time by avoiding parsing manifest and install info files.
-                        let extra_query = options.contains(&QueryOption::Binary)
-                            || options.contains(&QueryOption::Description);
-                        let name_matched = if is_wildcard_query {
-                            // name is always matched for wildcard query
-                            true
-                        } else {
-                            matchers.iter().any(|(_, m)| m.is_match(name))
-                        };
-
-                        if !is_wildcard_query && !extra_query && !name_matched {
+                        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
                             return None;
                         }
 
                         if let Ok(manifest) = Manifest::parse(entry.path()) {
                             let bucket = bucket.name();
 
-                            let mut unmatched = true;
-
-                            if is_wildcard_query {
-                                unmatched = false;
-                            } else {
-                                let prefixed_name_matched = matchers
-                                    .iter()
-                                    .filter(|&(_, m)| m.is_match(name))
-                                    .any(|(prefix, _)| {
-                                        // either no bucket prefix or the bucket
-                                        // is also matched.
-                                        prefix.is_none() || prefix.as_deref().unwrap() == bucket
-                                    });
-
-                                if prefixed_name_matched {
-                                    unmatched = false;
-                                }
-
-                                if unmatched && !is_explicit_mode {
-                                    if options.contains(&QueryOption::Description) {
-                                        let description =
-                                            manifest.description().unwrap_or_default();
-                                        let description_matched =
-                                            matchers.iter().any(|(_, m)| m.is_match(description));
-                                        if description_matched {
-                                            unmatched = false;
-                                        }
-                                    }
-
-                                    if options.contains(&QueryOption::Binary) {
-                                        let binaries = manifest.shims().unwrap_or_default();
-                                        let binary_matched = matchers
-                                            .iter()
-                                            .any(|(_, m)| binaries.iter().any(|&b| m.is_match(b)));
-                                        if binary_matched {
-                                            unmatched = false;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if unmatched {
+                            if !manifest_matches(
+                                name,
+                                bucket,
+                                &manifest,
+                                is_wildcard_query,
+                                is_explicit_mode,
+                                &matchers,
+                                options,
+                            ) {
                                 return None;
                             }
 
                             let package = Package::from(name, bucket, manifest);
-
-                            // The query has finished, the package has been found,
-                            // the last step is to check if the package is installed.
-                            let mut path = apps_dir.join(name);
-                            path.push("current");
-                            path.push("install.json");
-
-                            if let Ok(install_info) = InstallInfo::parse(&path) {
-                                path.pop();
-                                path.push("manifest.json");
-                                if let Ok(install_manifest) = Manifest::parse(path) {
-                                    let state = InstallState::Installed(InstallStateInstalled {
-                                        version: install_manifest.version().to_owned(),
-                                        bucket: install_info.bucket().map(|s| s.to_owned()),
-                                        arch: install_info.arch().to_owned(),
-                                        held: install_info.is_held(),
-                                        url: install_info.url().map(|s| s.to_owned()),
-                                    });
-                                    package.fill_install_state(state);
-                                }
-                            } else {
-                                package.fill_install_state(InstallState::NotInstalled);
-                            }
+                            fill_install_state(&package, &apps_dir, name);
 
                             return Some(package);
                         }
@@ -520,34 +440,11 @@ fn query_synced_cached(
     }
 
     let entries = manifest_cache::query(&conn, None, None)?;
-    let apps_dir = if session.is_global() {
-        session.config().global_path().join("apps")
-    } else {
-        session.config().root_path().join("apps")
-    };
+    let apps_dir = session.effective_root_path().join("apps");
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
-
-    let mut matchers: Vec<(Option<String>, Box<dyn Matcher + Send + Sync>)> = vec![];
-    if !is_wildcard_query {
-        for query in queries {
-            let (bucket_prefix, name) = query
-                .split_once('/')
-                .map(|(b, n)| (Some(b.to_owned()), n))
-                .unwrap_or((None, query));
-
-            if is_explicit_mode {
-                matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
-            } else {
-                let re = RegexBuilder::new(name)
-                    .case_insensitive(true)
-                    .multi_line(true)
-                    .build()?;
-                matchers.push((bucket_prefix, Box::new(RegexMatcher(re))));
-            }
-        }
-    }
+    let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let mut packages = Vec::new();
 
@@ -555,112 +452,37 @@ fn query_synced_cached(
         let name = &entry.name;
         let bucket = &entry.bucket;
 
-        // Pre-filter by name (same as file-based path)
-        let extra_query =
-            options.contains(&QueryOption::Binary) || options.contains(&QueryOption::Description);
-        let name_matched = if is_wildcard_query {
-            true
-        } else {
-            matchers.iter().any(|(_, m)| m.is_match(name))
-        };
-
-        if !is_wildcard_query && !extra_query && !name_matched {
+        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
             continue;
         }
 
         // Prefer reading manifest files directly to avoid stale cache.
         // Cache is populated once during bucket update, but the user
         // may have edited the file since then.
-        let manifest = match try_read_file_manifest(session, name, bucket)
+        let manifest = match load_bucket_manifest(session, bucket, name)
             .or_else(|| manifest_cache::entry_to_manifest(entry))
         {
             Some(m) => m,
             None => continue,
         };
 
-        let mut unmatched = true;
-
-        if is_wildcard_query {
-            unmatched = false;
-        } else {
-            let prefixed = matchers
-                .iter()
-                .filter(|&(_, m)| m.is_match(name))
-                .any(|(prefix, _)| prefix.is_none() || prefix.as_deref().unwrap() == bucket);
-
-            if prefixed {
-                unmatched = false;
-            }
-
-            if unmatched && !is_explicit_mode {
-                if options.contains(&QueryOption::Description)
-                    && matchers
-                        .iter()
-                        .any(|(_, m)| manifest.description().map_or(false, |d| m.is_match(d)))
-                {
-                    unmatched = false;
-                }
-
-                if options.contains(&QueryOption::Binary) {
-                    let binaries = manifest.shims().unwrap_or_default();
-                    if matchers
-                        .iter()
-                        .any(|(_, m)| binaries.iter().any(|b| m.is_match(b)))
-                    {
-                        unmatched = false;
-                    }
-                }
-            }
-        }
-
-        if unmatched {
+        if !manifest_matches(
+            name,
+            bucket,
+            &manifest,
+            is_wildcard_query,
+            is_explicit_mode,
+            &matchers,
+            options,
+        ) {
             continue;
         }
 
         let package = Package::from(name, bucket, manifest);
-
-        // Check if installed
-        let mut path = apps_dir.join(name);
-        path.push("current");
-        path.push("install.json");
-
-        if let Ok(install_info) = InstallInfo::parse(&path) {
-            path.pop();
-            path.push("manifest.json");
-            if let Ok(install_manifest) = Manifest::parse(path) {
-                let state = InstallState::Installed(InstallStateInstalled {
-                    version: install_manifest.version().to_owned(),
-                    bucket: install_info.bucket().map(|s| s.to_owned()),
-                    arch: install_info.arch().to_owned(),
-                    held: install_info.is_held(),
-                    url: install_info.url().map(|s| s.to_owned()),
-                });
-                package.fill_install_state(state);
-            }
-        } else {
-            package.fill_install_state(InstallState::NotInstalled);
-        }
+        fill_install_state(&package, &apps_dir, name);
 
         packages.push(package);
     }
 
     Ok(packages)
-}
-
-/// Read a manifest file directly from the bucket directory,
-/// bypassing the SQLite cache. Returns `None` if the file
-/// doesn't exist or fails to parse.
-fn try_read_file_manifest(session: &Session, name: &str, bucket: &str) -> Option<Manifest> {
-    let path = session
-        .config()
-        .root_path()
-        .join("buckets")
-        .join(bucket)
-        .join("bucket")
-        .join(format!("{name}.json"));
-    if path.exists() {
-        Manifest::parse(path).ok()
-    } else {
-        None
-    }
 }
