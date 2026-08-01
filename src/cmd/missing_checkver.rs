@@ -1,8 +1,8 @@
 use clap::Parser;
-use libscoop::Manifest;
+use libscoop::package::missing_checkver;
+use libscoop::Session;
 use std::path::PathBuf;
 
-use libscoop::Session;
 use crate::{output, Result};
 
 /// Check bucket manifests missing checkver and autoupdate
@@ -24,55 +24,31 @@ pub fn execute(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let mut total = 0u32;
-    let mut missing_checkver = 0u32;
-    let mut missing_autoupdate = 0u32;
+    let report = missing_checkver::scan(dir, args.supported)?;
 
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
+    if args.supported {
+        for name in &report.supported_items {
+            output::done(name);
+        }
+    } else {
+        for item in &report.missing_items {
+            output::named(&item.name, format!("({})", item.issues.join(", ")));
         }
 
-        let manifest = match Manifest::parse(&path) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        let has_checkver = manifest.checkver().is_some();
-        let has_autoupdate = manifest.autoupdate().is_some();
-        total += 1;
-
-        if args.supported {
-            if has_checkver || has_autoupdate {
-                output::done(name);
-            }
-        } else {
-            let mut issues = Vec::new();
-            if !has_checkver {
-                issues.push("checkver".to_string());
-                missing_checkver += 1;
-            }
-            if !has_autoupdate {
-                issues.push("autoupdate".to_string());
-                missing_autoupdate += 1;
-            }
-            if !issues.is_empty() {
-                output::named(&name, format!("({})", issues.join(", ")));
-            }
-        }
-    }
-
-    if !args.supported {
-        output::info(rust_i18n::t!("cmd.missing_checkver_scan", total = total, missing = missing_checkver, noauto = missing_autoupdate));
-        if missing_checkver == 0 && missing_autoupdate == 0 {
+        output::info(rust_i18n::t!(
+            "cmd.missing_checkver_scan",
+            total = report.total,
+            missing = report.missing_checkver,
+            noauto = report.missing_autoupdate
+        ));
+        if report.missing_checkver == 0 && report.missing_autoupdate == 0 {
             output::info(rust_i18n::t!("cmd.missing_checkver_all"));
         }
     }
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {
