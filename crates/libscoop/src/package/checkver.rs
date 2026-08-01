@@ -23,18 +23,6 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-mod output {
-    pub fn err(msg: impl std::fmt::Display) {
-        eprintln!("{msg}");
-    }
-    pub fn warn(msg: impl std::fmt::Display) {
-        eprintln!("{msg}");
-    }
-    pub fn done(msg: impl std::fmt::Display) {
-        println!("{msg}");
-    }
-}
-
 use anyhow::Result;
 
 // ---------------------------------------------------------------------------
@@ -80,17 +68,64 @@ pub struct Args {
 
 // ─── Execute ────────────────────────────────────────────────────────────────
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+/// Severity of a per-manifest checkver message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportSeverity {
+    /// Normal status (no message; render the version change directly).
+    Ok,
+    /// Warning (e.g. script produced no version).
+    Warn,
+    /// Error (e.g. download or extraction failure).
+    Error,
+}
+
+/// Result of checking a single manifest.
+#[derive(Debug, Clone)]
+pub struct CheckverReport {
+    /// Package stem (manifest file name without `.json`).
+    pub stem: String,
+    /// Current version in the manifest.
+    pub current: String,
+    /// New version found upstream (Some even when unchanged).
+    pub new_version: Option<String>,
+    /// Whether the manifest was rewritten via autoupdate.
+    pub updated: bool,
+    /// Whether an autoupdate is available (semantic upgrade over current).
+    pub autoupdate_available: bool,
+    /// Optional message for the CLI to render (with `severity`).
+    pub message: Option<String>,
+    /// Message severity (ignored when `message` is None).
+    pub severity: ReportSeverity,
+}
+
+impl CheckverReport {
+    fn new(stem: String, current: String) -> Self {
+        CheckverReport {
+            stem,
+            current,
+            new_version: None,
+            updated: false,
+            autoupdate_available: false,
+            message: None,
+            severity: ReportSeverity::Ok,
+        }
+    }
+}
+
+pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     let dir = &args.dir;
     if !dir.is_dir() {
-        output::err(rust_i18n::t!("cmd.checkver_err_dir", path = dir.display()));
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "checkver: directory not found: {}",
+            dir.display()
+        ));
     }
 
     // Don't use --version with wildcard app pattern
     if args.version.is_some() && args.app[0] == "*" {
-        output::err(rust_i18n::t!("cmd.checkver_version_wildcard"));
-        return Ok(());
+        return Err(anyhow::anyhow!(
+            "checkver: --version cannot be combined with wildcard app pattern"
+        ));
     }
 
     // Extract session data needed for concurrent downloads (Session is !Sync)
@@ -130,6 +165,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     let mut pending: Vec<PendingItem> = Vec::new();
+    let mut reports: Vec<CheckverReport> = Vec::new();
 
     for path in manifest_walker::discover(dir)? {
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
@@ -151,13 +187,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // When --version is specified, skip all detection and use that version directly
         if let Some(ref ver_override) = args.version {
-            if ver_override != &current {
-                println!("  {stem} ({current} -> {ver_override})");
-            } else {
-                println!("  {stem} ({ver_override})");
-                if args.skip_updated {
-                    continue;
-                }
+            let mut report = CheckverReport::new(stem, current);
+            report.new_version = Some(ver_override.clone());
+            if args.skip_updated && ver_override == &report.current {
+                continue;
             }
             if args.update || args.force_update {
                 let captures = vec![ver_override.clone()];
@@ -169,12 +202,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     &captures,
                     &HashMap::new(),
                 ) {
-                    Ok(()) => {
-                        output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver_override))
+                    Ok(()) => report.updated = true,
+                    Err(e) => {
+                        report.message = Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                        report.severity = ReportSeverity::Error;
                     }
-                    Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
                 }
             }
+            reports.push(report);
             continue;
         }
 
@@ -204,10 +239,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     )
                 }
                 None => {
-                    output::err(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.checkver_sourceforge_err")
-                    ));
+                    let mut report = CheckverReport::new(stem, current);
+                    report.message = Some(rust_i18n::t!("cmd.checkver_sourceforge_err").to_string());
+                    report.severity = ReportSeverity::Error;
+                    reports.push(report);
                     continue;
                 }
             }
@@ -216,10 +251,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             match github_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
                 None => {
-                    output::err(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.checkver_github_err")
-                    ));
+                    let mut report = CheckverReport::new(stem, current);
+                    report.message = Some(rust_i18n::t!("cmd.checkver_github_err").to_string());
+                    report.severity = ReportSeverity::Error;
+                    reports.push(report);
                     continue;
                 }
             }
@@ -227,7 +262,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             // Homepage fallback when checkver.url is absent (Scoop L125-129)
             let hp = manifest.homepage().to_string();
             if hp.is_empty() {
-                output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_url")));
+                let mut report = CheckverReport::new(stem, current);
+                report.message = Some(rust_i18n::t!("cmd.checkver_no_url").to_string());
+                report.severity = ReportSeverity::Error;
+                reports.push(report);
                 continue;
             }
             hp
@@ -335,14 +373,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             script_text,
         } = item;
 
+        let mut report = CheckverReport::new(stem, current);
+
         // Get the downloaded page content (or error out, matching Scoop's error handling)
         let mut raw = match dl_result {
             Some(Ok(content)) => content,
             Some(Err(e)) => {
-                output::err(format!(
-                    "{stem}: {}",
-                    rust_i18n::t!("cmd.err_download", e = e)
-                ));
+                report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
+                report.severity = ReportSeverity::Error;
+                reports.push(report);
                 continue;
             }
             None => String::new(),
@@ -356,17 +395,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     raw = page;
                 }
                 Ok(None) => {
-                    output::warn(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.checkver_no_version")
-                    ));
+                    report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
+                    report.severity = ReportSeverity::Warn;
+                    reports.push(report);
                     continue;
                 }
                 Err(e) => {
-                    output::err(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.checkver_script_err", e = e)
-                    ));
+                    report.message = Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
+                    reports.push(report);
                     continue;
                 }
             }
@@ -385,10 +422,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let (mut ver, captures, named_captures) = match extract_result {
             Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
             None => {
-                output::err(format!(
-                    "{stem}: {}",
-                    rust_i18n::t!("cmd.checkver_no_extract")
-                ));
+                report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
+                report.severity = ReportSeverity::Error;
+                reports.push(report);
                 continue;
             }
         };
@@ -397,44 +433,42 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             ver = ver.trim_start_matches(['v', 'V']).to_string();
         }
 
+        report.new_version = Some(ver.clone());
+        report.autoupdate_available = manifest.autoupdate().is_some()
+            && ver != report.current
+            && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
+
         // ForceUpdate implies Update (matching Scoop behavior)
         let do_update = args.update || args.force_update;
 
-        if ver == current {
+        if ver == report.current {
             // SkipUpdated: skip display (and update) for up-to-date manifests
             if args.skip_updated && !args.force_update {
                 continue;
             }
-            if !args.skip_updated {
-                println!("  {stem} ({ver})");
-            }
             if args.force_update {
                 match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures)
                 {
-                    Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
-                    Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
+                    Ok(()) => report.updated = true,
+                    Err(e) => {
+                        report.message = Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                        report.severity = ReportSeverity::Error;
+                    }
                 }
             }
-        } else {
-            println!("  {stem} ({current} -> {ver})");
-            // Show "autoupdate available" when the new version is a semantic upgrade
-            // (matching Scoop's autoupdate availability display)
-            if manifest.autoupdate().is_some()
-                && crate::compare_versions(&ver, &current) == std::cmp::Ordering::Greater
-            {
-                println!("    autoupdate available");
-            }
-            if do_update {
-                match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures)
-                {
-                    Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
-                    Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
+        } else if do_update {
+            match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures) {
+                Ok(()) => report.updated = true,
+                Err(e) => {
+                    report.message = Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
                 }
             }
         }
+        reports.push(report);
     }
 
-    Ok(())
+    Ok(reports)
 }
 
 // ─── URL helpers ────────────────────────────────────────────────────────────

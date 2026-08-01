@@ -1,9 +1,9 @@
 use clap::Parser;
-use libscoop::package::checkver;
+use libscoop::package::checkver::{self, ReportSeverity};
 use libscoop::Session;
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Check manifest for a newer version
 #[derive(Debug, Parser)]
@@ -47,7 +47,37 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         version: args.version,
         timeout: args.timeout,
     };
-    checkver::execute(inner, session)?;
+
+    let reports = checkver::execute(inner, session)?;
+    for r in &reports {
+        if let Some(msg) = &r.message {
+            match r.severity {
+                ReportSeverity::Warn => output::warn(format!("{}: {}", r.stem, msg)),
+                _ => output::err(format!("{}: {}", r.stem, msg)),
+            }
+            continue;
+        }
+
+        let Some(ver) = &r.new_version else {
+            continue;
+        };
+
+        if ver == &r.current {
+            output::status(format!("  {} ({})", r.stem, ver));
+            if r.updated {
+                output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+            }
+        } else {
+            output::status(format!("  {} ({} -> {})", r.stem, r.current, ver));
+            if r.autoupdate_available {
+                output::status("    autoupdate available");
+            }
+            if r.updated {
+                output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+            }
+        }
+    }
+
     Ok(())
 }
 
