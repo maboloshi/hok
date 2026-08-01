@@ -236,7 +236,7 @@ pub fn cache_list(session: &Session, query: &str) -> Fallible<Vec<CacheFile>> {
             files = entires
                 .filter_map(|de| {
                     if let Ok(entry) = de {
-                        let is_file = entry.file_type().map_or(false, |t| t.is_file());
+                        let is_file = entry.file_type().is_ok_and(|t| t.is_file());
                         if is_file {
                             if let Ok(item) = CacheFile::from(entry.path()) {
                                 if !is_wildcard_query {
@@ -317,7 +317,7 @@ pub fn head_url_ext(
                 regex::Regex::new(h.match_pattern())
                     .inspect_err(|e| warn!("invalid regex pattern '{}': {e}", h.match_pattern()))
                     .ok()
-                    .map_or(false, |re| re.is_match(url))
+                    .is_some_and(|re| re.is_match(url))
             })
             .flat_map(|h| h.parse_headers())
             .collect();
@@ -421,8 +421,6 @@ pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
 ///
 /// I/O errors will be returned if failed to write the `install.json` file.
 /// Serde errors will be returned if the install info cannot be serialized.
-
-/// Hold or unhold a package.
 pub fn package_hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
     let mut path = session.effective_root_path();
     path.push("apps");
@@ -504,7 +502,7 @@ pub fn package_cleanup(
         let mut all = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&apps_dir) {
             for entry in entries.flatten() {
-                if entry.file_type().map_or(false, |t| t.is_dir()) {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     if let Some(name) = entry.file_name().to_str() {
                         all.push(name.to_owned());
                     }
@@ -552,7 +550,7 @@ pub fn package_cleanup(
                 if name_str == "current" || name_str == current_ver {
                     continue;
                 }
-                if entry.file_type().map_or(false, |t| t.is_dir()) {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     old_dirs.push(name_str.to_owned());
                 }
             }

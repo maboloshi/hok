@@ -109,10 +109,9 @@ fn create_shortcut(
         .and_then(|s| s.to_str())
         .map(|s| s.to_owned());
 
-    let sl = ShellLink::new(target, args, name, icon)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let sl = ShellLink::new(target, args, name, icon).map_err(std::io::Error::other)?;
     sl.create_lnk(link_str.as_ref())
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        .map_err(std::io::Error::other)
 }
 
 /// Remove shortcut(s) for a given package.

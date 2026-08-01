@@ -70,7 +70,7 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
             if let Some(parent) = tgt_path.parent() {
                 internal::fs::ensure_dir(parent)?;
             }
-            std::fs::write(&tgt_path, &[])?;
+            std::fs::write(&tgt_path, [])?;
         } else {
             // Neither exists — create empty directory (Scoop default)
             internal::fs::ensure_dir(&tgt_path)?;

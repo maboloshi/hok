@@ -230,6 +230,7 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
     const INFINITE: u32 = 0xFFFF_FFFF;
 
     #[repr(C)]
+    #[allow(clippy::upper_case_acronyms)]
     struct SHELLEXECUTEINFOW {
         cb_size: u32,
         f_mask: u32,

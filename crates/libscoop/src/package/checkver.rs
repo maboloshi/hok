@@ -143,7 +143,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Determine URL and regex to use
         // Detect GitHub checkver: the deserializer sets specific regex (/releases/tag/) for
         // `checkver: "github"` and `checkver.github: "owner/repo"`. Also detect via URL pattern.
-        let mut github_mode = is_github_checkver(&cv);
+        let mut github_mode = is_github_checkver(cv);
         let mut url = if let Some(u) = &cv.url {
             if u.contains("github.com/") && u.contains("/releases/") {
                 github_mode = true;
@@ -224,9 +224,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     continue;
                 }
             }
-        } else if url.contains("api.github.com") && gh_token.is_some() {
+        } else if url.contains("api.github.com") {
             // Use authenticated request for GitHub API to avoid rate limits
-            match download_page_with_token(&url, &gh_token.unwrap(), args.timeout) {
+            let page = match gh_token.as_deref() {
+                Some(token) => download_page_with_token(&url, token, args.timeout),
+                None => operation::download_page(session, &url, args.timeout)
+                    .map_err(|e| anyhow::Error::msg(e.to_string())),
+            };
+            match page {
                 Ok(t) => t,
                 Err(e) => {
                     output::err(format!(
@@ -271,9 +276,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // If the user has not defined replace, the leading v/V will be automatically removed (global default behavior).
         if cv.replace.is_none() {
-            ver = ver
-                .trim_start_matches(|c: char| c == 'v' || c == 'V')
-                .to_string();
+            ver = ver.trim_start_matches(['v', 'V']).to_string();
         }
 
         // ForceUpdate implies Update (matching Scoop behavior)
@@ -314,14 +317,16 @@ fn is_github_checkver(cv: &crate::Checkver) -> bool {
     if cv
         .regex
         .as_deref()
-        .map_or(false, |r| r.contains("/releases/tag/"))
+        .is_some_and(|r| r.contains("/releases/tag/"))
     {
         return true;
     }
     // Check by URL pattern (for cases where cv.url is set to a github releases URL)
-    if cv.url.as_deref().map_or(false, |u| {
-        u.contains("github.com/") && u.contains("/releases/")
-    }) {
+    if cv
+        .url
+        .as_deref()
+        .is_some_and(|u| u.contains("github.com/") && u.contains("/releases/"))
+    {
         return true;
     }
     false
@@ -460,19 +465,19 @@ fn apply_autoupdate(
         ("$version".to_string(), new_version.to_string()),
         (
             "$dotVersion".to_string(),
-            new_version.replace(|c: char| c == '_' || c == '-' || c == '.', "."),
+            new_version.replace(['_', '-', '.'], "."),
         ),
         (
             "$underscoreVersion".to_string(),
-            new_version.replace(|c: char| c == '_' || c == '-' || c == '.', "_"),
+            new_version.replace(['_', '-', '.'], "_"),
         ),
         (
             "$dashVersion".to_string(),
-            new_version.replace(|c: char| c == '_' || c == '-' || c == '.', "-"),
+            new_version.replace(['_', '-', '.'], "-"),
         ),
         (
             "$cleanVersion".to_string(),
-            new_version.replace(|c: char| c == '_' || c == '-' || c == '.', ""),
+            new_version.replace(['_', '-', '.'], ""),
         ),
         (
             "$majorVersion".to_string(),
@@ -979,7 +984,7 @@ fn simple_base64_decode(input: &str) -> Result<Vec<u8>> {
     // Validate length (must be multiple of 4 after stripping padding)
     let padding = input.chars().rev().take(2).filter(|&c| c == '=').count();
     let cleaned = input.trim_end_matches('=');
-    if cleaned.len() % 4 != 0 && padding == 0 {
+    if !cleaned.len().is_multiple_of(4) && padding == 0 {
         return Err(anyhow::anyhow!("invalid base64 length"));
     }
 

@@ -63,7 +63,7 @@ pub fn github_api_request(
             .header("User-Agent", "hok")
             .header("Accept", "application/vnd.github.v3+json");
         // POST always sends a body; use empty object if none provided.
-        req.send_json(&body.unwrap_or(serde_json::json!({})))
+        req.send_json(body.unwrap_or(serde_json::json!({})))
     };
 
     let resp = match resp {

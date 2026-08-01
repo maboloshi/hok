@@ -41,8 +41,8 @@ pub(crate) fn discover(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
                 continue;
             }
 
-            if path.extension().map_or(false, |e| e == "json")
-                && path.file_name().map_or(true, |n| n != "package.json")
+            if path.extension().is_some_and(|e| e == "json")
+                && path.file_name().is_none_or(|n| n != "package.json")
             {
                 files.push(path);
             }

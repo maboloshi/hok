@@ -317,8 +317,8 @@ fn extract_tar(
 
     if filter.is_some() {
         let mut archive = TarArchive::new(reader);
-        let mut entries = archive.entries()?;
-        while let Some(entry) = entries.next() {
+        let entries = archive.entries()?;
+        for entry in entries {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
             if let Some(f) = filter {
@@ -450,17 +450,15 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
     if let Some(stderr) = child.stderr.take() {
         use std::io::{BufRead, BufReader};
         let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(text) = line {
-                if let Some(pct) = text
-                    .trim()
-                    .split('%')
-                    .next()
-                    .and_then(|s| s.parse::<u8>().ok())
-                {
-                    if let Some(tx) = emitter {
-                        let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
-                    }
+        for text in reader.lines().map_while(Result::ok) {
+            if let Some(pct) = text
+                .trim()
+                .split('%')
+                .next()
+                .and_then(|s| s.parse::<u8>().ok())
+            {
+                if let Some(tx) = emitter {
+                    let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
                 }
             }
         }

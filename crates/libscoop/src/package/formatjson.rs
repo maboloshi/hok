@@ -55,7 +55,7 @@ pub fn glob_to_regex(pattern: &str) -> String {
 pub fn app_matches(name: &str, pattern: &str) -> bool {
     if pattern.contains('*') || pattern.contains('?') {
         let re_str = glob_to_regex(pattern);
-        Regex::new(&re_str).map_or(false, |re| re.is_match(name))
+        Regex::new(&re_str).is_ok_and(|re| re.is_match(name))
     } else {
         name == pattern
     }

@@ -57,7 +57,7 @@ struct PackageCache<'a> {
 impl PackageCache<'_> {
     fn update_valid_state(&mut self) {
         let mut cnt = 0;
-        for (_, cache) in self.inner.iter() {
+        for cache in self.inner.values() {
             if cache.local_size == cache.remote_size {
                 cnt += 1;
             }
@@ -181,10 +181,10 @@ impl<'a> PackageSet<'a> {
         let agent = build_agent(proxy, user_agent, 120);
         let agent = &agent;
 
-        for (_, cache) in package_caches.iter() {
+        for cache in package_caches.values() {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
                 if let Some(tx) = self.session.emitter() {
-                    for (filename, _) in cache.inner.iter() {
+                    for filename in cache.inner.keys() {
                         let _ = tx.send(Event::PackageCacheHit(filename.clone()));
                     }
                 }
@@ -239,7 +239,7 @@ impl<'a> PackageSet<'a> {
 
                             scope.spawn(move || {
                                 if let Err(e) =
-                                    download_range(&agent, &url, start, end, &part_path, &ck, proxy)
+                                    download_range(agent, &url, start, end, &part_path, &ck, proxy)
                                 {
                                     debug!("chunk download failed: {}", e);
                                 }

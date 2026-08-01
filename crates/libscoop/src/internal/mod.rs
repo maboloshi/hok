@@ -39,8 +39,8 @@ pub mod url;
 /// - Mixed text+number: `1.2.0-beta` > `1.2.0-alpha`
 /// - `v`/`V` prefix stripped automatically
 pub fn compare_versions<S: AsRef<str>>(ver_a: S, ver_b: S) -> std::cmp::Ordering {
-    let a = ver_a.as_ref().trim_start_matches(|c| c == 'v' || c == 'V');
-    let b = ver_b.as_ref().trim_start_matches(|c| c == 'v' || c == 'V');
+    let a = ver_a.as_ref().trim_start_matches(['v', 'V']);
+    let b = ver_b.as_ref().trim_start_matches(['v', 'V']);
 
     let a_parts: Vec<&str> = a.split(&['.', '-', '_', '+'][..]).collect();
     let b_parts: Vec<&str> = b.split(&['.', '-', '_', '+'][..]).collect();

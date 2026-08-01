@@ -10,8 +10,8 @@
 //!     Events flow *out* of the session to the caller (e.g. progress, prompts).
 //!   - *Inbound* (`outer_tx` → `inner_rx`): Frontend → session backend.
 //!     Responses flow *in* (e.g. `PromptTransactionNeedConfirmResult`).
-//!   The public API exposes only `sender()` and `receiver()` on the outer
-//!   (frontend-facing) side; the inner side is `pub(crate)`.
+//!     The public API exposes only `sender()` and `receiver()` on the outer
+//!     (frontend-facing) side; the inner side is `pub(crate)`.
 //!
 //! - **Non-exhaustive enum**: `Event` is marked `#[non_exhaustive]` so that
 //!   adding new variants is not a breaking change for external implementors

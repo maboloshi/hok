@@ -1007,12 +1007,13 @@ impl Manifest {
         }
         // Add architecture-specific URLs
         if let Some(ref arch) = self.inner.architecture {
-            for spec_opt in [&arch.ia32, &arch.amd64, &arch.aarch64] {
-                if let Some(spec) = spec_opt {
-                    if let Some(ref u) = spec.url {
-                        for s in u.devectorize() {
-                            urls.push(s);
-                        }
+            for spec in [&arch.ia32, &arch.amd64, &arch.aarch64]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(ref u) = spec.url {
+                    for s in u.devectorize() {
+                        urls.push(s);
                     }
                 }
             }
@@ -1035,12 +1036,13 @@ impl Manifest {
         }
         // Add architecture-specific hashes
         if let Some(ref arch) = self.inner.architecture {
-            for spec_opt in [&arch.ia32, &arch.amd64, &arch.aarch64] {
-                if let Some(spec) = spec_opt {
-                    if let Some(ref h) = spec.hash {
-                        for s in h.devectorize() {
-                            hashes.push(s);
-                        }
+            for spec in [&arch.ia32, &arch.amd64, &arch.aarch64]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(ref h) = spec.hash {
+                    for s in h.devectorize() {
+                        hashes.push(s);
                     }
                 }
             }

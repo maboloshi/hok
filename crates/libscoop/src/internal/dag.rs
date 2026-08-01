@@ -160,7 +160,7 @@ where
         let node = self
             .nodes
             .iter()
-            .filter(|(_, deps)| deps.len() == 0)
+            .filter(|(_, deps)| deps.is_empty())
             .map(|(node, _)| node)
             .next()
             .cloned();
@@ -216,11 +216,25 @@ where
         self.walk()
             .map(|v| v.into_iter().flatten().collect::<Vec<_>>())
     }
+}
 
+impl<T> Default for DepGraph<T>
+where
+    T: Hash + Eq + Clone + Display,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> DepGraph<T>
+where
+    T: Hash + Eq + Clone + Display,
+{
     fn __step(nodes: &mut Nodes<T>) -> Vec<T> {
         let step = nodes
             .iter()
-            .filter(|(_, deps)| deps.len() == 0)
+            .filter(|(_, deps)| deps.is_empty())
             .map(|(node, _)| node.clone())
             .collect::<Vec<_>>();
         step.iter().for_each(|node| {

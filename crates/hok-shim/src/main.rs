@@ -32,6 +32,12 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[cfg(not(test))]
 #[no_mangle]
+/// Copy `n` bytes from `src` to `dst`.
+///
+/// # Safety
+///
+/// `dst` and `src` must be valid for reads/writes of `n` bytes and must not
+/// overlap.
 pub unsafe extern "C" fn shim_memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     for i in 0..n {
         *dst.add(i) = *src.add(i);
@@ -40,6 +46,11 @@ pub unsafe extern "C" fn shim_memcpy(dst: *mut u8, src: *const u8, n: usize) -> 
 }
 #[cfg(not(test))]
 #[no_mangle]
+/// Fill `n` bytes of `dst` with `c` (as an unsigned byte).
+///
+/// # Safety
+///
+/// `dst` must be valid for writes of `n` bytes.
 pub unsafe extern "C" fn shim_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     for i in 0..n {
         *dst.add(i) = c as u8;
@@ -48,6 +59,12 @@ pub unsafe extern "C" fn shim_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 
 }
 #[cfg(not(test))]
 #[no_mangle]
+/// Compare `n` bytes of `a` and `b`, returning a negative, zero, or positive
+/// value like `memcmp`.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid for reads of `n` bytes.
 pub unsafe extern "C" fn shim_memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
     for i in 0..n {
         let diff = (*a.add(i) as i32) - (*b.add(i) as i32);
@@ -450,8 +467,8 @@ unsafe fn get_shim_dir() -> U16Buf {
         return U16Buf::new();
     }
     let mut last_sep = 0usize;
-    for i in 0..len as usize {
-        if buf[i] == b'\\' as u16 || buf[i] == b'/' as u16 {
+    for (i, &c) in buf.iter().enumerate().take(len as usize) {
+        if c == b'\\' as u16 || c == b'/' as u16 {
             last_sep = i;
         }
     }
@@ -465,8 +482,8 @@ unsafe fn get_exe_stem() -> U16Buf {
         return U16Buf::new();
     }
     let mut file_start = 0usize;
-    for i in 0..len as usize {
-        if buf[i] == b'\\' as u16 || buf[i] == b'/' as u16 {
+    for (i, &c) in buf.iter().enumerate().take(len as usize) {
+        if c == b'\\' as u16 || c == b'/' as u16 {
             file_start = i + 1;
         }
     }
@@ -519,8 +536,8 @@ unsafe fn get_shim_path(dir: &U16Buf, stem: &U16Buf) -> U16Buf {
 pub(crate) fn target_dir_of(resolved: &U16Buf) -> U16Buf {
     let slice = resolved.slice();
     let mut last_sep = 0usize;
-    for i in 0..slice.len() {
-        if slice[i] == b'\\' as u16 || slice[i] == b'/' as u16 {
+    for (i, &c) in slice.iter().enumerate() {
+        if c == b'\\' as u16 || c == b'/' as u16 {
             last_sep = i + 1;
         }
     }
@@ -663,7 +680,7 @@ unsafe fn build_cmdline(
 
     // Quote path
     let ps = path.slice();
-    let needs_q = ps.iter().any(|&c| c == b' ' as u16);
+    let needs_q = ps.contains(&(b' ' as u16));
     if needs_q {
         out[pos] = b'"' as u16;
         pos += 1;
@@ -686,7 +703,7 @@ unsafe fn build_cmdline(
 
     // Shim args
     let a_slice = shim_args.slice();
-    if a_slice.len() > 0 && a_slice[0] != 0 {
+    if !a_slice.is_empty() && a_slice[0] != 0 {
         out[pos] = b' ' as u16;
         pos += 1;
         for &c in a_slice.iter() {
@@ -703,7 +720,7 @@ unsafe fn build_cmdline(
 
     // User args (tail after argv[0], appended as-is)
     let ut = user_tail.slice();
-    if ut.len() > 0 && ut[0] != 0 {
+    if !ut.is_empty() && ut[0] != 0 {
         out[pos] = b' ' as u16;
         pos += 1;
         for &c in ut.iter() {
@@ -801,6 +818,7 @@ unsafe fn do_elevate(path: &U16Buf, args: &U16Buf, user_tail: &U16Buf, cwd: &U16
     // SHELLEXECUTEINFOW (104 bytes on x64)
     #[repr(C)]
     #[allow(non_snake_case)]
+    #[allow(clippy::upper_case_acronyms)]
     struct SEI {
         cbSize: u32,
         fMask: u32,
@@ -909,9 +927,10 @@ unsafe fn entry() -> i32 {
                 cwd_u16.set_utf8(val);
             } else if u16_ieq(key, b"elevate") || u16_ieq(key, b"runas") {
                 // Only true/1/yes means elevate
-                if val.len() == 1 && val[0] == b'1' {
-                    elevate = true;
-                } else if u16_ieq(val, b"true") || u16_ieq(val, b"yes") {
+                if (val.len() == 1 && val[0] == b'1')
+                    || u16_ieq(val, b"true")
+                    || u16_ieq(val, b"yes")
+                {
                     elevate = true;
                 }
             } else if env_count < EVARS_MAX && !is_known_field(key) {
@@ -1025,7 +1044,10 @@ fn exit_process(code: i32) -> ! {
             fn ExitProcess(uExitCode: u32);
         }
         ExitProcess(code as u32);
-        loop {}
+        // If ExitProcess somehow returns, spin to avoid undefined behaviour.
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 

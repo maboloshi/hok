@@ -803,7 +803,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let hashes = pkg.download_hashes();
             let files_cnt = files.len();
 
-            for (idx, (filename, hash)) in files.into_iter().zip(hashes.into_iter()).enumerate() {
+            for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
                 let path = cache_root.join(filename);
 
                 let mut hasher = ChecksumBuilder::new().algo(hash.algorithm())?.build();
@@ -999,7 +999,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let url = &urls[idx];
         let target_name = url.rsplit('/').next().unwrap_or(filename);
 
-        let dst = working_dir.join(&target_name);
+        let dst = working_dir.join(target_name);
         let _ = std::fs::remove_file(&dst);
         std::fs::copy(&src, dst)?;
     }

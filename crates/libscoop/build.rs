@@ -21,8 +21,8 @@ fn embed_hok_shim() {
         .and_then(|p| p.parent())
         .expect("workspace root");
 
-    let debug_path = workspace_dir.join("target/debug").join(&shim_name);
-    let release_path = workspace_dir.join("target/release").join(&shim_name);
+    let debug_path = workspace_dir.join("target/debug").join(shim_name);
+    let release_path = workspace_dir.join("target/release").join(shim_name);
 
     // Prefer release binary, fall back to debug
     let shim_src = if release_path.exists() {
@@ -36,7 +36,7 @@ fn embed_hok_shim() {
         );
     };
 
-    let shim_dest = Path::new(&out_dir).join(&shim_name);
+    let shim_dest = Path::new(&out_dir).join(shim_name);
     fs::copy(&shim_src, &shim_dest).expect("copy hok-shim to OUT_DIR");
 
     let embedded = Path::new(&out_dir).join("embedded_shim.rs");
