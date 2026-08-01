@@ -1,25 +1,35 @@
 //! Package representation and module organisation.
 //!
-//! Defines the core [`Package`] struct — the runtime representation of a
-//! Scoop package — and re-exports key types from sub-modules (`Manifest`,
-//! `QueryOption`, `SyncOption`, etc.).
+//! 定义 `package` 子域的核心类型和子模块，是 libscoop 包管理功能的主入口。
 //!
-//! # Design
+//! # 职责
 //!
-//! - **Lazy fields**: `origin` (`OnceCell<OriginateFrom>`), `install_state`
-//!   (`OnceCell<InstallState>`), and `upgradable` are resolved on first
-//!   access, avoiding unnecessary work when the information is not needed.
-//! - **Version comparison**: [`Version`] implements a Scoop-compatible
-//!   version ordering via custom comparison logic.
-//! - **Serialize / Deserialize**: `Package` is serialisable for caching
-//!   installed-package state to disk.
+//! 本模块及其子模块共同承担以下职责：
 //!
-//! Sub-modules handle specific lifecycle phases:
-//! - [`manifest`] — Parsing and validation of manifest JSON files.
-//! - [`download`] — Concurrent, resumable package downloads.
-//! - [`query`] — Searching and filtering packages across buckets.
-//! - [`resolve`] — Dependency resolution using a DAG.
-//! - [`sync`] — The full install / upgrade / uninstall pipeline.
+//! - **Manifest 管理** — 解析和验证 Scoop manifest JSON 文件（[`manifest`]）。
+//! - **包发现** — 递归扫描 bucket 目录中的 manifest 文件（[`manifest_walker`]）。
+//! - **包缓存** — 将 bucket manifest 索引缓存到 SQLite，加速查询（[`manifest_cache`]）。
+//! - **包查询** — 按名称、描述或二进制名跨 bucket 搜索包（[`query`]）。
+//! - **依赖解析** — 使用有向无环图（DAG）解析安装依赖顺序（[`resolve`]）。
+//! - **下载** — 并发、可恢复的包文件下载（[`download`]）。
+//! - **同步** — 完整的安装 / 升级 / 卸载流水线（[`sync`]）。
+//! - **校验** — URL 有效性检查（[`checkurls`]）、哈希计算与比对（[`checkhashes`]）、
+//!   版本检测（[`checkver`]）。
+//!
+//! # 核心类型
+//!
+//! - [`Package`] — 运行时包表示，持有 manifest、安装状态、可升级状态等。
+//! - [`Manifest`] — manifest JSON 的强类型解析结果。
+//! - [`QueryOption`] — 控制包查询行为的枚举（正则 / 精确 / 按描述 / 可升级等）。
+//! - [`SyncOption`] — 控制安装/升级行为的枚举。
+//!
+//! # 设计说明
+//!
+//! - **惰性字段**：`origin`、`install_state`、`upgradable` 均使用 `OnceCell` 延迟
+//!   填充，避免在不需要时解析安装状态。
+//! - **并发安全**：`Package` 实现了 `Send + Sync`；`query` 子模块使用 `rayon`
+//!   并行扫描 bucket manifest，无需持有 `Session` 所有权。
+
 
 pub mod auto_pr;
 pub mod checkhashes;

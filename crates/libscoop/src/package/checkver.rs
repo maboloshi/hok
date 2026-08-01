@@ -1261,3 +1261,249 @@ fn run_checkver_script(
         Ok(Some(version))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Checkver;
+
+    fn checkver_default() -> Checkver {
+        Checkver {
+            regex: None,
+            url: None,
+            jsonpath: None,
+            xpath: None,
+            reverse: None,
+            replace: None,
+            useragent: None,
+            script: None,
+            sourceforge: None,
+        }
+    }
+
+    // ── apply_replace ────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_replace_no_pattern_returns_first_capture() {
+        let caps = vec!["full_match".to_string(), "1.2.3".to_string()];
+        assert_eq!(apply_replace(&caps, None), "1.2.3");
+    }
+
+    #[test]
+    fn apply_replace_no_pattern_falls_back_to_zeroth_when_no_groups() {
+        let caps = vec!["1.2.3".to_string()];
+        assert_eq!(apply_replace(&caps, None), "1.2.3");
+    }
+
+    #[test]
+    fn apply_replace_empty_captures_returns_empty() {
+        let caps: Vec<String> = vec![];
+        assert_eq!(apply_replace(&caps, None), "");
+    }
+
+    #[test]
+    fn apply_replace_pattern_substitutes_dollar_index() {
+        let caps = vec!["full".to_string(), "1".to_string(), "2".to_string()];
+        assert_eq!(apply_replace(&caps, Some("$1.$2")), "1.2");
+    }
+
+    #[test]
+    fn apply_replace_pattern_substitutes_zero() {
+        let caps = vec!["fullmatch".to_string()];
+        assert_eq!(apply_replace(&caps, Some("v$0")), "vfullmatch");
+    }
+
+    // ── is_github_checkver ───────────────────────────────────────────────────
+
+    #[test]
+    fn is_github_regex_match() {
+        let cv = Checkver {
+            regex: Some(r"releases/tag/v?([\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        assert!(is_github_checkver(&cv));
+    }
+
+    #[test]
+    fn is_github_url_match() {
+        let cv = Checkver {
+            url: Some("https://github.com/owner/repo/releases/latest".to_string()),
+            ..checkver_default()
+        };
+        assert!(is_github_checkver(&cv));
+    }
+
+    #[test]
+    fn is_github_false_when_unrelated() {
+        let cv = Checkver {
+            url: Some("https://example.com/latest.txt".to_string()),
+            ..checkver_default()
+        };
+        assert!(!is_github_checkver(&cv));
+    }
+
+    #[test]
+    fn is_github_false_when_empty() {
+        assert!(!is_github_checkver(&checkver_default()));
+    }
+
+    // ── github_api_url ───────────────────────────────────────────────────────
+
+    #[test]
+    fn github_api_url_from_homepage() {
+        let result = github_api_url("https://github.com/BurntSushi/ripgrep");
+        assert!(result.is_some());
+        let url = result.unwrap();
+        assert!(url.contains("api.github.com"));
+        assert!(url.contains("BurntSushi/ripgrep"));
+    }
+
+    #[test]
+    fn github_api_url_from_releases_url() {
+        let result =
+            github_api_url("https://github.com/sharkdp/bat/releases/latest");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("api.github.com"));
+    }
+
+    #[test]
+    fn github_api_url_non_github_returns_none() {
+        let result = github_api_url("https://example.com/owner/repo");
+        assert!(result.is_none());
+    }
+
+    // ── extract_sourceforge_project ──────────────────────────────────────────
+
+    #[test]
+    fn sourceforge_extracts_project_from_homepage() {
+        let result = extract_sourceforge_project("https://sourceforge.net/projects/sevenzip/");
+        assert_eq!(result.as_deref(), Some("sevenzip"));
+    }
+
+    #[test]
+    fn sourceforge_returns_none_for_non_sf_url() {
+        let result = extract_sourceforge_project("https://example.com/project");
+        assert!(result.is_none());
+    }
+
+    // ── extract_version (regex) ──────────────────────────────────────────────
+
+    #[test]
+    fn extract_version_regex_basic() {
+        let cv = Checkver {
+            regex: Some(r"version=([\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        let content = "some text version=1.2.3 end";
+        let result = extract_version(content, &cv, None, None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "1.2.3");
+    }
+
+    #[test]
+    fn extract_version_regex_no_match_returns_none_if_content_empty() {
+        let cv = Checkver {
+            regex: Some(r"version=([\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        let result = extract_version("", &cv, None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_version_regex_override_takes_precedence() {
+        let cv = Checkver {
+            regex: Some(r"v(\d+)".to_string()),
+            ..checkver_default()
+        };
+        // regex_override overrides cv.regex
+        let result = extract_version("1.9.9 release", &cv, None, Some(r"(\d+\.\d+\.\d+)"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "1.9.9");
+    }
+
+    // ── extract_version (jsonpath) ────────────────────────────────────────────
+
+    #[test]
+    fn extract_version_jsonpath_extracts_tag_name() {
+        let cv = checkver_default();
+        let json = r#"{"tag_name": "v1.5.0", "name": "Release 1.5.0"}"#;
+        let result = extract_version(json, &cv, Some("$.tag_name"), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "v1.5.0");
+    }
+
+    #[test]
+    fn extract_version_jsonpath_no_field_returns_none() {
+        let cv = checkver_default();
+        let json = r#"{"other_key": "value"}"#;
+        let result = extract_version(json, &cv, Some("$.tag_name"), None);
+        assert!(result.is_none());
+    }
+
+    // ── extract_version (fallback trim) ──────────────────────────────────────
+
+    #[test]
+    fn extract_version_fallback_returns_trimmed_content() {
+        let cv = checkver_default(); // no regex, no jsonpath, no xpath
+        let result = extract_version("  1.0.0  ", &cv, None, None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "1.0.0");
+    }
+
+    #[test]
+    fn extract_version_empty_content_fallback_returns_none() {
+        let cv = checkver_default();
+        let result = extract_version("   ", &cv, None, None);
+        assert!(result.is_none());
+    }
+
+    // ── extract_version_head_tail ────────────────────────────────────────────
+
+    #[test]
+    fn head_tail_extracts_semver() {
+        let result = extract_version_head_tail("1.2.3-beta1");
+        assert!(result.is_some());
+        let (head, tail) = result.unwrap();
+        assert_eq!(head, "1.2.3");
+        assert_eq!(tail, "-beta1");
+    }
+
+    #[test]
+    fn head_tail_simple_version() {
+        let result = extract_version_head_tail("2.0.0");
+        assert!(result.is_some());
+        let (head, tail) = result.unwrap();
+        assert_eq!(head, "2.0.0");
+        assert_eq!(tail, "");
+    }
+
+    // ── format_hash ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_hash_sha256_no_prefix() {
+        let h = "a".repeat(64);
+        let result = format_hash(&h);
+        assert_eq!(result, Some(h.clone()));
+    }
+
+    #[test]
+    fn format_hash_md5_prefix_added() {
+        let h = "a".repeat(32);
+        let result = format_hash(&h);
+        assert_eq!(result, Some(format!("md5:{h}")));
+    }
+
+    #[test]
+    fn format_hash_sha1_prefix_added() {
+        let h = "b".repeat(40);
+        let result = format_hash(&h);
+        assert_eq!(result, Some(format!("sha1:{h}")));
+    }
+
+    #[test]
+    fn format_hash_invalid_length_returns_none() {
+        let result = format_hash("tooshort");
+        assert!(result.is_none());
+    }
+}

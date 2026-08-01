@@ -267,3 +267,153 @@ fn format_hash_value(algo: &str, hash: &str) -> String {
         _ => hash.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_hash_value ───────────────────────────────────────────────────
+
+    #[test]
+    fn format_sha256_returns_bare_value() {
+        assert_eq!(format_hash_value("sha256", "abc123"), "abc123");
+    }
+
+    #[test]
+    fn format_md5_adds_prefix() {
+        assert_eq!(format_hash_value("md5", "deadbeef"), "md5:deadbeef");
+    }
+
+    #[test]
+    fn format_sha1_adds_prefix() {
+        assert_eq!(
+            format_hash_value("sha1", "aabbcc"),
+            "sha1:aabbcc"
+        );
+    }
+
+    #[test]
+    fn format_sha512_adds_prefix() {
+        assert_eq!(
+            format_hash_value("sha512", "longvalue"),
+            "sha512:longvalue"
+        );
+    }
+
+    #[test]
+    fn format_unknown_algo_returns_bare() {
+        assert_eq!(format_hash_value("crc32", "deadcode"), "deadcode");
+    }
+
+    // ── hash_entry_index_prefix ─────────────────────────────────────────────
+
+    #[test]
+    fn index_prefix_out_of_bounds_returns_index_string() {
+        let entries: Vec<HashEntry> = vec![];
+        assert_eq!(hash_entry_index_prefix(&entries, 0), "0");
+        assert_eq!(hash_entry_index_prefix(&entries, 5), "5");
+    }
+
+    #[test]
+    fn index_prefix_top_level_hash_returns_index() {
+        let entries = vec![HashEntry {
+            path: "/hash".to_string(),
+            index: 0,
+        }];
+        assert_eq!(hash_entry_index_prefix(&entries, 0), "0");
+    }
+
+    #[test]
+    fn index_prefix_arch_path_includes_arch_hint() {
+        let entries = vec![HashEntry {
+            path: "/architecture/64bit/hash".to_string(),
+            index: 0,
+        }];
+        let prefix = hash_entry_index_prefix(&entries, 0);
+        assert!(
+            prefix.contains("64bit"),
+            "prefix should contain arch hint: {}",
+            prefix
+        );
+    }
+
+    // ── CheckHashesReport default ───────────────────────────────────────────
+
+    #[test]
+    fn report_default_is_zeroed() {
+        let r = CheckHashesReport::default();
+        assert_eq!(r.total, 0);
+        assert_eq!(r.passed, 0);
+        assert_eq!(r.failed, 0);
+        assert_eq!(r.updated, 0);
+        assert_eq!(r.skipped, 0);
+        assert!(r.items.is_empty());
+    }
+
+    // ── CheckHashesStatus equality ──────────────────────────────────────────
+
+    #[test]
+    fn status_equality() {
+        assert_eq!(CheckHashesStatus::Passed, CheckHashesStatus::Passed);
+        assert_ne!(CheckHashesStatus::Passed, CheckHashesStatus::Failed);
+        assert_ne!(CheckHashesStatus::Failed, CheckHashesStatus::Updated);
+    }
+
+    // ── collect_entries on real manifests ───────────────────────────────────
+
+    /// Helper: build a Manifest from an inline JSON string.
+    fn manifest_from_json(json: &str) -> Option<crate::Manifest> {
+        crate::Manifest::from_json("test-pkg", json).ok()
+    }
+
+    #[test]
+    fn collect_entries_empty_when_no_urls() {
+        let m = manifest_from_json(r#"{
+            "version": "1.0",
+            "homepage": "https://example.com",
+            "license": "MIT"
+        }"#);
+        if let Some(m) = m {
+            assert!(collect_entries(&m).is_none());
+        }
+    }
+
+    #[test]
+    fn collect_entries_mismatch_returns_none() {
+        // One URL but two hashes — should return None.
+        let m = manifest_from_json(r#"{
+            "version": "1.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "url": "https://example.com/app.zip",
+            "hash": [
+                "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+            ]
+        }"#);
+        // Manifest parser may reject mismatched counts; either way collect_entries
+        // should return None for mismatch.
+        if let Some(m) = m {
+            let result = collect_entries(&m);
+            assert!(result.is_none(), "URL/hash count mismatch should yield None");
+        }
+    }
+
+    #[test]
+    fn collect_entries_matching_url_hash() {
+        let m = manifest_from_json(r#"{
+            "version": "1.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "url": "https://example.com/app.zip",
+            "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        }"#);
+        if let Some(m) = m {
+            let result = collect_entries(&m);
+            assert!(result.is_some(), "matching URL/hash should yield Some");
+            let (urls, entries) = result.unwrap();
+            assert_eq!(urls.len(), 1);
+            assert_eq!(entries.len(), 1);
+        }
+    }
+}

@@ -488,3 +488,117 @@ fn query_synced_cached(
 
     Ok(packages)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::manifest::Manifest;
+
+    // ── build_matchers ───────────────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_query_yields_empty_matchers() {
+        let matchers = build_matchers(&["*"], true, false).unwrap();
+        assert!(matchers.is_empty());
+    }
+
+    #[test]
+    fn explicit_mode_builds_explicit_matcher() {
+        let matchers = build_matchers(&["curl"], false, true).unwrap();
+        assert_eq!(matchers.len(), 1);
+    }
+
+    #[test]
+    fn regex_mode_builds_regex_matcher() {
+        let matchers = build_matchers(&["curl"], false, false).unwrap();
+        assert_eq!(matchers.len(), 1);
+    }
+
+    #[test]
+    fn bucket_prefixed_query_is_parsed() {
+        let matchers = build_matchers(&["extras/curl"], false, true).unwrap();
+        assert_eq!(matchers.len(), 1);
+        let (prefix, _) = &matchers[0];
+        assert_eq!(prefix.as_deref(), Some("extras"));
+    }
+
+    // ── name_prefiltered_out ─────────────────────────────────────────────────
+
+    #[test]
+    fn wildcard_never_prefilters() {
+        let matchers = build_matchers(&[], true, false).unwrap();
+        assert!(!name_prefiltered_out("anything", true, &matchers, &[]));
+    }
+
+    #[test]
+    fn explicit_match_is_not_prefiltered() {
+        let matchers = build_matchers(&["curl"], false, true).unwrap();
+        assert!(!name_prefiltered_out("curl", false, &matchers, &[]));
+    }
+
+    #[test]
+    fn non_match_is_prefiltered_when_no_extra_options() {
+        let matchers = build_matchers(&["curl"], false, true).unwrap();
+        assert!(name_prefiltered_out("wget", false, &matchers, &[]));
+    }
+
+    #[test]
+    fn description_option_prevents_prefilter() {
+        let matchers = build_matchers(&["downloader"], false, false).unwrap();
+        // With description option, name prefilter should NOT apply
+        let options = vec![QueryOption::Description];
+        assert!(!name_prefiltered_out(
+            "curl",
+            false,
+            &matchers,
+            &options
+        ));
+    }
+
+    // ── manifest_matches ─────────────────────────────────────────────────────
+
+    fn make_manifest(version: &str) -> Manifest {
+        let json = format!(
+            r#"{{"version":"{version}","homepage":"https://example.com","license":"MIT"}}"#
+        );
+        Manifest::from_json("test", &json).unwrap()
+    }
+
+    #[test]
+    fn wildcard_matches_all() {
+        let m = make_manifest("1.0");
+        let matchers = build_matchers(&[], true, false).unwrap();
+        assert!(manifest_matches("any-pkg", "bucket", &m, true, false, &matchers, &[]));
+    }
+
+    #[test]
+    fn explicit_exact_match() {
+        let m = make_manifest("1.0");
+        let matchers = build_matchers(&["curl"], false, true).unwrap();
+        assert!(manifest_matches("curl", "main", &m, false, true, &matchers, &[]));
+    }
+
+    #[test]
+    fn explicit_no_match() {
+        let m = make_manifest("1.0");
+        let matchers = build_matchers(&["curl"], false, true).unwrap();
+        assert!(!manifest_matches("wget", "main", &m, false, true, &matchers, &[]));
+    }
+
+    #[test]
+    fn regex_case_insensitive_match() {
+        let m = make_manifest("1.0");
+        let matchers = build_matchers(&["CURL"], false, false).unwrap();
+        assert!(manifest_matches("curl", "main", &m, false, false, &matchers, &[]));
+    }
+
+    #[test]
+    fn bucket_prefixed_query_only_matches_correct_bucket() {
+        let m = make_manifest("1.0");
+        let matchers = build_matchers(&["extras/curl"], false, true).unwrap();
+        // Matches when bucket is "extras"
+        assert!(manifest_matches("curl", "extras", &m, false, true, &matchers, &[]));
+        // Does NOT match when bucket is "main"
+        assert!(!manifest_matches("curl", "main", &m, false, true, &matchers, &[]));
+    }
+}
