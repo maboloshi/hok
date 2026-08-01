@@ -134,7 +134,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     // 6. Run checkver update
     output::progress("Checking", "for updates");
-    let cv_args = crate::cmd::checkver::Args {
+    let cv_args = libscoop::package::checkver::Args {
         dir: dir.clone(),
         app: vec!["*".to_string()],
         update: true,
@@ -143,14 +143,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         version: None,
         timeout: 30,
     };
-    let _ = crate::cmd::checkver::execute(cv_args, session);
+    let _ = libscoop::package::checkver::execute(cv_args, session);
     output::ok();
 
     // 6b. Force update special snowflakes
     if let Some(ref special) = args.special {
         for name in special.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
             output::progress("Forcing", name);
-            let cv_args = crate::cmd::checkver::Args {
+            let cv_args = libscoop::package::checkver::Args {
                 dir: dir.clone(),
                 app: vec![name.to_string()],
                 update: true,
@@ -159,7 +159,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 version: None,
                 timeout: 30,
             };
-            let _ = crate::cmd::checkver::execute(cv_args, session);
+            let _ = libscoop::package::checkver::execute(cv_args, session);
             output::ok();
         }
     }
