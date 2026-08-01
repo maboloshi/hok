@@ -25,10 +25,9 @@
 //!   cloneable (it holds only a path, a name, and two `OnceLock`s).
 
 use rayon::prelude::{IntoParallelIterator, ParallelBridge, ParallelIterator};
-use regex::{Regex, RegexBuilder};
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::OnceLock;
 use tracing::warn;
 
 use crate::error::{Error, Fallible};
@@ -238,32 +237,6 @@ impl Bucket {
 
         Ok(ret)
     }
-}
-
-#[allow(dead_code)]
-pub(crate) fn extract_name_and_bucket(path: &Path) -> Fallible<(String, String)> {
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        // FIXME: Uppercase <name> is not a good idea, the support is going to be dropped.
-        let p = r".*?[\\/]buckets[\\/](?P<bucket>[a-zA-Z0-9-_]+).*?[\\/](?P<name>[a-zA-Z0-9-_@.]+).json$";
-        RegexBuilder::new(p).build().unwrap()
-    });
-    match RE.captures(path.to_str().unwrap()) {
-        None => {}
-        Some(caps) => {
-            let name = caps.name("name").map(|m| m.as_str().to_string());
-            let bucket = caps.name("bucket").map(|m| m.as_str().to_string());
-            if let Some(name) = name {
-                if let Some(bucket) = bucket {
-                    return Ok((name, bucket));
-                }
-            }
-        }
-    }
-
-    Err(Error::Custom(format!(
-        "unsupported manifest path {}",
-        path.display()
-    )))
 }
 
 /// Helper function to interate entries in a directory in parallel.
