@@ -60,28 +60,28 @@ pub struct AutoPrConfig {
 // ---------------------------------------------------------------------------
 
 mod output {
-    pub fn info(msg: impl std::fmt::Display) {
+    pub(super) fn info(msg: impl std::fmt::Display) {
         println!("{msg}");
     }
-    pub fn warn(msg: impl std::fmt::Display) {
+    pub(super) fn warn(msg: impl std::fmt::Display) {
         eprintln!("WARN  {msg}");
     }
-    pub fn err(msg: impl std::fmt::Display) {
+    pub(super) fn err(msg: impl std::fmt::Display) {
         eprintln!("ERROR {msg}");
     }
-    pub fn progress(verb: &str, subject: &str) {
+    pub(super) fn progress(verb: &str, subject: &str) {
         print!("{verb} {subject} ... ");
     }
-    pub fn ok() {
+    pub(super) fn ok() {
         println!("ok");
     }
-    pub fn done(msg: impl std::fmt::Display) {
+    pub(super) fn done(msg: impl std::fmt::Display) {
         println!("DONE  {msg}");
     }
-    pub fn header(msg: impl std::fmt::Display) {
+    pub(super) fn header(msg: impl std::fmt::Display) {
         println!("=== {msg} ===");
     }
-    pub fn named(label: &str, value: &str) {
+    pub(super) fn named(label: &str, value: &str) {
         println!("  {label}: {value}");
     }
 }

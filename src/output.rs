@@ -53,19 +53,8 @@ pub fn set_color_enabled(enabled: bool) {
     crossterm::style::force_color_output(enabled);
 }
 
-/// Whether color output is currently enabled.
-#[allow(dead_code)]
-pub fn is_color_enabled() -> bool {
-    COLOR_ENABLED.load(Ordering::Relaxed)
-}
-
 fn is_scoop() -> bool {
     OUTPUT_STYLE.load(Ordering::Relaxed) == STYLE_SCOOP
-}
-/// Check if currently in scoop output style.
-#[allow(dead_code)]
-pub fn is_scoop_style() -> bool {
-    is_scoop()
 }
 
 /// Section heading.

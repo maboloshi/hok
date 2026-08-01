@@ -70,8 +70,8 @@ pub fn init_language(choice: LanguageChoice) -> Language {
     lang
 }
 
-#[allow(dead_code)]
-pub fn current_language() -> Language {
+#[cfg(test)]
+fn current_language() -> Language {
     match SELECTED_LANGUAGE.load(Ordering::Relaxed) {
         LANG_ZH => Language::Chinese,
         _ => Language::English,
@@ -118,8 +118,8 @@ fn parse_choice(raw: &str) -> Option<LanguageChoice> {
 
 /// Convenience function for inline bilingual strings.
 /// Uses current_language() to choose between en and zh.
-#[allow(dead_code)]
-pub fn tr<'a>(en: &'a str, zh: &'a str) -> &'a str {
+#[cfg(test)]
+fn tr<'a>(en: &'a str, zh: &'a str) -> &'a str {
     match current_language() {
         Language::English => en,
         Language::Chinese => zh,

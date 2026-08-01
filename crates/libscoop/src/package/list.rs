@@ -19,20 +19,12 @@ pub struct InstalledVersion {
 
 /// Compare two version strings in descending order (newest first).
 ///
-/// Numeric dot-separated segments are compared segment by segment; the
-/// leading `v`/`V` prefix is ignored, matching Scoop's convention.
+/// Delegates to the unified [`crate::internal::compare_versions`] comparator
+/// (numeric dot-separated segments compared segment by segment, leading
+/// `v`/`V` prefix ignored, matching Scoop's convention) and reverses the
+/// result so that newer versions sort first.
 pub fn compare_versions_desc(a: &str, b: &str) -> Ordering {
-    let a_ver = a.trim_start_matches(['v', 'V']);
-    let b_ver = b.trim_start_matches(['v', 'V']);
-    let a_parts: Vec<u64> = a_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-    let b_parts: Vec<u64> = b_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-    for (a_n, b_n) in a_parts.iter().zip(b_parts.iter()) {
-        match a_n.cmp(b_n) {
-            Ordering::Equal => continue,
-            other => return other.reverse(),
-        }
-    }
-    a_parts.len().cmp(&b_parts.len()).reverse()
+    crate::internal::compare_versions(a, b).reverse()
 }
 
 /// List all installed version directories of a package, newest first.
@@ -102,8 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn compare_desc_non_numeric_falls_back_to_len() {
-        // "beta" parses to no segments; both empty → equal by length
-        assert_eq!(compare_versions_desc("beta", "alpha"), Ordering::Equal);
+    fn compare_desc_non_numeric_text_segments() {
+        // Unified internal comparator falls back to alphabetical text compare:
+        // "beta" > "alpha" ascending, so descending puts "beta" first.
+        assert_eq!(compare_versions_desc("beta", "alpha"), Ordering::Less);
+        assert_eq!(compare_versions_desc("alpha", "beta"), Ordering::Greater);
+        assert_eq!(compare_versions_desc("beta", "beta"), Ordering::Equal);
     }
 }

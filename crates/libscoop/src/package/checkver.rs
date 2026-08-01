@@ -18,6 +18,7 @@
 //!   features (ThrowError, etc.). UA / Referer / PRIVATE_HOSTS header
 //!   injection is provided by `network::download_page`.
 
+use crate::internal::github;
 use crate::{network, package::manifest_walker, Manifest, Session};
 use regex::Regex;
 use std::collections::HashMap;
@@ -227,7 +228,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
             }
             u.clone()
         } else if let Some(sf) = &cv.sourceforge {
-            let extracted = extract_sourceforge_project(manifest.homepage());
+            let extracted = github::extract_sourceforge_project(manifest.homepage());
             let project = sf.project.as_deref().or(extracted.as_deref());
             match project {
                 Some(proj) => {
@@ -250,7 +251,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
             }
         } else if github_mode {
             // No cv.url set but github detected: extract repo from homepage
-            match github_api_url(manifest.homepage()) {
+            match github::github_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
                 None => {
                     let mut report = CheckverReport::new(stem, current);
@@ -275,7 +276,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
 
         // Transform github.com releases URLs to API URLs (Scoop's useGithubAPI behavior)
         if github_mode && url.contains("github.com/") && !url.contains("api.github.com") {
-            if let Some(api_url) = github_api_url(&url) {
+            if let Some(api_url) = github::github_api_url(&url) {
                 url = api_url;
             }
         }
@@ -496,24 +497,6 @@ fn is_github_checkver(cv: &crate::Checkver) -> bool {
         return true;
     }
     false
-}
-
-fn github_api_url(url_or_homepage: &str) -> Option<String> {
-    // Try to match as a github.com URL first (handles both homepage and releases URLs)
-    let re = Regex::new(r"github\.com[:/]([^/]+/[^/]+?)(?:/|$)").ok()?;
-    let caps = re.captures(url_or_homepage)?;
-    let repo = caps.get(1)?.as_str().trim_end_matches('/');
-    Some(format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        repo
-    ))
-}
-
-/// Extract SourceForge project name from homepage URL.
-fn extract_sourceforge_project(homepage: &str) -> Option<String> {
-    let re = Regex::new(r"sourceforge\.net/projects/([^/]+)").ok()?;
-    let caps = re.captures(homepage)?;
-    caps.get(1).map(|m| m.as_str().to_string())
 }
 
 // ─── Version extraction ─────────────────────────────────────────────────────
@@ -929,7 +912,7 @@ fn download_and_hash_multi(
                     "sourceforge" => {
                         // Scoop: fetch SF files page, extract sha1 with regex
                         // Regex: '"$basename":.*?"sha1":\s*"([a-fA-F0-9]{40})"'
-                        let (project, file_path) = parse_sourceforge_url(url).ok_or_else(|| {
+                        let (project, file_path) = github::parse_sourceforge_url(url).ok_or_else(|| {
                             crate::Error::Custom(format!(
                                 "could not parse sourceforge URL: {}",
                                 url
@@ -969,7 +952,7 @@ fn download_and_hash_multi(
                     "github" => {
                         // Scoop: fetch GitHub API releases, extract digest via jsonpath
                         // jsonpath: "$..assets[?(@.browser_download_url == '" + $url + "')].digest"
-                        let (owner, repo) = parse_github_download_url(url).ok_or_else(|| {
+                        let (owner, repo) = github::parse_github_download_url(url).ok_or_else(|| {
                             crate::Error::Custom(format!("could not parse GitHub URL: {}", url))
                         })?;
                         let api_url =
@@ -1037,29 +1020,6 @@ fn detect_hash_mode(url: &str) -> Option<&'static str> {
         return Some("github");
     }
     None
-}
-
-/// Parse a SourceForge download URL to extract (project, file_path).
-fn parse_sourceforge_url(url: &str) -> Option<(String, String)> {
-    // Scoop regex: '(?:downloads\.)?sourceforge.net\/projects?\/(?<project>[^\/]+)\/(?:files\/)?(?<file>.*)'
-    let re = Regex::new(
-        r"(?:downloads\.)?(?:sourceforge\.net|sf\.net)/projects?/([^/]+)(?:/files)?/(.*)",
-    )
-    .ok()?;
-    let caps = re.captures(url)?;
-    let project = caps.get(1)?.as_str().to_string();
-    let file_path = caps.get(2)?.as_str().trim_end_matches('/').to_string();
-    Some((project, file_path))
-}
-
-/// Parse a GitHub release download URL to extract (owner, repo).
-fn parse_github_download_url(url: &str) -> Option<(String, String)> {
-    // Pattern: https://github.com/<owner>/<repo>/releases/download/...
-    let re = Regex::new(r"github\.com/([^/]+)/([^/]+)/releases/download/").ok()?;
-    let caps = re.captures(url)?;
-    let owner = caps.get(1)?.as_str().to_string();
-    let repo = caps.get(2)?.as_str().to_string();
-    Some((owner, repo))
 }
 
 /// Download a single file and compute its hash using the algorithm from extraction config.
@@ -1553,44 +1513,6 @@ mod tests {
     #[test]
     fn is_github_false_when_empty() {
         assert!(!is_github_checkver(&checkver_default()));
-    }
-
-    // ── github_api_url ───────────────────────────────────────────────────────
-
-    #[test]
-    fn github_api_url_from_homepage() {
-        let result = github_api_url("https://github.com/BurntSushi/ripgrep");
-        assert!(result.is_some());
-        let url = result.unwrap();
-        assert!(url.contains("api.github.com"));
-        assert!(url.contains("BurntSushi/ripgrep"));
-    }
-
-    #[test]
-    fn github_api_url_from_releases_url() {
-        let result = github_api_url("https://github.com/sharkdp/bat/releases/latest");
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("api.github.com"));
-    }
-
-    #[test]
-    fn github_api_url_non_github_returns_none() {
-        let result = github_api_url("https://example.com/owner/repo");
-        assert!(result.is_none());
-    }
-
-    // ── extract_sourceforge_project ──────────────────────────────────────────
-
-    #[test]
-    fn sourceforge_extracts_project_from_homepage() {
-        let result = extract_sourceforge_project("https://sourceforge.net/projects/sevenzip/");
-        assert_eq!(result.as_deref(), Some("sevenzip"));
-    }
-
-    #[test]
-    fn sourceforge_returns_none_for_non_sf_url() {
-        let result = extract_sourceforge_project("https://example.com/project");
-        assert!(result.is_none());
     }
 
     // ── extract_version (regex) ──────────────────────────────────────────────
