@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, SyncOption, Session};
+use libscoop::{package::import, operation, SyncOption, Session};
 
 use crate::{output, Result};
 
@@ -20,25 +20,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
     };
 
-    let root: serde_json::Value = match serde_json::from_str(&content) {
+    let packages = match import::parse_import_json(&content) {
         Ok(v) => v,
         Err(e) => {
             output::err(format!("Error parsing JSON: {}", e));
             return Ok(());
         }
     };
-
-    let mut packages = Vec::new();
-
-    if let Some(buckets) = root.get("buckets").and_then(|v| v.as_object()) {
-        for (bucket, apps) in buckets {
-            if let Some(apps) = apps.as_object() {
-                for (name, _version) in apps {
-                    packages.push(format!("{}/{}", bucket, name));
-                }
-            }
-        }
-    }
 
     if packages.is_empty() {
         output::warn(rust_i18n::t!("cmd.import_no_pkgs"));

@@ -15,6 +15,9 @@
 //! - **Synchronization** — Complete install / upgrade / uninstall pipeline ([`sync`]).
 //! - **Validation** — URL validity checks ([`checkurls`]), hash computation and comparison ([`checkhashes`]),
 //!   version detection ([`checkver`]).
+//! - **Tooling** — Manifest generation from a download URL ([`create`]), installed-version listing ([`list`]),
+//!   dependency tree traversal ([`depends`]), shim inspection ([`shim`]), and export/import of the
+//!   installed package set ([`export`], [`import`]).
 //!
 //! # Core Types
 //!
@@ -35,14 +38,20 @@ pub mod checkhashes;
 pub mod checkup;
 pub mod checkurls;
 pub mod checkver;
+pub mod create;
+pub mod depends;
 pub(crate) mod download;
+pub mod export;
 pub mod formatjson;
+pub mod import;
+pub mod list;
 pub(crate) mod manifest;
 pub(crate) mod manifest_cache;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
 pub(crate) mod query;
 pub(crate) mod resolve;
+pub mod shim;
 pub(crate) mod sync;
 pub mod virustotal;
 

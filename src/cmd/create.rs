@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, Session};
+use libscoop::{package::create, Session};
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -27,73 +27,22 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     output::info(format!("Creating manifest for: {url}"));
 
-    // Extract filename from URL
-    let filename = url.rsplit('/').next()
-        .and_then(|s| s.split('?').next())
-        .unwrap_or("download");
-    let name = filename.rsplit('.').nth(1)
-        .or_else(|| filename.split('.').next())
-        .unwrap_or("app");
-
-    // Detect archive type
-    let is_archive = filename.ends_with(".zip") || filename.ends_with(".7z")
-        || filename.ends_with(".tar.gz") || filename.ends_with(".tgz")
-        || filename.ends_with(".tar.xz") || filename.ends_with(".tar.bz2")
-        || filename.ends_with(".tar") || filename.ends_with(".gz")
-        || filename.ends_with(".bz2") || filename.ends_with(".xz")
-        || filename.ends_with(".zst") || filename.ends_with(".rar");
-
-    // Download to temp and compute hash
-    let tmp_dir = std::env::temp_dir().join("hok-create");
-    std::fs::create_dir_all(&tmp_dir)?;
-    let dest = tmp_dir.join(filename);
-
     output::progress(rust_i18n::t!("cmd.downloading"), "");
-    operation::download_file(session, url, &dest)
-        .map_err(|e| anyhow::anyhow!("download failed: {}", e))?;
+    let manifest = create::create_manifest(session, url)
+        .map_err(|e| anyhow::anyhow!("create manifest failed: {e}"))?;
     output::ok();
 
-    output::progress(rust_i18n::t!("cmd.computing_hash"), "");
-    let hash = scoop_hash::compute_file_hash(&dest, "sha256")?;
-    output::ok();
-
-    // Generate manifest
-    let version = "0.0.0".to_string();
-    let homepage = "https://example.com".to_string();
-    let description = format!("{} description", name);
-
-    let manifest = serde_json::json!({
-        "version": version,
-        "description": description,
-        "homepage": homepage,
-        "license": "Unknown",
-        "url": url,
-        "hash": hash,
-    });
-
-    let manifest = if is_archive {
-        manifest
-    } else {
-        let mut m = manifest.as_object().unwrap().clone();
-        let bin_name = name.to_string();
-        m.insert("bin".to_string(), serde_json::json!([bin_name]));
-        serde_json::Value::Object(m)
-    };
-
-    let output = serde_json::to_string_pretty(&manifest)?;
+    let output_json = serde_json::to_string_pretty(&manifest)?;
 
     match &args.output {
         Some(path) => {
-            std::fs::write(path, output.as_bytes())?;
+            std::fs::write(path, output_json.as_bytes())?;
             output::done(rust_i18n::t!("cmd.create_manifest_saved", path = path.display()));
         }
         None => {
-            println!("\n{}", output);
+            println!("\n{}", output_json);
         }
     }
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     Ok(())
 }
