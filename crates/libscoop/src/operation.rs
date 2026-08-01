@@ -585,6 +585,67 @@ pub fn package_cleanup(
     Ok(results)
 }
 
+/// A single unsatisfied `suggest` entry: the package that suggests it and
+/// the candidate apps it recommends installing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestEntry {
+    /// The package name that carries the `suggest` entry.
+    pub package: String,
+    /// The candidate apps the manifest suggests installing.
+    pub candidates: Vec<String>,
+}
+
+/// Collect the unsatisfied `suggest` entries for the given packages,
+/// matching Scoop's `show_suggestions` (lib/install.ps1): a feature is only
+/// reported when **none** of its candidate apps is installed. Candidates are
+/// matched by app name (bucket/name forms included) against installed apps
+/// in both local and global scopes.
+///
+/// # Errors
+///
+/// Returns an error if querying the installed packages fails.
+pub fn package_suggest(session: &Session, packages: &[&str]) -> Fallible<Vec<SuggestEntry>> {
+    let installed = package_query(session, packages.to_vec(), vec![QueryOption::Explicit], true)?;
+
+    // All installed app names in both scopes, matching `installed_apps $true + $false`.
+    let original_global = session.is_global();
+    let mut installed_apps = HashSet::new();
+    for global in [false, true] {
+        session.set_global(global);
+        if let Ok(pkgs) = package_query(session, vec![], vec![], true) {
+            installed_apps.extend(pkgs.into_iter().map(|p| p.name().to_owned()));
+        }
+    }
+    session.set_global(original_global);
+
+    let mut entries = Vec::new();
+    for pkg in &installed {
+        let manifest = pkg.manifest();
+        if let Some(suggest) = manifest.suggest() {
+            let name = pkg.name();
+            for values in suggest.values() {
+                let candidates: Vec<String> = values
+                    .devectorize()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // A suggestion like "bucket/app" is fulfilled by installed "app".
+                let fulfilled = candidates.iter().any(|s| {
+                    let app = s.split(['/', '\\']).next_back().unwrap_or(s);
+                    installed_apps.contains(app)
+                });
+                if !fulfilled {
+                    entries.push(SuggestEntry {
+                        package: name.to_string(),
+                        candidates,
+                    });
+                }
+            }
+        }
+    }
+    Ok(entries)
+}
+
 /// Sync packages.
 ///
 /// # Note

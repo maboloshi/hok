@@ -11,7 +11,7 @@
 
 use clap::{ArgAction, Parser};
 use libscoop::internal::os::is_admin;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{operation, Session};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
 use crate::{output, Result};
@@ -110,8 +110,15 @@ impl Cmd for Args {
         operation::package_sync(session, to_install.clone(), options)?;
         handle.join().unwrap();
 
-        // Show suggestions from manifests of installed packages
-        show_suggestions(session, &to_install)?;
+        // Show unsatisfied suggestions from manifests of installed packages
+        let suggestions = operation::package_suggest(session, &to_install)?;
+        for entry in &suggestions {
+            let joined = entry.candidates.join("' or '");
+            output::info(format!(
+                "'{}' suggests installing '{}'.",
+                entry.package, joined
+            ));
+        }
 
         Ok(())
     }
@@ -121,36 +128,4 @@ impl Cmd for Args {
 #[inline]
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     <Args as Cmd>::execute(args, session)
-}
-
-/// Query installed packages and display their `suggest` field entries.
-fn show_suggestions(session: &Session, packages: &[&str]) -> Result<()> {
-    let installed = match operation::package_query(
-        session,
-        packages.to_vec(),
-        vec![QueryOption::Explicit],
-        true,
-    ) {
-        Ok(pkgs) => pkgs,
-        Err(_) => return Ok(()),
-    };
-
-    for pkg in &installed {
-        let manifest = pkg.manifest();
-        if let Some(suggest) = manifest.suggest() {
-            let name = pkg.name();
-            output::info(format!("Suggestions for '{name}':"));
-            for (key, values) in suggest {
-                let vals = values
-                    .devectorize()
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                output::info(format!("  {key}: {vals}"));
-            }
-        }
-    }
-
-
-    Ok(())
 }
