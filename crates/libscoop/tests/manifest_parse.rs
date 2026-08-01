@@ -90,7 +90,7 @@ fn test_manifest_from_json() {
         "homepage": "https://example.com",
         "license": "MIT",
         "url": "https://example.com/pkg.zip",
-        "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
     }"#;
     let manifest = Manifest::from_json("test-pkg", json).unwrap();
     assert_eq!(manifest.version(), "99.99.99");

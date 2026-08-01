@@ -4,7 +4,7 @@
     "homepage": "https://github.com/example/checkver-pkg",
     "license": "MIT",
     "url": "https://github.com/example/checkver-pkg/releases/download/v3.0.0/checkver-pkg-3.0.0.zip",
-    "hash": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
+    "hash": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
     "bin": "checkver-pkg.exe",
     "checkver": {
         "url": "https://api.github.com/repos/example/checkver-pkg/releases/latest",
