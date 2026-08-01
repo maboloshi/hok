@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::internal::github;
+use crate::package::manifest_walker;
 use crate::Session;
 
 // ---------------------------------------------------------------------------
@@ -369,19 +370,15 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 /// Read all JSON manifest files in `dir` into a map of `path → raw bytes`.
 fn read_manifests(dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
     let mut map = HashMap::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
+    let manifest_paths = match manifest_walker::discover(dir) {
+        Ok(paths) => paths,
         Err(e) => {
             output::err(format!("read dir {}: {}", dir.display(), e));
             return Ok(map);
         }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
+    for path in manifest_paths {
         match std::fs::read(&path) {
             Ok(content) => {
                 map.insert(path, content);

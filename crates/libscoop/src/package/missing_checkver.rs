@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{error::Fallible, Manifest};
+use crate::{error::Fallible, package::manifest_walker, Manifest};
 
 #[derive(Debug, Clone, Default)]
 pub struct MissingCheckverReport {
@@ -20,12 +20,7 @@ pub struct MissingItem {
 pub fn scan(dir: &Path, supported: bool) -> Fallible<MissingCheckverReport> {
     let mut report = MissingCheckverReport::default();
 
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
-
+    for path in manifest_walker::discover(dir)? {
         let manifest = match Manifest::parse(&path) {
             Ok(m) => m,
             Err(_) => continue,

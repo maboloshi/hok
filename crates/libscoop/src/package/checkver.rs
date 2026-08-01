@@ -17,7 +17,7 @@
 //! - **Known gaps vs Scoop**: See the `TODO` block below for unimplemented
 //!   features (ThrowError, custom useragent, etc.).
 
-use crate::{operation, Manifest, Session};
+use crate::{operation, package::manifest_walker, Manifest, Session};
 use regex::Regex;
 use std::path::PathBuf;
 
@@ -128,12 +128,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        if path.extension().map(|e| e != "json").unwrap_or(true) {
-            continue;
-        }
-
+    for path in manifest_walker::discover(dir)? {
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
         if args.app[0] != "*" && !args.app.iter().any(|p| stem.contains(p.as_str())) {
             continue;

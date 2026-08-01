@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{error::Fallible, operation, Manifest, Session};
+use crate::package::manifest_walker;
 
 #[derive(Debug, Clone)]
 pub struct CheckHashesOptions {
@@ -50,8 +51,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
     std::fs::create_dir_all(&cache_dir)?;
 
     let mut report = CheckHashesReport::default();
-    let mut json_files = Vec::new();
-    collect_json_files(&opts.dir, &mut json_files)?;
+    let json_files = manifest_walker::discover(&opts.dir)?;
 
     for path in &json_files {
         let name = match path.file_stem() {
@@ -241,19 +241,6 @@ fn collect_entries(manifest: &Manifest) -> Option<(Vec<String>, Vec<HashEntry>)>
     }
     Some((urls.into_iter().map(|s| s.to_string()).collect(), entries))
 }
-
-fn collect_json_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)?.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_json_files(&path, files)?;
-        } else if path.extension().map(|e| e == "json").unwrap_or(false) {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn hash_entry_index_prefix(entries: &[HashEntry], i: usize) -> String {
     if i < entries.len() {
         let entry = &entries[i];

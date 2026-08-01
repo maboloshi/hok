@@ -1,7 +1,8 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::{error::Fallible, operation, Manifest, Session};
+use crate::package::manifest_walker;
 
 #[derive(Debug, Clone)]
 pub struct UrlCheckError {
@@ -35,7 +36,7 @@ pub fn check_urls(
     skip_valid: bool,
 ) -> Fallible<CheckUrlsReport> {
     let mut report = CheckUrlsReport::default();
-    let manifest_paths = walk_json_files(dir);
+    let manifest_paths = manifest_walker::discover(dir)?;
 
     for path in &manifest_paths {
         let name = match path.file_stem().and_then(|s| s.to_str()) {
@@ -115,24 +116,4 @@ pub fn check_urls(
     }
 
     Ok(report)
-}
-
-fn walk_json_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-
-    while let Some(current) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&current) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().map_or(false, |e| e == "json") {
-                    files.push(path);
-                }
-            }
-        }
-    }
-
-    files
 }
