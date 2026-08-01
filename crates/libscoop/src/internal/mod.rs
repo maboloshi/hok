@@ -7,7 +7,6 @@
 //! - [`env`] — Windows Registry-backed environment variable management
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
-//! - [`manifest_cache`] — SQLite-based manifest cache
 //! - [`network`] — HTTP networking via `ureq`
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
@@ -26,7 +25,6 @@ pub mod dag;
 pub mod env;
 pub mod fs;
 pub mod git;
-pub mod manifest_cache;
 pub mod network;
 pub mod os;
 pub mod path;

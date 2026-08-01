@@ -6,7 +6,7 @@
 //! # Design
 //!
 //! - **Parallel scanning**: Bucket manifests are scanned in parallel via
-//!   `rayon` for performance. The manifest cache (`internal::manifest_cache`)
+//!   `rayon` for performance. The manifest cache (`package::manifest_cache`)
 //!   is checked first to avoid re-parsing unchanged files.
 //! - **Flexible query options**: [`QueryOption`] controls search scope
 //!   (`Description`, `Binary`, `Explicit`) and whether to include
@@ -25,12 +25,12 @@ use crate::{
     bucket::Bucket,
     constant::ISOLATED_PACKAGE_BUCKET,
     error::Fallible,
-    internal::{compare_versions, manifest_cache},
+    internal::compare_versions,
     package::manifest::{InstallInfo, Manifest},
     Session,
 };
 
-use super::{InstallState, InstallStateInstalled, Package};
+use super::{manifest_cache, InstallState, InstallStateInstalled, Package};
 
 /// Options that may be used to query Scoop packages.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

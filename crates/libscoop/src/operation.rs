@@ -641,8 +641,8 @@ pub fn refresh_manifest_cache(session: &Session) {
     if !session.config().use_sqlite_cache() {
         return;
     }
-    if let Ok(conn) = internal::manifest_cache::open(session) {
-        let _ = internal::manifest_cache::populate(&conn, session);
+    if let Ok(conn) = package::manifest_cache::open(session) {
+        let _ = package::manifest_cache::populate(&conn, session);
     } else {
         warn!("failed to open manifest cache");
     }
