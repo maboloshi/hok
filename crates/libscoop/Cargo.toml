@@ -25,6 +25,11 @@ serde_json = { version = "1.0.120", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1.41"
 ureq = "3"
+jsonpath-rust = "1.0"
+sxd-document = "0.3"
+sxd-xpath = "0.4"
+anyhow = "1.0"
+rust-i18n = "3.1.5"
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
 sevenz-rust2 = "0.21"

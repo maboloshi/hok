@@ -23,6 +23,7 @@
 
 pub mod checkhashes;
 pub mod checkurls;
+pub mod checkver;
 pub(crate) mod download;
 pub(crate) mod manifest;
 pub(crate) mod manifest_cache;
