@@ -2,6 +2,7 @@
 //!
 //! This module organises low-level utilities used across `libscoop`:
 //!
+//! - [`arch`] — Runtime OS architecture detection (Scoop-compatible)
 //! - [`archive`] — Archive extraction (7z, zip, tar, ...)
 //! - [`dag`] — Directed Acyclic Graph for dependency resolution
 //! - [`env`] — Windows Registry-backed environment variable management
@@ -20,6 +21,7 @@
 //! visibility rules require it for re-exporting; they are **not** part of
 //! the stable API and may change without notice.
 
+pub mod arch;
 pub mod archive;
 pub mod dag;
 pub mod env;
