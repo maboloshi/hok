@@ -424,11 +424,7 @@ pub fn alias_remove(session: &Session, name: &str) -> Fallible<()> {
 
 /// Hold or unhold a package.
 pub fn package_hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
-    let mut path = if session.is_global() {
-        session.config().global_path().to_owned()
-    } else {
-        session.config().root_path().to_owned()
-    };
+    let mut path = session.effective_root_path();
     path.push("apps");
     path.push(name);
 
@@ -500,12 +496,7 @@ pub fn package_cleanup(
     names: &[String],
     ignore_failure: bool,
 ) -> Fallible<Vec<(String, usize, usize)>> {
-    let config = session.config();
-    let apps_dir = if session.is_global() {
-        config.global_path().join("apps")
-    } else {
-        config.root_path().join("apps")
-    };
+    let apps_dir = session.effective_root_path().join("apps");
     let mut results = Vec::new();
 
     // If no names given, scan all installed packages
