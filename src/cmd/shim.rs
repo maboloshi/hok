@@ -36,8 +36,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 let name = entry.file_name();
                 if let Some(name) = name.to_str() {
                     // Skip .cmd files (show only .ps1 or no extension)
-                    if name.ends_with(".ps1") {
-                        let stem = &name[..name.len() - 4];
+                    if let Some(stem) = name.strip_suffix(".ps1") {
                         output::named(stem, "(shim)");
                     }
                 }

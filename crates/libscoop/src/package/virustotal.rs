@@ -69,10 +69,7 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
         .ok_or_else(|| anyhow::anyhow!("VT: no analysis ID in response"))?;
 
     // Step 2: poll for analysis results (up to 5 attempts with 3 s delay)
-    let analysis_url = format!(
-        "https://www.virustotal.com/api/v3/analyses/{}",
-        analysis_id
-    );
+    let analysis_url = format!("https://www.virustotal.com/api/v3/analyses/{}", analysis_id);
 
     for _ in 0..5 {
         std::thread::sleep(std::time::Duration::from_secs(3));
@@ -88,9 +85,7 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
             .read_json()
             .map_err(|e| anyhow::anyhow!("VT parse error: {}", e))?;
 
-        let status = json["data"]["attributes"]["status"]
-            .as_str()
-            .unwrap_or("");
+        let status = json["data"]["attributes"]["status"].as_str().unwrap_or("");
         if status == "completed" {
             let stats = &json["data"]["attributes"]["stats"];
             return Ok(ScanStats {
@@ -102,7 +97,9 @@ pub fn check_url(url: &str, api_key: &str) -> Result<ScanStats> {
         }
     }
 
-    Err(anyhow::anyhow!("VT analysis timed out after 5 polling attempts"))
+    Err(anyhow::anyhow!(
+        "VT analysis timed out after 5 polling attempts"
+    ))
 }
 
 #[cfg(test)]

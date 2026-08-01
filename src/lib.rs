@@ -104,7 +104,7 @@ fn translate_error(err: &libscoop::Error) -> String {
 fn report(err: &anyhow::Error) {
     if let Some(libscoop_err) = err.downcast_ref::<libscoop::Error>() {
         let msg = translate_error(libscoop_err);
-        let msg_s: String = msg.into();
+        let msg_s: String = msg;
         let _ = error(&msg_s);
     } else {
         let _ = error(err);

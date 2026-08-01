@@ -31,7 +31,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let filename = url.rsplit('/').next()
         .and_then(|s| s.split('?').next())
         .unwrap_or("download");
-    let name = filename.rsplit('.').skip(1).next()
+    let name = filename.rsplit('.').nth(1)
         .or_else(|| filename.split('.').next())
         .unwrap_or("app");
 

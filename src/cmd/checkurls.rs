@@ -35,10 +35,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     // The ps1 prints: '[' + 'U' (cyan) + ']RLs | [' + 'O' (green) + ']kay |  | [' + 'F' (red) + ']ailed |  |  |'
     use crossterm::style::Stylize;
     eprintln!(
-        "{} {} {}",
-        format!("[{}]", "U".cyan()).to_string(),
-        format!("RLs   [{}]", "O".green()).to_string(),
-        format!("[{}]", "F".red()).to_string(),
+        "[{}] RLs   [{}] [{}]",
+        "U".cyan(),
+        "O".green(),
+        "F".red(),
     );
     eprintln!();
 
@@ -66,8 +66,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         for err in &result.errors {
             eprintln!(
-                "{} > {} ({})",
-                "       ".to_string(),
+                "        > {} ({})",
                 err.message.clone().dark_red(),
                 err.url
             );

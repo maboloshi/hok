@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::{error::Fallible, operation, Manifest, Session};
 use crate::package::manifest_walker;
+use crate::{error::Fallible, operation, Manifest, Session};
 
 #[derive(Debug, Clone)]
 pub struct UrlCheckError {

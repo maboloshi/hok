@@ -10,13 +10,13 @@ fn visual_width(s: &str) -> usize {
     s.chars()
         .map(|c| {
             if c >= '\u{1100}' && (c <= '\u{115F}' || c == '\u{2329}' || c == '\u{232A}'
-                || (c >= '\u{2E80}' && c <= '\u{9FFF}')
-                || (c >= '\u{A000}' && c <= '\u{A4CF}')
-                || (c >= '\u{AC00}' && c <= '\u{D7AF}')
-                || (c >= '\u{F900}' && c <= '\u{FAFF}')
-                || (c >= '\u{FE30}' && c <= '\u{FE6F}')
-                || (c >= '\u{FF01}' && c <= '\u{FF60}')
-                || (c >= '\u{FFE0}' && c <= '\u{FFE6}'))
+                || ('\u{2E80}'..='\u{9FFF}').contains(&c)
+                || ('\u{A000}'..='\u{A4CF}').contains(&c)
+                || ('\u{AC00}'..='\u{D7AF}').contains(&c)
+                || ('\u{F900}'..='\u{FAFF}').contains(&c)
+                || ('\u{FE30}'..='\u{FE6F}').contains(&c)
+                || ('\u{FF01}'..='\u{FF60}').contains(&c)
+                || ('\u{FFE0}'..='\u{FFE6}').contains(&c))
             {
                 2
             } else {
@@ -188,8 +188,8 @@ fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Sessi
             .unwrap_or_default();
 
         versions.sort_by(|a, b| {
-            let a_ver = a.trim_start_matches(|c| c == 'v' || c == 'V');
-            let b_ver = b.trim_start_matches(|c| c == 'v' || c == 'V');
+            let a_ver = a.trim_start_matches(['v', 'V']);
+            let b_ver = b.trim_start_matches(['v', 'V']);
             // Simple numeric sort — descending (newest first)
             let a_parts: Vec<u64> = a_ver.split('.').filter_map(|s| s.parse().ok()).collect();
             let b_parts: Vec<u64> = b_ver.split('.').filter_map(|s| s.parse().ok()).collect();

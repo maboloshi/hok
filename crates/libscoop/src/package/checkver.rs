@@ -1360,8 +1360,7 @@ mod tests {
 
     #[test]
     fn github_api_url_from_releases_url() {
-        let result =
-            github_api_url("https://github.com/sharkdp/bat/releases/latest");
+        let result = github_api_url("https://github.com/sharkdp/bat/releases/latest");
         assert!(result.is_some());
         assert!(result.unwrap().contains("api.github.com"));
     }

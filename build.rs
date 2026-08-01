@@ -24,7 +24,7 @@ fn generate_cmd_mods() -> std::io::Result<()> {
         for entry in std::fs::read_dir(&cmd_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "rs") {
+            if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
             let stem = path.file_stem().unwrap().to_string_lossy();

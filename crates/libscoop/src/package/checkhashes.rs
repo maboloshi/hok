@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::{error::Fallible, operation, Manifest, Session};
 use crate::package::manifest_walker;
+use crate::{error::Fallible, operation, Manifest, Session};
 
 #[derive(Debug, Clone)]
 pub struct CheckHashesOptions {
@@ -286,18 +286,12 @@ mod tests {
 
     #[test]
     fn format_sha1_adds_prefix() {
-        assert_eq!(
-            format_hash_value("sha1", "aabbcc"),
-            "sha1:aabbcc"
-        );
+        assert_eq!(format_hash_value("sha1", "aabbcc"), "sha1:aabbcc");
     }
 
     #[test]
     fn format_sha512_adds_prefix() {
-        assert_eq!(
-            format_hash_value("sha512", "longvalue"),
-            "sha512:longvalue"
-        );
+        assert_eq!(format_hash_value("sha512", "longvalue"), "sha512:longvalue");
     }
 
     #[test]
@@ -368,11 +362,13 @@ mod tests {
 
     #[test]
     fn collect_entries_empty_when_no_urls() {
-        let m = manifest_from_json(r#"{
+        let m = manifest_from_json(
+            r#"{
             "version": "1.0",
             "homepage": "https://example.com",
             "license": "MIT"
-        }"#);
+        }"#,
+        );
         if let Some(m) = m {
             assert!(collect_entries(&m).is_none());
         }
@@ -381,7 +377,8 @@ mod tests {
     #[test]
     fn collect_entries_mismatch_returns_none() {
         // One URL but two hashes — should return None.
-        let m = manifest_from_json(r#"{
+        let m = manifest_from_json(
+            r#"{
             "version": "1.0",
             "homepage": "https://example.com",
             "license": "MIT",
@@ -390,24 +387,30 @@ mod tests {
                 "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                 "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
             ]
-        }"#);
+        }"#,
+        );
         // Manifest parser may reject mismatched counts; either way collect_entries
         // should return None for mismatch.
         if let Some(m) = m {
             let result = collect_entries(&m);
-            assert!(result.is_none(), "URL/hash count mismatch should yield None");
+            assert!(
+                result.is_none(),
+                "URL/hash count mismatch should yield None"
+            );
         }
     }
 
     #[test]
     fn collect_entries_matching_url_hash() {
-        let m = manifest_from_json(r#"{
+        let m = manifest_from_json(
+            r#"{
             "version": "1.0",
             "homepage": "https://example.com",
             "license": "MIT",
             "url": "https://example.com/app.zip",
             "hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-        }"#);
+        }"#,
+        );
         if let Some(m) = m {
             let result = collect_entries(&m);
             assert!(result.is_some(), "matching URL/hash should yield Some");

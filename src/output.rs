@@ -50,7 +50,7 @@ pub fn set_style(name: &str) {
 pub fn set_color_enabled(enabled: bool) {
     COLOR_ENABLED.store(enabled, Ordering::Relaxed);
     // crossterm respects NO_COLOR env var by default; force the override
-    let _ = crossterm::style::force_color_output(enabled);
+    crossterm::style::force_color_output(enabled);
 }
 
 /// Whether color output is currently enabled.

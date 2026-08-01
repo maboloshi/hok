@@ -124,24 +124,20 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
     output::named("Repository", &repo_nwo);
     output::named("Branch", &config.origin_branch);
     if config.request {
-        let upstream = format!(
-            "{}:{}",
-            config.upstream_repo_nwo, config.upstream_branch
-        );
+        let upstream = format!("{}:{}", config.upstream_repo_nwo, config.upstream_branch);
         output::named("Upstream", &upstream);
     }
 
     // Resolve absolute directory
     let dir = if config.dir.is_relative() {
-        std::env::current_dir().unwrap_or_default().join(&config.dir)
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(&config.dir)
     } else {
         config.dir.clone()
     };
     if !dir.is_dir() {
-        output::err(rust_i18n::t!(
-            "cmd.checkver_err_dir",
-            path = dir.display()
-        ));
+        output::err(rust_i18n::t!("cmd.checkver_err_dir", path = dir.display()));
         return Ok(());
     }
 
@@ -210,10 +206,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         let version = match json["version"].as_str() {
             Some(v) => v.to_string(),
             None => {
-                output::err(format!(
-                    "{}: no version field",
-                    manifest_path.display()
-                ));
+                output::err(format!("{}: no version field", manifest_path.display()));
                 continue;
             }
         };
@@ -292,8 +285,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                     }
                 };
 
-            if let Err(e) =
-                github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token)
+            if let Err(e) = github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token)
             {
                 output::err(format!("{}: create branch failed: {}", app, e));
                 continue;

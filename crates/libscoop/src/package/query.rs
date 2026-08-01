@@ -547,12 +547,7 @@ mod tests {
         let matchers = build_matchers(&["downloader"], false, false).unwrap();
         // With description option, name prefilter should NOT apply
         let options = vec![QueryOption::Description];
-        assert!(!name_prefiltered_out(
-            "curl",
-            false,
-            &matchers,
-            &options
-        ));
+        assert!(!name_prefiltered_out("curl", false, &matchers, &options));
     }
 
     // ── manifest_matches ─────────────────────────────────────────────────────
@@ -568,28 +563,60 @@ mod tests {
     fn wildcard_matches_all() {
         let m = make_manifest("1.0");
         let matchers = build_matchers(&[], true, false).unwrap();
-        assert!(manifest_matches("any-pkg", "bucket", &m, true, false, &matchers, &[]));
+        assert!(manifest_matches(
+            "any-pkg",
+            "bucket",
+            &m,
+            true,
+            false,
+            &matchers,
+            &[]
+        ));
     }
 
     #[test]
     fn explicit_exact_match() {
         let m = make_manifest("1.0");
         let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(manifest_matches("curl", "main", &m, false, true, &matchers, &[]));
+        assert!(manifest_matches(
+            "curl",
+            "main",
+            &m,
+            false,
+            true,
+            &matchers,
+            &[]
+        ));
     }
 
     #[test]
     fn explicit_no_match() {
         let m = make_manifest("1.0");
         let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(!manifest_matches("wget", "main", &m, false, true, &matchers, &[]));
+        assert!(!manifest_matches(
+            "wget",
+            "main",
+            &m,
+            false,
+            true,
+            &matchers,
+            &[]
+        ));
     }
 
     #[test]
     fn regex_case_insensitive_match() {
         let m = make_manifest("1.0");
         let matchers = build_matchers(&["CURL"], false, false).unwrap();
-        assert!(manifest_matches("curl", "main", &m, false, false, &matchers, &[]));
+        assert!(manifest_matches(
+            "curl",
+            "main",
+            &m,
+            false,
+            false,
+            &matchers,
+            &[]
+        ));
     }
 
     #[test]
@@ -597,8 +624,24 @@ mod tests {
         let m = make_manifest("1.0");
         let matchers = build_matchers(&["extras/curl"], false, true).unwrap();
         // Matches when bucket is "extras"
-        assert!(manifest_matches("curl", "extras", &m, false, true, &matchers, &[]));
+        assert!(manifest_matches(
+            "curl",
+            "extras",
+            &m,
+            false,
+            true,
+            &matchers,
+            &[]
+        ));
         // Does NOT match when bucket is "main"
-        assert!(!manifest_matches("curl", "main", &m, false, true, &matchers, &[]));
+        assert!(!manifest_matches(
+            "curl",
+            "main",
+            &m,
+            false,
+            true,
+            &matchers,
+            &[]
+        ));
     }
 }

@@ -80,17 +80,26 @@ mod tests {
 
     #[test]
     fn remote_filename_decodes_percent() {
-        assert_eq!(remote_filename("https://example.com/foo%20bar.zip"), "foo bar.zip");
+        assert_eq!(
+            remote_filename("https://example.com/foo%20bar.zip"),
+            "foo bar.zip"
+        );
     }
 
     #[test]
     fn remote_filename_plain_url() {
-        assert_eq!(remote_filename("https://example.com/releases/app-1.0.zip"), "app-1.0.zip");
+        assert_eq!(
+            remote_filename("https://example.com/releases/app-1.0.zip"),
+            "app-1.0.zip"
+        );
     }
 
     #[test]
     fn basename_strips_extension() {
-        assert_eq!(basename("https://example.com/archive.tar.gz"), "archive.tar");
+        assert_eq!(
+            basename("https://example.com/archive.tar.gz"),
+            "archive.tar"
+        );
     }
 
     #[test]

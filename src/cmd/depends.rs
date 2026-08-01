@@ -55,7 +55,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 fn print_deps(session: &Session, name: &str, bucket: &str, depth: usize, seen: &mut std::collections::HashSet<String>) -> Result<()> {
     if !seen.insert(name.to_string()) {
         if depth > 0 {
-            println!("{:indent$} {} {}", "", name, "(already listed)", indent = depth * 2);
+            println!("{:indent$} {} (already listed)", "", name, indent = depth * 2);
         }
         return Ok(());
     }

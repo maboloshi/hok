@@ -70,7 +70,10 @@ mod tests {
     fn empty_dir_returns_empty() {
         let dir = tmpdir("empty");
         let result = discover(&dir).unwrap();
-        assert!(result.is_empty(), "An empty directory should return an empty list.");
+        assert!(
+            result.is_empty(),
+            "An empty directory should return an empty list."
+        );
     }
 
     /// Top-level .json files were found (excluding package.json)。
@@ -82,7 +85,11 @@ mod tests {
         fs::write(dir.join("package.json"), "{}").unwrap(); // should be excluded
 
         let result = discover(&dir).unwrap();
-        assert_eq!(result.len(), 2, "2 manifests should be found, package.json should be excluded");
+        assert_eq!(
+            result.len(),
+            2,
+            "2 manifests should be found, package.json should be excluded"
+        );
         let names: Vec<_> = result
             .iter()
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
@@ -137,6 +144,9 @@ mod tests {
     fn nonexistent_dir_returns_error() {
         let dir = std::path::PathBuf::from("/tmp/hok_mw_test_nonexistent_dir_xyz_abc");
         let result = discover(&dir);
-        assert!(result.is_err(), "A non-existent directory should return Err.");
+        assert!(
+            result.is_err(),
+            "A non-existent directory should return Err."
+        );
     }
 }

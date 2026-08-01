@@ -30,7 +30,6 @@
 //! - **Concurrency Safety**: `Package` implements `Send + Sync`; the `query` submodule uses `rayon`
 //!   to scan bucket manifests in parallel without requiring ownership of `Session`.
 
-
 pub mod auto_pr;
 pub mod checkhashes;
 pub mod checkup;

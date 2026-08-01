@@ -118,16 +118,16 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
 /// Recursively collect all `.json` files under a directory.
 ///
 /// Uses an explicit stack to avoid deep recursion on deeply nested trees.
-pub fn walkdir_files(dir: &PathBuf) -> Vec<PathBuf> {
+pub fn walkdir_files(dir: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let mut stack = vec![dir.clone()];
+    let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
         if let Ok(entries) = std::fs::read_dir(&current) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path.extension().map_or(false, |e| e == "json") {
+                } else if path.extension().is_some_and(|e| e == "json") {
                     files.push(path);
                 }
             }
