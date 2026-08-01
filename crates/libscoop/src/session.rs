@@ -35,7 +35,7 @@
 use flume::{Receiver, Sender};
 use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     config::{possible_config_paths, Config, ConfigBuilder},
@@ -118,6 +118,10 @@ impl Session {
         P: AsRef<Path>,
     {
         let config = RefCell::new(ConfigBuilder::new().path(config_path).load()?);
+
+        // Apply the `default_architecture` config as the process-wide
+        // architecture override (Scoop's `Get-DefaultArchitecture` config path).
+        apply_default_architecture(&config.borrow());
 
         Ok(Session {
             config,
@@ -226,5 +230,24 @@ impl Session {
         self.user_agent
             .set(user_agent.to_owned())
             .map_err(|_| Error::UserAgentAlreadySet)
+    }
+
+    /// Get the custom user agent, if set.
+    pub fn user_agent(&self) -> Option<&str> {
+        self.user_agent.get().map(|s| s.as_str())
+    }
+}
+
+/// Apply the `default_architecture` config as the process-wide architecture
+/// override, mirroring Scoop's `Get-DefaultArchitecture` config path. An
+/// invalid value is logged and the runtime-detected architecture is kept.
+fn apply_default_architecture(config: &Config) {
+    if let Some(raw) = config.default_architecture() {
+        match crate::internal::arch::Arch::parse(raw) {
+            Ok(arch) => crate::internal::arch::Arch::set_default_architecture(arch),
+            Err(_) => warn!(
+                "invalid default architecture configured: {raw}; using the system architecture"
+            ),
+        }
     }
 }

@@ -143,8 +143,12 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     no_color: Option<bool>,
 
+    /// The default architecture to use (Scoop's `default_architecture`
+    /// config, see `Get-DefaultArchitecture`). When set, it overrides the
+    /// runtime-detected host architecture for manifest field selection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    deafult_architecture: Option<String>,
+    #[serde(alias = "deafult_architecture")]
+    default_architecture: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     debug: Option<bool>,
@@ -451,6 +455,15 @@ impl Config {
         self.inner.use_sqlite_cache.unwrap_or(false)
     }
 
+    /// The user-configured default architecture, if any.
+    ///
+    /// Maps to Scoop's `default_architecture` config; when set it overrides
+    /// the runtime-detected host architecture.
+    #[inline]
+    pub fn default_architecture(&self) -> Option<&str> {
+        self.inner.default_architecture.as_deref()
+    }
+
     /// Whether Aria2 (or equivalent curl fragmentation) is enabled.
     /// Defaults to `true` if not set.
     #[inline]
@@ -564,6 +577,13 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
+            "default_architecture" => match is_unset {
+                true => self.inner.default_architecture = None,
+                false => match crate::internal::arch::Arch::parse(value) {
+                    Ok(_) => self.inner.default_architecture = Some(value.to_owned()),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "use_sqlite_cache" => match is_unset {
                 true => self.inner.use_sqlite_cache = None,
                 false => match value.parse::<bool>() {
@@ -606,7 +626,7 @@ impl Default for Config {
             // default_cache_path: default::cache_path(),
             cache_path: default::cache_path(),
             cat_style: Default::default(),
-            deafult_architecture: Default::default(),
+            default_architecture: Default::default(),
             debug: Default::default(),
             force_update: Default::default(),
             gh_token: Default::default(),
