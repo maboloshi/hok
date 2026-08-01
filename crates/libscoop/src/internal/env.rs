@@ -26,9 +26,9 @@ pub fn get_path_like_env(name: &str) -> Fallible<Vec<PathBuf>> {
 }
 
 mod windows {
-    use std::sync::LazyLock;
     use std::ffi::OsString;
     use std::path::Path;
+    use std::sync::LazyLock;
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 

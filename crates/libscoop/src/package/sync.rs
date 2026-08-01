@@ -32,8 +32,8 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::{
-    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error,
-    Event, QueryOption, Session,
+    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
+    Session,
 };
 
 use super::{
@@ -360,9 +360,9 @@ fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible
         return Ok(true);
     }
 
-    let rx = session.receiver().ok_or_else(|| {
-        Error::Custom("event bus not initialized".to_owned())
-    })?;
+    let rx = session
+        .receiver()
+        .ok_or_else(|| Error::Custom("event bus not initialized".to_owned()))?;
 
     while let Ok(event) = rx.recv() {
         if let Event::PromptTransactionNeedConfirmResult(ret) = event {
@@ -416,7 +416,12 @@ fn run_script(
         _ => return Ok(()),
     };
 
-    debug!("run_script: {} stage={} ({} lines)", package.name(), stage, lines.len());
+    debug!(
+        "run_script: {} stage={} ({} lines)",
+        package.name(),
+        stage,
+        lines.len()
+    );
 
     let script = lines.join("\r\n");
 
@@ -424,7 +429,8 @@ fn run_script(
     // like Expand-InnoArchive, Expand-7zipArchive, Get-HelperPath, etc.
     const CORE_PS1: &str = include_str!("../../../../asset_scripts/core.ps1");
     const DECOMPRESS_PS1: &str = include_str!("../../../../asset_scripts/decompress.ps1");
-    let preamble = format!(r#"
+    let preamble = format!(
+        r#"
 # Hok embedded helpers (always available)
 {core}
 {decompress}
@@ -454,7 +460,10 @@ $bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "64bit"
 $global = $false
 $cmd = $env:SCOOP_PACKAGE_CMD
-"#, core = CORE_PS1, decompress = DECOMPRESS_PS1);
+"#,
+        core = CORE_PS1,
+        decompress = DECOMPRESS_PS1
+    );
     let full_script = format!("{preamble}\r\n{script}");
 
     // Write script to a temp file in the working dir
@@ -467,7 +476,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     // Build environment variables
     let config = session.config();
     let root_path = config.root_path();
-    let pkg_dir = working_dir.to_path_buf();  // $dir = version dir (not current)
+    let pkg_dir = working_dir.to_path_buf(); // $dir = version dir (not current)
 
     let version = package.version();
 
@@ -479,7 +488,11 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     let _guard = TempFileGuard::new(vec![script_path.clone(), marker_path.clone()]);
 
     // Prefer pwsh.exe (PowerShell Core, faster startup)
-    let ps_exe = if crate::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+    let ps_exe = if crate::internal::os::is_pwsh_available() {
+        "pwsh.exe"
+    } else {
+        "powershell.exe"
+    };
 
     let status = std::process::Command::new(ps_exe)
         .arg("-NoProfile")
@@ -529,7 +542,9 @@ $cmd = $env:SCOOP_PACKAGE_CMD
 
             if source.exists() {
                 let emit = session.emitter();
-                if let Err(e) = internal::archive::extract(source, dest, None, None, innosetup, &emit) {
+                if let Err(e) =
+                    internal::archive::extract(source, dest, None, None, innosetup, &emit)
+                {
                     // Log but don't abort — extraction errors may be handled
                     // by the PS script's own error handling
                     debug!("P2 extract failed for {}: {}", source.display(), e);
@@ -610,7 +625,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             .filter_map(|p| {
                 let upgradable = p.upgradable().cloned();
                 if upgradable.is_none() {
-                    debug!("package '{}' has no upgradable reference, skipping", p.name());
+                    debug!(
+                        "package '{}' has no upgradable reference, skipping",
+                        p.name()
+                    );
                 }
                 upgradable
             })
@@ -631,7 +649,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 .collect::<Vec<_>>();
 
             // Debug: log how many synced packages for diagnosis
-            debug!("query '{}': {} synced packages, {} exact matches", query, synced.len(), matched.len());
+            debug!(
+                "query '{}': {} synced packages, {} exact matches",
+                query,
+                synced.len(),
+                matched.len()
+            );
 
             match matched.len() {
                 0 => return Err(Error::PackageNotFound(query.to_owned())),
@@ -884,7 +907,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let urls = pkg.manifest().url();
 
     // Collect the files that need to be decompressed
-    let archives: Vec<usize> = files.iter().enumerate()
+    let archives: Vec<usize> = files
+        .iter()
+        .enumerate()
         .filter_map(|(idx, f)| {
             let url = &urls[idx];
 
@@ -895,8 +920,19 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or("");
-            if matches!(ext, "7z" | "zip" | "nupkg" | "rar" | "lzh"
-                | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tar") {
+            if matches!(
+                ext,
+                "7z" | "zip"
+                    | "nupkg"
+                    | "rar"
+                    | "lzh"
+                    | "gz"
+                    | "bz2"
+                    | "xz"
+                    | "zst"
+                    | "tgz"
+                    | "tar"
+            ) {
                 Some(idx)
             } else {
                 None
@@ -907,23 +943,33 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 1. Extract the archive file
     if !archives.is_empty() {
         let cache_path = config.cache_path();
-        debug!("commit: {} v{} - extract ({} files)", pkg.name(), pkg.version(), archives.len());
+        debug!(
+            "commit: {} v{} - extract ({} files)",
+            pkg.name(),
+            pkg.version(),
+            archives.len()
+        );
 
         for idx in archives.iter() {
             let filename = &files[*idx];
             let src = cache_path.join(filename);
             if src.exists() {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractStart(
-                        format!("{}/{}", pkg.name(), filename)));
+                    let _ = tx.send(Event::PackageExtractStart(format!(
+                        "{}/{}",
+                        pkg.name(),
+                        filename
+                    )));
                 }
                 let emit = session.emitter();
                 internal::archive::extract(
-                    &src, &working_dir,
+                    &src,
+                    &working_dir,
                     pkg.manifest().extract_dir().as_deref(),
                     pkg.manifest().extract_to().as_deref(),
                     pkg.manifest().innosetup(),
-                    &emit)?;
+                    &emit,
+                )?;
                 if let Some(tx) = session.emitter() {
                     let _ = tx.send(Event::PackageExtractDone);
                 }
@@ -932,7 +978,12 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 2. Copy all non-archived files (including _ files and regular files)
-    debug!("commit: {} v{} - copy ({} files)", pkg.name(), pkg.version(), files.len() - archives.len());
+    debug!(
+        "commit: {} v{} - copy ({} files)",
+        pkg.name(),
+        pkg.version(),
+        files.len() - archives.len()
+    );
 
     for (idx, filename) in files.iter().enumerate() {
         // Skip already extracted archive files
@@ -956,24 +1007,46 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
     if pkg.manifest().pre_install().is_some() {
         debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
-        run_script(session, pkg, &working_dir, "pre_install", "install",
-            pkg.manifest().pre_install())?;
+        run_script(
+            session,
+            pkg,
+            &working_dir,
+            "pre_install",
+            "install",
+            pkg.manifest().pre_install(),
+        )?;
     }
 
     // 3. installer, $dir = version dir)
     if let Some(installer) = pkg.manifest().installer() {
         if let Some(script) = installer.script() {
-            debug!("commit: {} v{} - installer.script", pkg.name(), pkg.version());
-            run_script(session, pkg, &working_dir, "installer", "install", Some(script))?;
+            debug!(
+                "commit: {} v{} - installer.script",
+                pkg.name(),
+                pkg.version()
+            );
+            run_script(
+                session,
+                pkg,
+                &working_dir,
+                "installer",
+                "install",
+                Some(script),
+            )?;
         } else if let Some(file) = installer.file() {
             debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
             let exe_path = working_dir.join(file);
             let raw_args: Vec<&str> = installer.args().unwrap_or_default();
             let expanded = expand_installer_vars(&raw_args, session, pkg, &working_dir, "install");
             let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-            crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir))
-                .map_err(|e| Error::Custom(format!(
-                    "failed to run installer '{}' for '{}': {}", file, pkg.name(), e)))?;
+            crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir)).map_err(|e| {
+                Error::Custom(format!(
+                    "failed to run installer '{}' for '{}': {}",
+                    file,
+                    pkg.name(),
+                    e
+                ))
+            })?;
         }
     }
 
@@ -987,7 +1060,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     internal::fs::symlink_dir(&working_dir, &current_lnk)?;
 
     // 5. shims + shortcuts
-    debug!("commit: {} v{} - shims/shortcuts", pkg.name(), pkg.version());
+    debug!(
+        "commit: {} v{} - shims/shortcuts",
+        pkg.name(),
+        pkg.version()
+    );
     shim::add(session, pkg)?;
     shortcut::add(session, pkg)?;
 
@@ -998,8 +1075,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 7. post_install (Scoop order: last hook)
     if pkg.manifest().post_install().is_some() {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
-        run_script(session, pkg, &working_dir, "post_install", "install",
-            pkg.manifest().post_install())?;
+        run_script(
+            session,
+            pkg,
+            &working_dir,
+            "post_install",
+            "install",
+            pkg.manifest().post_install(),
+        )?;
     }
 
     if let Some(tx) = session.emitter() {
@@ -1014,7 +1097,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
-    debug!("commit: {} v{} - writing metadata", pkg.name(), pkg.version());
+    debug!(
+        "commit: {} v{} - writing metadata",
+        pkg.name(),
+        pkg.version()
+    );
 
     // 7. Write install metadata
     let current_dir = apps_dir.join(pkg.name()).join("current");
@@ -1023,21 +1110,35 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // Use bucket path (manifest.path() may be virtual when loaded from cache)
     let bucket_path = config.root_path().join("buckets").join(pkg.bucket());
     let manifest_src = {
-        let primary = bucket_path.join("bucket").join(format!("{}.json", pkg.name()));
+        let primary = bucket_path
+            .join("bucket")
+            .join(format!("{}.json", pkg.name()));
         let fallback = bucket_path.join(format!("{}.json", pkg.name()));
-        if primary.exists() { primary } else { fallback }
+        if primary.exists() {
+            primary
+        } else {
+            fallback
+        }
     };
     let manifest_dst = current_dir.join("manifest.json");
     match std::fs::copy(&manifest_src, manifest_dst) {
-        Ok(_) => {},
-        Err(e) => return Err(Error::Custom(format!(
-            "could not copy manifest from {:?}: {}", manifest_src, e))),
+        Ok(_) => {}
+        Err(e) => {
+            return Err(Error::Custom(format!(
+                "could not copy manifest from {:?}: {}",
+                manifest_src, e
+            )))
+        }
     }
 
     // 2. Write current/install.json
-    let arch = if cfg!(target_arch = "x86_64") { "64bit" }
-               else if cfg!(target_arch = "x86") { "32bit" }
-               else { "arm64" };
+    let arch = if cfg!(target_arch = "x86_64") {
+        "64bit"
+    } else if cfg!(target_arch = "x86") {
+        "32bit"
+    } else {
+        "arm64"
+    };
     let install_info = serde_json::json!({
         "architecture": arch,
         "bucket": pkg.bucket(),
@@ -1140,7 +1241,12 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
 
 /// Execute the removal commit: run scripts, clean up shims/shortcuts/env,
 /// remove app directory, and optionally purge persist data.
-fn commit_remove(session: &Session, packages: &[Package], purge: bool, ignore_failure: bool) -> Fallible<()> {
+fn commit_remove(
+    session: &Session,
+    packages: &[Package],
+    purge: bool,
+    ignore_failure: bool,
+) -> Fallible<()> {
     for package in packages.iter() {
         if let Err(e) = commit_one_remove(session, package, purge) {
             let msg = format!("failed to remove '{}': {}", package.name(), e);
@@ -1169,25 +1275,53 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 
     let app_dir = root_dir.join("apps").join(package.name());
 
-    run_script(session, package, &app_dir.join("current"), "pre_uninstall", "uninstall",
-        package.manifest().pre_uninstall())?;
+    run_script(
+        session,
+        package,
+        &app_dir.join("current"),
+        "pre_uninstall",
+        "uninstall",
+        package.manifest().pre_uninstall(),
+    )?;
 
     if let Some(uninstaller) = package.manifest().uninstaller() {
         if let Some(script) = uninstaller.script() {
-            run_script(session, package, &app_dir.join("current"), "uninstaller", "uninstall", Some(script))?;
+            run_script(
+                session,
+                package,
+                &app_dir.join("current"),
+                "uninstaller",
+                "uninstall",
+                Some(script),
+            )?;
         } else if let Some(file) = uninstaller.file() {
             debug!("remove: {} - uninstaller.file", package.name());
             let exe_path = app_dir.join("current").join(file);
             let raw_args: Vec<&str> = uninstaller.args().unwrap_or_default();
-            let expanded = expand_installer_vars(&raw_args, session, package, &app_dir.join("current"), "uninstall");
+            let expanded = expand_installer_vars(
+                &raw_args,
+                session,
+                package,
+                &app_dir.join("current"),
+                "uninstall",
+            );
             let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
             crate::internal::os::run_gui(&exe_path, &args, Some(&app_dir.join("current")))
-                .map_err(|e| Error::Custom(format!(
-                    "failed to run uninstaller '{}' for '{}': {}", file, package.name(), e)))?;
+                .map_err(|e| {
+                    Error::Custom(format!(
+                        "failed to run uninstaller '{}' for '{}': {}",
+                        file,
+                        package.name(),
+                        e
+                    ))
+                })?;
         }
     }
 
-    debug!("remove: {} - cleanup (shims/shortcuts/env/persist)", package.name());
+    debug!(
+        "remove: {} - cleanup (shims/shortcuts/env/persist)",
+        package.name()
+    );
     shim::remove(session, package)?;
     shortcut::remove(session, package)?;
     psmodule::remove(session, package)?;
@@ -1197,8 +1331,14 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     let current_lnk = app_dir.join("current");
     internal::fs::remove_symlink(current_lnk)?;
 
-    run_script(session, package, &app_dir, "post_uninstall", "uninstall",
-        package.manifest().post_uninstall())?;
+    run_script(
+        session,
+        package,
+        &app_dir,
+        "post_uninstall",
+        "uninstall",
+        package.manifest().post_uninstall(),
+    )?;
 
     internal::fs::remove_dir(&app_dir)?;
 
@@ -1289,23 +1429,35 @@ mod tests {
             &std::path::PathBuf::from("cmd.exe"),
             &["/c", "exit /b 42"],
             Some(&tmp),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(exit_code, 42, "should capture exit code from cmd.exe /c");
 
         // Test 2: create a file via PowerShell (used in many Scoop installer scripts)
         let marker = tmp.join("ran.txt");
-        let ps = if crate::internal::os::is_pwsh_available() { "pwsh.exe" } else { "powershell.exe" };
+        let ps = if crate::internal::os::is_pwsh_available() {
+            "pwsh.exe"
+        } else {
+            "powershell.exe"
+        };
         let exit_code = crate::internal::os::run_gui(
             &std::path::PathBuf::from(ps),
             &[
                 "-NoProfile",
                 "-Command",
-                &format!("New-Item -Path '{}' -ItemType File -Force | Out-Null", marker.display()),
+                &format!(
+                    "New-Item -Path '{}' -ItemType File -Force | Out-Null",
+                    marker.display()
+                ),
             ],
             Some(&tmp),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(exit_code, 0, "powershell script should exit 0");
-        assert!(marker.exists(), "powershell should have created marker file");
+        assert!(
+            marker.exists(),
+            "powershell should have created marker file"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1339,7 +1491,8 @@ mod tests {
     #[test]
     fn test_url_filename_without_fragment() {
         let url = "https://example.com/dopus_patcher.exe";
-        let filename = std::path::Path::new(url).file_name()
+        let filename = std::path::Path::new(url)
+            .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap();
         assert_eq!(filename, "dopus_patcher.exe");
@@ -1354,7 +1507,9 @@ mod tests {
         }
     }
 
-    fn setup_expand_vars_test(test_name: &str) -> (crate::Session, Package, std::path::PathBuf, TestDirGuard) {
+    fn setup_expand_vars_test(
+        test_name: &str,
+    ) -> (crate::Session, Package, std::path::PathBuf, TestDirGuard) {
         let tmp = crate::test_utils::tmpdir(&format!("expand_vars_{}", test_name));
         let guard = TestDirGuard(tmp.clone());
         let root = &tmp;
@@ -1433,7 +1588,8 @@ mod tests {
     fn test_expand_cmd_var() {
         let (session, pkg, working_dir, _tmp) = setup_expand_vars_test("cmd");
         let args = vec!["$cmd"];
-        let expanded_install = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
+        let expanded_install =
+            expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
         let expanded_uninstall =
             expand_installer_vars(&args, &session, &pkg, &working_dir, "uninstall");
         assert_eq!(expanded_install[0], "install");
@@ -1533,7 +1689,7 @@ mod tests {
     fn setup_confirm_test() -> (Session, flume::Sender<Event>, flume::Receiver<Event>) {
         let session = Session::new();
         let bus = session.event_bus();
-        let frontend_tx = bus.sender();   // outer_tx → session.inner_rx
+        let frontend_tx = bus.sender(); // outer_tx → session.inner_rx
         let frontend_rx = bus.receiver(); // outer_rx ← session.inner_tx
         (session, frontend_tx, frontend_rx)
     }

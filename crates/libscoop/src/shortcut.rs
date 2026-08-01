@@ -12,8 +12,8 @@
 //! - **Conflict detection**: An event is emitted when a shortcut already
 //!   exists and will be overwritten.
 
-use std::sync::LazyLock;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
@@ -50,18 +50,30 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             //   [1] = display name in start menu
             //   [2] = optional arguments
             //   [3] = optional icon path (relative to package dir)
-            let target = apps_dir.join(package.name()).join("current").join(shortcut[0]);
+            let target = apps_dir
+                .join(package.name())
+                .join("current")
+                .join(shortcut[0]);
             let target_str = target.to_string_lossy().into_owned();
 
             let args = shortcut.get(2).map(|s| s.to_string());
-            let icon = shortcut.get(3).map(|s| apps_dir.join(package.name()).join("current").join(s).to_string_lossy().into_owned());
+            let icon = shortcut.get(3).map(|s| {
+                apps_dir
+                    .join(package.name())
+                    .join("current")
+                    .join(s)
+                    .to_string_lossy()
+                    .into_owned()
+            });
 
             let mut link_path = SCOOP_SHORTCUT_DIR.join(shortcut[1]);
             link_path.set_extension("lnk");
 
             if link_path.exists() {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageShortcutConflict(link_path.to_string_lossy().into_owned()));
+                    let _ = tx.send(Event::PackageShortcutConflict(
+                        link_path.to_string_lossy().into_owned(),
+                    ));
                 }
             }
 
@@ -92,7 +104,10 @@ fn create_shortcut(
 
     let link_str = link.to_string_lossy();
     // The display name is derived from the .lnk filename (minus .lnk extension)
-    let name = link.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned());
+    let name = link
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_owned());
 
     let sl = ShellLink::new(target, args, name, icon)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
@@ -125,7 +140,9 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                 std::fs::remove_file(&path)?;
             } else {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageShortcutNotFound(path.to_string_lossy().into_owned()));
+                    let _ = tx.send(Event::PackageShortcutNotFound(
+                        path.to_string_lossy().into_owned(),
+                    ));
                 }
             }
         }
@@ -156,7 +173,11 @@ mod tests {
         assert!(link.exists(), ".lnk file was not created");
 
         let bytes = std::fs::read(&link).unwrap();
-        assert_eq!(&bytes[..4], &[0x4C, 0x00, 0x00, 0x00], "not a valid LNK header");
+        assert_eq!(
+            &bytes[..4],
+            &[0x4C, 0x00, 0x00, 0x00],
+            "not a valid LNK header"
+        );
 
         let _ = std::fs::remove_file(&link);
     }
@@ -176,7 +197,11 @@ mod tests {
             Some("/k echo hello".into()),
             Some(target_str.clone()),
         );
-        assert!(result.is_ok(), "create_shortcut with args/icon failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "create_shortcut with args/icon failed: {:?}",
+            result.err()
+        );
         assert!(link.exists(), ".lnk file was not created");
 
         let _ = std::fs::remove_file(&link);

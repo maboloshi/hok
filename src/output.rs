@@ -205,6 +205,3 @@ pub fn progress(action: impl AsRef<str>, target: impl AsRef<str>) {
     print!("  {} {}... ", action.as_ref(), target.as_ref());
     let _ = std::io::stdout().flush();
 }
-
-
-

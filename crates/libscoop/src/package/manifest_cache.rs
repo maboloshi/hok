@@ -11,10 +11,7 @@ use std::io::Read;
 
 use rusqlite::{params, Connection};
 
-use crate::{
-    error::Fallible,
-    internal, package::Manifest, Session,
-};
+use crate::{error::Fallible, internal, package::Manifest, Session};
 
 /// Cache entry matching the `app` table schema.
 #[derive(Debug, Clone)]
@@ -52,7 +49,7 @@ pub fn open(session: &Session) -> Fallible<Connection> {
             dependency TEXT,
             suggest TEXT,
             PRIMARY KEY (name, version, bucket)
-        );"
+        );",
     )?;
 
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
@@ -108,18 +105,18 @@ pub fn populate(conn: &Connection, session: &Session) -> Fallible<()> {
 
             let description = manifest.description().unwrap_or("").to_owned();
             let version = manifest.version().to_owned();
-            let bin = manifest.bin().map(|v| {
-                serde_json::to_string(&v).unwrap_or_default()
-            });
-            let shortcut = manifest.shortcuts().map(|v| {
-                serde_json::to_string(&v).unwrap_or_default()
-            });
-            let dependency = manifest.depends().map(|v| {
-                serde_json::to_string(&v).unwrap_or_default()
-            });
-            let suggest = manifest.suggest().map(|v| {
-                serde_json::to_string(&v).unwrap_or_default()
-            });
+            let bin = manifest
+                .bin()
+                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            let shortcut = manifest
+                .shortcuts()
+                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            let dependency = manifest
+                .depends()
+                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            let suggest = manifest
+                .suggest()
+                .map(|v| serde_json::to_string(&v).unwrap_or_default());
 
             tx.execute(
                 "INSERT OR REPLACE INTO app (name, description, version, bucket, manifest, binary, shortcut, dependency, suggest)
@@ -151,12 +148,16 @@ pub fn query(
     bucket_filter: Option<&str>,
     name_filter: Option<&str>,
 ) -> Fallible<Vec<CacheEntry>> {
-    let (where_clause, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match (bucket_filter, name_filter) {
-        (Some(b), Some(n)) => ("WHERE bucket = ?1 AND name = ?2".into(), vec![Box::new(b.to_owned()), Box::new(n.to_owned())]),
-        (Some(b), None) => ("WHERE bucket = ?1".into(), vec![Box::new(b.to_owned())]),
-        (None, Some(n)) => ("WHERE name = ?1".into(), vec![Box::new(n.to_owned())]),
-        (None, None) => ("".into(), vec![]),
-    };
+    let (where_clause, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+        match (bucket_filter, name_filter) {
+            (Some(b), Some(n)) => (
+                "WHERE bucket = ?1 AND name = ?2".into(),
+                vec![Box::new(b.to_owned()), Box::new(n.to_owned())],
+            ),
+            (Some(b), None) => ("WHERE bucket = ?1".into(), vec![Box::new(b.to_owned())]),
+            (None, Some(n)) => ("WHERE name = ?1".into(), vec![Box::new(n.to_owned())]),
+            (None, None) => ("".into(), vec![]),
+        };
 
     let sql = format!(
         "SELECT name, description, version, bucket, manifest, binary, shortcut, dependency, suggest FROM app {}",
@@ -164,7 +165,8 @@ pub fn query(
     );
     let mut stmt = conn.prepare(&sql)?;
 
-    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
 
     let rows = stmt.query_map(params_refs.as_slice(), |row| {
         Ok(CacheEntry {

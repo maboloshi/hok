@@ -13,11 +13,7 @@
 //!   the parent path.
 
 #![allow(dead_code)]
-use std::sync::LazyLock;
-use regex::{Regex, RegexBuilder};
 use std::path::{Component, Path, PathBuf};
-
-use crate::error::{Error, Fallible};
 
 /// Return the Leaf, i.e. file name (with extension), or directory name
 /// of given path.
@@ -32,31 +28,6 @@ pub fn leaf<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 #[inline(always)]
 pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
     path.as_ref().file_stem().and_then(|s| s.to_str())
-}
-
-pub fn extract_name_and_bucket(path: &Path) -> Fallible<(String, String)> {
-    static RE: LazyLock<Regex> = LazyLock::new(|| {
-        // FIXME: Uppercase <name> is not a good idea, the support is going to be dropped.
-        let p = r".*?[\\/]buckets[\\/](?P<bucket>[a-zA-Z0-9-_]+).*?[\\/](?P<name>[a-zA-Z0-9-_@.]+).json$";
-        RegexBuilder::new(p).build().unwrap()
-    });
-    match RE.captures(path.to_str().unwrap()) {
-        None => {}
-        Some(caps) => {
-            let name = caps.name("name").map(|m| m.as_str().to_string());
-            let bucket = caps.name("bucket").map(|m| m.as_str().to_string());
-            if let Some(name) = name {
-                if let Some(bucket) = bucket {
-                    return Ok((name, bucket));
-                }
-            }
-        }
-    }
-
-    Err(Error::Custom(format!(
-        "unsupported manifest path {}",
-        path.display()
-    )))
 }
 
 /// Normalize a path, removing things like `.` and `..`.

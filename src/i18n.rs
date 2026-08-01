@@ -19,7 +19,6 @@ use clap::ValueEnum;
 use std::env;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-
 const LANG_EN: u8 = 0;
 const LANG_ZH: u8 = 1;
 

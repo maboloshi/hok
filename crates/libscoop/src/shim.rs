@@ -34,9 +34,7 @@ include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"));
 fn alt_filename(path: &Path, pkg: &str) -> PathBuf {
     let stem = path.file_stem().unwrap().to_str().unwrap();
     match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) if !ext.is_empty() => {
-            path.with_file_name(format!("{}.{}.{}", stem, ext, pkg))
-        }
+        Some(ext) if !ext.is_empty() => path.with_file_name(format!("{}.{}.{}", stem, ext, pkg)),
         _ => path.with_file_name(format!("{}.{}", stem, pkg)),
     }
 }
@@ -155,11 +153,13 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 // Handle conflicts: if .exe or .shim already exist (from another package),
                 // rename them to alt names before writing ours
                 if shim_exe.exists() {
-                    let alt_exe = shim_exe.with_file_name(format!("{}.{}.exe", shim.name, pkg_name));
+                    let alt_exe =
+                        shim_exe.with_file_name(format!("{}.{}.exe", shim.name, pkg_name));
                     std::fs::rename(&shim_exe, &alt_exe)?;
                 }
                 if shim_meta.exists() {
-                    let alt_meta = shim_meta.with_file_name(format!("{}.{}.shim", shim.name, pkg_name));
+                    let alt_meta =
+                        shim_meta.with_file_name(format!("{}.{}.shim", shim.name, pkg_name));
                     std::fs::rename(&shim_meta, &alt_meta)?;
                 }
 
@@ -167,12 +167,12 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
 
                 // Write .shim metadata file
-                let target_rel = format!(
-                    r#"~\..\apps\{}\current\{}"#,
-                    pkg_name, shim.real_name
-                );
+                let target_rel = format!(r#"~\..\apps\{}\current\{}"#, pkg_name, shim.real_name);
                 let meta_content = if let Some(args) = &shim.args {
-                    format!("path = \"{target_rel}\"\r\nargs = \"{}\"\r\n", args.join(" "))
+                    format!(
+                        "path = \"{target_rel}\"\r\nargs = \"{}\"\r\n",
+                        args.join(" ")
+                    )
                 } else {
                     format!("path = \"{target_rel}\"\r\n")
                 };
@@ -222,10 +222,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
     let mut result = Vec::new();
 
     // The target path relative to the shims dir: ..\apps\pkgname\current\real_name
-    let target_rel = format!(
-        r#"..\apps\{}\current\{}"#,
-        pkg_name, shim.real_name
-    );
+    let target_rel = format!(r#"..\apps\{}\current\{}"#, pkg_name, shim.real_name);
 
     let arg_suffix = shim
         .args
@@ -238,32 +235,25 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
             // .cmd file: batch redirect to the target executable
             // (hok doesn't include Scoop's pre-built shim.exe stub,
             //  so .cmd wrapper is used for CLI access)
-            let content = format!(
-                "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
-                target_rel, arg_suffix
-            );
+            let content = format!("@echo off\r\n\"%~dp0{}\"{} %*\r\n", target_rel, arg_suffix);
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
 
             // .shim metadata file (Scoop-compatible format)
-            let shim_meta = format!("path = \"~\\..\\apps\\{}\\current\\{}\"\r\n", pkg_name, shim.real_name);
+            let shim_meta = format!(
+                "path = \"~\\..\\apps\\{}\\current\\{}\"\r\n",
+                pkg_name, shim.real_name
+            );
             result.push((PathBuf::from(format!("{}.shim", shim.name)), shim_meta));
         }
         ShimType::Batch | ShimType::Bash => {
             // .cmd file: direct batch redirect
-            let content = format!(
-                "@echo off\r\n\"%~dp0{}\"{} %*\r\n",
-                target_rel, arg_suffix
-            );
+            let content = format!("@echo off\r\n\"%~dp0{}\"{} %*\r\n", target_rel, arg_suffix);
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
         }
         ShimType::PowerShell => {
             // .ps1 shim: PowerShell script
             let target_backslash = target_rel.replace('/', "\\");
-            let arg_str = shim
-                .args
-                .as_ref()
-                .map(|a| a.join(" "))
-                .unwrap_or_default();
+            let arg_str = shim.args.as_ref().map(|a| a.join(" ")).unwrap_or_default();
             let ps_content = format!(
                 "if ($MyInvocation.ExpectingInput) {{ $input | & \"$PSScriptRoot\\{0}\" {1} @args }} else {{ & \"$PSScriptRoot\\{0}\" {1} @args }}\r\nexit $LASTEXITCODE\r\n",
                 target_backslash,
@@ -336,8 +326,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 
                 if alt_path.exists() {
                     if let Some(tx) = session.emitter() {
-                        let shim_name =
-                            alt_path.file_name().unwrap().to_string_lossy().to_string();
+                        let shim_name = alt_path.file_name().unwrap().to_string_lossy().to_string();
                         let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
                     }
 

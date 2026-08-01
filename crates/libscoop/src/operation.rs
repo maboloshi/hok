@@ -311,7 +311,8 @@ pub fn head_url_ext(
 
     // Build PRIVATE_HOSTS extra headers
     let extra_headers = config.private_hosts().and_then(|hosts| {
-        let matched: std::collections::HashMap<String, String> = hosts.iter()
+        let matched: std::collections::HashMap<String, String> = hosts
+            .iter()
             .filter(|h| {
                 regex::Regex::new(h.match_pattern())
                     .inspect_err(|e| warn!("invalid regex pattern '{}': {e}", h.match_pattern()))
@@ -320,7 +321,11 @@ pub fn head_url_ext(
             })
             .flat_map(|h| h.parse_headers())
             .collect();
-        if matched.is_empty() { None } else { Some(matched) }
+        if matched.is_empty() {
+            None
+        } else {
+            Some(matched)
+        }
     });
 
     internal::network::head_url_ext(
@@ -490,7 +495,11 @@ pub fn package_query(
 /// Removes all version directories except the current one for each package.
 /// If `names` is empty, cleans up all installed packages.
 /// Returns a list of (package_name, removed_count, failed_count).
-pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool) -> Fallible<Vec<(String, usize, usize)>> {
+pub fn package_cleanup(
+    session: &Session,
+    names: &[String],
+    ignore_failure: bool,
+) -> Fallible<Vec<(String, usize, usize)>> {
     let config = session.config();
     let apps_dir = if session.is_global() {
         config.global_path().join("apps")
@@ -528,7 +537,8 @@ pub fn package_cleanup(session: &Session, names: &[String], ignore_failure: bool
         // Determine current version by reading the "current" symlink target
         let current_version = (|| -> Option<String> {
             let current_link = pkg_dir.join("current");
-            std::fs::read_link(&current_link).ok()?
+            std::fs::read_link(&current_link)
+                .ok()?
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
         })();
@@ -661,12 +671,7 @@ pub fn package_prune_installed<'s>(
     session: &Session,
     queries: &[&'s str],
 ) -> Fallible<(Vec<&'s str>, Vec<String>)> {
-    let installed = package_query(
-        session,
-        queries.to_vec(),
-        vec![QueryOption::Explicit],
-        true,
-    )?;
+    let installed = package_query(session, queries.to_vec(), vec![QueryOption::Explicit], true)?;
 
     let mut already_installed = Vec::new();
     let mut to_install = Vec::new();

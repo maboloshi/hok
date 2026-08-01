@@ -16,10 +16,10 @@
 //!   (matching Scoop's behaviour) but may not yet be referenced by Hok.
 
 #![allow(dead_code)]
-use std::sync::LazyLock;
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 use std::iter::FromIterator;
+use std::sync::LazyLock;
 
 /// Default capacity of the event bus.
 pub static EVENT_BUS_CAPACITY: usize = 20;

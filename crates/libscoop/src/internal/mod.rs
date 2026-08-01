@@ -65,12 +65,10 @@ pub fn compare_versions<S: AsRef<str>>(ver_a: S, ver_b: S) -> std::cmp::Ordering
             }
             (Some(_), None) => return std::cmp::Ordering::Greater, // num > text
             (None, Some(_)) => return std::cmp::Ordering::Less,    // text < num
-            (None, None) => {
-                match a_seg.cmp(b_seg) {
-                    std::cmp::Ordering::Equal => continue,
-                    other => return other,
-                }
-            }
+            (None, None) => match a_seg.cmp(b_seg) {
+                std::cmp::Ordering::Equal => continue,
+                other => return other,
+            },
         }
     }
 
@@ -81,7 +79,7 @@ pub fn compare_versions<S: AsRef<str>>(ver_a: S, ver_b: S) -> std::cmp::Ordering
     let b_has_suffix = b.contains('-') || b.contains('_') || b.contains('+');
 
     match (a_has_suffix, b_has_suffix) {
-        (true, false) => std::cmp::Ordering::Less,    // 1.0.0-rc < 1.0.0
+        (true, false) => std::cmp::Ordering::Less, // 1.0.0-rc < 1.0.0
         (false, true) => std::cmp::Ordering::Greater, // 1.0.0 > 1.0.0-rc
         _ => std::cmp::Ordering::Equal,
     }

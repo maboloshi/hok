@@ -556,8 +556,8 @@ fn query_synced_cached(
         let bucket = &entry.bucket;
 
         // Pre-filter by name (same as file-based path)
-        let extra_query = options.contains(&QueryOption::Binary)
-            || options.contains(&QueryOption::Description);
+        let extra_query =
+            options.contains(&QueryOption::Binary) || options.contains(&QueryOption::Description);
         let name_matched = if is_wildcard_query {
             true
         } else {
@@ -572,7 +572,8 @@ fn query_synced_cached(
         // Cache is populated once during bucket update, but the user
         // may have edited the file since then.
         let manifest = match try_read_file_manifest(session, name, bucket)
-            .or_else(|| manifest_cache::entry_to_manifest(entry)) {
+            .or_else(|| manifest_cache::entry_to_manifest(entry))
+        {
             Some(m) => m,
             None => continue,
         };
@@ -585,9 +586,7 @@ fn query_synced_cached(
             let prefixed = matchers
                 .iter()
                 .filter(|&(_, m)| m.is_match(name))
-                .any(|(prefix, _)| {
-                    prefix.is_none() || prefix.as_deref().unwrap() == bucket
-                });
+                .any(|(prefix, _)| prefix.is_none() || prefix.as_deref().unwrap() == bucket);
 
             if prefixed {
                 unmatched = false;
@@ -595,18 +594,19 @@ fn query_synced_cached(
 
             if unmatched && !is_explicit_mode {
                 if options.contains(&QueryOption::Description)
-                    && matchers.iter().any(|(_, m)| {
-                        manifest.description().map_or(false, |d| m.is_match(d))
-                    })
+                    && matchers
+                        .iter()
+                        .any(|(_, m)| manifest.description().map_or(false, |d| m.is_match(d)))
                 {
                     unmatched = false;
                 }
 
                 if options.contains(&QueryOption::Binary) {
                     let binaries = manifest.shims().unwrap_or_default();
-                    if matchers.iter().any(|(_, m)| {
-                        binaries.iter().any(|b| m.is_match(b))
-                    }) {
+                    if matchers
+                        .iter()
+                        .any(|(_, m)| binaries.iter().any(|b| m.is_match(b)))
+                    {
                         unmatched = false;
                     }
                 }
@@ -651,8 +651,12 @@ fn query_synced_cached(
 /// bypassing the SQLite cache. Returns `None` if the file
 /// doesn't exist or fails to parse.
 fn try_read_file_manifest(session: &Session, name: &str, bucket: &str) -> Option<Manifest> {
-    let path = session.config().root_path()
-        .join("buckets").join(bucket).join("bucket")
+    let path = session
+        .config()
+        .root_path()
+        .join("buckets")
+        .join(bucket)
+        .join("bucket")
         .join(format!("{name}.json"));
     if path.exists() {
         Manifest::parse(path).ok()

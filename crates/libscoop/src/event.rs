@@ -287,4 +287,3 @@ pub enum Event {
     /// [1]: Event::PromptPackageCandidate
     PromptPackageCandidateResult(usize),
 }
-

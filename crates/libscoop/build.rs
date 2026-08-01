@@ -8,7 +8,11 @@ fn main() {
 
 fn embed_hok_shim() {
     let out_dir = env::var("OUT_DIR").unwrap();
-    let shim_name = if cfg!(windows) { "hok-shim.exe" } else { "hok-shim" };
+    let shim_name = if cfg!(windows) {
+        "hok-shim.exe"
+    } else {
+        "hok-shim"
+    };
 
     // CARGO_MANIFEST_DIR = crates/libscoop/ → workspace root = crates/libscoop/../../
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

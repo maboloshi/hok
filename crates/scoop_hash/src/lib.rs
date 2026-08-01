@@ -180,15 +180,20 @@ impl Checksum {
 /// Supported algorithms: `md5`, `sha1`, `sha256`, `sha512`.
 /// Returns the hash as a lowercase hex string.
 pub fn compute_file_hash(path: &Path, algo: &str) -> std::io::Result<String> {
-    let builder = ChecksumBuilder::new()
-        .algo(algo)
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "unsupported hash algorithm"))?;
+    let builder = ChecksumBuilder::new().algo(algo).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsupported hash algorithm",
+        )
+    })?;
     let mut hasher = builder.build();
     let mut file = std::fs::File::open(path)?;
     let mut buf = [0u8; 65536];
     loop {
         let n = file.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.consume(&buf[..n]);
     }
     Ok(hasher.finalize())

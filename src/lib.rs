@@ -46,11 +46,11 @@ use std::{fmt::Display, io};
 
 rust_i18n::i18n!("locales");
 
-mod i18n;
 mod cmd;
 mod cui;
-mod output;
 mod eventloop;
+mod i18n;
+mod output;
 mod scoop_handler;
 mod util;
 
@@ -79,12 +79,24 @@ fn error<T: Display>(input: &T) -> io::Result<()> {
 
 fn translate_error(err: &libscoop::Error) -> String {
     match err {
-        libscoop::Error::BucketNotFound(name) => rust_i18n::t!("error.bucket_not_found", name = name).to_string(),
-        libscoop::Error::BucketAlreadyExists(name) => rust_i18n::t!("error.bucket_already_exists", name = name).to_string(),
-        libscoop::Error::PackageNotFound(name) => rust_i18n::t!("error.package_not_found", name = name).to_string(),
-        libscoop::Error::ConfigKeyInvalid(key) => rust_i18n::t!("error.config_key_invalid", key = key).to_string(),
-        libscoop::Error::ConfigValueInvalid(value) => rust_i18n::t!("error.config_value_invalid", value = value).to_string(),
-        libscoop::Error::ExtractionFailed(reason) => rust_i18n::t!("error.extraction_failed", reason = reason).to_string(),
+        libscoop::Error::BucketNotFound(name) => {
+            rust_i18n::t!("error.bucket_not_found", name = name).to_string()
+        }
+        libscoop::Error::BucketAlreadyExists(name) => {
+            rust_i18n::t!("error.bucket_already_exists", name = name).to_string()
+        }
+        libscoop::Error::PackageNotFound(name) => {
+            rust_i18n::t!("error.package_not_found", name = name).to_string()
+        }
+        libscoop::Error::ConfigKeyInvalid(key) => {
+            rust_i18n::t!("error.config_key_invalid", key = key).to_string()
+        }
+        libscoop::Error::ConfigValueInvalid(value) => {
+            rust_i18n::t!("error.config_value_invalid", value = value).to_string()
+        }
+        libscoop::Error::ExtractionFailed(reason) => {
+            rust_i18n::t!("error.extraction_failed", reason = reason).to_string()
+        }
         _ => err.to_string(),
     }
 }
@@ -92,7 +104,8 @@ fn translate_error(err: &libscoop::Error) -> String {
 fn report(err: &anyhow::Error) {
     if let Some(libscoop_err) = err.downcast_ref::<libscoop::Error>() {
         let msg = translate_error(libscoop_err);
-        let msg_s: String = msg.into(); let _ = error(&msg_s);
+        let msg_s: String = msg.into();
+        let _ = error(&msg_s);
     } else {
         let _ = error(err);
     }
@@ -107,9 +120,3 @@ fn report(err: &anyhow::Error) {
 pub fn create_app() -> bool {
     cmd::start().inspect_err(report).is_err()
 }
-
-
-
-
-
-

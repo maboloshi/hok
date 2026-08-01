@@ -1065,9 +1065,11 @@ impl Manifest {
         }
         // Architecture-specific hashes
         if let Some(ref arch) = self.inner.architecture {
-            for (arch_name, spec_opt) in
-                [("32bit", &arch.ia32), ("64bit", &arch.amd64), ("arm64", &arch.aarch64)]
-            {
+            for (arch_name, spec_opt) in [
+                ("32bit", &arch.ia32),
+                ("64bit", &arch.amd64),
+                ("arm64", &arch.aarch64),
+            ] {
                 if let Some(spec) = spec_opt {
                     if let Some(ref h) = spec.hash {
                         let count = h.devectorize().len();

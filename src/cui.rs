@@ -38,10 +38,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::{
-    collections::HashMap,
-    io::{stdout},
-};
+use std::{collections::HashMap, io::stdout};
 
 static BAR_FMT: &str = " {wide_msg} {total_bytes:>12} [{bar:>20}] {percent:>3}%";
 
@@ -190,7 +187,3 @@ impl BucketUpdateUI {
             .unwrap();
     }
 }
-
-
-
-

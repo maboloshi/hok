@@ -238,9 +238,9 @@ impl<'a> PackageSet<'a> {
                             let ck = cookie_clone.clone();
 
                             scope.spawn(move || {
-                                if let Err(e) = download_range(
-                                    &agent, &url, start, end, &part_path, &ck, proxy,
-                                ) {
+                                if let Err(e) =
+                                    download_range(&agent, &url, start, end, &part_path, &ck, proxy)
+                                {
                                     debug!("chunk download failed: {}", e);
                                 }
                             });
@@ -262,9 +262,13 @@ impl<'a> PackageSet<'a> {
                             )));
                         }
                         if actual < expected {
-                            debug!("chunk {} is incomplete ({} < {}), will retry", idx, actual, expected);
+                            debug!(
+                                "chunk {} is incomplete ({} < {}), will retry",
+                                idx, actual, expected
+                            );
                             return Err(crate::error::Error::Custom(format!(
-                                "incomplete chunk {}: {} < {}", idx, actual, expected
+                                "incomplete chunk {}: {} < {}",
+                                idx, actual, expected
                             )));
                         }
                     }
@@ -299,19 +303,16 @@ impl<'a> PackageSet<'a> {
                         crate::error::Error::Custom(format!("download failed: {}", e))
                     })?;
 
-                    let mut file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&tmp)?;
+                    let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
 
                     let mut reader = resp.into_body().into_reader();
                     let mut buf = [0u8; 32768];
                     let mut dlnow = 0u64;
 
                     loop {
-                        let n = reader.read(&mut buf).map_err(|e| {
-                            crate::error::Error::Custom(e.to_string())
-                        })?;
+                        let n = reader
+                            .read(&mut buf)
+                            .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
                         if n == 0 {
                             break;
                         }
@@ -421,8 +422,8 @@ impl<'a> PackageSet<'a> {
                 };
 
                 if code == 200 {
-                    info.remote_size = get_content_length_from_agent(&agent, url, &cookie)
-                        .unwrap_or(0);
+                    info.remote_size =
+                        get_content_length_from_agent(&agent, url, &cookie).unwrap_or(0);
                     if info.remote_size != info.local_size {
                         total += info.remote_size;
                     }
@@ -457,11 +458,14 @@ fn build_agent(proxy: Option<&str>, _user_agent: &str, timeout_secs: u64) -> ure
 }
 
 fn get_content_length_from_agent(
-    agent: &ureq::Agent, url: &str, cookie: &[(&str, &str)],
+    agent: &ureq::Agent,
+    url: &str,
+    cookie: &[(&str, &str)],
 ) -> Option<u64> {
     let mut req = agent.head(url);
     if !cookie.is_empty() {
-        let cookie_val = cookie.iter()
+        let cookie_val = cookie
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("; ");
@@ -476,8 +480,13 @@ fn get_content_length_from_agent(
 }
 
 fn download_range(
-    agent: &ureq::Agent, url: &str, start: u64, end: u64, dest: &std::path::Path,
-    cookie: &[(&str, &str)], proxy: Option<&str>,
+    agent: &ureq::Agent,
+    url: &str,
+    start: u64,
+    end: u64,
+    dest: &std::path::Path,
+    cookie: &[(&str, &str)],
+    proxy: Option<&str>,
 ) -> Result<(), String> {
     let _ = proxy; // proxy already baked into agent
 
@@ -499,7 +508,8 @@ fn download_range(
 
     let mut req = agent.get(url).header("Range", &range);
     if !cookie.is_empty() {
-        let cookie_val = cookie.iter()
+        let cookie_val = cookie
+            .iter()
             .map(|(k, v)| format!("{}={}", k, v))
             .collect::<Vec<_>>()
             .join("; ");
@@ -510,7 +520,9 @@ fn download_range(
 
     // Open file in append mode if resuming, create if new
     let mut file = if resume_start > 0 {
-        std::fs::OpenOptions::new().append(true).open(dest)
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dest)
             .map_err(|e| e.to_string())?
     } else {
         std::fs::File::create(dest).map_err(|e| e.to_string())?
@@ -568,7 +580,11 @@ mod tests {
         let mut covered = vec![false; size as usize];
         for i in 0..chunks {
             let start = i * chunk_size;
-            let end = if i == chunks - 1 { size - 1 } else { (i + 1) * chunk_size - 1 };
+            let end = if i == chunks - 1 {
+                size - 1
+            } else {
+                (i + 1) * chunk_size - 1
+            };
             for b in start..=end {
                 covered[b as usize] = true;
             }

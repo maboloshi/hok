@@ -33,7 +33,10 @@
 //! - `HOK_LOG_LEVEL` env var overrides the log level for `libscoop` only;
 //!   other crates use `RUST_LOG` or the default filter.
 
-use clap::{crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{
+    crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser,
+    Subcommand,
+};
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
 use libscoop::Session;
@@ -50,8 +53,7 @@ include!("__cmd_reg__.rs");
 
 use crate::Result;
 
-#[derive(Parser)]
-#[derive(I18nHelp)]
+#[derive(Parser, I18nHelp)]
 #[command(
     name = crate_name!(),
     version = format!("{} (built {})", crate_version!(), option_env!("BUILD_DATE").unwrap_or("unknown")),
@@ -222,7 +224,11 @@ pub fn start() -> Result<()> {
 
 fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
     // When --detail is active, ensure at least DEBUG level (unless user set higher via -vv)
-    let effective_level = if detail { level_filter.max(LevelFilter::DEBUG) } else { level_filter };
+    let effective_level = if detail {
+        level_filter.max(LevelFilter::DEBUG)
+    } else {
+        level_filter
+    };
 
     // filter for low-level/depedency logs
     let low_level_filter = match effective_level {

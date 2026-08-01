@@ -189,34 +189,71 @@ mod tests {
 
     #[test]
     fn test_error_key_bucket() {
-        assert_eq!(Error::BucketAlreadyExists("main".into()).error_key(), "error.bucket_already_exists");
-        assert_eq!(Error::BucketNotFound("main".into()).error_key(), "error.bucket_not_found");
-        assert_eq!(Error::BucketAddRemoteRequired("main".into()).error_key(), "error.bucket_add_remote_required");
-        assert_eq!(Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(), "error.bucket_update_not_fast_forward");
+        assert_eq!(
+            Error::BucketAlreadyExists("main".into()).error_key(),
+            "error.bucket_already_exists"
+        );
+        assert_eq!(
+            Error::BucketNotFound("main".into()).error_key(),
+            "error.bucket_not_found"
+        );
+        assert_eq!(
+            Error::BucketAddRemoteRequired("main".into()).error_key(),
+            "error.bucket_add_remote_required"
+        );
+        assert_eq!(
+            Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(),
+            "error.bucket_update_not_fast_forward"
+        );
     }
 
     #[test]
     fn test_error_key_config() {
         assert_eq!(Error::ConfigInUse.error_key(), "error.config_in_use");
-        assert_eq!(Error::ConfigKeyInvalid("x".into()).error_key(), "error.config_key_invalid");
-        assert_eq!(Error::ConfigValueInvalid("x".into()).error_key(), "error.config_value_invalid");
+        assert_eq!(
+            Error::ConfigKeyInvalid("x".into()).error_key(),
+            "error.config_key_invalid"
+        );
+        assert_eq!(
+            Error::ConfigValueInvalid("x".into()).error_key(),
+            "error.config_value_invalid"
+        );
     }
 
     #[test]
     fn test_error_key_package() {
-        assert_eq!(Error::PackageNotFound("7zip".into()).error_key(), "error.package_not_found");
-        assert_eq!(Error::PackageMultipleCandidates("7zip".into()).error_key(), "error.package_multiple_candidates");
-        assert_eq!(Error::PackageHoldNotInstalled("7zip".into()).error_key(), "error.package_hold_not_installed");
+        assert_eq!(
+            Error::PackageNotFound("7zip".into()).error_key(),
+            "error.package_not_found"
+        );
+        assert_eq!(
+            Error::PackageMultipleCandidates("7zip".into()).error_key(),
+            "error.package_multiple_candidates"
+        );
+        assert_eq!(
+            Error::PackageHoldNotInstalled("7zip".into()).error_key(),
+            "error.package_hold_not_installed"
+        );
     }
 
     #[test]
     fn test_error_key_technical() {
-        assert_eq!(Error::ExtractionFailed("corrupt".into()).error_key(), "error.extraction_failed");
-        assert_eq!(Error::PathTraversalDetected("foo/../bar".into()).error_key(), "error.path_traversal_detected");
-        assert_eq!(Error::Custom("something".into()).error_key(), "error.custom");
+        assert_eq!(
+            Error::ExtractionFailed("corrupt".into()).error_key(),
+            "error.extraction_failed"
+        );
+        assert_eq!(
+            Error::PathTraversalDetected("foo/../bar".into()).error_key(),
+            "error.path_traversal_detected"
+        );
+        assert_eq!(
+            Error::Custom("something".into()).error_key(),
+            "error.custom"
+        );
         assert_eq!(Error::InvalidAnswer.error_key(), "error.invalid_answer");
-        assert_eq!(Error::UserAgentAlreadySet.error_key(), "error.user_agent_already_set");
+        assert_eq!(
+            Error::UserAgentAlreadySet.error_key(),
+            "error.user_agent_already_set"
+        );
     }
-
 }
-

@@ -367,11 +367,17 @@ impl Config {
 
     /// Set or remove an alias.
     pub fn set_alias(&mut self, name: &str, command: Option<&str>) -> Fallible<()> {
-        self.inner.alias.get_or_insert_with(std::collections::HashMap::new);
+        self.inner
+            .alias
+            .get_or_insert_with(std::collections::HashMap::new);
         let map = self.inner.alias.as_mut().unwrap();
         match command {
-            Some(cmd) => { map.insert(name.to_string(), cmd.to_string()); }
-            None => { map.remove(name); }
+            Some(cmd) => {
+                map.insert(name.to_string(), cmd.to_string());
+            }
+            None => {
+                map.remove(name);
+            }
         }
         self.commit()
     }
@@ -426,7 +432,11 @@ impl Config {
         };
         let elapsed = jiff::Timestamp::now().as_second() - last_ts.as_second();
         let remaining = COOLDOWN_SECS - elapsed;
-        if remaining > 0 { Some(remaining) } else { None }
+        if remaining > 0 {
+            Some(remaining)
+        } else {
+            None
+        }
     }
 
     /// Get the `use_isoloated_path` config.
@@ -484,7 +494,11 @@ impl Config {
         } else {
             (raw.as_str(), 1u64)
         };
-        num_str.parse::<u64>().ok().map(|v| v * multiplier).unwrap_or(DEFAULT)
+        num_str
+            .parse::<u64>()
+            .ok()
+            .map(|v| v * multiplier)
+            .unwrap_or(DEFAULT)
     }
 
     /// Update config key with new value.
@@ -774,10 +788,3 @@ mod default {
     is_default_accessor!(is_default_cache_path, cache_path);
     is_default_accessor!(is_default_global_path, global_path);
 }
-
-
-
-
-
-
-

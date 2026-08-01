@@ -44,10 +44,10 @@ mod package;
 mod persist;
 mod psmodule;
 mod session;
-#[cfg(test)]
-mod test_utils;
 mod shim;
 mod shortcut;
+#[cfg(test)]
+mod test_utils;
 
 pub mod operation;
 

@@ -41,10 +41,7 @@
 //! implementations in the `scoop_handler` module.
 
 use crate::{cui, output, util};
-use crossterm::{
-    cursor,
-    ExecutableCommand,
-};
+use crossterm::{cursor, ExecutableCommand};
 use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
 
@@ -120,10 +117,7 @@ pub fn run_event_loop(
 
                 // Interactive prompt: select from multiple package candidates
                 Event::PromptPackageCandidate(ref pkgs) => {
-                    let name = pkgs[0]
-                        .split_once('/')
-                        .map(|x| x.1)
-                        .unwrap_or(&pkgs[0]);
+                    let name = pkgs[0].split_once('/').map(|x| x.1).unwrap_or(&pkgs[0]);
                     println!("Found multiple candidates for package '{}':\n", name);
                     for (i, pkg) in pkgs.iter().enumerate() {
                         println!("  {}: {}", i, pkg);
@@ -170,9 +164,7 @@ pub fn run_event_loop(
                         output::header(rust_i18n::t!("cmd.header_upgraded"));
                         let out = upgrade
                             .iter()
-                            .map(|p| {
-                                format!("{}-{}", p.ident(), p.upgradable_version().unwrap())
-                            })
+                            .map(|p| format!("{}-{}", p.ident(), p.upgradable_version().unwrap()))
                             .collect::<Vec<_>>()
                             .join("  ");
                         println!("  {}", out);

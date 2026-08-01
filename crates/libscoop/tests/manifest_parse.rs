@@ -101,12 +101,18 @@ fn test_manifest_from_json() {
 fn test_manifest_roundtrip_url_hash_count() {
     // Verify URL and hash counts match
     let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
-    assert_eq!(manifest.url().len(), manifest.hash().len(),
-        "URL and hash counts should match");
+    assert_eq!(
+        manifest.url().len(),
+        manifest.hash().len(),
+        "URL and hash counts should match"
+    );
 
     let manifest = Manifest::parse(fixture_path("dependencies.json")).unwrap();
-    assert_eq!(manifest.url().len(), manifest.hash().len(),
-        "URL and hash counts should match for multi-file manifests");
+    assert_eq!(
+        manifest.url().len(),
+        manifest.hash().len(),
+        "URL and hash counts should match for multi-file manifests"
+    );
 }
 
 // ── Scoop 原版 fixture 兼容性测试 ─────────────────────────────────────
@@ -118,7 +124,10 @@ fn test_scoop_wget_manifest() {
     // Our HashString parser rejects empty strings, so this test
     // verifies the expected behavior.
     let result = Manifest::parse(scoop_fixture("manifest/wget.json"));
-    assert!(result.is_err(), "wget manifest has empty hash strings which our parser rejects");
+    assert!(
+        result.is_err(),
+        "wget manifest has empty hash strings which our parser rejects"
+    );
 }
 
 #[test]
@@ -139,7 +148,10 @@ fn test_scoop_invalid_wget() {
 fn test_scoop_broken_schema() {
     // JSON valid, schema valid but has broken references
     let result = Manifest::parse(scoop_fixture("manifest/broken_schema.json"));
-    assert!(result.is_err() || result.is_ok(), "schema may be valid depending on strictness");
+    assert!(
+        result.is_err() || result.is_ok(),
+        "schema may be valid depending on strictness"
+    );
 }
 
 #[test]

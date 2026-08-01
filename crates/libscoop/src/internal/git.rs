@@ -78,7 +78,8 @@ where
     // local branch during fetch, making head_id == fetch_commit.id() and the
     // early return always trigger — so we save it first.
     let head_id = repo.head()?.target().unwrap();
-    let ref_name = repo.head()
+    let ref_name = repo
+        .head()
         .ok()
         .and_then(|h| h.name().map(|n| n.to_owned()))
         .unwrap_or_else(|| "refs/heads/master".to_owned());
@@ -92,7 +93,8 @@ where
         None,
     )?;
 
-    let fetch_commit = repo.find_reference("FETCH_HEAD")?
+    let fetch_commit = repo
+        .find_reference("FETCH_HEAD")?
         .peel(git2::ObjectType::Commit)?;
 
     if fetch_commit.id() == head_id {

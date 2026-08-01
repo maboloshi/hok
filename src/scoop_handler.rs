@@ -166,7 +166,11 @@ impl EventHandler for ScoopHandler {
             }
 
             // --- Version info ---
-            Event::PackageVersionKnown { name, old_version, new_version } => {
+            Event::PackageVersionKnown {
+                name,
+                old_version,
+                new_version,
+            } => {
                 if old_version.is_empty() {
                     output::info(format!("{}: {}", name, new_version));
                 } else {
@@ -189,7 +193,11 @@ impl EventHandler for ScoopHandler {
 
             // --- Held package skipped ---
             Event::PackageHeld { name, version } => {
-                output::warn(rust_i18n::t!("cmd.held_skip", name = name, version = version));
+                output::warn(rust_i18n::t!(
+                    "cmd.held_skip",
+                    name = name,
+                    version = version
+                ));
             }
 
             // --- Sync done ---

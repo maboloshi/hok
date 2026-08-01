@@ -39,16 +39,18 @@ pub fn head_url_ext(
     cookies: Option<&HashMap<String, String>>,
     extra_headers: Option<&HashMap<String, String>>,
 ) -> HeadResult {
-    let mut cfg = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(timeout_secs)));
+    let mut cfg =
+        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs)));
     if let Some(proxy_url) = proxy {
         let p = match ureq::Proxy::new(proxy_url) {
             Ok(p) => p,
-            Err(e) => return HeadResult {
-                url: url.to_string(),
-                status_code: 0,
-                error: Some(format!("proxy error: {e}")),
-            },
+            Err(e) => {
+                return HeadResult {
+                    url: url.to_string(),
+                    status_code: 0,
+                    error: Some(format!("proxy error: {e}")),
+                }
+            }
         };
         cfg = cfg.proxy(Some(p));
     }
@@ -68,7 +70,8 @@ pub fn head_url_ext(
 
     // Cookie header from manifest
     if let Some(cookies_map) = cookies {
-        let cookie_str: Vec<String> = cookies_map.iter()
+        let cookie_str: Vec<String> = cookies_map
+            .iter()
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
         if !cookie_str.is_empty() {
@@ -89,16 +92,18 @@ pub fn head_url_ext(
             HeadResult {
                 url: url.to_string(),
                 status_code: code,
-                error: if (200..400).contains(&code) { None } else { Some(format!("HTTP {code}")) },
+                error: if (200..400).contains(&code) {
+                    None
+                } else {
+                    Some(format!("HTTP {code}"))
+                },
             }
         }
-        Err(e) => {
-            HeadResult {
-                url: url.to_string(),
-                status_code: 0,
-                error: Some(e.to_string()),
-            }
-        }
+        Err(e) => HeadResult {
+            url: url.to_string(),
+            status_code: 0,
+            error: Some(e.to_string()),
+        },
     }
 }
 
@@ -115,8 +120,8 @@ pub fn download_file(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Resul
 }
 
 fn agent(proxy: Option<&str>, timeout_secs: u64) -> Result<ureq::Agent, String> {
-    let mut cfg = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(timeout_secs)));
+    let mut cfg =
+        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs)));
     if let Some(proxy_url) = proxy {
         let p = ureq::Proxy::new(proxy_url).map_err(|e| e.to_string())?;
         cfg = cfg.proxy(Some(p));

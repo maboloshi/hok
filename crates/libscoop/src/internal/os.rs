@@ -13,28 +13,15 @@ use crate::error::{Error, Fallible};
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn CreateToolhelp32Snapshot(
-        dwFlags: u32,
-        th32ProcessID: u32,
-    ) -> isize; // HANDLE
+    fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> isize; // HANDLE
 
-    fn Process32FirstW(
-        hSnapshot: isize,
-        lppe: *mut PROCESSENTRY32W,
-    ) -> i32; // BOOL
+    fn Process32FirstW(hSnapshot: isize, lppe: *mut PROCESSENTRY32W) -> i32; // BOOL
 
-    fn Process32NextW(
-        hSnapshot: isize,
-        lppe: *mut PROCESSENTRY32W,
-    ) -> i32; // BOOL
+    fn Process32NextW(hSnapshot: isize, lppe: *mut PROCESSENTRY32W) -> i32; // BOOL
 
     fn CloseHandle(hObject: isize) -> i32; // BOOL
 
-    fn OpenProcess(
-        dwDesiredAccess: u32,
-        bInheritHandle: i32,
-        dwProcessId: u32,
-    ) -> isize; // HANDLE
+    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> isize; // HANDLE
 
     fn QueryFullProcessImageNameW(
         hProcess: isize,
@@ -127,9 +114,13 @@ pub fn is_pwsh_available() -> bool {
         }
         // Confirm it actually runs (PATH scan can false-positive on dirs)
         std::process::Command::new("pwsh.exe")
-            .arg("-NoProfile").arg("-c").arg("$null")
-            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
-            .status().is_ok()
+            .arg("-NoProfile")
+            .arg("-c")
+            .arg("$null")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
     })
 }
 
@@ -160,8 +151,7 @@ pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
         let pid = pe.th32ProcessID;
         if pid != 0 {
             // Open process with minimal access needed to query image path
-            let h_process =
-                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            let h_process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
             if h_process != 0 {
                 let mut buf = [0u16; 4096];
                 let mut size = buf.len() as u32;
@@ -277,7 +267,11 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
         lp_verb: verb.as_ptr(),
         lp_file: exe_wide.as_ptr(),
         lp_parameters: args_wide.as_ptr(),
-        lp_directory: if dir_wide.is_empty() { ptr::null() } else { dir_wide.as_ptr() },
+        lp_directory: if dir_wide.is_empty() {
+            ptr::null()
+        } else {
+            dir_wide.as_ptr()
+        },
         n_show: SW_SHOWNORMAL,
         h_inst_app: ptr::null_mut(),
         lp_id_list: ptr::null_mut(),
