@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -14,7 +14,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = vec!["*"];
     let options = vec![QueryOption::Upgradable];
-    let packages = operation::package_query(session, queries, options, false)?;
+    let packages = package::query::query(session, queries, options, false)?;
 
     let mut outdated = 0u32;
     let mut up_to_date = 0u32;

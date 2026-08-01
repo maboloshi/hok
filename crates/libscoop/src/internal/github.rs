@@ -113,7 +113,7 @@ pub fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
     let resp = github_api_request(&query, "GET", None, token)?;
     let sha = resp["object"]["sha"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom(format!("unexpected ref response format")))?
+        .ok_or_else(|| crate::Error::Custom("unexpected ref response format".to_string()))?
         .to_string();
     Ok(sha)
 }
@@ -170,7 +170,7 @@ pub fn create_pull_request(
     let resp = github_api_request(&query, "POST", Some(request_body), token)?;
     let pr_url = resp["html_url"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom(format!("PR response missing html_url")))?
+        .ok_or_else(|| crate::Error::Custom("PR response missing html_url".to_string()))?
         .to_string();
     Ok(pr_url)
 }
@@ -281,15 +281,15 @@ pub fn graphql_commit_push(
                 .map(|s| s.to_string())
                 .collect();
             return Err(crate::Error::Custom(format!(
-            "GraphQL error(s): {}",
-            msgs.join("; ")
-        )));
+                "GraphQL error(s): {}",
+                msgs.join("; ")
+            )));
         }
     }
 
     let commit_url = value["data"]["createCommitOnBranch"]["commit"]["url"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom(format!("GraphQL response missing commit URL")))?
+        .ok_or_else(|| crate::Error::Custom("GraphQL response missing commit URL".to_string()))?
         .to_string();
 
     Ok(commit_url)

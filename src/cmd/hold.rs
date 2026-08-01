@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser};
-use libscoop::{operation, Session};
+use libscoop::{package, Session};
 
 use crate::{output, Result};
 
@@ -19,7 +19,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     session.set_global(args.global);
     for name in &args.package {
         output::progress(rust_i18n::t!("cmd.holding"), name);
-        match operation::package_hold(session, name, true) {
+        match package::hold::hold(session, name, true) {
             Ok(..) => output::ok(),
             Err(err) => {
                 output::err(rust_i18n::t!("cmd.hold_err"));

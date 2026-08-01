@@ -33,15 +33,16 @@ extern crate serde;
 
 rust_i18n::i18n!("../../locales");
 
-mod bucket;
-mod cache;
-mod config;
+pub mod bucket;
+pub mod cache;
+pub mod config;
 mod constant;
 mod env;
 mod error;
 mod event;
 mod handler;
 pub mod internal;
+pub mod network;
 pub mod package;
 mod persist;
 mod psmodule;
@@ -50,8 +51,6 @@ mod shim;
 mod shortcut;
 #[cfg(test)]
 mod test_utils;
-
-pub mod operation;
 
 pub use error::Error;
 pub use event::Event;

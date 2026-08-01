@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::{error::Fallible, operation, QueryOption, Session};
+use crate::{error::Fallible, QueryOption, Session};
 
 /// A node in the flattened dependency tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +61,7 @@ fn collect_deps(
     }
 
     let query = format!("{bucket}/{name}");
-    let pkgs = operation::package_query(
+    let pkgs = super::query::query(
         session,
         vec![query.as_str()],
         vec![QueryOption::Explicit],

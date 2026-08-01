@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
-use libscoop::{operation, package::list, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -72,7 +72,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return list_with_versions(&queries, &options, session);
     }
 
-    match operation::package_query(session, queries, options, true) {
+    match package::query::query(session, queries, options, true) {
         Err(e) => Err(e.into()),
         Ok(packages) => {
             // Compute column widths
@@ -161,13 +161,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 /// List packages with all installed versions shown.
 fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Session) -> Result<()> {
     // Get current packages for name/bucket info
-    let pkgs = operation::package_query(session, queries.to_vec(), options.to_vec(), true)
+    let pkgs = package::query::query(session, queries.to_vec(), options.to_vec(), true)
         .unwrap_or_default();
 
     for pkg in &pkgs {
         output::named(pkg.name(), format!("/{}", pkg.bucket()));
 
-        let versions = list::list_installed_versions(session, pkg.name())?;
+        let versions = package::list::list_installed_versions(session, pkg.name())?;
 
         if versions.is_empty() {
             output::named("(no versions)", "(broken install)");

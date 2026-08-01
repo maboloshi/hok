@@ -22,7 +22,7 @@
 
 use serde_json::Value;
 
-use crate::{error::Fallible, operation, Session};
+use crate::{error::Fallible, network, Session};
 
 /// Extract the file name from a download URL, stripping any query string.
 fn extract_filename(url: &str) -> &str {
@@ -78,7 +78,7 @@ pub fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
     let dest = tmp_dir.join(filename);
 
     let result = (|| -> Fallible<Value> {
-        operation::download_file(session, url, &dest)?;
+        network::download_file(session, url, &dest)?;
         let hash = scoop_hash::compute_file_hash(&dest, "sha256")?;
 
         let mut manifest = serde_json::json!({

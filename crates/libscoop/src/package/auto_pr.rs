@@ -416,11 +416,15 @@ fn resolve_repo_nwo() -> Result<String> {
         .args(["remote", "get-url", "origin"])
         .output()
         .map_err(|_| {
-            crate::Error::Custom(format!("Cannot determine repository. Set GITHUB_REPOSITORY env var."))
+            crate::Error::Custom(
+                "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
+            )
         })?;
 
     if !output.status.success() {
-        return Err(crate::Error::Custom(format!("Cannot determine repository. Set GITHUB_REPOSITORY env var.")));
+        return Err(crate::Error::Custom(
+            "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
+        ));
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -431,7 +435,10 @@ fn resolve_repo_nwo() -> Result<String> {
     } else if let Some(nwo) = url.split("github.com:").nth(1) {
         Ok(nwo.trim_end_matches('/').to_string())
     } else {
-        return Err(crate::Error::Custom(format!("Cannot parse repository NWO from remote URL: {}", url)));
+        Err(crate::Error::Custom(format!(
+            "Cannot parse repository NWO from remote URL: {}",
+            url
+        )))
     }
 }
 

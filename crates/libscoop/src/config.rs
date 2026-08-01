@@ -41,6 +41,12 @@ pub struct ConfigBuilder {
     path: PathBuf,
 }
 
+impl Default for ConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfigBuilder {
     pub fn new() -> ConfigBuilder {
         Self {
@@ -807,4 +813,50 @@ mod default {
     is_default_accessor!(is_default_root_path, root_path);
     is_default_accessor!(is_default_cache_path, cache_path);
     is_default_accessor!(is_default_global_path, global_path);
+}
+
+// ─── Session operations ────────────────────────────────────────────────────
+
+/// Get the configuration list.
+///
+/// # Returns
+///
+/// A string of the configuration list in pretty-printed JSON format.
+///
+/// # Errors
+///
+/// Serde errors will be returned if the config cannot be serialized.
+pub fn list(session: &crate::Session) -> Fallible<String> {
+    let config = session.config();
+    config.pretty()
+}
+
+/// Set a configuration key. *
+///
+/// # Errors
+///
+/// A [`ConfigInUse`][1] error will be returned if the config is borrowed
+/// elsewhere.
+///
+/// A [`ConfigKeyInvalid`][2] error will be returned if the key is invalid.
+///
+/// A [`ConfigValueInvalid`][3] error will be returned if the value is invalid.
+///
+/// [1]: crate::Error::ConfigInUse
+/// [2]: crate::Error::ConfigKeyInvalid
+/// [3]: crate::Error::ConfigValueInvalid
+pub fn set(session: &crate::Session, key: &str, value: &str) -> Fallible<()> {
+    session.config_mut()?.set(key, value)
+}
+
+/// Add an alias to the config.
+pub fn alias_add(session: &crate::Session, name: &str, command: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, Some(command))
+}
+
+/// Remove an alias from the config.
+pub fn alias_remove(session: &crate::Session, name: &str) -> Fallible<()> {
+    let mut config = session.config_mut()?;
+    config.set_alias(name, None)
 }

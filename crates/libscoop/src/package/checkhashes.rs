@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::package::manifest_walker;
-use crate::{error::Fallible, operation, Manifest, Session};
+use crate::{error::Fallible, network, Manifest, Session};
 
 #[derive(Debug, Clone)]
 pub struct CheckHashesOptions {
@@ -117,7 +117,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
             let cache_path = cache_dir.join(&cache_filename);
 
             if !cache_path.exists() || opts.force {
-                if let Err(e) = operation::download_file(session, url, &cache_path) {
+                if let Err(e) = network::download_file(session, url, &cache_path) {
                     item.status = CheckHashesStatus::Failed;
                     item.messages.push(format!("download failed: {}", e));
                     has_any_failure = true;

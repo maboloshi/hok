@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, package::depends, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 use std::io::Write;
 
 use crate::{output, Result};
@@ -16,7 +16,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let query = args.package;
     let queries = vec![query.as_str()];
     let options = vec![QueryOption::Explicit];
-    let mut result = operation::package_query(session, queries, options, false)?;
+    let mut result = package::query::query(session, queries, options, false)?;
 
     if result.is_empty() {
         output::err(rust_i18n::t!("cmd.depends_not_found", query = query));
@@ -45,7 +45,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     };
 
     // Display the dependency tree
-    let tree = depends::dependencies_tree(session, pkg.name(), pkg.bucket())?;
+    let tree = package::depends::dependencies_tree(session, pkg.name(), pkg.bucket())?;
     for node in &tree {
         if node.depth == 0 {
             output::named(format!("{}/{}", node.bucket, node.name), "");

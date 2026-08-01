@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser, Subcommand};
-use libscoop::{operation, Session};
+use libscoop::{cache, Session};
 
 use crate::{output, util, Result};
 
@@ -34,7 +34,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::List { query } => {
             let query = query.unwrap_or("*".to_string());
-            let files = operation::cache_list(session, query.as_str())?;
+            let files = cache::list(session, query.as_str())?;
             let mut total_size: u64 = 0;
             let total_count = files.len();
 
@@ -62,7 +62,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Remove { query, all } => {
             if all {
-                match operation::cache_remove(session, "*") {
+                match cache::remove(session, "*") {
                     Ok(_) => {
                         output::info(rust_i18n::t!("cmd.cache_all_removed"));
                         return Ok(());
@@ -72,7 +72,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
 
             if let Some(query) = query {
-                match operation::cache_remove(session, query.as_str()) {
+                match cache::remove(session, query.as_str()) {
                     Ok(_) => {
                         if query == "*" {
                             output::info(rust_i18n::t!("cmd.cache_all_removed"));

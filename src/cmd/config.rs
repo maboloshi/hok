@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use libscoop::{operation, Session};
+use libscoop::{config, Session};
 
 use crate::{output, util, Result};
 
@@ -48,18 +48,18 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             Ok(())
         }
         Command::List => {
-            let config_json = operation::config_list(session)?;
+            let config_json = config::list(session)?;
             output::info(session.config().path.display().to_string());
             println!("{}", config_json);
             Ok(())
         }
         Command::Set { key, value } => {
-            operation::config_set(session, key.as_str(), value.as_str())?;
+            config::set(session, key.as_str(), value.as_str())?;
             output::info(rust_i18n::t!("cmd.config_set", key = key, value = value));
             Ok(())
         }
         Command::Unset { key } => {
-            operation::config_set(session, key.as_str(), "")?;
+            config::set(session, key.as_str(), "")?;
             output::info(rust_i18n::t!("cmd.config_unset", key = key));
             Ok(())
         }

@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use libscoop::internal::os::is_admin;
-use libscoop::{operation, Event, Session, SyncOption};
+use libscoop::{bucket, package, Event, Session, SyncOption};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
 use crate::{output, Result};
@@ -127,13 +127,13 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
     });
 
     output::header(rust_i18n::t!("cmd.header_buckets"));
-    operation::bucket_update(session)?;
+    bucket::update(session)?;
     handle.join().unwrap();
 
     // Refresh SQLite manifest cache with visible feedback
     if session.config().use_sqlite_cache() {
         output::status(rust_i18n::t!("cmd.refresh_cache"));
-        operation::refresh_manifest_cache(session);
+        package::manifest_cache::refresh(session);
         output::done(rust_i18n::t!("cmd.cache_done"));
     }
 
@@ -176,7 +176,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
 
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    operation::package_sync(session, queries, options)?;
+    package::sync::sync(session, queries, options)?;
     handle.join().unwrap();
 
     Ok(())

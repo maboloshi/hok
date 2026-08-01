@@ -1,6 +1,6 @@
 use clap::Parser;
 use libscoop::internal::os::is_admin;
-use libscoop::{operation, Session, SyncOption};
+use libscoop::{package, Session, SyncOption};
 
 use crate::{output, Result};
 
@@ -55,7 +55,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    operation::package_sync(session, queries, options)?;
+    package::sync::sync(session, queries, options)?;
     handle.join().unwrap();
 
     for name in &args.package {

@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 
 use crate::{output, util, Result};
 
@@ -16,7 +16,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     let queries = vec![query.as_str()];
     let options = vec![QueryOption::Explicit];
-    let mut result = operation::package_query(session, queries, options, false)?;
+    let mut result = package::query::query(session, queries, options, false)?;
 
     match result.len() {
         0 => output::err(rust_i18n::t!("cmd.home_not_found", query = query)),

@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, package::virustotal, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -19,7 +19,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = args.app.iter().map(|s| s.as_str()).collect();
     let options = vec![QueryOption::Explicit];
-    let pkgs = operation::package_query(session, queries, options, false)?;
+    let pkgs = package::query::query(session, queries, options, false)?;
 
     if pkgs.is_empty() {
         output::err(rust_i18n::t!("cmd.no_pkgs_found"));
@@ -40,7 +40,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         print!("  {}: {} ... ", pkg.name(), url);
 
         if let Some(key) = &api_key {
-            match virustotal::check_url(url, key) {
+            match package::virustotal::check_url(url, key) {
                 Ok(stats) => {
                     if stats.malicious > 0 {
                         output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));

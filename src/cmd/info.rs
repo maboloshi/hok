@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, Session};
+use libscoop::{package, Session};
 
 use crate::{output, Result};
 
@@ -16,7 +16,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     let queries = vec![query.as_str()];
     let options = vec![];
-    let packages = operation::package_query(session, queries, options, false)?;
+    let packages = package::query::query(session, queries, options, false)?;
     let length = packages.len();
     match length {
         0 => output::err(format!("Could not find package for query '{query}'.")),

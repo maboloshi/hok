@@ -79,7 +79,7 @@ impl Drop for CursorGuard {
 /// Run the unified event loop for a package sync operation.
 ///
 /// Spawns a dedicated thread to process events while the current thread
-/// calls `operation::package_sync` (or equivalent).
+/// calls `package::sync::sync` (or equivalent).
 ///
 /// The `handler` is called for each event to render output.
 pub fn run_event_loop(

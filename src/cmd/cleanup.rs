@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser};
-use libscoop::{operation, Session};
+use libscoop::{cache, package, Session};
 
 use crate::{output, Result};
 
@@ -30,7 +30,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         args.app
     };
     // Cleanup is a maintenance operation; individual failures should not abort it
-    let results = operation::package_cleanup(session, &apps, true)?;
+    let results = package::cleanup::cleanup(session, &apps, true)?;
 
     for (name, count, failed) in &results {
         let msg = if *failed > 0 {
@@ -48,7 +48,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if args.cache {
-        operation::cache_remove(session, "*")?;
+        cache::remove(session, "*")?;
         output::info(rust_i18n::t!("cmd.cache_cleaned"));
     }
 

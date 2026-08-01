@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{package::import, operation, SyncOption, Session};
+use libscoop::{package, SyncOption, Session};
 
 use crate::{output, Result};
 
@@ -20,7 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
     };
 
-    let packages = match import::parse_import_json(&content) {
+    let packages = match package::import::parse_import_json(&content) {
         Ok(v) => v,
         Err(e) => {
             output::err(format!("Error parsing JSON: {}", e));
@@ -38,7 +38,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
     let options = vec![SyncOption::AssumeYes];
 
-    match operation::package_sync(session, queries, options) {
+    match package::sync::sync(session, queries, options) {
         Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),
         Err(e) => output::err(format!("Import error: {}", e)),
     }

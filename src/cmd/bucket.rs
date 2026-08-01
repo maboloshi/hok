@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser, Subcommand};
 use crossterm::style::Stylize;
-use libscoop::{operation, Session};
+use libscoop::{bucket, Session};
 
 use crate::{output, Result};
 
@@ -43,7 +43,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         Command::Add { name, repo } => {
             output::progress(rust_i18n::t!("cmd.adding_bucket"), &name);
             let repo = repo.as_deref().unwrap_or_default();
-            match operation::bucket_add(session, name.as_str(), repo) {
+            match bucket::add(session, name.as_str(), repo) {
                 Ok(..) => output::ok(),
                 Err(err) => {
                     output::err(rust_i18n::t!("cmd.bucket_err"));
@@ -54,7 +54,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::List { known } => {
             if known {
-                let known_buckets = operation::bucket_list_known();
+                let known_buckets = bucket::list_known();
                 let max_name = known_buckets.iter().map(|&(n, _)| n.len()).max().unwrap_or(4);
                 output::header(rust_i18n::t!("cmd.header_buckets_list"));
                 for (name, repo) in &known_buckets {
@@ -62,7 +62,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 Ok(())
             } else {
-                match operation::bucket_list(session) {
+                match bucket::list(session) {
                     Err(e) => Err(e.into()),
                     Ok(buckets) => {
                         for bucket in buckets {
@@ -81,7 +81,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         Command::Remove { name } => {
             for name in name {
                 output::progress(rust_i18n::t!("cmd.removing_bucket"), &name);
-                match operation::bucket_remove(session, name.as_str()) {
+                match bucket::remove(session, name.as_str()) {
                     Ok(..) => output::ok(),
                     Err(err) => {
                         output::err(rust_i18n::t!("cmd.bucket_err"));

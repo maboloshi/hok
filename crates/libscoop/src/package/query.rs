@@ -645,3 +645,154 @@ mod tests {
         ));
     }
 }
+
+// ─── Session-level query operations ─────────────────────────────────────────
+
+/// Query packages.
+///
+/// # Note
+/// Set `installed` to `true` to query installed packages. The returned list
+/// will be sorted by package name.
+///
+/// # Returns
+///
+/// A list of packages that match the query.
+///
+/// # Errors
+///
+/// I/O errors will be returned if the `apps`/`buckets` directory is not readable.
+///
+/// A [`Regex`][1] error will be returned if the given query is not a valid regex.
+///
+/// [1]: crate::Error::Regex
+pub fn query(
+    session: &Session,
+    queries: Vec<&str>,
+    options: Vec<QueryOption>,
+    installed: bool,
+) -> Fallible<Vec<Package>> {
+    // remove possible duplicates
+    let mut queries = std::collections::HashSet::<&str>::from_iter(queries)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if queries.is_empty() {
+        queries.push("*");
+    }
+
+    let mut packages = if installed {
+        query_installed(session, &queries, &options)?
+    } else {
+        query_synced(session, &queries, &options)?
+    };
+
+    packages.sort_by_key(|p| p.name().to_lowercase());
+
+    Ok(packages)
+}
+
+/// Prune already-installed packages from a list of queries.
+///
+/// Returns `(to_install, already_installed)` where `to_install` contains
+/// queries that are not yet installed, and `already_installed` contains
+/// the names of packages that are already installed.
+///
+/// # Errors
+///
+/// Returns an error if the installed package list cannot be queried.
+pub fn prune_installed<'s>(
+    session: &Session,
+    queries: &[&'s str],
+) -> Fallible<(Vec<&'s str>, Vec<String>)> {
+    let installed = query(session, queries.to_vec(), vec![QueryOption::Explicit], true)?;
+
+    let mut already_installed = Vec::new();
+    let mut to_install = Vec::new();
+
+    for q in queries {
+        let installed_names: Vec<&str> = installed
+            .iter()
+            .filter(|p| {
+                let q_normalized = q.to_lowercase();
+                let p_name = p.name().to_lowercase();
+                let p_ident = p.ident().to_lowercase();
+                q_normalized == p_name || q_normalized == p_ident
+            })
+            .map(|p| p.name())
+            .collect();
+
+        if installed_names.is_empty() {
+            to_install.push(*q);
+        } else {
+            already_installed.push(installed_names[0].to_string());
+        }
+    }
+
+    Ok((to_install, already_installed))
+}
+
+/// A single unsatisfied `suggest` entry: the package that suggests it and
+/// the candidate apps it recommends installing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuggestEntry {
+    /// The package name that carries the `suggest` entry.
+    pub package: String,
+    /// The candidate apps the manifest suggests installing.
+    pub candidates: Vec<String>,
+}
+
+/// Collect the unsatisfied `suggest` entries for the given packages,
+/// matching Scoop's `show_suggestions` (lib/install.ps1): a feature is only
+/// reported when **none** of its candidate apps is installed. Candidates are
+/// matched by app name (bucket/name forms included) against installed apps
+/// in both local and global scopes.
+///
+/// # Errors
+///
+/// Returns an error if querying the installed packages fails.
+pub fn suggest(session: &Session, packages: &[&str]) -> Fallible<Vec<SuggestEntry>> {
+    let installed = query(
+        session,
+        packages.to_vec(),
+        vec![QueryOption::Explicit],
+        true,
+    )?;
+
+    // All installed app names in both scopes, matching `installed_apps $true + $false`.
+    let original_global = session.is_global();
+    let mut installed_apps = std::collections::HashSet::new();
+    for global in [false, true] {
+        session.set_global(global);
+        if let Ok(pkgs) = query(session, vec![], vec![], true) {
+            installed_apps.extend(pkgs.into_iter().map(|p| p.name().to_owned()));
+        }
+    }
+    session.set_global(original_global);
+
+    let mut entries = Vec::new();
+    for pkg in &installed {
+        let manifest = pkg.manifest();
+        if let Some(suggest) = manifest.suggest() {
+            let name = pkg.name();
+            for values in suggest.values() {
+                let candidates: Vec<String> = values
+                    .devectorize()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                // A suggestion like "bucket/app" is fulfilled by installed "app".
+                let fulfilled = candidates.iter().any(|s| {
+                    let app = s.split(['/', '\\']).next_back().unwrap_or(s);
+                    installed_apps.contains(app)
+                });
+                if !fulfilled {
+                    entries.push(SuggestEntry {
+                        package: name.to_string(),
+                        candidates,
+                    });
+                }
+            }
+        }
+    }
+    Ok(entries)
+}

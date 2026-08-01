@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 use std::process::Command;
 
 use crate::{output, Result};
@@ -17,7 +17,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     let queries = vec![query.as_str()];
     let options = vec![QueryOption::Explicit];
-    let mut result = operation::package_query(session, queries, options, false)?;
+    let mut result = package::query::query(session, queries, options, false)?;
 
     if result.is_empty() {
         output::err(rust_i18n::t!("cmd.cat_not_found", query = query))

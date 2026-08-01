@@ -193,3 +193,19 @@ pub fn query(
 pub fn entry_to_manifest(entry: &CacheEntry) -> Option<Manifest> {
     Manifest::from_json(&entry.name, &entry.manifest_json).ok()
 }
+
+/// Re-populate the SQLite manifest cache after bucket updates.
+///
+/// This is a no-op if the SQLite cache is not enabled in config.
+/// Call this after `crate::bucket::update()` to refresh the cache with the
+/// latest manifest data from all buckets.
+pub fn refresh(session: &Session) {
+    if !session.config().use_sqlite_cache() {
+        return;
+    }
+    if let Ok(conn) = open(session) {
+        let _ = populate(&conn, session);
+    } else {
+        tracing::warn!("failed to open manifest cache");
+    }
+}

@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use libscoop::internal::os::is_admin;
-use libscoop::{operation, Session, SyncOption};
+use libscoop::{package, Session, SyncOption};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
 use crate::{eventloop, output, Result};
@@ -63,7 +63,7 @@ impl Cmd for Args {
         // Resolve queries to exact bucket-qualified names.
         // Only installed packages (with install.json + manifest.json) are accepted.
         for q in &args.package {
-            if let Ok(pkgs) = operation::package_query(
+            if let Ok(pkgs) = package::query::query(
                 session,
                 vec![q.as_str()],
                 vec![libscoop::QueryOption::Explicit],
@@ -87,7 +87,7 @@ impl Cmd for Args {
         if !held.is_empty() {
             output::status(format!("Releasing held packages: {}", held.join(", ")));
             for name in &held {
-                operation::package_hold(session, name, false)?;
+                package::hold::hold(session, name, false)?;
             }
             output::done(rust_i18n::t!("reinstall.released"));
         }
@@ -107,7 +107,7 @@ impl Cmd for Args {
         if !held.is_empty() {
             output::status(format!("Re-holding packages: {}", held.join(", ")));
             for name in &held {
-                operation::package_hold(session, name, true)?;
+                package::hold::hold(session, name, true)?;
             }
             output::done(rust_i18n::t!("reinstall.reheld"));
         }
@@ -125,7 +125,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 /// Uninstall phase.
 fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let handle = eventloop::run_event_loop_default(session);
-    operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
+    package::sync::sync(session, queries.to_vec(), opts.to_vec())?;
     handle.join().unwrap();
     Ok(())
 }
@@ -141,7 +141,7 @@ fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Resu
         config,
         Box::new(crate::scoop_handler::ScoopHandler::new()),
     );
-    operation::package_sync(session, queries.to_vec(), opts.to_vec())?;
+    package::sync::sync(session, queries.to_vec(), opts.to_vec())?;
     handle.join().unwrap();
     Ok(())
 }

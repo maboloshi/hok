@@ -1,6 +1,6 @@
 //! Install package(s) command.
 //!
-//! Thin CLI wrapper around [`operation::install`]. Parses package names and
+//! Thin CLI wrapper around [`package::sync::sync`]. Parses package names and
 //! sync options from the command line, checks for administrator privileges
 //! (for global install), and dispatches to the install pipeline.
 //!
@@ -11,7 +11,7 @@
 
 use clap::{ArgAction, Parser};
 use libscoop::internal::os::is_admin;
-use libscoop::{operation, Session};
+use libscoop::{package, Session};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
 use crate::{output, Result};
@@ -81,7 +81,7 @@ impl Cmd for Args {
         let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
         // Prune already-installed packages (matching PS1's prune_installed behavior)
-        let (to_install, already_installed) = operation::package_prune_installed(session, &queries)?;
+        let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
         for name in &already_installed {
             output::warn(format!("'{name}' is already installed. Skipping."));
         }
@@ -107,11 +107,11 @@ impl Cmd for Args {
 
         let handle = crate::eventloop::run_event_loop_default(session);
 
-        operation::package_sync(session, to_install.clone(), options)?;
+        package::sync::sync(session, to_install.clone(), options)?;
         handle.join().unwrap();
 
         // Show unsatisfied suggestions from manifests of installed packages
-        let suggestions = operation::package_suggest(session, &to_install)?;
+        let suggestions = package::query::suggest(session, &to_install)?;
         for entry in &suggestions {
             let joined = entry.candidates.join("' or '");
             output::info(format!(

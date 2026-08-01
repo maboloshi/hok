@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, package::shim, QueryOption, Session};
+use libscoop::{package, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -16,7 +16,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let mut found = false;
 
     // Check for .cmd, .ps1, .exe shims
-    let paths = shim::shim_paths(session, &command)?;
+    let paths = package::shim::shim_paths(session, &command)?;
     for (_, path) in &paths {
         println!("{}", path.display());
         found = true;
@@ -26,7 +26,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Search installed packages for the binary
         let queries = vec!["*"];
         let options = vec![QueryOption::Binary];
-        let pkgs = operation::package_query(session, queries, options, true)?;
+        let pkgs = package::query::query(session, queries, options, true)?;
 
         for pkg in &pkgs {
             if let Some(shims) = pkg.shims() {

@@ -18,7 +18,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::{constant::ISOLATED_PACKAGE_BUCKET, error::Fallible, operation, Session};
+use crate::{bucket, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible, Session};
 
 /// Build the export JSON document for all installed packages.
 ///
@@ -29,7 +29,7 @@ pub fn build_export(session: &Session, include_all: bool) -> Fallible<Value> {
     let mut output = Map::new();
 
     // 1. Buckets: name → remote_url
-    let buckets = operation::bucket_list(session)?;
+    let buckets = bucket::list(session)?;
     let mut bucket_map = Map::new();
     for bucket in &buckets {
         if let Some(url) = bucket.remote_url() {
@@ -39,7 +39,7 @@ pub fn build_export(session: &Session, include_all: bool) -> Fallible<Value> {
     output.insert("buckets".to_string(), Value::Object(bucket_map));
 
     // 2. Apps: bucket → { name → version }
-    let pkgs = operation::package_query(session, vec!["*"], vec![], true)?;
+    let pkgs = super::query::query(session, vec!["*"], vec![], true)?;
 
     let mut bucket_apps = Map::new();
     for pkg in &pkgs {

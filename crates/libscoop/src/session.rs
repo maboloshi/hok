@@ -138,7 +138,7 @@ impl Session {
     /// of this method may not be able to perform some [`operations`][2], which
     /// will internally alter the config, before the reference is dropped.
     ///
-    /// [1]: crate::operation::config_list
+    /// [1]: crate::config::list
     /// [2]: crate::operation
     pub fn config(&self) -> Ref<'_, Config> {
         self.config.borrow()

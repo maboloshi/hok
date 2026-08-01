@@ -1,5 +1,5 @@
 use clap::{ArgAction, Parser};
-use libscoop::{operation, Session};
+use libscoop::{package, Session};
 
 use crate::{output, Result};
 
@@ -37,7 +37,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     };
     let options = qargs.to_query_options();
 
-    let packages = operation::package_query(session, queries, options, false)?;
+    let packages = package::query::query(session, queries, options, false)?;
 
     for pkg in packages {
         let mut line = String::new();

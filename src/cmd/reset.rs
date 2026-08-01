@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, Session};
+use libscoop::{package, Session};
 
 use crate::Result;
 
@@ -15,7 +15,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     let name = args.app;
     let version = args.version.as_deref();
-    operation::package_reset(session, &name, version)?;
+    package::sync::reset(session, &name, version)?;
     Ok(())
 }
 use crate::cmd::shared_args::Cmd;

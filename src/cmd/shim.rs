@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use libscoop::{package::shim, Session};
+use libscoop::{package, Session};
 
 use crate::{output, Result};
 
@@ -25,7 +25,7 @@ pub enum Command {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command.unwrap_or(Command::List) {
         Command::List => {
-            let shims = shim::list_shims(session)?;
+            let shims = package::shim::list_shims(session)?;
             if shims.is_empty() {
                 output::warn(rust_i18n::t!("cmd.shim_no_dir"));
             } else {
@@ -35,7 +35,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         Command::Info { name } => {
-            let paths = shim::shim_paths(session, &name)?;
+            let paths = package::shim::shim_paths(session, &name)?;
             for (_, path) in &paths {
                 output::change(name.as_str(), "->", path.display().to_string());
             }

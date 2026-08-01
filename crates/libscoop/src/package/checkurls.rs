@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::package::manifest_walker;
-use crate::{error::Fallible, operation, Manifest, Session};
+use crate::{error::Fallible, network, Manifest, Session};
 
 #[derive(Debug, Clone)]
 pub struct UrlCheckError {
@@ -83,7 +83,7 @@ pub fn check_urls(
 
         for url in &urls {
             report.total_urls += 1;
-            let result = operation::head_url(session, url, timeout_secs, manifest_cookies.as_ref());
+            let result = network::head_url(session, url, timeout_secs, manifest_cookies.as_ref());
 
             match result.error {
                 None => {

@@ -378,3 +378,183 @@ impl BucketUpdateState {
         }
     }
 }
+
+// ─── Session operations ────────────────────────────────────────────────────
+
+/// Add a bucket to Scoop.
+///
+/// # Errors
+///
+/// This method will return an error if the bucket already exists, or the remote
+/// url is not specified when adding a non built-in bucket.
+///
+/// A git error will be returned if failed to clone the bucket.
+pub fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
+    let config = session.config();
+    let mut path = config.root_path().to_owned();
+    path.push("buckets");
+
+    internal::fs::ensure_dir(&path)?;
+
+    path.push(name);
+    if path.exists() {
+        return Err(Error::BucketAlreadyExists(name.to_owned()));
+    }
+
+    let proxy = config.proxy();
+    let remote_url = match remote_url.is_empty() {
+        false => remote_url,
+        true => crate::constant::BUILTIN_BUCKET_LIST
+            .iter()
+            .find(|&&(n, _)| n == name)
+            .map(|&(_, remote)| remote)
+            .ok_or_else(|| Error::BucketAddRemoteRequired(name.to_owned()))?,
+    };
+
+    internal::git::clone_repo(remote_url, path, proxy)
+}
+
+/// Get a list of added buckets.
+///
+/// # Returns
+///
+/// A list of added buckets sorted by name.Buckets cannot be parsed will be
+/// filtered out.
+///
+/// # Errors
+///
+/// I/O errors will be returned if the `buckets` directory is not readable.
+pub fn list(session: &Session) -> Fallible<Vec<Bucket>> {
+    bucket_added(session).map(|mut buckets| {
+        buckets.sort_by_key(|b| b.name().to_lowercase());
+        buckets
+    })
+}
+
+/// Get a list of known (built-in) buckets.
+///
+/// # Returns
+///
+/// A list of known buckets.
+pub fn list_known() -> Vec<(&'static str, &'static str)> {
+    crate::constant::BUILTIN_BUCKET_LIST.to_vec()
+}
+
+/// Update all added buckets. *
+///
+/// # Errors
+///
+/// I/O errors will be returned if the `buckets` directory is not readable or
+/// failed to start up the update threads.
+///
+/// A [`ConfigInUse`][1] error will be returned if the config is borrowed elsewhere.
+///
+/// [1]: crate::Error::ConfigInUse
+pub fn update(session: &Session) -> Fallible<()> {
+    use std::sync::{Arc, Mutex};
+
+    let buckets = bucket_added(session)?;
+
+    if buckets.is_empty() {
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(crate::Event::BucketUpdateDone);
+        }
+
+        return Ok(());
+    }
+
+    // Doing bucket update will update the last_update timestamp in the config.
+    // A mutable reference to the config is borrowed here.
+    let mut config = session.config_mut()?;
+    let any_bucket_updated = Arc::new(Mutex::new(false));
+    let proxy = config.proxy().map(|s| s.to_owned());
+    let emitter = session.emitter();
+
+    let handles: Vec<_> = buckets
+        .iter()
+        .filter(|b| b.remote_url().is_some())
+        .map(|bucket| {
+            let repo = bucket.path().to_owned();
+            let name = bucket.name().to_owned();
+            let flag = Arc::clone(&any_bucket_updated);
+            let proxy = proxy.clone();
+            let emitter = emitter.clone();
+
+            std::thread::spawn(move || {
+                let mut ctx = BucketUpdateProgressContext::new(name.as_str());
+
+                if let Some(tx) = emitter.clone() {
+                    let _ = tx.send(crate::Event::BucketUpdateProgress(ctx.clone()));
+                }
+
+                match internal::git::reset_head(repo, proxy) {
+                    Ok(_) => {
+                        if let Ok(mut guard) = flag.lock() {
+                            *guard = true;
+                        }
+
+                        if let Some(tx) = emitter {
+                            ctx.set_succeeded();
+                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx));
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(tx) = emitter {
+                            ctx.set_failed(err.to_string().as_str());
+                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx));
+                        }
+                    }
+                };
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    if let Ok(guard) = any_bucket_updated.lock() {
+        if *guard {
+            // Scoop format: [DateTime]::Now.ToString('o')
+            // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
+            let now = jiff::Timestamp::now();
+            let zoned = now.to_zoned(jiff::tz::TimeZone::system());
+            let nsec = now.subsec_nanosecond() / 100; // 100-nanosecond ticks → 7 digits
+            let time = format!(
+                "{}.{:07}{}",
+                zoned.strftime("%Y-%m-%dT%H:%M:%S"),
+                nsec,
+                zoned.strftime("%:z"),
+            );
+            config.set("last_update", time.as_str())?;
+        }
+    }
+
+    // Drop the mutable config borrow before calling open(), which needs
+    // an immutable borrow on config via session.config().
+    drop(config);
+
+    if let Some(tx) = emitter {
+        let _ = tx.send(crate::Event::BucketUpdateDone);
+    }
+
+    Ok(())
+}
+
+/// Remove a bucket from Scoop.
+///
+/// # Errors
+///
+/// This method will return an error if the bucket does not exist. I/O errors
+/// will be returned if the bucket directory is unable to be removed.
+pub fn remove(session: &Session, name: &str) -> Fallible<()> {
+    let mut path = session.config().root_path().to_owned();
+    path.push("buckets");
+    path.push(name);
+
+    if !path.exists() {
+        return Err(Error::BucketNotFound(name.to_owned()));
+    }
+
+    Ok(std::fs::remove_dir_all(path.as_path())?)
+}

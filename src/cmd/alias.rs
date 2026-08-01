@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use libscoop::{operation, Session};
+use libscoop::{config, Session};
 
 use crate::{output, Result};
 
@@ -65,13 +65,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         Some(Command::Add { name, value }) => {
-            match operation::alias_add(session, &name, &value) {
+            match config::alias_add(session, &name, &value) {
                 Ok(_) => output::info(rust_i18n::t!("cmd.alias_added", name = name, value = value)),
                 Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
             }
         }
         Some(Command::Remove { name }) => {
-            match operation::alias_remove(session, &name) {
+            match config::alias_remove(session, &name) {
                 Ok(_) => output::info(rust_i18n::t!("cmd.alias_removed", name = name)),
                 Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
             }
