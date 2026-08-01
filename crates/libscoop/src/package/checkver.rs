@@ -20,6 +20,7 @@
 
 use crate::{operation, package::manifest_walker, Manifest, Session};
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 mod output {
@@ -92,6 +93,44 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
+    // Extract session data needed for concurrent downloads (Session is !Sync)
+    let proxy = session.config().proxy().map(|s| s.to_string());
+    let gh_token = session.config().gh_token.clone();
+    let private_hosts = session.config().private_hosts().map(|hosts| {
+        hosts
+            .iter()
+            .map(|h| (h.match_pattern().to_string(), h.parse_headers()))
+            .collect::<Vec<_>>()
+    });
+    let user_agent = session
+        .user_agent()
+        .unwrap_or("Scoop/1.0 (+http://scoop.sh/)")
+        .to_string();
+    let timeout = args.timeout;
+
+    /// A manifest that needs version checking.
+    struct PendingItem {
+        stem: String,
+        path: PathBuf,
+        manifest: Manifest,
+        /// Current version string (pre-extracted for comparison)
+        current: String,
+        /// URL to download (fully resolved with homepage fallback, GitHub API transform, etc.)
+        url: String,
+        /// Whether this is a GitHub checkver (for v/V prefix stripping)
+        github_mode: bool,
+        /// JSONPath override for version extraction (e.g. "$.tag_name" for GitHub API)
+        effective_jsonpath: Option<String>,
+        /// Regex override for version extraction (e.g. sourceforge default)
+        effective_regex: Option<String>,
+        /// The checkver configuration (cloned for extraction)
+        cv: crate::Checkver,
+        /// Script text to execute instead of downloading (script output overrides page content)
+        script_text: Option<String>,
+    }
+
+    let mut pending: Vec<PendingItem> = Vec::new();
+
     for path in manifest_walker::discover(dir)? {
         let stem = path.file_stem().unwrap().to_string_lossy().to_string();
         if args.app[0] != "*" && !args.app.iter().any(|p| stem.contains(p.as_str())) {
@@ -104,7 +143,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         };
 
         let cv = match manifest.checkver() {
-            Some(c) => c,
+            Some(c) => c.clone(),
             None => continue,
         };
 
@@ -122,7 +161,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
             if args.update || args.force_update {
                 let captures = vec![ver_override.clone()];
-                match apply_autoupdate(session, &path, &manifest, ver_override, &captures) {
+                match apply_autoupdate(
+                    session,
+                    &path,
+                    &manifest,
+                    ver_override,
+                    &captures,
+                    &HashMap::new(),
+                ) {
                     Ok(()) => {
                         output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver_override))
                     }
@@ -138,7 +184,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         // Determine URL and regex to use
         // Detect GitHub checkver: the deserializer sets specific regex (/releases/tag/) for
         // `checkver: "github"` and `checkver.github: "owner/repo"`. Also detect via URL pattern.
-        let mut github_mode = is_github_checkver(cv);
+        let mut github_mode = is_github_checkver(&cv);
         let mut url = if let Some(u) = &cv.url {
             if u.contains("github.com/") && u.contains("/releases/") {
                 github_mode = true;
@@ -178,12 +224,16 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 }
             }
         } else {
-            output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_url")));
-            continue;
+            // Homepage fallback when checkver.url is absent (Scoop L125-129)
+            let hp = manifest.homepage().to_string();
+            if hp.is_empty() {
+                output::err(format!("{stem}: {}", rust_i18n::t!("cmd.checkver_no_url")));
+                continue;
+            }
+            hp
         };
 
-        // If this is a GitHub checkver with a github.com URL, transform to API URL
-        // (matching Scoop's useGithubAPI behavior: github.com/.../releases/latest → api.github.com/repos/.../releases/latest)
+        // Transform github.com releases URLs to API URLs (Scoop's useGithubAPI behavior)
         if github_mode && url.contains("github.com/") && !url.contains("api.github.com") {
             if let Some(api_url) = github_api_url(&url) {
                 url = api_url;
@@ -196,14 +246,115 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             effective_jsonpath = Some("$.tag_name".to_string());
         }
 
-        // TODO(scoop-alignment): Add custom user-agent from checkver.useragent + Referer header + PRIVATE_HOSTS headers
-        // Get page content: from script output (if checkver.script is set) or by downloading URL
-        // In Scoop, script output replaces the downloaded page and still goes through extraction.
-        let gh_token = session.config().gh_token.clone();
-        let raw = if let Some(script_lines) = cv.script.as_ref() {
-            let script = script_lines.devectorize().join("\r\n");
-            match run_checkver_script(session, &script, cv.url.as_deref(), args.timeout) {
-                Ok(Some(page)) => page,
+        let script_text = cv.script.as_ref().map(|s| s.devectorize().join("\r\n"));
+
+        pending.push(PendingItem {
+            stem,
+            path,
+            manifest,
+            current,
+            url,
+            github_mode,
+            effective_jsonpath,
+            effective_regex,
+            cv,
+            script_text,
+        });
+    }
+
+    // ── Phase 2: Download all URLs concurrently ──────────────────────────
+    // (matching Scoop's async downloads in checkver.ps1 lines 110-248)
+    // Script-based items are skipped here (their output is produced below).
+    // Session data was extracted before the scope because Session is !Sync.
+    let proxy_ref: Option<&str> = proxy.as_deref();
+    let ua_ref: &str = &user_agent;
+    let hosts_ref = &private_hosts;
+    let download_results: Vec<Option<std::result::Result<String, String>>> =
+        std::thread::scope(|s| {
+            let mut handles = Vec::with_capacity(pending.len());
+            for item in &pending {
+                if item.script_text.is_some() {
+                    handles.push(None);
+                    continue;
+                }
+                let url = item.url.clone();
+                let token = gh_token.clone();
+                handles.push(Some(s.spawn(move || {
+                    // Build PRIVATE_HOSTS extra headers for this URL
+                    // (computed inside the closure so the HashMap is owned by the thread)
+                    let extra = hosts_ref.as_ref().map(|hosts| {
+                        hosts
+                            .iter()
+                            .filter(|(pattern, _)| {
+                                regex::Regex::new(pattern)
+                                    .ok()
+                                    .is_some_and(|re| re.is_match(&url))
+                            })
+                            .flat_map(|(_, headers)| headers.clone().into_iter())
+                            .collect::<std::collections::HashMap<String, String>>()
+                    });
+                    let extra_ref = extra.as_ref().filter(|m| !m.is_empty());
+                    let referer = crate::internal::network::strip_filename(&url);
+                    let dl_opts = crate::internal::network::RequestOptions {
+                        proxy: proxy_ref,
+                        timeout_secs: timeout,
+                        user_agent: Some(ua_ref),
+                        referer: Some(&referer),
+                        cookies: None,
+                        extra_headers: extra_ref,
+                        token: token.as_deref(),
+                    };
+                    crate::internal::network::download(&url, &dl_opts)
+                        .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
+                })));
+            }
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.map(|h| {
+                        h.join()
+                            .unwrap_or_else(|_| Err("thread panicked".to_string()))
+                    })
+                })
+                .collect()
+        });
+
+    // ── Phase 3: Process each result sequentially ────────────────────────
+    // (matching Scoop's event loop in checkver.ps1 lines 257-419)
+    for (item, dl_result) in pending.into_iter().zip(download_results) {
+        let PendingItem {
+            stem,
+            path,
+            manifest,
+            current,
+            url: _,
+            github_mode,
+            effective_jsonpath,
+            effective_regex,
+            cv,
+            script_text,
+        } = item;
+
+        // Get the downloaded page content (or error out, matching Scoop's error handling)
+        let mut raw = match dl_result {
+            Some(Ok(content)) => content,
+            Some(Err(e)) => {
+                output::err(format!(
+                    "{stem}: {}",
+                    rust_i18n::t!("cmd.err_download", e = e)
+                ));
+                continue;
+            }
+            None => String::new(),
+        };
+
+        // Script output overrides the downloaded page
+        // (matching Scoop checkver.ps1 lines 298-301)
+        if let Some(ref script) = script_text {
+            match run_checkver_script(session, script, cv.url.as_deref(), timeout) {
+                Ok(Some(page)) => {
+                    raw = page;
+                }
                 Ok(None) => {
                     output::warn(format!(
                         "{stem}: {}",
@@ -219,48 +370,20 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     continue;
                 }
             }
-        } else if url.contains("api.github.com") {
-            // Use authenticated request for GitHub API to avoid rate limits
-            let page = match gh_token.as_deref() {
-                Some(token) => operation::download_page(session, &url, args.timeout, Some(token))
-                    .map_err(|e| anyhow::Error::msg(e.to_string())),
-                None => operation::download_page(session, &url, args.timeout, None)
-                    .map_err(|e| anyhow::Error::msg(e.to_string())),
-            };
-            match page {
-                Ok(t) => t,
-                Err(e) => {
-                    output::err(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.err_download", e = e)
-                    ));
-                    continue;
-                }
-            }
-        } else {
-            match operation::download_page(session, &url, args.timeout, None) {
-                Ok(t) => t,
-                Err(e) => {
-                    output::err(format!(
-                        "{stem}: {}",
-                        rust_i18n::t!("cmd.err_download", e = e)
-                    ));
-                    continue;
-                }
-            }
-        };
+        }
 
         // Extract version
         let extract_result = extract_version(
             &raw,
-            cv,
+            &cv,
             effective_jsonpath.as_deref(),
             effective_regex.as_deref(),
         );
 
-        // Auto-strip leading v/V prefix
-        let (mut ver, captures) = match extract_result {
-            Some((ref ver, ref caps)) => (ver.clone(), caps.clone()),
+        // Auto-strip leading v/V prefix only for GitHub API JSONPath results
+        // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
+        let (mut ver, captures, named_captures) = match extract_result {
+            Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
             None => {
                 output::err(format!(
                     "{stem}: {}",
@@ -270,8 +393,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
         };
 
-        // If the user has not defined replace, the leading v/V will be automatically removed (global default behavior).
-        if cv.replace.is_none() {
+        if github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
             ver = ver.trim_start_matches(['v', 'V']).to_string();
         }
 
@@ -287,15 +409,24 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 println!("  {stem} ({ver})");
             }
             if args.force_update {
-                match apply_autoupdate(session, &path, &manifest, &ver, &captures) {
+                match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures)
+                {
                     Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
                     Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
                 }
             }
         } else {
             println!("  {stem} ({current} -> {ver})");
+            // Show "autoupdate available" when the new version is a semantic upgrade
+            // (matching Scoop's autoupdate availability display)
+            if manifest.autoupdate().is_some()
+                && crate::compare_versions(&ver, &current) == std::cmp::Ordering::Greater
+            {
+                println!("    autoupdate available");
+            }
             if do_update {
-                match apply_autoupdate(session, &path, &manifest, &ver, &captures) {
+                match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures)
+                {
                     Ok(()) => output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver)),
                     Err(e) => output::err(rust_i18n::t!("cmd.checkver_update_failed", e = e)),
                 }
@@ -349,12 +480,16 @@ fn extract_sourceforge_project(homepage: &str) -> Option<String> {
 // ─── Version extraction ─────────────────────────────────────────────────────
 
 /// Extract version + capture groups from page content.
+///
+/// Returns `(version, numbered_captures, named_captures)` where `named_captures`
+/// maps named group names to their values (Scoop `$matchesHashtable`, checkver.ps1
+/// lines 361-362).
 fn extract_version(
     content: &str,
     cv: &crate::Checkver,
     jsonpath_override: Option<&str>,
     regex_override: Option<&str>,
-) -> Option<(String, Vec<String>)> {
+) -> Option<(String, Vec<String>, HashMap<String, String>)> {
     // JSONPath: use override first (for GitHub API), then cv.jsonpath
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
@@ -364,7 +499,7 @@ fn extract_version(
         if !ver.is_empty() {
             let caps = vec![ver.to_string()];
             let v = apply_replace(&caps, cv.replace.as_deref());
-            return Some((v, caps));
+            return Some((v, caps, HashMap::new()));
         }
     }
 
@@ -373,7 +508,7 @@ fn extract_version(
         if let Some(ver) = extract_xpath(content, xp) {
             let caps = vec![ver.clone()];
             let v = apply_replace(&caps, cv.replace.as_deref());
-            return Some((v, caps));
+            return Some((v, caps, HashMap::new()));
         }
     }
 
@@ -391,8 +526,9 @@ fn extract_version(
                 .iter()
                 .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
                 .collect();
+            let named = extract_named_captures(&re, caps);
             let ver = apply_replace(&captures, cv.replace.as_deref());
-            return Some((ver, captures));
+            return Some((ver, captures, named));
         }
 
         let caps = re.captures(content)?;
@@ -400,14 +536,15 @@ fn extract_version(
             .iter()
             .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
             .collect();
+        let named = extract_named_captures(&re, &caps);
         let ver = apply_replace(&captures, cv.replace.as_deref());
-        return Some((ver, captures));
+        return Some((ver, captures, named));
     }
 
     let trimmed = content.trim();
     if !trimmed.is_empty() {
         let ver = apply_replace(&[trimmed.to_string()], cv.replace.as_deref());
-        Some((ver, vec![trimmed.to_string()]))
+        Some((ver, vec![trimmed.to_string()], HashMap::new()))
     } else {
         None
     }
@@ -435,6 +572,21 @@ fn apply_replace(captures: &[String], replace: Option<&str>) -> String {
     }
 }
 
+/// Extract named capture groups from a regex match.
+///
+/// Returns a map of group_name → value for all named groups (excluding numbered
+/// groups). This matches Scoop's `$matchesHashtable` behavior (checkver.ps1
+/// lines 361-362).
+fn extract_named_captures(re: &Regex, caps: &regex::Captures<'_>) -> HashMap<String, String> {
+    let mut named = HashMap::new();
+    for name in re.capture_names().flatten() {
+        if let Some(m) = caps.name(name) {
+            named.insert(name.to_string(), m.as_str().to_string());
+        }
+    }
+    named
+}
+
 // ─── Autoupdate ────────────────────────────────────────────────────────────
 
 /// Apply autoupdate: substitute variables, download files, compute/extract
@@ -445,6 +597,7 @@ fn apply_autoupdate(
     manifest: &Manifest,
     new_version: &str,
     captures: &[String],
+    named_captures: &HashMap<String, String>,
 ) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value =
@@ -495,6 +648,11 @@ fn apply_autoupdate(
     ];
     for (i, cap) in captures.iter().enumerate().skip(1) {
         vars.push((format!("$match{}", i), cap.clone()));
+    }
+    // Named capture groups (Scoop $matchesHashtable, checkver.ps1 lines 361-362)
+    // Named groups like `(?<version>...)` create `$version` variables
+    for (name, val) in named_captures {
+        vars.push((format!("${}", name), val.clone()));
     }
     // Scoop: $matchHead/$matchTail are derived from the version string,
     // not from capture groups. Regex: (?<head>\d+\.\d+(?:\.\d+)?)(?<tail>.*)
