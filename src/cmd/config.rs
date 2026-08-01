@@ -37,12 +37,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Edit => {
             let path = &session.config().path;
-            if let Ok(editor) = std::env::var("EDITOR") {
-                let mut child = std::process::Command::new(editor.as_str())
-                    .arg(path)
-                    .spawn()?;
-                child.wait()?;
-            } else {
+            if !config::edit(session)? {
                 util::open_file(path)?;
             }
             Ok(())

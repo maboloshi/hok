@@ -1,5 +1,4 @@
 use clap::Parser;
-use libscoop::internal::os::is_admin;
 use libscoop::{package, Session, SyncOption};
 
 use crate::{output, Result};
@@ -30,7 +29,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     session.set_global(args.global);
 
-    if args.global && !is_admin() {
+    if args.global && !session.is_admin() {
         anyhow::bail!("ERROR: you need admin rights to uninstall global apps");
     }
 

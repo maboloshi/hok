@@ -124,6 +124,24 @@ pub fn is_pwsh_available() -> bool {
     })
 }
 
+/// Run a program with the given arguments and wait for it to complete.
+///
+/// Returns the process exit code (or `-1` if the process was terminated by a
+/// signal rather than exiting normally).
+pub fn run_program(
+    program: &Path,
+    args: &[&str],
+    working_dir: Option<&Path>,
+) -> std::io::Result<i32> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    let status = cmd.status()?;
+    Ok(status.code().unwrap_or(-1))
+}
+
 /// Find all running processes whose executable is under `apps_dir`.
 pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
     let h_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };

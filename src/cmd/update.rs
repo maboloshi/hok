@@ -1,5 +1,4 @@
 use clap::{ArgAction, Parser};
-use libscoop::internal::os::is_admin;
 use libscoop::{bucket, package, Event, Session, SyncOption};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
@@ -148,7 +147,7 @@ pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> R
     }
 
     session.set_global(args.global);
-    if args.global && !is_admin() {
+    if args.global && !session.is_admin() {
         anyhow::bail!("ERROR: you need admin rights to install global apps");
     }
 

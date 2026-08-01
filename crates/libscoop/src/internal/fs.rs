@@ -15,7 +15,7 @@
 use serde::Serialize;
 use serde_json::ser::PrettyFormatter;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::Fallible;
 
@@ -23,6 +23,39 @@ use crate::error::Fallible;
 #[inline]
 pub fn ensure_dir<P: AsRef<Path> + ?Sized>(path: &P) -> io::Result<()> {
     std::fs::create_dir_all(path.as_ref())
+}
+
+/// Read the entire contents of a file into a string.
+#[inline]
+pub fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
+    std::fs::read_to_string(path.as_ref())
+}
+
+/// Write the given contents to a file at given path.
+#[inline]
+pub fn write<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> io::Result<()> {
+    std::fs::write(path.as_ref(), contents.as_ref())
+}
+
+/// Recursively collect all `.json` files under a directory.
+///
+/// Uses an explicit stack to avoid deep recursion on deeply nested trees.
+pub fn walkdir_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "json") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
 }
 
 /// Remove given `path` recursively.

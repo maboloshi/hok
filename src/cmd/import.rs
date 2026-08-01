@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{package, SyncOption, Session};
+use libscoop::{fs, package, SyncOption, Session};
 
 use crate::{output, Result};
 
@@ -12,7 +12,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let content = match std::fs::read_to_string(&args.file) {
+    let content = match fs::read_to_string(&args.file) {
         Ok(c) => c,
         Err(e) => {
             output::err(format!("Error reading '{}': {}", args.file, e));

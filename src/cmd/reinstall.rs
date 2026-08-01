@@ -1,5 +1,4 @@
 use clap::{ArgAction, Parser};
-use libscoop::internal::os::is_admin;
 use libscoop::{package, Session, SyncOption};
 
 use crate::cmd::shared_args::{Cmd, SyncArgs};
@@ -38,7 +37,7 @@ impl Cmd for Args {
 
     fn execute(args: Self::Args, session: &Session) -> Result<()> {
         session.set_global(args.global);
-        if args.global && !is_admin() {
+        if args.global && !session.is_admin() {
             anyhow::bail!("ERROR: you need admin rights to install global apps");
         }
 

@@ -59,3 +59,13 @@ pub use internal::compare_versions;
 pub use package::manifest::{Checkver, Manifest};
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;
+
+/// Public filesystem helpers (thin facade over [`internal::fs`]).
+pub mod fs {
+    pub use crate::internal::fs::{read_to_string, walkdir_files, write, write_json};
+}
+
+/// Public OS / process helpers (thin facade over [`internal::os`]).
+pub mod os {
+    pub use crate::internal::os::{encode_wide, is_program_available, run_program};
+}

@@ -831,6 +831,29 @@ pub fn list(session: &crate::Session) -> Fallible<String> {
     config.pretty()
 }
 
+/// Open the config file in the user's configured editor.
+///
+/// Launches `$EDITOR` (if set) with the config file path as its argument and
+/// waits for the editor to exit. Returns `Ok(false)` when the `EDITOR`
+/// environment variable is not set, so the caller can fall back to opening
+/// the file with the system default handler.
+///
+/// # Errors
+///
+/// I/O errors from spawning or waiting on the editor process are returned.
+pub fn edit(session: &crate::Session) -> Fallible<bool> {
+    match std::env::var("EDITOR") {
+        Ok(editor) => {
+            let mut child = std::process::Command::new(editor.as_str())
+                .arg(&session.config().path)
+                .spawn()?;
+            child.wait()?;
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
 /// Set a configuration key. *
 ///
 /// # Errors

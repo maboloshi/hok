@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use libscoop::package::formatjson;
 use libscoop::Session;
-use crate::{output, util, Result};
+use crate::{output, Result};
 
 /// Format manifest JSON files in a bucket directory
 #[derive(Debug, Parser)]
@@ -31,7 +31,7 @@ pub fn execute(args: Args) -> Result<()> {
         args.app.iter().map(|s| s.as_str()).collect()
     };
 
-    let entries = util::walkdir_files(dir);
+    let entries = libscoop::fs::walkdir_files(dir);
     let mut count = 0u32;
 
     for path in &entries {

@@ -11,11 +11,11 @@
 //! - **Shared backend**: Both `open_url` and `open_file` delegate to a
 //!   common [`shell_open()`] function that handles UTF-16 encoding and
 //!   `ShellExecuteW` invocation.
-//! - **Minimal dependency**: Uses `libscoop::internal::os::encode_wide`
+//! - **Minimal dependency**: Uses `libscoop::os::encode_wide`
 //!   for UTF-16 conversion rather than pulling in a separate crate.
 
-use libscoop::internal::os::encode_wide;
-use std::path::{Path, PathBuf};
+use libscoop::os::encode_wide;
+use std::path::Path;
 
 /// Open a URL in the default system browser.
 #[cfg(windows)]
@@ -111,27 +111,4 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
     } else {
         flength.to_string()
     }
-}
-
-// ─── Directory walking ──────────────────────────────────────────────────────
-
-/// Recursively collect all `.json` files under a directory.
-///
-/// Uses an explicit stack to avoid deep recursion on deeply nested trees.
-pub fn walkdir_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&current) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "json") {
-                    files.push(path);
-                }
-            }
-        }
-    }
-    files
 }

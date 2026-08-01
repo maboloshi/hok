@@ -1,6 +1,6 @@
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
-use std::process::Command;
+use libscoop::{fs, os, package, QueryOption, Session};
+use std::path::Path;
 
 use crate::{output, Result};
 
@@ -55,7 +55,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
         // Use bat.exe for syntax-highlighted output if available
         // (install via: hok install bat)
-        if libscoop::internal::os::is_program_available("bat.exe") {
+        if os::is_program_available("bat.exe") {
             let config = session.config();
             let mut args = vec!["--no-paging"];
             let cat_style = config.cat_style();
@@ -65,10 +65,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
             args.push("--language");
             args.push("json");
-            let mut child = Command::new("bat.exe").arg(path).args(args).spawn()?;
-            child.wait()?;
+            let path_str = path.to_str().unwrap_or_default();
+            let mut cmd_args = vec![path_str];
+            cmd_args.extend(args);
+            os::run_program(Path::new("bat.exe"), &cmd_args, None)?;
         } else {
-            let content = std::fs::read_to_string(path)?;
+            let content = fs::read_to_string(path)?;
             println!("{}", content.trim());
         }
     }

@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{package::create, Session};
+use libscoop::{fs, package::create, Session};
 use std::path::PathBuf;
 
 use crate::{output, Result};
@@ -36,7 +36,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     match &args.output {
         Some(path) => {
-            std::fs::write(path, output_json.as_bytes())?;
+            fs::write(path, output_json.as_bytes())?;
             output::done(rust_i18n::t!("cmd.create_manifest_saved", path = path.display()));
         }
         None => {

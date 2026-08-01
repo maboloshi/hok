@@ -144,6 +144,14 @@ impl Session {
         self.config.borrow()
     }
 
+    /// Check whether the current process has administrator privileges.
+    ///
+    /// Uses `IsUserAnAdmin()` from `shell32.dll` on Windows; always returns
+    /// `false` on other platforms.
+    pub fn is_admin(&self) -> bool {
+        crate::internal::os::is_admin()
+    }
+
     /// Set whether operations should target the global Scoop root.
     pub fn set_global(&self, global: bool) {
         self.global.set(global);
