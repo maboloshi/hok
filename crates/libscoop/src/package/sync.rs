@@ -31,14 +31,11 @@ use std::io::Read;
 use std::path::Path;
 use tracing::{debug, info};
 
-use crate::{
-    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
-    Session,
-};
+use crate::{env, error::Fallible, internal, psmodule, shim, Error, Event, QueryOption, Session};
 
 use super::{
     download::{self, DownloadSize},
-    query, resolve, Package,
+    operations, query, resolve, Package,
 };
 
 /// Options that may be used to tweak behavior of package sync operation.
@@ -529,29 +526,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     }
 
     // Process extraction markers (P2: Rust native extraction)
-    if let Ok(markers) = std::fs::read_to_string(&marker_path) {
-        for line in markers.lines() {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() < 3 {
-                continue;
-            }
-            let format = parts[0];
-            let source = Path::new(parts[1]);
-            let dest = Path::new(parts[2]);
-            let innosetup = format == "innosetup";
-
-            if source.exists() {
-                let emit = session.emitter();
-                if let Err(e) =
-                    internal::archive::extract(source, dest, None, None, innosetup, &emit)
-                {
-                    // Log but don't abort — extraction errors may be handled
-                    // by the PS script's own error handling
-                    debug!("P2 extract failed for {}: {}", source.display(), e);
-                }
-            }
-        }
-    }
+    operations::extract_markers(session, working_dir);
 
     Ok(())
 }
@@ -903,106 +878,8 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 1. extract/copy downloaded files
-    let files = pkg.download_filenames();
-    let urls = pkg.manifest().url();
-
-    // Collect the files that need to be decompressed
-    let archives: Vec<usize> = files
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, f)| {
-            let url = &urls[idx];
-
-            // Extract the target filename directly from the URL
-            let target_name = url.rsplit('/').next().unwrap_or(f);
-
-            let ext = Path::new(target_name)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            if matches!(
-                ext,
-                "7z" | "zip"
-                    | "nupkg"
-                    | "rar"
-                    | "lzh"
-                    | "gz"
-                    | "bz2"
-                    | "xz"
-                    | "zst"
-                    | "tgz"
-                    | "tar"
-            ) {
-                Some(idx)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // 1. Extract the archive file
-    if !archives.is_empty() {
-        let cache_path = config.cache_path();
-        debug!(
-            "commit: {} v{} - extract ({} files)",
-            pkg.name(),
-            pkg.version(),
-            archives.len()
-        );
-
-        for idx in archives.iter() {
-            let filename = &files[*idx];
-            let src = cache_path.join(filename);
-            if src.exists() {
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractStart(format!(
-                        "{}/{}",
-                        pkg.name(),
-                        filename
-                    )));
-                }
-                let emit = session.emitter();
-                internal::archive::extract(
-                    &src,
-                    &working_dir,
-                    pkg.manifest().extract_dir().as_deref(),
-                    pkg.manifest().extract_to().as_deref(),
-                    pkg.manifest().innosetup(),
-                    &emit,
-                )?;
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractDone);
-                }
-            }
-        }
-    }
-
-    // 2. Copy all non-archived files (including _ files and regular files)
-    debug!(
-        "commit: {} v{} - copy ({} files)",
-        pkg.name(),
-        pkg.version(),
-        files.len() - archives.len()
-    );
-
-    for (idx, filename) in files.iter().enumerate() {
-        // Skip already extracted archive files
-        if archives.contains(&idx) {
-            continue;
-        }
-
-        let src = config.cache_path().join(filename);
-        if !src.exists() {
-            continue;
-        }
-
-        let url = &urls[idx];
-        let target_name = url.rsplit('/').next().unwrap_or(filename);
-
-        let dst = working_dir.join(target_name);
-        let _ = std::fs::remove_file(&dst);
-        std::fs::copy(&src, dst)?;
-    }
+    let archives = operations::extract_archives(session, pkg, &working_dir)?;
+    operations::copy_downloaded_files(session, pkg, &working_dir, &archives)?;
 
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
     if pkg.manifest().pre_install().is_some() {
@@ -1052,12 +929,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
-    let current_lnk = apps_dir.join(pkg.name()).join("current");
-    let _ = internal::fs::remove_symlink(&current_lnk);
-    if current_lnk.exists() {
-        let _ = std::fs::remove_dir_all(&current_lnk);
-    }
-    internal::fs::symlink_dir(&working_dir, &current_lnk)?;
+    operations::link_current(&apps_dir.join(pkg.name()), &working_dir)?;
 
     // 5. shims + shortcuts
     debug!(
@@ -1066,11 +938,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         pkg.version()
     );
     shim::add(session, pkg)?;
-    shortcut::add(session, pkg)?;
+    operations::shortcut_add(session, pkg)?;
 
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
-    persist::link(session, pkg)?;
+    operations::persist_link(session, pkg)?;
 
     // 7. post_install (Scoop order: last hook)
     if pkg.manifest().post_install().is_some() {
@@ -1261,7 +1133,6 @@ fn commit_remove(
 }
 
 fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
-    let config = session.config();
     let root_dir = session.effective_root_path();
 
     debug!("remove: {} - starting", package.name());
@@ -1323,13 +1194,12 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         package.name()
     );
     shim::remove(session, package)?;
-    shortcut::remove(session, package)?;
+    operations::shortcut_remove(session, package)?;
     psmodule::remove(session, package)?;
     env::remove(session, package)?;
-    persist::unlink(session, package)?;
+    operations::persist_unlink(session, package)?;
 
-    let current_lnk = app_dir.join("current");
-    internal::fs::remove_symlink(current_lnk)?;
+    operations::unlink_current(&app_dir)?;
 
     run_script(
         session,
@@ -1343,15 +1213,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     internal::fs::remove_dir(&app_dir)?;
 
     if purge {
-        debug!("remove: {} - purging persist data", package.name());
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePersistPurgeStart);
-        }
-        let persist_dir = config.root_path().join("persist").join(package.name());
-        internal::fs::remove_dir(persist_dir)?;
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePersistPurgeDone);
-        }
+        operations::persist_purge(session, package.name())?;
     }
 
     if let Some(tx) = session.emitter() {
@@ -1389,18 +1251,16 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     info!("resetting {} ({})", name, version);
 
     // Re-create the `current` symlink
-    let current_lnk = pkg_dir.join("current");
-    let _ = internal::fs::remove_symlink(&current_lnk);
-    internal::fs::symlink_dir(&version_dir, &current_lnk)?;
+    operations::link_current(&pkg_dir, &version_dir)?;
 
     // Re-link persistent data
-    persist::link(session, pkg)?;
+    operations::persist_link(session, pkg)?;
 
     // Re-create shims + shortcuts
     shim::remove(session, pkg)?;
     shim::add(session, pkg)?;
-    shortcut::remove(session, pkg)?;
-    shortcut::add(session, pkg)?;
+    operations::shortcut_remove(session, pkg)?;
+    operations::shortcut_add(session, pkg)?;
 
     // Run post_install to reapply localization (fixes Scoop bug)
     run_script(

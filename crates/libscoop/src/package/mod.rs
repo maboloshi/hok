@@ -51,6 +51,7 @@ pub(crate) mod manifest;
 pub mod manifest_cache;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
+pub(crate) mod operations;
 pub mod query;
 pub(crate) mod resolve;
 pub mod shim;
