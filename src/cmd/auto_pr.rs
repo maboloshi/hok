@@ -94,6 +94,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     };
 
     libscoop::package::auto_pr::run_auto_pr(config, session)
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 use crate::cmd::shared_args::Cmd;

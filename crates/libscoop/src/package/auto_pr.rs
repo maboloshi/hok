@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::error::Fallible as Result;
 
 use crate::internal::github;
 use crate::package::manifest_walker;
@@ -416,11 +416,11 @@ fn resolve_repo_nwo() -> Result<String> {
         .args(["remote", "get-url", "origin"])
         .output()
         .map_err(|_| {
-            anyhow::anyhow!("Cannot determine repository. Set GITHUB_REPOSITORY env var.")
+            crate::Error::Custom(format!("Cannot determine repository. Set GITHUB_REPOSITORY env var."))
         })?;
 
     if !output.status.success() {
-        anyhow::bail!("Cannot determine repository. Set GITHUB_REPOSITORY env var.");
+        return Err(crate::Error::Custom(format!("Cannot determine repository. Set GITHUB_REPOSITORY env var.")));
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -431,7 +431,7 @@ fn resolve_repo_nwo() -> Result<String> {
     } else if let Some(nwo) = url.split("github.com:").nth(1) {
         Ok(nwo.trim_end_matches('/').to_string())
     } else {
-        anyhow::bail!("Cannot parse repository NWO from remote URL: {}", url);
+        return Err(crate::Error::Custom(format!("Cannot parse repository NWO from remote URL: {}", url)));
     }
 }
 

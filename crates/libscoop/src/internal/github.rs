@@ -18,10 +18,10 @@
 //! # Notes
 //!
 //! - All requests have a 30-second timeout (60 seconds for GraphQL).
-//! - On HTTP 4xx/5xx responses, an error message with the status code is returned as `anyhow::Error`.
+//! - On HTTP 4xx/5xx responses, an error message with the status code is returned as [`crate::Error`].
 //! - Tokens are never logged (shown as `******` in logs).
 
-use anyhow::Result;
+use crate::error::Fallible as Result;
 use base64::Engine as _;
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@ pub fn github_api_request(
     let resp = match resp {
         Ok(r) => r,
         Err(e) => {
-            anyhow::bail!("GitHub API error: {}", e);
+            return Err(crate::Error::Custom(format!("GitHub API error: {}", e)));
         }
     };
 
@@ -77,25 +77,31 @@ pub fn github_api_request(
     let body_str = resp
         .into_body()
         .read_to_string()
-        .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+        .map_err(|e| crate::Error::Custom(format!("Failed to read response body: {}", e)))?;
 
     let value: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(v) => v,
         Err(e) => {
             if status >= 400 {
-                anyhow::bail!("GitHub API error (HTTP {}) with non-JSON body", status);
+                return Err(crate::Error::Custom(format!(
+                    "GitHub API error (HTTP {}) with non-JSON body",
+                    status
+                )));
             }
-            anyhow::bail!(
+            return Err(crate::Error::Custom(format!(
                 "Failed to parse JSON response: {} | body: {}",
                 e,
                 &body_str[..body_str.len().min(200)]
-            );
+            )));
         }
     };
 
     if status >= 400 {
         let msg = value["message"].as_str().unwrap_or("unknown error");
-        anyhow::bail!("GitHub API error (HTTP {}): {}", status, msg);
+        return Err(crate::Error::Custom(format!(
+            "GitHub API error (HTTP {}): {}",
+            status, msg
+        )));
     }
 
     Ok(value)
@@ -107,7 +113,7 @@ pub fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
     let resp = github_api_request(&query, "GET", None, token)?;
     let sha = resp["object"]["sha"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("unexpected ref response format"))?
+        .ok_or_else(|| crate::Error::Custom(format!("unexpected ref response format")))?
         .to_string();
     Ok(sha)
 }
@@ -164,7 +170,7 @@ pub fn create_pull_request(
     let resp = github_api_request(&query, "POST", Some(request_body), token)?;
     let pr_url = resp["html_url"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("PR response missing html_url"))?
+        .ok_or_else(|| crate::Error::Custom(format!("PR response missing html_url")))?
         .to_string();
     Ok(pr_url)
 }
@@ -206,7 +212,7 @@ pub fn graphql_commit_push(
 ) -> Result<String> {
     // Read the file and base64-encode it with normalised line endings.
     let content = std::fs::read_to_string(file_path)
-        .map_err(|e| anyhow::anyhow!("read file {}: {}", file_path, e))?;
+        .map_err(|e| crate::Error::Custom(format!("read file {}: {}", file_path, e)))?;
     let content_lf = content.replace("\r\n", "\n");
     let encoded = base64::engine::general_purpose::STANDARD.encode(content_lf.as_bytes());
 
@@ -252,19 +258,19 @@ pub fn graphql_commit_push(
         .header("Authorization", &format!("Bearer {}", token))
         .header("User-Agent", "hok")
         .send_json(&body)
-        .map_err(|e| anyhow::anyhow!("GraphQL request failed: {}", e))?;
+        .map_err(|e| crate::Error::Custom(format!("GraphQL request failed: {}", e)))?;
 
     let body_str = resp
         .into_body()
         .read_to_string()
-        .map_err(|e| anyhow::anyhow!("Read GraphQL response failed: {}", e))?;
+        .map_err(|e| crate::Error::Custom(format!("Read GraphQL response failed: {}", e)))?;
 
     let value: serde_json::Value = serde_json::from_str(&body_str).map_err(|e| {
-        anyhow::anyhow!(
+        crate::Error::Custom(format!(
             "Parse GraphQL response failed: {} | body: {}",
             e,
             &body_str[..body_str.len().min(200)]
-        )
+        ))
     })?;
 
     if let Some(errors) = value["errors"].as_array() {
@@ -274,13 +280,16 @@ pub fn graphql_commit_push(
                 .filter_map(|e| e["message"].as_str())
                 .map(|s| s.to_string())
                 .collect();
-            anyhow::bail!("GraphQL error(s): {}", msgs.join("; "));
+            return Err(crate::Error::Custom(format!(
+            "GraphQL error(s): {}",
+            msgs.join("; ")
+        )));
         }
     }
 
     let commit_url = value["data"]["createCommitOnBranch"]["commit"]["url"]
         .as_str()
-        .ok_or_else(|| anyhow::anyhow!("GraphQL response missing commit URL"))?
+        .ok_or_else(|| crate::Error::Custom(format!("GraphQL response missing commit URL")))?
         .to_string();
 
     Ok(commit_url)
