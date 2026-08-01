@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{operation, package::depends, QueryOption, Session};
 use std::io::Write;
 
 use crate::{output, Result};
@@ -44,41 +44,27 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         result.remove(idx)
     };
 
-    // Display dependencies
-    let mut seen = std::collections::HashSet::new();
-    print_deps(session, pkg.name(), pkg.bucket(), 0, &mut seen)?;
-
-    Ok(())
-}
-
-/// Recursively print dependencies as an indented tree.
-fn print_deps(session: &Session, name: &str, bucket: &str, depth: usize, seen: &mut std::collections::HashSet<String>) -> Result<()> {
-    if !seen.insert(name.to_string()) {
-        if depth > 0 {
-            println!("{:indent$} {} (already listed)", "", name, indent = depth * 2);
+    // Display the dependency tree
+    let tree = depends::dependencies_tree(session, pkg.name(), pkg.bucket())?;
+    for node in &tree {
+        if node.depth == 0 {
+            output::named(format!("{}/{}", node.bucket, node.name), "");
+        } else if node.already_listed {
+            println!(
+                "{:indent$} {} (already listed)",
+                "",
+                node.name,
+                indent = node.depth * 2
+            );
+        } else {
+            println!(
+                "{:indent$} {} [{}]",
+                "",
+                node.name,
+                node.bucket,
+                indent = node.depth * 2
+            );
         }
-        return Ok(());
-    }
-
-    if depth == 0 {
-        output::named(format!("{bucket}/{name}"), "");
-    } else {
-        println!("{:indent$} {} [{}]", "", name, bucket, indent = depth * 2);
-    }
-
-    // Query the package to get its dependencies
-    let q = format!("{}/{}", bucket, name);
-    let queries = vec![q.as_str()];
-    let options = vec![QueryOption::Explicit];
-    let pkgs = operation::package_query(session, queries, options, false)?;
-    let deps = pkgs.first().map(|p| p.dependencies()).unwrap_or_default();
-
-    for dep in &deps {
-        let (dep_bucket, dep_name) = dep.split_once('/')
-            .map(|(b, n)| (b.to_string(), n.to_string()))
-            .unwrap_or_else(|| (bucket.to_string(), dep.clone()));
-
-        print_deps(session, &dep_name, &dep_bucket, depth + 1, seen)?;
     }
 
     Ok(())

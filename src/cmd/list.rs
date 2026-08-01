@@ -1,6 +1,6 @@
 use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{operation, package::list, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -160,9 +160,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
 /// List packages with all installed versions shown.
 fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Session) -> Result<()> {
-    let root_path = session.config().root_path().to_owned();
-    let apps_dir = root_path.join("apps");
-
     // Get current packages for name/bucket info
     let pkgs = operation::package_query(session, queries.to_vec(), options.to_vec(), true)
         .unwrap_or_default();
@@ -170,49 +167,19 @@ fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Sessi
     for pkg in &pkgs {
         output::named(pkg.name(), format!("/{}", pkg.bucket()));
 
-        let app_dir = apps_dir.join(pkg.name());
-        if !app_dir.exists() {
-            continue;
-        }
-
-        // Read all version directories under apps/{name}/
-        let current_target = std::fs::read_link(app_dir.join("current")).ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
-
-        let mut versions: Vec<_> = std::fs::read_dir(&app_dir)
-            .map(|entries| entries.flatten()
-                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|name| name != "current")
-                .collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        versions.sort_by(|a, b| {
-            let a_ver = a.trim_start_matches(['v', 'V']);
-            let b_ver = b.trim_start_matches(['v', 'V']);
-            // Simple numeric sort — descending (newest first)
-            let a_parts: Vec<u64> = a_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-            let b_parts: Vec<u64> = b_ver.split('.').filter_map(|s| s.parse().ok()).collect();
-            for (a_n, b_n) in a_parts.iter().zip(b_parts.iter()) {
-                match a_n.cmp(b_n) {
-                    std::cmp::Ordering::Equal => continue,
-                    other => return other.reverse(),
-                }
-            }
-            a_parts.len().cmp(&b_parts.len()).reverse()
-        });
-
-        for ver in &versions {
-            let is_current = current_target.as_deref() == Some(ver.as_str());
-            if is_current {
-                output::named(ver.as_str(), "(current)");
-            } else {
-                output::status(ver);
-            }
-        }
+        let versions = list::list_installed_versions(session, pkg.name())?;
 
         if versions.is_empty() {
             output::named("(no versions)", "(broken install)");
+            continue;
+        }
+
+        for ver in &versions {
+            if ver.is_current {
+                output::named(ver.version.as_str(), "(current)");
+            } else {
+                output::status(&ver.version);
+            }
         }
     }
 
