@@ -33,9 +33,11 @@
 
 pub mod auto_pr;
 pub mod checkhashes;
+pub mod checkup;
 pub mod checkurls;
 pub mod checkver;
 pub(crate) mod download;
+pub mod formatjson;
 pub(crate) mod manifest;
 pub(crate) mod manifest_cache;
 pub(crate) mod manifest_walker;
@@ -43,6 +45,7 @@ pub mod missing_checkver;
 pub(crate) mod query;
 pub(crate) mod resolve;
 pub(crate) mod sync;
+pub mod virustotal;
 
 use std::cell::OnceCell;
 use std::{fmt, path::PathBuf};

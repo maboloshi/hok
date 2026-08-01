@@ -1,5 +1,5 @@
 use clap::Parser;
-use libscoop::{operation, QueryOption, Session};
+use libscoop::{operation, package::virustotal, QueryOption, Session};
 
 use crate::{output, Result};
 
@@ -27,8 +27,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     // Get API key: env var > config > none
-    let api_key = std::env::var("VT_API_KEY").ok()
-        .or_else(|| None); // config lookup deferred
+    let api_key = std::env::var("VT_API_KEY").ok();
 
     for pkg in &pkgs {
         let urls = pkg.manifest().url();
@@ -41,7 +40,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         print!("  {}: {} ... ", pkg.name(), url);
 
         if let Some(key) = &api_key {
-            match check_virustotal(url, key) {
+            match virustotal::check_url(url, key) {
                 Ok(stats) => {
                     if stats.malicious > 0 {
                         output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));
@@ -59,67 +58,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     Ok(())
-}
-
-struct ScanStats {
-    total: u32,
-    malicious: u32,
-    suspicious: u32,
-    harmless: u32,
-}
-
-/// Check a URL against VirusTotal API.
-fn check_virustotal(url: &str, api_key: &str) -> Result<ScanStats> {
-    // Step 1: Submit URL for analysis
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .build().new_agent();
-
-    let submit_body = serde_json::json!({ "url": url });
-    let submit_resp = agent
-        .post("https://www.virustotal.com/api/v3/urls")
-        .header("x-apikey", api_key)
-        .send_json(&submit_body)
-        .map_err(|e| anyhow::anyhow!("VT submit error: {}", e))?;
-
-    let submit_json: serde_json::Value = submit_resp
-        .into_body().read_json()
-        .map_err(|e| anyhow::anyhow!("VT response error: {}", e))?;
-
-    let analysis_id = submit_json["data"]["id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("VT: no analysis ID"))?;
-
-    // Step 2: Poll for analysis results
-    use std::time::Duration;
-    let analysis_url = format!("https://www.virustotal.com/api/v3/analyses/{}", analysis_id);
-
-    // Poll up to 5 times with 3s delay
-    for _ in 0..5 {
-        std::thread::sleep(Duration::from_secs(3));
-
-        let resp = agent
-            .get(&analysis_url)
-            .header("x-apikey", api_key)
-            .call()
-            .map_err(|e| anyhow::anyhow!("VT poll error: {}", e))?;
-
-        let json: serde_json::Value = resp.into_body().read_json()
-            .map_err(|e| anyhow::anyhow!("VT parse error: {}", e))?;
-
-        let status = json["data"]["attributes"]["status"].as_str().unwrap_or("");
-        if status == "completed" {
-            let stats = &json["data"]["attributes"]["stats"];
-            return Ok(ScanStats {
-                total: stats["total"].as_u64().unwrap_or(0) as u32,
-                malicious: stats["malicious"].as_u64().unwrap_or(0) as u32,
-                suspicious: stats["suspicious"].as_u64().unwrap_or(0) as u32,
-                harmless: stats["harmless"].as_u64().unwrap_or(0) as u32,
-            });
-        }
-    }
-
-    Err(anyhow::anyhow!("VT analysis timed out"))
 }
 use crate::cmd::shared_args::Cmd;
 
