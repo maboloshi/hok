@@ -39,6 +39,9 @@ mod sync_remove;
 pub use sync_install::install;
 pub use sync_remove::{remove, reset};
 
+/// Installer-variable expansion reused outside `sync` (e.g. `env::add`).
+pub(crate) use sync_install::expand_installer_vars;
+
 /// Options that may be used to tweak behavior of package sync operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]

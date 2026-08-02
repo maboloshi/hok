@@ -12,7 +12,7 @@ use std::path::Path;
 use tracing::{debug, info};
 
 use crate::package::{download, operations, query, resolve, Package};
-use crate::{error::Fallible, internal, shim, Error, Event, QueryOption, Session};
+use crate::{error::Fallible, env, internal, shim, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, TempFileGuard, Transaction};
 
@@ -99,8 +99,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     std::fs::write(&script_path, &full_script)?;
 
     // Build environment variables
-    let config = session.config();
-    let root_path = config.root_path();
+    let root_path = session.effective_root_path();
     let pkg_dir = working_dir.to_path_buf(); // $dir = version dir (not current)
 
     let version = package.version();
@@ -164,15 +163,14 @@ $cmd = $env:SCOOP_PACKAGE_CMD
 /// This mirrors the variable definitions in `run_script`'s PowerShell preamble,
 /// so that `installer.file` and `uninstaller.file` (which run via `run_gui`
 /// rather than through PowerShell) get equivalent variable expansion.
-pub(super) fn expand_installer_vars(
+pub(crate) fn expand_installer_vars(
     args: &[&str],
     session: &Session,
     pkg: &Package,
     working_dir: &Path,
     cmd: &str,
 ) -> Vec<String> {
-    let config = session.config();
-    let root_path = config.root_path();
+    let root_path = session.effective_root_path();
     let persist_dir = root_path.join("persist").join(pkg.name());
     let buckets_dir = root_path.join("buckets");
     let version = pkg.version();
@@ -640,6 +638,42 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
+    // 3.5 Upgrade: clean up the old version's env before relinking
+    // (mirrors scoop-update.ps1, which runs env_rm_path/env_rm against
+    // $old_manifest before the new version is installed).
+    if let Some(old_version) = pkg.installed_version() {
+        debug!(
+            "commit: {} v{} - env remove (old {})",
+            pkg.name(),
+            pkg.version(),
+            old_version
+        );
+        let version = if config.no_junction() {
+            old_version.to_owned()
+        } else {
+            "current".to_owned()
+        };
+        // Locate the old manifest: with junctions, `current` still points at
+        // the old version; without junctions, use the versioned dir directly.
+        // Fall back to the new manifest if the old one can't be read.
+        let old_manifest_path = if config.no_junction() {
+            apps_dir
+                .join(pkg.name())
+                .join(old_version)
+                .join("manifest.json")
+        } else {
+            apps_dir
+                .join(pkg.name())
+                .join("current")
+                .join("manifest.json")
+        };
+        let old_manifest = crate::package::Manifest::parse(old_manifest_path).ok();
+        match old_manifest {
+            Some(m) => env::remove_with_manifest(session, pkg, &m, &version)?,
+            None => env::remove(session, pkg)?,
+        }
+    }
+
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
     operations::link_current(&apps_dir.join(pkg.name()), &working_dir)?;
@@ -652,6 +686,10 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     );
     shim::add(session, pkg)?;
     operations::shortcut_add(session, pkg)?;
+
+    // 5.5 env (Scoop order: after shims/shortcuts, before persist)
+    debug!("commit: {} v{} - env", pkg.name(), pkg.version());
+    env::add(session, pkg)?;
 
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());

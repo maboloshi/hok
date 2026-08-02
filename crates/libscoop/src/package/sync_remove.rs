@@ -260,6 +260,11 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     operations::shortcut_remove(session, &pkg)?;
     operations::shortcut_add(session, &pkg)?;
 
+    // Re-apply env (mirrors scoop-reset.ps1: env_rm_path/env_rm then
+    // env_add_path/env_set — unset all potential old env before re-adding)
+    env::remove(session, &pkg)?;
+    env::add(session, &pkg)?;
+
     // Run post_install to reapply localization (fixes Scoop bug)
     run_script(
         session,

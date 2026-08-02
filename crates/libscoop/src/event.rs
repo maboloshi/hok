@@ -164,11 +164,23 @@ pub enum Event {
     /// Package shortcut creation has finished.
     PackageShortcutAddDone,
 
+    /// Package environment path(s) addition has started.
+    PackageEnvPathAddStart,
+
+    /// Package environment path(s) addition has finished.
+    PackageEnvPathAddDone,
+
     /// Package environment path(s) removal has started.
     PackageEnvPathRemoveStart,
 
     /// Package environment path(s) removal has finished.
     PackageEnvPathRemoveDone,
+
+    /// Package environment variable(s) setting has started.
+    PackageEnvVarSetStart,
+
+    /// Package environment variable(s) setting has finished.
+    PackageEnvVarSetDone,
 
     /// Package environment variable(s) removal has started.
     PackageEnvVarRemoveStart,
