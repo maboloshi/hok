@@ -543,7 +543,7 @@ impl Manifest {
         let path = internal::path::normalize_path(path);
 
         // SHA256 of the manifest file itself (kept for cache validation).
-        let mut checksum = scoop_hash::ChecksumBuilder::new().sha256().build();
+        let mut checksum = crate::internal::hash::ChecksumBuilder::new().sha256().build();
         checksum.consume(&bytes);
         let hash = checksum.finalize();
 
@@ -565,7 +565,7 @@ impl Manifest {
         let path = PathBuf::from(name);
 
         // SHA256 of the manifest JSON, consistent with `parse()`.
-        let mut checksum = scoop_hash::ChecksumBuilder::new().sha256().build();
+        let mut checksum = crate::internal::hash::ChecksumBuilder::new().sha256().build();
         checksum.consume(json.as_bytes());
         let hash = checksum.finalize();
 

@@ -31,6 +31,9 @@ sxd-document = "0.3"
 sxd-xpath = "0.4"
 base64 = "0.22"
 rust-i18n = "3.1.5"
+md-5 = "0.11"
+sha1 = "0.11"
+sha2 = "0.11"
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
@@ -45,10 +48,6 @@ lzma-rs = "0.3"
 unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
 bzip2 = "0.6.1"
-
-[dependencies.scoop-hash]
-version = "0.2.0-beta.3"
-path = "../scoop_hash"
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"

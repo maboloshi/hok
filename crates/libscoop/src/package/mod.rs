@@ -255,7 +255,7 @@ impl Package {
             .url()
             .into_iter()
             .map(|u| {
-                let mut hasher = scoop_hash::ChecksumBuilder::new().sha256().build();
+                let mut hasher = crate::internal::hash::ChecksumBuilder::new().sha256().build();
                 hasher.consume(u.as_bytes());
                 let mut hash = hasher.finalize();
                 hash.truncate(7);

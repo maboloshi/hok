@@ -1,15 +1,19 @@
-//! Hash library for libscoop.
+//! Hash utilities — MD5, SHA1, SHA256, SHA512.
 //!
-//! Provides a unified API (`ChecksumBuilder`) for MD5, SHA1, SHA256, SHA512.
-//! Uses the RustCrypto crates (`md-5`, `sha1`, `sha2`) for the actual hash
-//! implementations — battle-tested, pure Rust, no C deps.
+//! Provides a unified API ([`ChecksumBuilder`]) for MD5, SHA1, SHA256, SHA512
+//! using the RustCrypto crates (`md-5`, `sha1`, `sha2`) — battle-tested,
+//! pure Rust, no C deps.
+//!
+//! This module was merged from the former standalone `scoop-hash` crate and
+//! is not part of the stable API (see [`crate::internal`]).
 
 use std::error::Error as StdError;
 use std::io::Read;
 use std::path::Path;
 
-mod rustcrypto;
-use rustcrypto::{Digest, Md5, Sha1, Sha256, Sha512};
+use md5::Md5;
+use sha1::Sha1;
+use sha2::{Sha256, Sha512};
 
 trait Hasher {
     fn hash_type(&self) -> String;
@@ -24,19 +28,19 @@ impl core::fmt::Debug for dyn Hasher {
 }
 
 macro_rules! impl_hasher_for {
-    ($hasher:ty) => {
+    ($hasher:ty, $digest:path, $name:literal) => {
         impl Hasher for $hasher {
             fn hash_type(&self) -> String {
-                stringify!($hasher).to_string()
+                $name.to_string()
             }
 
             fn update(&mut self, data: &[u8]) {
-                self.inner.update(data);
+                <$hasher as $digest>::update(self, data);
             }
 
             fn sum(self: Box<Self>) -> String {
                 use std::fmt::Write;
-                let digest = self.inner.finalize();
+                let digest = <$hasher as $digest>::finalize(*self);
                 let mut hex = String::with_capacity(digest.len() * 2);
                 for byte in digest.iter() {
                     let _ = write!(hex, "{:02x}", byte);
@@ -47,17 +51,17 @@ macro_rules! impl_hasher_for {
     };
 }
 
-impl_hasher_for!(Md5);
-impl_hasher_for!(Sha1);
-impl_hasher_for!(Sha256);
-impl_hasher_for!(Sha512);
+impl_hasher_for!(Md5, md5::Digest, "md5");
+impl_hasher_for!(Sha1, sha1::Digest, "sha1");
+impl_hasher_for!(Sha256, sha2::Digest, "sha256");
+impl_hasher_for!(Sha512, sha2::Digest, "sha512");
 
 #[derive(Debug)]
-pub struct Error;
+pub struct HashError;
 
-impl StdError for Error {}
+impl StdError for HashError {}
 
-impl core::fmt::Display for Error {
+impl core::fmt::Display for HashError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "unsupported hash algorithm")
     }
@@ -76,10 +80,10 @@ impl Default for ChecksumBuilder {
 
 /// Macro to generate a `ChecksumBuilder::*` method for a given hash algorithm.
 macro_rules! checksum_method {
-    ($(#[$doc:meta])* fn $name:ident($ctor:ident)) => {
+    ($(#[$doc:meta])* fn $name:ident($ctor:ident, $digest:path)) => {
         $(#[$doc])*
         pub fn $name(self) -> ChecksumBuilder {
-            let algo: Box<dyn Hasher> = Box::new($ctor::new());
+            let algo: Box<dyn Hasher> = Box::new(<$ctor as $digest>::new());
             self.set_algo(algo)
         }
     };
@@ -91,14 +95,14 @@ impl ChecksumBuilder {
     /// # Examples
     ///
     /// ```rust
-    /// use scoop_hash::ChecksumBuilder;
+    /// use libscoop::internal::hash::ChecksumBuilder;
     /// let mut md5 = ChecksumBuilder::new().md5().build();
     /// md5.consume(b"hello world");
     /// assert!(md5.check("5eb63bbbe01eeed093cb22bb8f5acdc3"));
     /// ```
     pub fn new() -> ChecksumBuilder {
         ChecksumBuilder {
-            hasher: Box::new(Sha256::new()),
+            hasher: Box::new(<Sha256 as sha2::Digest>::new()),
         }
     }
 
@@ -107,34 +111,34 @@ impl ChecksumBuilder {
     /// # Errors
     ///
     /// Returns an error if the specified algorithm is not supported.
-    pub fn algo(self, algo: &str) -> Result<ChecksumBuilder, Error> {
+    pub fn algo(self, algo: &str) -> Result<ChecksumBuilder, HashError> {
         match algo {
             "md5" => Ok(self.md5()),
             "sha1" => Ok(self.sha1()),
             "sha256" => Ok(self.sha256()),
             "sha512" => Ok(self.sha512()),
-            _ => Err(Error),
+            _ => Err(HashError),
         }
     }
 
     checksum_method! {
         /// Use the md5 hash algorithm.
-        fn md5(Md5)
+        fn md5(Md5, md5::Digest)
     }
 
     checksum_method! {
         /// Use the sha1 hash algorithm.
-        fn sha1(Sha1)
+        fn sha1(Sha1, sha1::Digest)
     }
 
     checksum_method! {
         /// Use the sha256 hash algorithm.
-        fn sha256(Sha256)
+        fn sha256(Sha256, sha2::Digest)
     }
 
     checksum_method! {
         /// Use the sha512 hash algorithm.
-        fn sha512(Sha512)
+        fn sha512(Sha512, sha2::Digest)
     }
 
     fn set_algo(mut self, algo: Box<dyn Hasher>) -> ChecksumBuilder {

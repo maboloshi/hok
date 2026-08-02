@@ -79,7 +79,7 @@ pub fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
 
     let result = (|| -> Fallible<Value> {
         network::download_file(session, url, &dest)?;
-        let hash = scoop_hash::compute_file_hash(&dest, "sha256")?;
+        let hash = crate::internal::hash::compute_file_hash(&dest, "sha256")?;
 
         let mut manifest = serde_json::json!({
             "version": "0.0.0",

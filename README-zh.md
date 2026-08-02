@@ -22,7 +22,7 @@
 | `sysinfo` | Win32 FFI（kernel32） | 只用了扫进程一个功能，sysinfo 是整个系统监控 |
 | `curl` + static-curl | `ureq`（纯 Rust HTTP） | 去掉了 libcurl 的 C 编译，完全纯 Rust |
 | `once_cell` | std（LazyLock/OnceCell） | Rust 1.70+ 已标准化，无需第三方 |
-| scoop_hash selfcontained | rustcrypto 后端 | 手写 MD5/SHA1/SHA256/SHA512 ~4700 行是维护债务 |
+| scoop_hash selfcontained | rustcrypto 后端（后合并进 libscoop `internal::hash`） | 手写 MD5/SHA1/SHA256/SHA512 ~4700 行是维护债务；独立 crate 仅本项目使用，0.2.0 起不再单独发布 |
 | `remove_dir_all` | `std::fs::remove_dir_all`（Rust 1.74+） | 原生支持 Windows 长路径，无需第三方 |
 | `unarc-rs` | `unrar` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
 | `thiserror` 1 + 2 并存 | 统一升级到 v2 | 消除依赖树中同一 crate 两个 major 版本的冗余 |

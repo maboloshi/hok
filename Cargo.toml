@@ -9,7 +9,7 @@ edition = "2021"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/scoop_hash", "crates/hok-shim", "crates/hok-i18n-derive"]
+members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive"]
 
 [lib]
 path = "src/lib.rs"
@@ -23,7 +23,6 @@ crossterm = "0.28"
 indicatif = "0.17.9"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
 serde_json = { version = "1.0.120", features = ["preserve_order"] }
-scoop-hash = { version = "0.2.0-beta.3", path = "./crates/scoop_hash" }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 rust-i18n = "3.1.5"

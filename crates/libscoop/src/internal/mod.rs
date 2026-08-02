@@ -8,6 +8,7 @@
 //! - [`env`] — Windows Registry-backed environment variable management
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
+//! - [`hash`] — Hash utilities (MD5/SHA1/SHA256/SHA512) via RustCrypto
 //! - [`network`] — HTTP networking via `ureq`
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
@@ -28,6 +29,7 @@ pub mod env;
 pub mod fs;
 pub mod git;
 pub mod github;
+pub mod hash;
 pub mod network;
 pub mod os;
 pub mod path;

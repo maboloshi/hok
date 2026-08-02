@@ -5,7 +5,7 @@
 //! execution — split out of [`super`] (`sync.rs`). It is a private
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
-use scoop_hash::ChecksumBuilder;
+use crate::internal::hash::ChecksumBuilder;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;

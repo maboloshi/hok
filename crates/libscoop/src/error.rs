@@ -121,7 +121,7 @@ pub enum Error {
 
     /// Scoop hash error
     #[error(transparent)]
-    Hash(#[from] scoop_hash::Error),
+    Hash(#[from] crate::internal::hash::HashError),
 
     /// Git error
     #[error(transparent)]

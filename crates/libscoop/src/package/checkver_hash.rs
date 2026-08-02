@@ -196,7 +196,7 @@ pub(super) fn download_and_hash_multi(
                 let dest = tmp_dir.join(filename);
                 network::download_file(session, url, &dest)
                     .map_err(|e| crate::Error::Custom(format!("download {}: {}", url, e)))?;
-                scoop_hash::compute_file_hash(&dest, "sha256")?
+                crate::internal::hash::compute_file_hash(&dest, "sha256")?
             }
         };
 
@@ -240,7 +240,7 @@ fn download_file_compute_hash(
         .get("algorithm")
         .and_then(|a| a.as_str())
         .unwrap_or("sha256");
-    scoop_hash::compute_file_hash(&dest, algo)
+    crate::internal::hash::compute_file_hash(&dest, algo)
         .map_err(|e| crate::Error::Custom(format!("compute hash {}: {}", filename, e)))
 }
 

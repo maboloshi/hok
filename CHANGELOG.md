@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Code Refactoring
+
+* **libscoop:** merge standalone `scoop-hash` crate into `internal::hash`
+  (md-5/sha1/sha2 become direct dependencies); workspace drops the crate and
+  the `hok` binary's redundant scoop-hash dependency
+
 ## [0.2.0-beta.3](https://github.com/maboloshi/hok/compare/v0.2.0-beta.2...v0.2.0-beta.3) (2026-07-30)
 
 ### Features

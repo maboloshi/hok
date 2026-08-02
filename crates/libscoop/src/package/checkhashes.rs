@@ -125,7 +125,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
                 }
             }
 
-            let actual_hash = match scoop_hash::compute_file_hash(&cache_path, hash_str.algorithm())
+            let actual_hash = match crate::internal::hash::compute_file_hash(&cache_path, hash_str.algorithm())
             {
                 Ok(h) => h,
                 Err(e) => {
