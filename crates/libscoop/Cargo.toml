@@ -33,9 +33,13 @@ base64 = "0.22"
 rust-i18n = "3.1.5"
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
-sevenz-rust2 = "0.21"
-zip = { version = "2", default-features = false, features = ["deflate"] }
-tar = "0.4"
+sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tar = { version = "0.4", default-features = false }
+# flate2 unified on the pure-Rust zlib-rs backend. Note: miniz_oxide still
+# enters the tree because innospect and ureq declare flate2 with default
+# features (rust_backend); feature unification cannot remove it project-side —
+# upstream would need `default-features = false`.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lzma-rs = "0.3"
 unrar = "0.5"
