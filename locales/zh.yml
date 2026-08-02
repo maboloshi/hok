@@ -45,7 +45,7 @@ detail:
   loading_cache: "正在从缓存加载 %{filename}"
   unlinking: "正在移除链接 %{path}"
   linking: "正在创建链接 %{from} => %{to}"
-  shortcut_conflict: "快捷方式已存在，将被覆盖: %{path}"
+  shortcut_conflict: "快捷方式已存在，属于其他包，将被覆盖: %{path}"
   shortcut_not_found: "快捷方式未找到: %{path}"
   config_fallback: "所有配置路径均加载失败，回退到默认配置"
 reinstall:

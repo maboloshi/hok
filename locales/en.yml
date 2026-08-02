@@ -45,7 +45,7 @@ detail:
   loading_cache: "Loading %{filename} from cache."
   unlinking: "Unlinking %{path}"
   linking: "Linking %{from} => %{to}"
-  shortcut_conflict: "shortcut already exists and will be overwritten: %{path}"
+  shortcut_conflict: "shortcut already exists and belongs to another package; it will be overwritten: %{path}"
   shortcut_not_found: "shortcut not found: %{path}"
   config_fallback: "all config paths failed, falling back to default config"
 reinstall:

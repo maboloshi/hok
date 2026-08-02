@@ -153,7 +153,8 @@ pub enum Event {
     /// Package shortcut creation has made some progress.
     PackageShortcutAddProgress(String),
 
-    /// Package shortcut already exists and will be overwritten.
+    /// Package shortcut already exists and belongs to another package; it will
+    /// be overwritten.
     PackageShortcutConflict(String),
 
     /// Package shortcut creation has finished.
