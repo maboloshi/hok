@@ -5,9 +5,16 @@
 //! reset — split out of [`super`] (`sync.rs`). It is a private sub-module
 //! of `sync`; the entry points are re-exported by `sync.rs`.
 
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
 use tracing::{debug, info};
 
-use crate::package::{operations, query, resolve, Package};
+use crate::constant::ISOLATED_PACKAGE_BUCKET;
+use crate::package::{
+    manifest::{InstallInfo, Manifest},
+    operations, query, resolve, InstallState, InstallStateInstalled, Package,
+};
 use crate::{env, error::Fallible, internal, psmodule, shim, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, Transaction};
@@ -226,27 +233,18 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 /// Reset a package: re-link current version, re-create shims/shortcuts,
 /// and run post_install. Unlike Scoop's original reset, this runs
 /// post_install to reapply localization settings.
+///
+/// Package resolution mirrors upstream `scoop reset` (libexec/scoop-reset.ps1):
+/// the app is considered installed when `apps/<name>` exists and the current
+/// version can be resolved — reading `current\manifest.json`'s `version` first
+/// (`Select-CurrentVersion`), then falling back to version directories with an
+/// `install.json`, newest by modification time (`Get-InstalledVersion`).
+/// Unlike `query_installed`, this does **not** require both
+/// `current\manifest.json` and `current\install.json` to exist, so a
+/// half-broken install (e.g. missing `install.json`) can still be reset.
 pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
-    let query = query::query_installed(session, &["*"], &[])?;
-    let pkg = query
-        .iter()
-        .find(|p| p.name() == name)
-        .ok_or_else(|| Error::PackageNotFound(name.to_owned()))?;
-
-    let config = session.config();
-    let apps_dir = config.root_path().join("apps");
-    let pkg_dir = apps_dir.join(pkg.name());
-
-    let installed_ver = pkg.installed_version().unwrap_or(pkg.version());
-    let version = target_version.unwrap_or(installed_ver);
-    let version_dir = pkg_dir.join(version);
-
-    if !version_dir.exists() {
-        return Err(Error::Custom(format!(
-            "version '{}' of '{}' is not installed",
-            version, name
-        )));
-    }
+    let (pkg, pkg_dir, version_dir) = resolve_reset_target(session, name, target_version)?;
+    let version = pkg.installed_version().unwrap_or(pkg.version());
 
     info!("resetting {} ({})", name, version);
 
@@ -254,18 +252,18 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     operations::link_current(&pkg_dir, &version_dir)?;
 
     // Re-link persistent data
-    operations::persist_link(session, pkg)?;
+    operations::persist_link(session, &pkg)?;
 
     // Re-create shims + shortcuts
-    shim::remove(session, pkg)?;
-    shim::add(session, pkg)?;
-    operations::shortcut_remove(session, pkg)?;
-    operations::shortcut_add(session, pkg)?;
+    shim::remove(session, &pkg)?;
+    shim::add(session, &pkg)?;
+    operations::shortcut_remove(session, &pkg)?;
+    operations::shortcut_add(session, &pkg)?;
 
     // Run post_install to reapply localization (fixes Scoop bug)
     run_script(
         session,
-        pkg,
+        &pkg,
         &version_dir,
         "post_install",
         "install",
@@ -273,4 +271,242 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     )?;
 
     Ok(())
+}
+
+/// Resolve the package and version directory a `reset` should operate on,
+/// tolerating broken installs the same way upstream Scoop does.
+///
+/// - `apps/<name>` missing or version unresolvable → [`Error::PackageNotFound`]
+/// - explicit `target_version` → that version directory (must exist; rejected
+///   if it contains path separators or `..`)
+/// - otherwise → [`select_current_version`]
+/// - manifest is parsed from the **version directory** (`installed_manifest`),
+///   not from `current/`, so a stale/broken `current` junction doesn't matter
+/// - `install.json` is optional (`install_info` returns `$null` when missing);
+///   bucket defaults to [`ISOLATED_PACKAGE_BUCKET`]
+///
+/// Returns `(package, apps/<name> dir, <version> dir)`.
+fn resolve_reset_target(
+    session: &Session,
+    name: &str,
+    target_version: Option<&str>,
+) -> Fallible<(Package, PathBuf, PathBuf)> {
+    let apps_dir = session.effective_root_path().join("apps");
+    let pkg_dir = apps_dir.join(name);
+
+    let version = match target_version {
+        Some(v) => {
+            if v.contains(['/', '\\']) || v == ".." {
+                return Err(Error::Custom(format!("invalid version '{}'", v)));
+            }
+            v.to_owned()
+        }
+        None => match select_current_version(&pkg_dir) {
+            Some(v) => v,
+            None => return Err(Error::PackageNotFound(name.to_owned())),
+        },
+    };
+    let version_dir = pkg_dir.join(&version);
+    if !version_dir.is_dir() {
+        return Err(Error::Custom(format!(
+            "version '{}' of '{}' is not installed",
+            version, name
+        )));
+    }
+
+    // Parse the version directory's manifest (upstream `installed_manifest`).
+    let manifest = Manifest::parse(version_dir.join("manifest.json"))
+        .map_err(|_| Error::Custom(format!("'{}' ({}) isn't installed", name, version)))?;
+
+    // install.json is optional; bucket defaults to the isolated bucket.
+    let install_info = InstallInfo::parse(version_dir.join("install.json")).ok();
+    let bucket = install_info
+        .as_ref()
+        .and_then(|i| i.bucket().map(|s| s.to_owned()))
+        .unwrap_or_else(|| ISOLATED_PACKAGE_BUCKET.to_owned());
+
+    let pkg = Package::from(name, &bucket, manifest);
+    pkg.fill_install_state(InstallState::Installed(InstallStateInstalled {
+        version: version.clone(),
+        bucket: install_info
+            .as_ref()
+            .and_then(|i| i.bucket().map(|s| s.to_owned())),
+        arch: install_info
+            .as_ref()
+            .map(|i| i.arch().to_owned())
+            .unwrap_or_default(),
+        held: install_info.as_ref().map(|i| i.is_held()).unwrap_or(false),
+        url: install_info
+            .as_ref()
+            .and_then(|i| i.url().map(|s| s.to_owned())),
+    }));
+
+    Ok((pkg, pkg_dir, version_dir))
+}
+
+/// Resolve the current installed version of an app, mirroring upstream
+/// `Select-CurrentVersion` (lib/versions.ps1):
+///
+/// 1. `current\manifest.json`'s `version` — a `nightly` version resolves to
+///    the junction target's directory name;
+/// 2. otherwise, the version directory whose `install.json` was most recently
+///    modified (`Get-InstalledVersion`, excluding `current` and `_*.old*`).
+fn select_current_version(pkg_dir: &Path) -> Option<String> {
+    // 1. current\manifest.json version
+    if let Ok(manifest) = Manifest::parse(pkg_dir.join("current").join("manifest.json")) {
+        let version = manifest.version().to_owned();
+        if version == "nightly" {
+            if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
+                if let Some(name) = target.file_name().and_then(|s| s.to_str()) {
+                    return Some(name.to_owned());
+                }
+            }
+        } else {
+            return Some(version);
+        }
+    }
+
+    // 2. version dirs with install.json, newest by modification time
+    let mut candidates: Vec<(SystemTime, String)> = vec![];
+    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "current" || (name.starts_with('_') && name.contains(".old")) {
+                continue;
+            }
+            let install_json = entry.path().join("install.json");
+            if let Ok(meta) = std::fs::metadata(&install_json) {
+                let time = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                candidates.push((time, name));
+            }
+        }
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates.pop().map(|(_, v)| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{test_session, tmpdir};
+
+    fn mini_manifest(version: &str) -> String {
+        format!(
+            r#"{{"version": "{}", "homepage": "https://example.com", "license": "MIT"}}"#,
+            version
+        )
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        use std::fs::{File, FileTimes};
+        let f = File::options().write(true).open(path).unwrap();
+        f.set_times(FileTimes::new().set_modified(time)).unwrap();
+    }
+
+    #[test]
+    fn select_current_version_reads_current_manifest() {
+        let root = tmpdir("reset_current_manifest");
+        let pkg_dir = root.join("apps").join("app");
+        std::fs::create_dir_all(pkg_dir.join("current")).unwrap();
+        std::fs::write(
+            pkg_dir.join("current").join("manifest.json"),
+            mini_manifest("13.24.5"),
+        )
+        .unwrap();
+
+        assert_eq!(select_current_version(&pkg_dir).as_deref(), Some("13.24.5"));
+    }
+
+    #[test]
+    fn select_current_version_falls_back_to_newest_version_dir() {
+        let root = tmpdir("reset_fallback");
+        let pkg_dir = root.join("apps").join("app");
+        for v in ["1.0.0", "2.0.0"] {
+            std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
+            std::fs::write(pkg_dir.join(v).join("install.json"), "{}").unwrap();
+            std::fs::write(pkg_dir.join(v).join("manifest.json"), mini_manifest(v)).unwrap();
+        }
+        // Pin distinct modification times: 2.0.0 is the most recently touched.
+        let old = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        let new = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2000);
+        set_modified(&pkg_dir.join("1.0.0").join("install.json"), old);
+        set_modified(&pkg_dir.join("2.0.0").join("install.json"), new);
+
+        assert_eq!(select_current_version(&pkg_dir).as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn select_current_version_none_without_versions() {
+        let root = tmpdir("reset_none");
+        let pkg_dir = root.join("apps").join("app");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+
+        assert_eq!(select_current_version(&pkg_dir), None);
+    }
+
+    /// The exact broken-install case from the report: version dir + manifest
+    /// exist but `install.json` is missing, so `query_installed` used to skip
+    /// the app and `reset` reported "package not found".
+    #[test]
+    fn resolve_reset_target_tolerates_missing_install_json() {
+        let root = tmpdir("reset_missing_install_json");
+        let session = test_session(&root);
+        let pkg_dir = root.join("apps").join("app");
+        std::fs::create_dir_all(pkg_dir.join("13.24.5")).unwrap();
+        std::fs::write(
+            pkg_dir.join("13.24.5").join("manifest.json"),
+            mini_manifest("13.24.5"),
+        )
+        .unwrap();
+        // `current` junction simulated by a plain dir exposing the same manifest
+        std::fs::create_dir_all(pkg_dir.join("current")).unwrap();
+        std::fs::write(
+            pkg_dir.join("current").join("manifest.json"),
+            mini_manifest("13.24.5"),
+        )
+        .unwrap();
+
+        let (pkg, pkg_dir_out, version_dir) = resolve_reset_target(&session, "app", None).unwrap();
+        assert_eq!(pkg.name(), "app");
+        assert_eq!(pkg.installed_version(), Some("13.24.5"));
+        assert_eq!(pkg.installed_bucket(), Some(ISOLATED_PACKAGE_BUCKET));
+        assert_eq!(pkg_dir_out, pkg_dir);
+        assert_eq!(version_dir, pkg_dir.join("13.24.5"));
+    }
+
+    #[test]
+    fn resolve_reset_target_not_installed() {
+        let root = tmpdir("reset_not_installed");
+        let session = test_session(&root);
+
+        let err = resolve_reset_target(&session, "missing", None).unwrap_err();
+        assert!(matches!(err, Error::PackageNotFound(_)));
+    }
+
+    #[test]
+    fn resolve_reset_target_explicit_version() {
+        let root = tmpdir("reset_explicit_version");
+        let session = test_session(&root);
+        let pkg_dir = root.join("apps").join("app");
+        for v in ["1.0.0", "2.0.0"] {
+            std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
+            std::fs::write(pkg_dir.join(v).join("manifest.json"), mini_manifest(v)).unwrap();
+        }
+
+        let (pkg, _, version_dir) = resolve_reset_target(&session, "app", Some("1.0.0")).unwrap();
+        assert_eq!(pkg.installed_version(), Some("1.0.0"));
+        assert_eq!(version_dir, pkg_dir.join("1.0.0"));
+    }
+
+    #[test]
+    fn resolve_reset_target_rejects_path_traversal_version() {
+        let root = tmpdir("reset_traversal");
+        let session = test_session(&root);
+        std::fs::create_dir_all(root.join("apps").join("app")).unwrap();
+
+        let err = resolve_reset_target(&session, "app", Some("..")).unwrap_err();
+        assert!(matches!(err, Error::Custom(_)));
+        let err = resolve_reset_target(&session, "app", Some("1.0.0\\..\\..")).unwrap_err();
+        assert!(matches!(err, Error::Custom(_)));
+    }
 }
