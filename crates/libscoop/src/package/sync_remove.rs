@@ -17,6 +17,7 @@ use super::sync_install::{check_not_running, expand_installer_vars, run_script};
 pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let escape_hold = options.contains(&SyncOption::EscapeHold);
     let no_dependent_check = options.contains(&SyncOption::NoDependentCheck);
+    let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
 
     // Query target packages directly instead of scanning all installed.
     // Dependency checking (below) does the full scan when needed.
@@ -24,6 +25,14 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
     for &name in queries {
         let matched = query::query_installed(session, &[name], &[QueryOption::Explicit])?;
         if matched.is_empty() {
+            if ignore_failure {
+                eprintln!(
+                    "failed to remove '{}': {}",
+                    name,
+                    Error::PackageNotFound(name.to_string())
+                );
+                continue;
+            }
             return Err(Error::PackageNotFound(name.to_string()));
         }
         let pkg = matched.into_iter().next().unwrap();

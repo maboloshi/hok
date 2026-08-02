@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::{package, Session, SyncOption};
 
-use crate::{output, Result};
+use crate::Result;
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -56,10 +56,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     package::sync::sync(session, queries, options)?;
     handle.join().unwrap();
-
-    for name in &args.package {
-        output::done(format!("'{name}' was uninstalled."));
-    }
 
     Ok(())
 }
