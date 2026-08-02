@@ -185,30 +185,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use crate::package::{Manifest, Package};
-    use crate::test_utils::tmpdir;
+    use crate::test_utils::{test_session, tmpdir};
     use crate::Session;
 
     use super::*;
 
     // ─── Helpers ────────────────────────────────────────────────────
-
-    /// Like `test_utils::test_session`, but pins `cache_path` to
-    /// `<root>/cache` — the global default cache dir would otherwise be
-    /// shared by concurrently running tests.
-    fn session_with_cache(root: &Path) -> Session {
-        let config_path = root.join("config.json");
-        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
-        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
-        std::fs::write(
-            &config_path,
-            format!(
-                r#"{{"root_path": "{}", "cache_path": "{}"}}"#,
-                root_escaped, cache_escaped
-            ),
-        )
-        .unwrap();
-        Session::new_with(&config_path).unwrap()
-    }
 
     /// Build a manifest whose `url` field is the given JSON fragment.
     fn manifest_with_urls(urls_json: &str, extra: &str) -> Manifest {
@@ -267,7 +249,7 @@ mod tests {
     #[test]
     fn test_extract_archives_zip_only() {
         let root = tmpdir("extract_archives_zip");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/pkg.zip"));
 
         let staged = stage_cache_file(&session, &pkg, 0, &[]);
@@ -289,7 +271,7 @@ mod tests {
     #[test]
     fn test_extract_archives_mixed_zip_and_plain() {
         let root = tmpdir("extract_archives_mixed");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -327,7 +309,7 @@ mod tests {
         // `7z` executable, so the cache file is deliberately not staged —
         // `extract_archives` skips missing files but still reports the index.
         let root = tmpdir("extract_archives_iso");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/disk.iso"));
 
         let working_dir = root.join("work");
@@ -340,7 +322,7 @@ mod tests {
     #[test]
     fn test_extract_archives_unknown_extension_copied() {
         let root = tmpdir("extract_archives_unknown");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/file.bin"));
 
         stage_cache_file(&session, &pkg, 0, b"binary");
@@ -365,7 +347,7 @@ mod tests {
         // cache filename derived from the URL must also stay `?`-free (the
         // old behaviour produced one with `?` in it, illegal on Windows).
         let root = tmpdir("extract_archives_query");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -389,7 +371,7 @@ mod tests {
         // The archive index is still reported, but a missing cache file is
         // silently skipped (matching Scoop behaviour for partial downloads).
         let root = tmpdir("extract_archives_missing");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/pkg.zip"));
 
         let working_dir = root.join("work");
@@ -403,7 +385,7 @@ mod tests {
     #[test]
     fn test_extract_archives_with_extract_dir() {
         let root = tmpdir("extract_archives_extract_dir");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -430,7 +412,7 @@ mod tests {
     #[test]
     fn test_extract_archives_with_extract_to() {
         let root = tmpdir("extract_archives_extract_to");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -457,7 +439,7 @@ mod tests {
     #[test]
     fn test_copy_downloaded_files_skips_archives() {
         let root = tmpdir("copy_skips_archives");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -485,7 +467,7 @@ mod tests {
     #[test]
     fn test_copy_downloaded_files_overwrites_existing() {
         let root = tmpdir("copy_overwrites");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/b.exe"));
 
         stage_cache_file(&session, &pkg, 0, b"new content");
@@ -504,7 +486,7 @@ mod tests {
     #[test]
     fn test_copy_downloaded_files_missing_source_skipped() {
         let root = tmpdir("copy_missing_source");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -522,7 +504,7 @@ mod tests {
     #[test]
     fn test_copy_downloaded_files_strips_query_from_target() {
         let root = tmpdir("copy_strips_query");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let pkg = Package::from(
             "test-pkg",
             "main",
@@ -554,7 +536,7 @@ mod tests {
     #[test]
     fn test_extract_markers_zip() {
         let root = tmpdir("markers_zip");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let archive = root.join("pkg.zip");
         create_zip(&archive);
         let dest = root.join("dest");
@@ -573,7 +555,7 @@ mod tests {
     #[test]
     fn test_extract_markers_malformed_lines_skipped() {
         let root = tmpdir("markers_malformed");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let archive = root.join("pkg.zip");
         create_zip(&archive);
         let dest = root.join("dest");
@@ -596,7 +578,7 @@ mod tests {
     #[test]
     fn test_extract_markers_missing_source_skipped() {
         let root = tmpdir("markers_missing_source");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         let missing = root.join("does-not-exist.zip");
         let dest = root.join("dest");
 
@@ -615,7 +597,7 @@ mod tests {
     #[test]
     fn test_extract_markers_bad_archive_continues() {
         let root = tmpdir("markers_bad_archive");
-        let session = session_with_cache(&root);
+        let session = test_session(&root);
         // A file that exists but is not a valid archive.
         let bad = root.join("bad.zip");
         std::fs::write(&bad, b"this is not a zip").unwrap();

@@ -11,15 +11,24 @@ pub fn tmpdir(name: &str) -> std::path::PathBuf {
 }
 
 /// Create a [`Session`][1] rooted at `root`: writes a minimal `config.json`
-/// (with `root_path` pointing at `root`) and loads it via `Session::new_with`.
+/// (with `root_path` and `cache_path` pointing at `root`) and loads it via
+/// `Session::new_with`.
+///
+/// `cache_path` is pinned to `<root>/cache`: without it, the config falls
+/// back to the global default cache dir (`~/scoop/cache`), which tests
+/// running in parallel would clobber (same download filenames → same files).
 ///
 /// [1]: crate::Session
 pub fn test_session(root: &std::path::Path) -> crate::Session {
     let config_path = root.join("config.json");
     let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+    let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
     std::fs::write(
         &config_path,
-        format!(r#"{{"root_path": "{}"}}"#, root_escaped),
+        format!(
+            r#"{{"root_path": "{}", "cache_path": "{}"}}"#,
+            root_escaped, cache_escaped
+        ),
     )
     .unwrap();
     crate::Session::new_with(&config_path).unwrap()
