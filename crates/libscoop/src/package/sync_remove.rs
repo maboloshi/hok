@@ -153,6 +153,17 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 
     let app_dir = root_dir.join("apps").join(package.name());
 
+    // Resolve the current version directory up-front (mirrors Scoop
+    // `Select-CurrentVersion` + `versiondir` in scoop-uninstall.ps1); used
+    // for persist unlink and directory removal below. Must run before
+    // `unlink_current` drops the `current` junction. When no current version
+    // resolves (broken install), upstream still proceeds to the old-version
+    // cleanup loop below, so this is `Option` — the current-version block is
+    // skipped and removal falls through to the old-version loop.
+    let version_dir = select_current_version(&app_dir)
+        .or_else(|| package.installed_version().map(str::to_owned))
+        .map(|v| app_dir.join(&v));
+
     run_script(
         session,
         package,
@@ -197,27 +208,90 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     }
 
     debug!(
-        "remove: {} - cleanup (shims/shortcuts/env/persist)",
+        "remove: {} - cleanup (shims/shortcuts/current/env/persist)",
         package.name()
     );
     shim::remove(session, package)?;
     operations::shortcut_remove(session, package)?;
+
+    // Scoop order: `unlink_current` runs right after shims/shortcuts and
+    // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
+    // `env::remove` resolve their own paths, so they don't need the
+    // `$refdir` return value that upstream passes along.
+    operations::unlink_current(&app_dir)?;
     psmodule::remove(session, package)?;
     env::remove(session, package)?;
-    operations::persist_unlink(session, package)?;
 
-    operations::unlink_current(&app_dir)?;
+    // Remove the current version directory: unlink persist links first,
+    // then delete (Scoop order: `unlink_persist_data $manifest $dir` +
+    // `Remove-Item $dir`). If the directory is gone already (e.g. the
+    // uninstaller removed it), keep going like upstream does. Skipped when
+    // no current version could be resolved (broken install).
+    if let Some(version_dir) = &version_dir {
+        operations::persist_unlink(session, package, version_dir)?;
+        match internal::fs::remove_dir(version_dir) {
+            Ok(()) => {}
+            Err(_e) if !version_dir.exists() => {}
+            Err(e) => {
+                return Err(Error::Custom(format!(
+                    "couldn't remove '{}'; it may be in use: {}",
+                    version_dir.display(),
+                    e
+                )));
+            }
+        }
 
-    run_script(
-        session,
-        package,
-        &app_dir,
-        "post_uninstall",
-        "uninstall",
-        package.manifest().post_uninstall(),
-    )?;
+        // post_uninstall runs after the version dir has been removed
+        // (Scoop order in scoop-uninstall.ps1).
+        run_script(
+            session,
+            package,
+            &app_dir,
+            "post_uninstall",
+            "uninstall",
+            package.manifest().post_uninstall(),
+        )?;
+    }
 
-    internal::fs::remove_dir(&app_dir)?;
+    // Remove older versions one by one, unlinking persist data in each
+    // (Scoop order: loop over `Get-ChildItem $appDir -Exclude 'current'`).
+    if let Ok(entries) = std::fs::read_dir(&app_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "current" {
+                continue;
+            }
+            let old_dir = app_dir.join(&name);
+            debug!("remove: {} - removing older version {}", package.name(), name);
+            operations::persist_unlink(session, package, &old_dir)?;
+            match internal::fs::remove_dir(&old_dir) {
+                Ok(()) => {}
+                Err(_e) if !old_dir.exists() => {}
+                Err(e) => {
+                    return Err(Error::Custom(format!(
+                        "couldn't remove '{}'; it may be in use: {}",
+                        old_dir.display(),
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    // Remove a leftover `current` link, if any (Scoop re-checks after the
+    // version loop; e.g. when NO_JUNCTION is set).
+    let current_lnk = app_dir.join("current");
+    if current_lnk.exists() {
+        let _ = internal::fs::remove_symlink(&current_lnk);
+    }
+
+    // Remove the app dir only when it is empty (Scoop: `if (!(Get-ChildItem
+    // $appDir)) { Remove-Item $appdir }`).
+    if let Ok(mut entries) = std::fs::read_dir(&app_dir) {
+        if entries.next().is_none() {
+            internal::fs::remove_dir(&app_dir)?;
+        }
+    }
 
     if purge {
         operations::persist_purge(session, package.name())?;

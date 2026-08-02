@@ -1,5 +1,7 @@
 //! Persistent data directory handling primitives.
 
+use std::path::Path;
+
 use tracing::debug;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
@@ -9,9 +11,9 @@ pub fn persist_link(session: &Session, pkg: &Package) -> Fallible<()> {
     crate::persist::link(session, pkg)
 }
 
-/// Unlink persistent data directories of an uninstalled package.
-pub fn persist_unlink(session: &Session, pkg: &Package) -> Fallible<()> {
-    crate::persist::unlink(session, pkg)
+/// Unlink persistent data symlinks of an uninstalled package's version dir.
+pub fn persist_unlink(session: &Session, pkg: &Package, version_dir: &Path) -> Fallible<()> {
+    crate::persist::unlink(session, pkg, version_dir)
 }
 
 /// Purge the persistent data directory of `pkg_name`.

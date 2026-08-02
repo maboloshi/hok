@@ -21,7 +21,14 @@ pub fn link_current(pkg_dir: &Path, target_dir: &Path) -> Fallible<()> {
 }
 
 /// Remove the `current` symlink of `pkg_dir`, if present.
+///
+/// Missing `current` is not an error (mirrors Scoop's `unlink_current`,
+/// which guards with `Test-Path` — e.g. when `NO_JUNCTION` is set).
 pub fn unlink_current(pkg_dir: &Path) -> Fallible<()> {
-    internal::fs::remove_symlink(pkg_dir.join("current"))?;
-    Ok(())
+    let current_lnk = pkg_dir.join("current");
+    match internal::fs::remove_symlink(&current_lnk) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }

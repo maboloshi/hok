@@ -14,6 +14,8 @@
 //! - **Link types**: Directories use junctions; files use hard links.
 //!   This matches Scoop's behaviour for transparent data access.
 
+use std::path::Path;
+
 use crate::{error::Fallible, internal, package::Package, Session};
 
 /// Link persistent data for a package.
@@ -91,17 +93,20 @@ fn has_extension(name: &str) -> bool {
     std::path::Path::new(name).extension().is_some()
 }
 
-/// Remove persistent data symlinks for a package (does NOT remove persist data).
-pub fn unlink(session: &Session, package: &Package) -> Fallible<()> {
+/// Remove persistent data symlinks in a specific version directory
+/// (does NOT remove persist data).
+///
+/// Mirrors Scoop's `unlink_persist_data $manifest $dir`, which is called
+/// against the version directory right before that directory is removed —
+/// both for the current version and for each older version being cleaned up.
+pub fn unlink(session: &Session, package: &Package, version_dir: &Path) -> Fallible<()> {
+    let _ = session;
     assert!(package.is_installed());
 
     if let Some(persists) = package.manifest().persist() {
-        let root = session.effective_root_path();
-        let app_dir = root.join("apps").join(package.name()).join("current");
-
         for entry in &persists {
             let source = entry[0];
-            let src_path = internal::path::normalize_path(app_dir.join(source));
+            let src_path = internal::path::normalize_path(version_dir.join(source));
             let _ = internal::fs::remove_symlink(&src_path);
         }
     }
