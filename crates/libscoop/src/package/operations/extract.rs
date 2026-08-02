@@ -174,3 +174,440 @@ pub fn extract_markers(session: &Session, working_dir: &Path) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    use crate::package::{Manifest, Package};
+    use crate::test_utils::tmpdir;
+    use crate::Session;
+
+    use super::*;
+
+    // ─── Helpers ────────────────────────────────────────────────────
+
+    /// Like `test_utils::test_session`, but pins `cache_path` to
+    /// `<root>/cache` — the global default cache dir would otherwise be
+    /// shared by concurrently running tests.
+    fn session_with_cache(root: &Path) -> Session {
+        let config_path = root.join("config.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}"}}"#,
+                root_escaped, cache_escaped
+            ),
+        )
+        .unwrap();
+        Session::new_with(&config_path).unwrap()
+    }
+
+    /// Build a manifest whose `url` field is the given JSON fragment.
+    fn manifest_with_urls(urls_json: &str, extra: &str) -> Manifest {
+        let json = format!(
+            r#"{{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": {urls_json},
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+                {extra}
+            }}"#
+        );
+        Manifest::from_json("test-pkg", &json).unwrap()
+    }
+
+    /// Build a manifest with a single download URL.
+    fn manifest(url: &str) -> Manifest {
+        manifest_with_urls(&format!(r#""{url}""#), "")
+    }
+
+    /// Create a small real zip archive containing `app/hello.txt` and
+    /// `app/sub/deep.txt` (mirrors `internal::archive::tests`).
+    fn create_zip(path: &Path) {
+        use zip::write::FileOptions;
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> =
+            FileOptions::default().compression_method(CompressionMethod::Stored);
+
+        zip.start_file("app/hello.txt", opts).unwrap();
+        zip.write_all(b"Hello, World!").unwrap();
+        zip.start_file("app/sub/deep.txt", opts).unwrap();
+        zip.write_all(b"Deep content").unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// Place a fake downloaded file into the session cache dir under the
+    /// name `download_filenames()[idx]` produces, so `extract_archives` /
+    /// `copy_downloaded_files` find it via `session.config().cache_path()`.
+    fn stage_cache_file(session: &Session, pkg: &Package, idx: usize, content: &[u8]) -> PathBuf {
+        let filename = &pkg.download_filenames()[idx];
+        let config = session.config();
+        let cache_dir = config.cache_path();
+        std::fs::create_dir_all(cache_dir).unwrap();
+        let path = cache_dir.join(filename);
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    // ─── extract_archives ───────────────────────────────────────────
+
+    #[test]
+    fn test_extract_archives_zip_only() {
+        let root = tmpdir("extract_archives_zip");
+        let session = session_with_cache(&root);
+        let pkg = Package::from("test-pkg", "main", manifest("https://example.com/pkg.zip"));
+
+        let staged = stage_cache_file(&session, &pkg, 0, &[]);
+        create_zip(&staged);
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert_eq!(archives, vec![0]);
+        assert!(working_dir.join("app/hello.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("app/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+        assert!(working_dir.join("app/sub/deep.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_archives_mixed_zip_and_plain() {
+        let root = tmpdir("extract_archives_mixed");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest_with_urls(
+                r#"["https://example.com/pkg.zip", "https://example.com/setup.exe"]"#,
+                "",
+            ),
+        );
+
+        let staged_zip = stage_cache_file(&session, &pkg, 0, &[]);
+        create_zip(&staged_zip);
+        stage_cache_file(&session, &pkg, 1, b"exe content");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Only the .zip URL is treated as an archive.
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert_eq!(archives, vec![0]);
+        assert!(working_dir.join("app/hello.txt").exists());
+
+        // The plain file is copied, not extracted.
+        copy_downloaded_files(&session, &pkg, &working_dir, &archives).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("setup.exe")).unwrap(),
+            "exe content"
+        );
+    }
+
+    #[test]
+    fn test_extract_archives_iso_not_detected() {
+        // Known inconsistency with `internal::archive::detect_format`, which
+        // supports `.iso` (extracted via 7z), while the archive detection in
+        // `extract_archives` does not list it. Lock the current behaviour: the
+        // file is treated as a plain downloaded file. If the inconsistency is
+        // ever fixed, this test must be updated.
+        let root = tmpdir("extract_archives_iso");
+        let session = session_with_cache(&root);
+        let pkg = Package::from("test-pkg", "main", manifest("https://example.com/disk.iso"));
+
+        stage_cache_file(&session, &pkg, 0, b"iso bytes");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert!(archives.is_empty());
+
+        copy_downloaded_files(&session, &pkg, &working_dir, &archives).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("disk.iso")).unwrap(),
+            "iso bytes"
+        );
+    }
+
+    #[test]
+    fn test_extract_archives_unknown_extension_copied() {
+        let root = tmpdir("extract_archives_unknown");
+        let session = session_with_cache(&root);
+        let pkg = Package::from("test-pkg", "main", manifest("https://example.com/file.bin"));
+
+        stage_cache_file(&session, &pkg, 0, b"binary");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert!(archives.is_empty());
+
+        copy_downloaded_files(&session, &pkg, &working_dir, &archives).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("file.bin")).unwrap(),
+            "binary"
+        );
+    }
+
+    #[test]
+    fn test_extract_archives_url_with_query_not_detected() {
+        // `url.rsplit('/').next()` keeps the query string, so the extension
+        // becomes `zip?download=1` and the URL is not recognised as an
+        // archive. Lock the current behaviour.
+        let root = tmpdir("extract_archives_query");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest("https://example.com/pkg.zip?download=1"),
+        );
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert!(archives.is_empty());
+    }
+
+    #[test]
+    fn test_extract_archives_missing_cache_file_skipped() {
+        // The archive index is still reported, but a missing cache file is
+        // silently skipped (matching Scoop behaviour for partial downloads).
+        let root = tmpdir("extract_archives_missing");
+        let session = session_with_cache(&root);
+        let pkg = Package::from("test-pkg", "main", manifest("https://example.com/pkg.zip"));
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert_eq!(archives, vec![0]);
+        assert!(!working_dir.join("app/hello.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_archives_with_extract_dir() {
+        let root = tmpdir("extract_archives_extract_dir");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest_with_urls(
+                r#""https://example.com/pkg.zip""#,
+                r#","extract_dir": "app""#,
+            ),
+        );
+
+        let staged = stage_cache_file(&session, &pkg, 0, &[]);
+        create_zip(&staged);
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        extract_archives(&session, &pkg, &working_dir).unwrap();
+
+        // Prefix `app/` stripped: files land directly in working_dir.
+        assert!(working_dir.join("hello.txt").exists());
+        assert!(!working_dir.join("app/hello.txt").exists());
+        assert!(working_dir.join("sub/deep.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_archives_with_extract_to() {
+        let root = tmpdir("extract_archives_extract_to");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest_with_urls(
+                r#""https://example.com/pkg.zip""#,
+                r#","extract_to": "myapp""#,
+            ),
+        );
+
+        let staged = stage_cache_file(&session, &pkg, 0, &[]);
+        create_zip(&staged);
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        extract_archives(&session, &pkg, &working_dir).unwrap();
+
+        // Everything lands under working_dir/myapp/.
+        assert!(working_dir.join("myapp/app/hello.txt").exists());
+    }
+
+    // ─── copy_downloaded_files ──────────────────────────────────────
+
+    #[test]
+    fn test_copy_downloaded_files_skips_archives() {
+        let root = tmpdir("copy_skips_archives");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest_with_urls(
+                r#"["https://example.com/a.zip", "https://example.com/b.exe"]"#,
+                "",
+            ),
+        );
+
+        stage_cache_file(&session, &pkg, 0, &[]);
+        stage_cache_file(&session, &pkg, 1, b"b content");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Index 0 is an archive: it must NOT be copied as a file.
+        copy_downloaded_files(&session, &pkg, &working_dir, &[0]).unwrap();
+        assert!(!working_dir.join("a.zip").exists());
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("b.exe")).unwrap(),
+            "b content"
+        );
+    }
+
+    #[test]
+    fn test_copy_downloaded_files_overwrites_existing() {
+        let root = tmpdir("copy_overwrites");
+        let session = session_with_cache(&root);
+        let pkg = Package::from("test-pkg", "main", manifest("https://example.com/b.exe"));
+
+        stage_cache_file(&session, &pkg, 0, b"new content");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        std::fs::write(working_dir.join("b.exe"), b"stale content").unwrap();
+
+        copy_downloaded_files(&session, &pkg, &working_dir, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("b.exe")).unwrap(),
+            "new content"
+        );
+    }
+
+    #[test]
+    fn test_copy_downloaded_files_missing_source_skipped() {
+        let root = tmpdir("copy_missing_source");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest("https://example.com/missing.exe"),
+        );
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // No file staged in the cache: silently skipped, no error.
+        copy_downloaded_files(&session, &pkg, &working_dir, &[]).unwrap();
+        assert!(!working_dir.join("missing.exe").exists());
+    }
+
+    // ─── extract_markers ────────────────────────────────────────────
+
+    fn write_markers(working_dir: &Path, lines: &[&str]) {
+        let marker_path = working_dir.join("hok_extract_markers.txt");
+        std::fs::write(&marker_path, lines.join("\n")).unwrap();
+    }
+
+    #[test]
+    fn test_extract_markers_zip() {
+        let root = tmpdir("markers_zip");
+        let session = session_with_cache(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("zip|{}|{}", archive.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir);
+        assert!(dest.join("app/hello.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_markers_malformed_lines_skipped() {
+        let root = tmpdir("markers_malformed");
+        let session = session_with_cache(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        // A line with fewer than 3 parts must be skipped without panicking.
+        write_markers(
+            &working_dir,
+            &[
+                "zip|only-two-parts",
+                &format!("zip|{}|{}", archive.display(), dest.display()),
+            ],
+        );
+
+        extract_markers(&session, &working_dir);
+        assert!(dest.join("app/hello.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_markers_missing_source_skipped() {
+        let root = tmpdir("markers_missing_source");
+        let session = session_with_cache(&root);
+        let missing = root.join("does-not-exist.zip");
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("zip|{}|{}", missing.display(), dest.display())],
+        );
+
+        // No panic, nothing extracted, extraction does not abort.
+        extract_markers(&session, &working_dir);
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn test_extract_markers_bad_archive_continues() {
+        let root = tmpdir("markers_bad_archive");
+        let session = session_with_cache(&root);
+        // A file that exists but is not a valid archive.
+        let bad = root.join("bad.zip");
+        std::fs::write(&bad, b"this is not a zip").unwrap();
+        let good = root.join("good.zip");
+        create_zip(&good);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[
+                &format!("zip|{}|{}", bad.display(), root.join("bad-dest").display()),
+                &format!("zip|{}|{}", good.display(), dest.display()),
+            ],
+        );
+
+        // A failing marker must not abort processing of the remaining lines.
+        extract_markers(&session, &working_dir);
+        assert!(dest.join("app/hello.txt").exists());
+    }
+}
