@@ -1,12 +1,14 @@
 //! Windows Start Menu shortcut management.
 //!
 //! Creates and removes shortcuts in the `Scoop Apps` folder under the
-//! user's Start Menu (`~\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Scoop Apps`).
+//! Start Menu — per-user (`~\AppData\Roaming\...\Programs\Scoop Apps`)
+//! or machine-wide (`C:\ProgramData\...\Programs\Scoop Apps` for global
+//! installs), mirroring Scoop's `shortcut_folder`.
 //!
 //! # Design
 //!
-//! - **Directory determined once**: The shortcut directory path is
-//!   resolved once via [`LazyLock`] at startup.
+//! - **Scope-aware directory**: The shortcut directory is derived from the
+//!   session's global flag; target paths resolve against the effective root.
 //! - **Per-package shortcuts**: [`add()`] reads `shortcuts` from the
 //!   package manifest and creates each entry; [`remove()`] cleans them up.
 //! - **Conflict detection**: Existing `.lnk` files are overwritten silently
@@ -19,17 +21,22 @@
 //!   without a full MS-SHLLINK parse — see [`shortcut_owner_package`].
 
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
-static SCOOP_SHORTCUT_DIR: LazyLock<PathBuf> = LazyLock::new(shortcut_dir);
-
-/// Return the path to the shortcut directory.
+/// Return the path to the `Scoop Apps` shortcut folder.
 ///
-/// `~\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Scoop Apps`
-fn shortcut_dir() -> PathBuf {
-    let mut dir = dirs::config_dir().unwrap();
+/// User scope: `~\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Scoop Apps`
+/// Global scope: `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Scoop Apps`
+/// (mirrors Scoop's `shortcut_folder`, which picks `StartMenu` vs `CommonStartMenu`).
+fn shortcut_dir(global: bool) -> PathBuf {
+    let mut dir = if global {
+        std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+    } else {
+        dirs::config_dir().unwrap()
+    };
     dir.push("Microsoft/Windows/Start Menu/Programs/Scoop Apps");
     internal::path::normalize_path(dir)
 }
@@ -37,11 +44,11 @@ fn shortcut_dir() -> PathBuf {
 /// Add shortcut(s) for a given package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     if let Some(shortcuts) = package.manifest().shortcuts() {
-        let config = session.config();
-        let apps_dir = config.root_path().join("apps");
+        let apps_dir = session.effective_root_path().join("apps");
+        let shortcut_dir = shortcut_dir(session.is_global());
 
         // Ensure shortcut dir exists
-        internal::fs::ensure_dir(&*SCOOP_SHORTCUT_DIR)?;
+        internal::fs::ensure_dir(&shortcut_dir)?;
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageShortcutAddStart);
@@ -72,7 +79,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                     .into_owned()
             });
 
-            let mut link_path = SCOOP_SHORTCUT_DIR.join(shortcut[1]);
+            let mut link_path = shortcut_dir.join(shortcut[1]);
             link_path.set_extension("lnk");
 
             // Overwrite existing .lnk. Warn only when it belongs to a
@@ -231,7 +238,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             let length = shortcut.len();
             assert!(length > 1);
 
-            let mut path = SCOOP_SHORTCUT_DIR.join(shortcut[1]);
+            let mut path = shortcut_dir(session.is_global()).join(shortcut[1]);
             path.set_extension("lnk");
 
             if let Some(tx) = session.emitter() {

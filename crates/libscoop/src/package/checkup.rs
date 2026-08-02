@@ -43,8 +43,7 @@ pub struct CheckupIssue {
 ///
 /// A (possibly empty) list of [`CheckupIssue`] entries, one per problem found.
 pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
-    let config = session.config();
-    let apps_dir = config.root_path().join("apps");
+    let apps_dir = session.effective_root_path().join("apps");
     let mut issues = Vec::new();
 
     if !apps_dir.exists() {

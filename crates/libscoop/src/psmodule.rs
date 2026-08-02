@@ -17,8 +17,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     assert!(package.is_installed());
 
     if let Some(psmodule) = package.manifest().psmodule() {
-        let config = session.config();
-        let mut psmodule_path = config.root_path().join("modules");
+        let mut psmodule_path = session.effective_root_path().join("modules");
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackagePsModuleRemoveStart(

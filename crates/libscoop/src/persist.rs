@@ -30,8 +30,7 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
         None => return Ok(()),
     };
 
-    let config = session.config();
-    let root = config.root_path();
+    let root = session.effective_root_path();
     let app_dir = root.join("apps").join(package.name()).join("current");
     let persist_root = root.join("persist").join(package.name());
 
@@ -97,8 +96,7 @@ pub fn unlink(session: &Session, package: &Package) -> Fallible<()> {
     assert!(package.is_installed());
 
     if let Some(persists) = package.manifest().persist() {
-        let config = session.config();
-        let root = config.root_path();
+        let root = session.effective_root_path();
         let app_dir = root.join("apps").join(package.name()).join("current");
 
         for entry in &persists {
