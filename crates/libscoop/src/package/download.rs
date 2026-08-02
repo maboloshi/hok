@@ -32,6 +32,8 @@ pub struct PackageSet<'a> {
     pub packages: &'a [&'a Package],
     caches: OnceCell<HashMap<String, PackageCache<'a>>>,
     reuse_cache: bool,
+    /// Skip packages whose download fails instead of aborting the operation.
+    ignore_failure: bool,
 }
 
 struct FileDownloadInfo<'a> {
@@ -83,7 +85,20 @@ impl<'a> PackageSet<'a> {
             packages,
             caches: OnceCell::new(),
             reuse_cache,
+            ignore_failure: false,
         })
+    }
+
+    /// Ignore per-package download failures and keep going with the rest of
+    /// the transaction.
+    ///
+    /// When enabled, [`download`][1] skips packages whose download fails (and
+    /// reports them in the returned list of failed idents) instead of aborting
+    /// the whole operation, so the remaining packages can still be committed.
+    ///
+    /// [1]: PackageSet::download
+    pub fn set_ignore_failure(&mut self, ignore: bool) {
+        self.ignore_failure = ignore;
     }
 
     fn load_cache(&self) {
@@ -148,7 +163,15 @@ impl<'a> PackageSet<'a> {
     // ─── Download ─────────────────────────────────────────────────────────────
 
     /// Download packages.
-    pub fn download(&mut self) -> Fallible<()> {
+    ///
+    /// # Returns
+    ///
+    /// The identifiers (`bucket/name`) of the packages whose download failed
+    /// and were skipped. Unless [`set_ignore_failure`][1] was enabled, the
+    /// first failure aborts with an error, so the list is empty on success.
+    ///
+    /// [1]: PackageSet::set_ignore_failure
+    pub fn download(&mut self) -> Fallible<Vec<String>> {
         if self.caches.get().is_none() {
             self.load_cache();
         }
@@ -165,8 +188,9 @@ impl<'a> PackageSet<'a> {
 
         let package_caches = self.caches.get_mut().unwrap();
 
-        let mut chunk_file_map: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let mut filepaths: Vec<(PathBuf, PathBuf)> = vec![];
+        let mut chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)> = HashMap::new();
+        let mut filepaths: Vec<(PathBuf, PathBuf, String)> = vec![];
+        let mut failed: Vec<String> = vec![];
 
         internal::fs::ensure_dir(&cache_root)?;
 
@@ -198,6 +222,12 @@ impl<'a> PackageSet<'a> {
             }
 
             let cookie = cache.package.cookie().unwrap_or_default();
+            let ident = cache.package.ident();
+
+            // A failure on any file marks the whole package as failed so the
+            // rest of the transaction can still be committed (IgnoreFailure).
+            let mut pkg_error: Option<crate::Error> = None;
+            let emitter = self.session.emitter();
 
             for (filename, dlinfo) in cache.inner.iter() {
                 if self.reuse_cache
@@ -213,160 +243,193 @@ impl<'a> PackageSet<'a> {
                     && dlinfo.remote_size > 0
                     && chunk_count > 1;
 
-                if use_fragments {
-                    let path = cache_root.join(filename);
-                    let part_dir = cache_root.join(format!("{}.parts", filename));
-                    internal::fs::ensure_dir(&part_dir)?;
+                let result = (|| -> Fallible<()> {
+                    if use_fragments {
+                        let path = cache_root.join(filename);
+                        let part_dir = cache_root.join(format!("{}.parts", filename));
+                        internal::fs::ensure_dir(&part_dir)?;
 
-                    let chunk_size = dlinfo.remote_size / chunk_count;
-                    let mut part_paths: Vec<PathBuf> = Vec::new();
+                        let chunk_size = dlinfo.remote_size / chunk_count;
+                        let mut part_paths: Vec<PathBuf> = Vec::new();
 
-                    // Launch threads for parallel chunk downloads
-                    let url_str = dlinfo.url.to_owned();
-                    let cookie_clone = cookie.clone();
+                        // Launch threads for parallel chunk downloads
+                        let url_str = dlinfo.url.to_owned();
+                        let cookie_clone = cookie.clone();
 
-                    std::thread::scope(|scope| {
-                        for chunk_idx in 0..chunk_count {
-                            let start = chunk_idx * chunk_size;
-                            let end = if chunk_idx == chunk_count - 1 {
-                                dlinfo.remote_size - 1
+                        std::thread::scope(|scope| {
+                            for chunk_idx in 0..chunk_count {
+                                let start = chunk_idx * chunk_size;
+                                let end = if chunk_idx == chunk_count - 1 {
+                                    dlinfo.remote_size - 1
+                                } else {
+                                    (chunk_idx + 1) * chunk_size - 1
+                                };
+
+                                let part_path = part_dir.join(format!("part.{}", chunk_idx));
+                                part_paths.push(part_path.clone());
+
+                                // Don't remove — allow resume if part exists
+
+                                let part_path = part_path.clone();
+                                let url = url_str.clone();
+                                let ck = cookie_clone.clone();
+
+                                scope.spawn(move || {
+                                    if let Err(e) = download_range(
+                                        agent, &url, start, end, &part_path, &ck, proxy,
+                                    ) {
+                                        debug!("chunk download failed: {}", e);
+                                    }
+                                });
+                            }
+                        });
+
+                        // Check all parts downloaded OK (respect resume — allow complete parts)
+                        for (idx, part) in part_paths.iter().enumerate() {
+                            let expected = if idx as u64 == chunk_count - 1 {
+                                dlinfo.remote_size - (chunk_count - 1) * chunk_size
                             } else {
-                                (chunk_idx + 1) * chunk_size - 1
+                                chunk_size
                             };
-
-                            let part_path = part_dir.join(format!("part.{}", chunk_idx));
-                            part_paths.push(part_path.clone());
-
-                            // Don't remove — allow resume if part exists
-
-                            let part_path = part_path.clone();
-                            let url = url_str.clone();
-                            let ck = cookie_clone.clone();
-
-                            scope.spawn(move || {
-                                if let Err(e) =
-                                    download_range(agent, &url, start, end, &part_path, &ck, proxy)
-                                {
-                                    debug!("chunk download failed: {}", e);
-                                }
-                            });
+                            let actual = part.metadata().map(|m| m.len()).unwrap_or(0);
+                            if actual == 0 {
+                                return Err(crate::error::Error::Custom(format!(
+                                    "failed to download chunk: {}",
+                                    part.display()
+                                )));
+                            }
+                            if actual < expected {
+                                debug!(
+                                    "chunk {} is incomplete ({} < {}), will retry",
+                                    idx, actual, expected
+                                );
+                                return Err(crate::error::Error::Custom(format!(
+                                    "incomplete chunk {}: {} < {}",
+                                    idx, actual, expected
+                                )));
+                            }
                         }
-                    });
 
-                    // Check all parts downloaded OK (respect resume — allow complete parts)
-                    for (idx, part) in part_paths.iter().enumerate() {
-                        let expected = if idx as u64 == chunk_count - 1 {
-                            dlinfo.remote_size - (chunk_count - 1) * chunk_size
-                        } else {
-                            chunk_size
-                        };
-                        let actual = part.metadata().map(|m| m.len()).unwrap_or(0);
-                        if actual == 0 {
-                            return Err(crate::error::Error::Custom(format!(
-                                "failed to download chunk: {}",
-                                part.display()
-                            )));
+                        chunk_file_map.insert(path, (part_paths, ident.clone()));
+                    } else {
+                        // Single download
+                        let path = cache_root.join(filename);
+                        let tmp = cache_root.join(format!("{}.download", filename));
+                        let _ = std::fs::remove_file(&path);
+                        let _ = std::fs::remove_file(&tmp);
+
+                        let fname = filename.to_owned();
+                        let url_str = dlinfo.url.to_owned();
+                        let cookie_clone = cookie.clone();
+                        let dlinfo_total = dlinfo.remote_size;
+
+                        // Download via ureq
+                        let mut req = agent.get(&url_str);
+                        if !cookie_clone.is_empty() {
+                            let cookie_val = cookie_clone
+                                .iter()
+                                .map(|(k, v)| format!("{}={}", k, v))
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            req = req.header("Cookie", &cookie_val);
                         }
-                        if actual < expected {
-                            debug!(
-                                "chunk {} is incomplete ({} < {}), will retry",
-                                idx, actual, expected
-                            );
-                            return Err(crate::error::Error::Custom(format!(
-                                "incomplete chunk {}: {} < {}",
-                                idx, actual, expected
-                            )));
+
+                        let resp = req.call().map_err(|e| {
+                            crate::error::Error::Custom(format!("download failed: {}", e))
+                        })?;
+
+                        let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
+
+                        let mut reader = resp.into_body().into_reader();
+                        let mut buf = [0u8; 32768];
+                        let mut dlnow = 0u64;
+
+                        loop {
+                            let n = reader
+                                .read(&mut buf)
+                                .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
+                            if n == 0 {
+                                break;
+                            }
+                            file.write_all(&buf[..n])?;
+                            dlnow += n as u64;
+
+                            if let Some(tx) = &emitter {
+                                let ctx = PackageDownloadProgressContext {
+                                    ident: ident.clone(),
+                                    url: url_str.clone(),
+                                    filename: fname.clone(),
+                                    dltotal: dlinfo_total,
+                                    dlnow,
+                                };
+                                let _ = tx.send(Event::PackageDownloadProgress(ctx));
+                            }
                         }
+
+                        filepaths.push((tmp, path, ident.clone()));
                     }
+                    Ok(())
+                })();
 
-                    chunk_file_map.insert(path, part_paths);
+                if let Err(e) = result {
+                    pkg_error = Some(e);
+                    break;
+                }
+            }
+
+            if let Some(err) = pkg_error {
+                if self.ignore_failure {
+                    eprintln!("failed to download '{}': {}", ident, err);
+                    failed.push(ident);
                 } else {
-                    // Single download
-                    let path = cache_root.join(filename);
-                    let tmp = cache_root.join(format!("{}.download", filename));
-                    let _ = std::fs::remove_file(&path);
-                    let _ = std::fs::remove_file(&tmp);
-
-                    let emitter = self.session.emitter();
-                    let ident = cache.package.ident();
-                    let fname = filename.to_owned();
-                    let url_str = dlinfo.url.to_owned();
-                    let cookie_clone = cookie.clone();
-                    let dlinfo_total = dlinfo.remote_size;
-
-                    // Download via ureq
-                    let mut req = agent.get(&url_str);
-                    if !cookie_clone.is_empty() {
-                        let cookie_val = cookie_clone
-                            .iter()
-                            .map(|(k, v)| format!("{}={}", k, v))
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        req = req.header("Cookie", &cookie_val);
-                    }
-
-                    let resp = req.call().map_err(|e| {
-                        crate::error::Error::Custom(format!("download failed: {}", e))
-                    })?;
-
-                    let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
-
-                    let mut reader = resp.into_body().into_reader();
-                    let mut buf = [0u8; 32768];
-                    let mut dlnow = 0u64;
-
-                    loop {
-                        let n = reader
-                            .read(&mut buf)
-                            .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
-                        if n == 0 {
-                            break;
-                        }
-                        file.write_all(&buf[..n])?;
-                        dlnow += n as u64;
-
-                        if let Some(tx) = &emitter {
-                            let ctx = PackageDownloadProgressContext {
-                                ident: ident.clone(),
-                                url: url_str.clone(),
-                                filename: fname.clone(),
-                                dltotal: dlinfo_total,
-                                dlnow,
-                            };
-                            let _ = tx.send(Event::PackageDownloadProgress(ctx));
-                        }
-                    }
-
-                    filepaths.push((tmp, path));
+                    return Err(err);
                 }
             }
         }
 
         // Reassemble fragmented files
-        for (final_path, part_paths) in chunk_file_map.iter() {
-            let _ = std::fs::remove_file(final_path);
-            let mut dest = File::create(final_path)?;
-            for part in part_paths {
-                let mut src = File::open(part)?;
-                std::io::copy(&mut src, &mut dest)?;
-                drop(src);
-                let _ = std::fs::remove_file(part);
-            }
-            if let Some(parent) = final_path.parent() {
-                let part_dir = parent.join(format!(
-                    "{}.parts",
-                    final_path.file_name().unwrap().to_string_lossy()
-                ));
-                let _ = std::fs::remove_dir(&part_dir);
+        for (final_path, (part_paths, ident)) in chunk_file_map.iter() {
+            let reassembled = (|| -> Fallible<()> {
+                let _ = std::fs::remove_file(final_path);
+                let mut dest = File::create(final_path)?;
+                for part in part_paths {
+                    let mut src = File::open(part)?;
+                    std::io::copy(&mut src, &mut dest)?;
+                    drop(src);
+                    let _ = std::fs::remove_file(part);
+                }
+                if let Some(parent) = final_path.parent() {
+                    let part_dir = parent.join(format!(
+                        "{}.parts",
+                        final_path.file_name().unwrap().to_string_lossy()
+                    ));
+                    let _ = std::fs::remove_dir(&part_dir);
+                }
+                Ok(())
+            })();
+            if let Err(e) = reassembled {
+                if self.ignore_failure {
+                    eprintln!("failed to reassemble '{}': {}", ident, e);
+                    failed.push(ident.clone());
+                } else {
+                    return Err(e);
+                }
             }
         }
 
         // Rename simple downloads
-        for (tmp, path) in filepaths.iter() {
-            std::fs::rename(tmp, path)?;
+        for (tmp, path, ident) in filepaths.iter() {
+            if let Err(e) = std::fs::rename(tmp, path) {
+                if self.ignore_failure {
+                    eprintln!("failed to move download of '{}': {}", ident, e);
+                    failed.push(ident.clone());
+                } else {
+                    return Err(e.into());
+                }
+            }
         }
 
-        Ok(())
+        Ok(failed)
     }
 
     // ─── Calculate download size ──────────────────────────────────────────────

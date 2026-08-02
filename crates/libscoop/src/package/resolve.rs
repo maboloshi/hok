@@ -14,6 +14,8 @@
 //! - **Cycle detection**: The [`DepGraph`] detects cyclic dependencies
 //!   and returns a [`CyclicError`] if any are found.
 
+use std::collections::HashSet;
+
 use crate::{
     error::Fallible,
     event,
@@ -28,9 +30,18 @@ use crate::{
 ///
 /// This function ensures that packages are unique and sorted in dependency first
 /// order.
-pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package>) -> Fallible<()> {
+///
+/// When `ignore_failure` is enabled, a package whose dependencies cannot be
+/// resolved (missing dependency or undecidable multi-candidate) is dropped from
+/// the list and reported to stderr, so the remaining packages still proceed.
+pub(crate) fn resolve_dependencies(
+    session: &Session,
+    packages: &mut Vec<Package>,
+    ignore_failure: bool,
+) -> Fallible<()> {
     let mut graph = DepGraph::<String>::new();
     let mut to_resolve = packages.clone();
+    let mut skipped: HashSet<String> = HashSet::new();
 
     // Only query all packages when there are actual dependencies to resolve.
     // Most packages have no deps, so this avoids a costly full scan.
@@ -52,6 +63,10 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
         tmp.append(&mut to_resolve);
 
         for pkg in tmp.into_iter() {
+            if skipped.contains(pkg.ident().as_str()) {
+                continue;
+            }
+
             let mut resolved = vec![];
             let deps = pkg.dependencies();
 
@@ -59,6 +74,7 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
                 graph.register_node(pkg.name().to_owned());
             } else {
                 let queries = deps.iter().map(|d| d.as_str());
+                let mut failed = false;
 
                 for query in queries {
                     let mut matched = synced
@@ -75,7 +91,19 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
                         .collect::<Vec<_>>();
 
                     match matched.len() {
-                        0 => return Err(Error::PackageNotFound(query.to_owned())),
+                        0 => {
+                            if ignore_failure {
+                                eprintln!(
+                                    "failed to resolve dependency '{}' of '{}': {}",
+                                    query,
+                                    pkg.name(),
+                                    Error::PackageNotFound(query.to_owned())
+                                );
+                                failed = true;
+                                break;
+                            }
+                            return Err(Error::PackageNotFound(query.to_owned()));
+                        }
                         1 => {
                             let p = matched.pop().unwrap();
                             if !(resolved.contains(&p)
@@ -97,7 +125,22 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
                             if !installed_candidate.is_empty() {
                                 matched = installed_candidate;
                             } else {
-                                select_candidate(session, &mut matched)?;
+                                match select_candidate(session, &mut matched) {
+                                    Ok(()) => {}
+                                    Err(e) => {
+                                        if ignore_failure {
+                                            eprintln!(
+                                                "failed to resolve dependency '{}' of '{}': {}",
+                                                query,
+                                                pkg.name(),
+                                                e
+                                            );
+                                            failed = true;
+                                            break;
+                                        }
+                                        return Err(e);
+                                    }
+                                }
                             }
 
                             let p = matched.pop().unwrap();
@@ -109,6 +152,13 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
                             }
                         }
                     }
+                }
+
+                if failed {
+                    // Skip the package whose dependencies could not be
+                    // resolved so the remaining packages still proceed.
+                    skipped.insert(pkg.ident());
+                    continue;
                 }
 
                 let dep_nodes = resolved
@@ -123,8 +173,45 @@ pub(crate) fn resolve_dependencies(session: &Session, packages: &mut Vec<Package
             to_resolve.append(&mut resolved);
         }
 
+        to_resolve.retain(|p| !skipped.contains(p.ident().as_str()));
+        packages.retain(|p| !skipped.contains(p.ident().as_str()));
         packages.extend(to_resolve.clone());
     }
+
+    // Propagate skips transitively: a package whose dependency was skipped
+    // must not be committed either, or its install would be broken.
+    // `skipped` is keyed by full ident (`bucket/name`); a dependency declared
+    // as "bucket/name" only matches that exact ident, while a bare name
+    // matches any bucket of that name.
+    loop {
+        let before = skipped.len();
+        for p in packages.iter() {
+            let dep_failed = p.dependencies().iter().any(|d| {
+                match d.split_once('/') {
+                    // "bucket/name" — exact ident match. Prefixes containing
+                    // '.' or ':' are treated as URLs/other, not bucket names.
+                    Some((bucket, _)) if !bucket.contains('.') && !bucket.contains(':') => {
+                        skipped.contains(d.as_str())
+                    }
+                    // Bare name or URL-ish string — match the trailing name
+                    // against the name part of any skipped ident.
+                    _ => {
+                        let name = super::extract_name(d);
+                        skipped
+                            .iter()
+                            .any(|s| s.rsplit_once('/').map(|(_, n)| n == name).unwrap_or(false))
+                    }
+                }
+            });
+            if dep_failed {
+                skipped.insert(p.ident());
+            }
+        }
+        if skipped.len() == before {
+            break;
+        }
+    }
+    packages.retain(|p| !skipped.contains(p.ident().as_str()));
 
     // dependencies need to be installed before dependents
     packages.reverse();
@@ -346,7 +433,7 @@ mod tests {
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages).unwrap();
+        resolve_dependencies(&session, &mut packages, false).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -361,7 +448,7 @@ mod tests {
         let (session, _root) = setup("no_deps");
 
         let mut packages = vec![pkg("main", "solo", &[])];
-        resolve_dependencies(&session, &mut packages).unwrap();
+        resolve_dependencies(&session, &mut packages, false).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["solo"]);
@@ -373,9 +460,67 @@ mod tests {
         write_manifest(&root.0, "main", "a", &["ghost"]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"])];
-        let err = resolve_dependencies(&session, &mut packages).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false).unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
+    }
+
+    #[test]
+    fn resolve_missing_dependency_skipped_with_ignore() {
+        let (session, root) = setup("missing_dep_ignored");
+        write_manifest(&root.0, "main", "a", &["ghost"]);
+        write_manifest(&root.0, "main", "b", &[]);
+
+        let mut packages = vec![pkg("main", "a", &["ghost"]), pkg("main", "b", &[])];
+        resolve_dependencies(&session, &mut packages, true).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["b"],
+            "package with unresolvable dependency is dropped, others kept"
+        );
+    }
+
+    #[test]
+    fn resolve_transitive_dependents_skipped_with_ignore() {
+        let (session, root) = setup("missing_dep_transitive");
+        write_manifest(&root.0, "main", "a", &["main/b"]);
+        write_manifest(&root.0, "main", "b", &["ghost"]);
+
+        // a → b → ghost: b cannot be resolved, so a must be dropped too,
+        // otherwise a would be committed with a missing dependency.
+        let mut packages = vec![pkg("main", "a", &["main/b"])];
+        resolve_dependencies(&session, &mut packages, true).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert!(
+            names.is_empty(),
+            "dependents of a skipped dependency must be skipped too, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_qualified_dep_not_collapsed_with_ignore() {
+        let (session, root) = setup("bucket_qualified_ignore");
+        // main/b fails (bad dep); c depends on alt/b explicitly. Even though
+        // alt/b can't co-exist with main/b in the list (packages are deduped
+        // by bare name, not ident), c must NOT be dropped just because the
+        // same-named main/b failed — the skip must match the full ident.
+        write_manifest(&root.0, "main", "a", &["main/b"]);
+        write_manifest(&root.0, "main", "b", &["ghost"]);
+        write_manifest(&root.0, "alt", "b", &[]);
+        write_manifest(&root.0, "main", "c", &["alt/b"]);
+
+        let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "c", &["alt/b"])];
+        resolve_dependencies(&session, &mut packages, true).unwrap();
+
+        let idents = packages.iter().map(|p| p.ident()).collect::<Vec<_>>();
+        assert_eq!(
+            idents,
+            vec!["main/c"],
+            "a (dependent of failed main/b) is dropped; c (dependent of alt/b) survives"
+        );
     }
 
     #[test]
@@ -386,7 +531,7 @@ mod tests {
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages).unwrap();
+        resolve_dependencies(&session, &mut packages, false).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -403,7 +548,7 @@ mod tests {
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages).unwrap();
+        resolve_dependencies(&session, &mut packages, false).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["b", "a"], "no duplicates, deps first");
@@ -420,7 +565,7 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        resolve_dependencies(&session, &mut packages).unwrap();
+        resolve_dependencies(&session, &mut packages, false).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
@@ -436,9 +581,28 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        let err = resolve_dependencies(&session, &mut packages).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false).unwrap_err();
 
         assert!(matches!(err, Error::PackageMultipleCandidates(name) if name == "a"));
+    }
+
+    #[test]
+    fn resolve_multiple_candidates_skipped_with_ignore() {
+        let (session, root) = setup("multi_no_emitter_ignored");
+        write_manifest(&root.0, "main", "a", &[]);
+        write_manifest(&root.0, "alt", "a", &[]);
+        write_manifest(&root.0, "main", "b", &["a"]);
+        write_manifest(&root.0, "main", "c", &[]);
+
+        let mut packages = vec![pkg("main", "b", &["a"]), pkg("main", "c", &[])];
+        resolve_dependencies(&session, &mut packages, true).unwrap();
+
+        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["c"],
+            "package with undecidable dependency is dropped, others kept"
+        );
     }
 
     // ── resolve_cascade ───────────────────────────────────────────────────────

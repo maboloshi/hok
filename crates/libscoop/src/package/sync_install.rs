@@ -6,6 +6,7 @@
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
 use scoop_hash::ChecksumBuilder;
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use tracing::{debug, info};
@@ -216,6 +217,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
     let escape_hold = options.contains(&SyncOption::EscapeHold);
+    let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
 
     if only_upgrade {
         packages = query::query_installed(session, queries, &[QueryOption::Upgradable])?;
@@ -259,7 +261,17 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             );
 
             match matched.len() {
-                0 => return Err(Error::PackageNotFound(query.to_owned())),
+                0 => {
+                    if ignore_failure {
+                        eprintln!(
+                            "failed to resolve '{}': {}",
+                            query,
+                            Error::PackageNotFound(query.to_owned())
+                        );
+                        continue;
+                    }
+                    return Err(Error::PackageNotFound(query.to_owned()));
+                }
                 1 => {
                     let p = matched.pop().unwrap();
 
@@ -279,7 +291,13 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                         continue;
                     }
 
-                    resolve::select_candidate(session, &mut matched)?;
+                    if let Err(e) = resolve::select_candidate(session, &mut matched) {
+                        if ignore_failure {
+                            eprintln!("failed to resolve '{}': {}", query, e);
+                            continue;
+                        }
+                        return Err(e);
+                    }
                     let p = matched.pop().unwrap();
                     if !packages.contains(&p) {
                         packages.push(p);
@@ -297,7 +315,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let no_dependencies = options.contains(&SyncOption::NoDependencies);
     if !no_dependencies {
-        resolve::resolve_dependencies(session, &mut packages)?;
+        resolve::resolve_dependencies(session, &mut packages, ignore_failure)?;
     }
 
     let (installed, installable): (Vec<_>, Vec<_>) =
@@ -353,6 +371,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     }
 
     let mut set = download::PackageSet::new(session, &packages, reuse_cache)?;
+    set.set_ignore_failure(ignore_failure);
 
     let assume_yes = options.contains(&SyncOption::AssumeYes);
     let offline = options.contains(&SyncOption::Offline);
@@ -372,17 +391,31 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         return Ok(());
     }
 
+    // Idents of packages that failed to download / verify and must be skipped.
+    // Only populated when IgnoreFailure is enabled.
+    let mut failed: HashSet<String> = HashSet::new();
+
     if !should_offline {
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageDownloadStart);
         }
 
-        set.download()?;
+        failed = set.download()?.into_iter().collect();
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageDownloadDone);
         }
     }
+
+    // Drop packages that failed to download (IgnoreFailure mode).
+    let packages = if failed.is_empty() {
+        packages
+    } else {
+        packages
+            .into_iter()
+            .filter(|p| !failed.contains(&p.ident()))
+            .collect::<Vec<_>>()
+    };
 
     let no_hash_check = options.contains(&SyncOption::NoHashCheck);
     if !no_hash_check {
@@ -405,33 +438,49 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let hashes = pkg.download_hashes();
             let files_cnt = files.len();
 
-            for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
-                let path = cache_root.join(filename);
+            let result = (|| -> Fallible<()> {
+                for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
+                    let path = cache_root.join(filename);
 
-                let mut hasher = ChecksumBuilder::new().algo(hash.algorithm())?.build();
+                    let mut hasher = ChecksumBuilder::new().algo(hash.algorithm())?.build();
 
-                if let Some(tx) = session.emitter() {
-                    let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
-                    let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
-                }
-
-                let mut file = std::fs::File::open(path)?;
-                loop {
-                    let len = file.read(&mut buf)?;
-                    if len == 0 {
-                        break;
+                    if let Some(tx) = session.emitter() {
+                        let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
+                        let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
                     }
-                    hasher.consume(&buf[..len]);
-                }
 
-                let actual = hasher.finalize();
-                let expected = hash.value();
-                if actual != expected {
-                    let name = pkg.name().to_owned();
-                    let url = pkg.download_urls()[idx].to_owned();
-                    let ctx =
-                        crate::package::HashMismatchContext::new(name, url, expected.to_owned(), actual);
-                    return Err(Error::HashMismatch(ctx));
+                    let mut file = std::fs::File::open(path)?;
+                    loop {
+                        let len = file.read(&mut buf)?;
+                        if len == 0 {
+                            break;
+                        }
+                        hasher.consume(&buf[..len]);
+                    }
+
+                    let actual = hasher.finalize();
+                    let expected = hash.value();
+                    if actual != expected {
+                        let name = pkg.name().to_owned();
+                        let url = pkg.download_urls()[idx].to_owned();
+                        let ctx = crate::package::HashMismatchContext::new(
+                            name,
+                            url,
+                            expected.to_owned(),
+                            actual,
+                        );
+                        return Err(Error::HashMismatch(ctx));
+                    }
+                }
+                Ok(())
+            })();
+
+            if let Err(e) = result {
+                if ignore_failure {
+                    failed.insert(pkg.ident());
+                    eprintln!("failed to verify '{}': {}", pkg.name(), e);
+                } else {
+                    return Err(e);
                 }
             }
         }
@@ -441,9 +490,18 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         }
     }
 
+    // Drop packages that failed to download or verify (IgnoreFailure mode).
+    let packages = if failed.is_empty() {
+        packages
+    } else {
+        packages
+            .into_iter()
+            .filter(|p| !failed.contains(&p.ident()))
+            .collect::<Vec<_>>()
+    };
+
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
         commit_install(session, &packages, ignore_failure)?;
     }
 
