@@ -28,9 +28,6 @@ pub struct Args {
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     global: bool,
-    /// Hide extraneous messages
-    #[arg(short = 'q', long, action = clap::ArgAction::SetTrue)]
-    quiet: bool,
     /// Update all installed packages (alternative to '*')
     #[arg(short = 'a', long, action = clap::ArgAction::SetTrue)]
     all: bool,
@@ -48,7 +45,6 @@ impl Cmd for Args {
             escape_hold: args.escape_hold,
             no_hash_check: args.no_hash_check,
             global: args.global,
-            quiet: args.quiet,
             all: args.all,
             force: false,
             independent: false,

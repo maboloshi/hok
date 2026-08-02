@@ -60,10 +60,6 @@ pub struct Args {
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     pub global: bool,
 
-    /// Hide extraneous messages
-    #[arg(short = 'q', long, action = ArgAction::SetTrue)]
-    pub quiet: bool,
-
     /// Update all installed packages (alternative to '*')
     #[arg(short = 'a', long, action = ArgAction::SetTrue)]
     pub all: bool,
