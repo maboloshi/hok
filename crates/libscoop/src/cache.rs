@@ -104,20 +104,47 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
 
 /// Remove cache files by query.
 ///
+/// Files that are already gone are silently skipped. Files that fail to
+/// remove (e.g. locked by a running process on Windows) are reported to
+/// stderr and skipped, so a single locked file never aborts the batch.
+///
 /// # Errors
 ///
-/// I/O errors will be returned if the cache directory is not readable or failed
-/// to remove the cache files.
+/// I/O errors will be returned if the cache directory is not readable.
 pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
     match query {
         "*" => {
             let config = session.config();
-            Ok(crate::internal::fs::empty_dir(config.cache_path())?)
+            let cache_dir = config.cache_path();
+            if !cache_dir.exists() {
+                return Ok(());
+            }
+            for entry in cache_dir.read_dir()? {
+                let entry = entry?;
+                let path = entry.path();
+                let result = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if let Err(e) = result {
+                    // Already gone — treat as success (Scoop's
+                    // Remove-Item -Force semantics).
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!("failed to remove cache '{}': {}", path.display(), e);
+                    }
+                }
+            }
+            Ok(())
         }
         query => {
             let files = list(session, query)?;
             for f in files.into_iter() {
-                std::fs::remove_file(f.path())?;
+                if let Err(e) = std::fs::remove_file(f.path()) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!("failed to remove cache '{}': {}", f.path().display(), e);
+                    }
+                }
             }
             Ok(())
         }

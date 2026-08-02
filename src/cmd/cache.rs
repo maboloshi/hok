@@ -36,11 +36,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             let query = query.unwrap_or("*".to_string());
             let files = cache::list(session, query.as_str())?;
             let mut total_size: u64 = 0;
-            let total_count = files.len();
+            let mut total_count = 0u32;
 
             for f in files.into_iter() {
-                let size = f.path().metadata()?.len();
+                // Skip entries deleted concurrently (NotFound) instead of
+                // aborting the whole listing; other errors still surface.
+                let metadata = match f.path().metadata() {
+                    Ok(m) => m,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
+                };
+                let size = metadata.len();
                 total_size += size;
+                total_count += 1;
 
                 println!(
                     "{:>8} {} ({}) {:>}",
