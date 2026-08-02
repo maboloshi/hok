@@ -33,8 +33,10 @@ pub fn extract_archives(
         .filter_map(|(idx, f)| {
             let url = &urls[idx];
 
-            // Extract the target filename directly from the URL
-            let target_name = url.rsplit('/').next().unwrap_or(f);
+            // Extract the target filename directly from the URL (query
+            // parameters stripped; the `#/rename.ext` Scoop fragment kept).
+            let stripped = internal::url::strip_url_query(url);
+            let target_name = stripped.rsplit('/').next().unwrap_or(f);
 
             let ext = Path::new(target_name)
                 .extension()
@@ -46,6 +48,7 @@ pub fn extract_archives(
                     | "nupkg"
                     | "rar"
                     | "lzh"
+                    | "iso"
                     | "gz"
                     | "bz2"
                     | "xz"
@@ -132,7 +135,8 @@ pub fn copy_downloaded_files(
         }
 
         let url = &urls[idx];
-        let target_name = url.rsplit('/').next().unwrap_or(filename);
+        let stripped = internal::url::strip_url_query(url);
+        let target_name = stripped.rsplit('/').next().unwrap_or(filename);
 
         let dst = working_dir.join(target_name);
         let _ = std::fs::remove_file(&dst);
@@ -316,29 +320,21 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_archives_iso_not_detected() {
-        // Known inconsistency with `internal::archive::detect_format`, which
-        // supports `.iso` (extracted via 7z), while the archive detection in
-        // `extract_archives` does not list it. Lock the current behaviour: the
-        // file is treated as a plain downloaded file. If the inconsistency is
-        // ever fixed, this test must be updated.
+    fn test_extract_archives_iso_detected_as_archive() {
+        // `.iso` must be recognised as an archive (aligned with
+        // `internal::archive::detect_format`, which extracts via 7z). The
+        // actual extraction is not exercised here: it requires the external
+        // `7z` executable, so the cache file is deliberately not staged —
+        // `extract_archives` skips missing files but still reports the index.
         let root = tmpdir("extract_archives_iso");
         let session = session_with_cache(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/disk.iso"));
-
-        stage_cache_file(&session, &pkg, 0, b"iso bytes");
 
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
         let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
-        assert!(archives.is_empty());
-
-        copy_downloaded_files(&session, &pkg, &working_dir, &archives).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(working_dir.join("disk.iso")).unwrap(),
-            "iso bytes"
-        );
+        assert_eq!(archives, vec![0]);
     }
 
     #[test]
@@ -363,10 +359,11 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_archives_url_with_query_not_detected() {
-        // `url.rsplit('/').next()` keeps the query string, so the extension
-        // becomes `zip?download=1` and the URL is not recognised as an
-        // archive. Lock the current behaviour.
+    fn test_extract_archives_url_with_query_detected() {
+        // Query parameters must be stripped before extension detection, so
+        // `pkg.zip?download=1` is still recognised as a zip archive. The
+        // cache filename derived from the URL must also stay `?`-free (the
+        // old behaviour produced one with `?` in it, illegal on Windows).
         let root = tmpdir("extract_archives_query");
         let session = session_with_cache(&root);
         let pkg = Package::from(
@@ -375,11 +372,16 @@ mod tests {
             manifest("https://example.com/pkg.zip?download=1"),
         );
 
+        let staged = stage_cache_file(&session, &pkg, 0, &[]);
+        create_zip(&staged);
+        assert!(!staged.to_string_lossy().contains('?'));
+
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
         let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
-        assert!(archives.is_empty());
+        assert_eq!(archives, vec![0]);
+        assert!(working_dir.join("app/hello.txt").exists());
     }
 
     #[test]
@@ -515,6 +517,31 @@ mod tests {
         // No file staged in the cache: silently skipped, no error.
         copy_downloaded_files(&session, &pkg, &working_dir, &[]).unwrap();
         assert!(!working_dir.join("missing.exe").exists());
+    }
+
+    #[test]
+    fn test_copy_downloaded_files_strips_query_from_target() {
+        let root = tmpdir("copy_strips_query");
+        let session = session_with_cache(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest("https://example.com/file.exe?download=1"),
+        );
+
+        stage_cache_file(&session, &pkg, 0, b"exe content");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        copy_downloaded_files(&session, &pkg, &working_dir, &[]).unwrap();
+        // The query string must not leak into the destination filename.
+        assert!(working_dir.join("file.exe").exists());
+        assert!(!working_dir.join("file.exe?download=1").exists());
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("file.exe")).unwrap(),
+            "exe content"
+        );
     }
 
     // ─── extract_markers ────────────────────────────────────────────

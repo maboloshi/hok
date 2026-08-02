@@ -83,6 +83,25 @@ pub fn strip_url_fragment(raw: &str) -> &str {
     raw.split('#').next().unwrap_or(raw)
 }
 
+/// Strip the query part (`?...`) from a raw URL string.
+///
+/// Download URLs often carry query parameters (e.g. `?download=1`); the query
+/// must not leak into derived filenames or extension-based archive detection.
+/// The Scoop rename fragment (`#/...`) is deliberately kept — it may follow
+/// the query (URL grammar puts `#` after `?`), and the target
+/// filename/extension lives there.
+pub fn strip_url_query(raw: &str) -> String {
+    let (body, fragment) = match raw.split_once('#') {
+        Some((body, fragment)) => (body, Some(fragment)),
+        None => (raw, None),
+    };
+    let body = body.split('?').next().unwrap_or(body);
+    match fragment {
+        Some(fragment) => format!("{}#{}", body, fragment),
+        None => body.to_string(),
+    }
+}
+
 /// Determine whether `name` passes `app_filters`.
 ///
 /// Returns `true` when the first filter is `"*"` (wildcard) or when any
@@ -169,6 +188,38 @@ mod tests {
     #[test]
     fn strip_fragment_only_hash() {
         assert_eq!(strip_url_fragment("#anchor"), "");
+    }
+
+    // ── strip_url_query ────────────────────────────────────────────────────
+
+    #[test]
+    fn strip_query_removes_parameters() {
+        assert_eq!(
+            strip_url_query("https://example.com/pkg.zip?download=1"),
+            "https://example.com/pkg.zip"
+        );
+    }
+
+    #[test]
+    fn strip_query_no_query_returns_original() {
+        assert_eq!(
+            strip_url_query("https://example.com/foo.zip"),
+            "https://example.com/foo.zip"
+        );
+    }
+
+    #[test]
+    fn strip_query_keeps_rename_fragment() {
+        // The Scoop `#/dl.7z` rename hint must survive query stripping.
+        assert_eq!(
+            strip_url_query("https://example.com/dl?token=abc#/dl.7z"),
+            "https://example.com/dl#/dl.7z"
+        );
+    }
+
+    #[test]
+    fn strip_query_empty_string() {
+        assert_eq!(strip_url_query(""), "");
     }
 
     // ── app_filter_matches ──────────────────────────────────────────────────

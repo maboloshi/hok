@@ -259,7 +259,11 @@ impl Package {
                 hasher.consume(u.as_bytes());
                 let mut hash = hasher.finalize();
                 hash.truncate(7);
-                let path = PathBuf::from(u);
+                // Strip the query so `?download=1`-style URLs do not produce
+                // cache filenames containing `?` (illegal on Windows). The
+                // `#/rename.ext` Scoop fragment is kept — its extension is
+                // what matters for archive detection.
+                let path = PathBuf::from(internal::url::strip_url_query(u));
                 let mut ext = path
                     .extension()
                     .unwrap_or_default()
