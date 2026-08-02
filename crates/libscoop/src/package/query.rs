@@ -94,6 +94,24 @@ fn has_extra_query(options: &[QueryOption]) -> bool {
     options.contains(&QueryOption::Binary) || options.contains(&QueryOption::Description)
 }
 
+/// Split a bucket-qualified query ("bucket/name" or "bucket\name") into the
+/// bucket prefix and the package name.
+///
+/// A backslash is only treated as a separator when it is not the leading
+/// character, so regex escapes like `\d` keep their meaning in non-explicit
+/// mode.
+pub(crate) fn split_bucket_query(query: &str) -> (Option<String>, &str) {
+    if let Some((bucket, name)) = query.split_once('/') {
+        return (Some(bucket.to_owned()), name);
+    }
+    if let Some(pos) = query.find('\\') {
+        if pos > 0 {
+            return (Some(query[..pos].to_owned()), &query[pos + 1..]);
+        }
+    }
+    (None, query)
+}
+
 fn build_matchers<'a>(
     queries: &[&'a str],
     is_wildcard_query: bool,
@@ -105,10 +123,7 @@ fn build_matchers<'a>(
 
     let mut matchers: QueryMatchers<'a> = vec![];
     for query in queries {
-        let (bucket_prefix, name) = query
-            .split_once('/')
-            .map(|(b, n)| (Some(b.to_owned()), n))
-            .unwrap_or((None, *query));
+        let (bucket_prefix, name) = split_bucket_query(query);
 
         if is_explicit_mode {
             matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
@@ -520,6 +535,37 @@ mod tests {
         assert_eq!(matchers.len(), 1);
         let (prefix, _) = &matchers[0];
         assert_eq!(prefix.as_deref(), Some("extras"));
+    }
+
+    #[test]
+    fn backslash_bucket_prefixed_query_is_parsed() {
+        let matchers = build_matchers(&["extras\\curl"], false, true).unwrap();
+        assert_eq!(matchers.len(), 1);
+        let (prefix, _) = &matchers[0];
+        assert_eq!(prefix.as_deref(), Some("extras"));
+    }
+
+    #[test]
+    fn leading_backslash_is_not_a_separator() {
+        // A regex escape like `\d` must not be split into a bucket prefix.
+        let matchers = build_matchers(&["\\d"], false, false).unwrap();
+        assert_eq!(matchers.len(), 1);
+        let (prefix, _) = &matchers[0];
+        assert!(prefix.is_none(), "leading backslash must not split bucket");
+    }
+
+    #[test]
+    fn split_bucket_query_handles_both_separators() {
+        assert_eq!(
+            split_bucket_query("extras/curl"),
+            (Some("extras".to_owned()), "curl")
+        );
+        assert_eq!(
+            split_bucket_query("extras\\curl"),
+            (Some("extras".to_owned()), "curl")
+        );
+        assert_eq!(split_bucket_query("curl"), (None, "curl"));
+        assert_eq!(split_bucket_query("\\d"), (None, "\\d"));
     }
 
     // ── name_prefiltered_out ─────────────────────────────────────────────────

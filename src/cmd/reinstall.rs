@@ -62,22 +62,28 @@ impl Cmd for Args {
         // Resolve queries to exact bucket-qualified names.
         // Only installed packages (with install.json + manifest.json) are accepted.
         for q in &args.package {
-            if let Ok(pkgs) = package::query::query(
+            match package::query::query(
                 session,
                 vec![q.as_str()],
                 vec![libscoop::QueryOption::Explicit],
                 true,
             ) {
-                for pkg in &pkgs {
-                    if pkg.is_held() {
-                        hold_set.insert(pkg.name().to_string());
+                Ok(pkgs) if !pkgs.is_empty() => {
+                    for pkg in &pkgs {
+                        if pkg.is_held() {
+                            hold_set.insert(pkg.name().to_string());
+                        }
+                        exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
                     }
-                    exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
                 }
-            } else {
-                return Err(anyhow::anyhow!(
-                    rust_i18n::t!("cmd.reinstall_not_installed", name = q)
-                ));
+                // Empty resolution must not silently succeed: sync() would
+                // otherwise run both phases with zero queries and merely
+                // report "all apps are up to date".
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        rust_i18n::t!("cmd.reinstall_not_installed", name = q)
+                    ));
+                }
             }
         }
 

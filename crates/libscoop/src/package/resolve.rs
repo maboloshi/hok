@@ -80,10 +80,10 @@ pub(crate) fn resolve_dependencies(
                     let mut matched = synced
                         .iter()
                         .filter(|p| {
-                            let (query_bucket, query_name) =
-                                query.split_once('/').unwrap_or(("", query));
-                            let bucket_matched =
-                                query_bucket.is_empty() || p.bucket() == query_bucket;
+                            let (query_bucket, query_name) = query::split_bucket_query(query);
+                            let bucket_matched = query_bucket
+                                .as_deref()
+                                .map_or(true, |b| p.bucket() == b);
                             let name_matched = p.name() == query_name;
                             bucket_matched && name_matched
                         })

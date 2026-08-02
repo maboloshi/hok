@@ -220,6 +220,32 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
 
     if only_upgrade {
+        // Named packages must already be installed. The Upgradable filter
+        // below would otherwise silently treat a nonexistent package (or a
+        // mistyped bucket/name separator) as "nothing to do" and report
+        // "all apps are up to date".
+        //
+        // Use the same (regex substring) matching as the Upgradable query
+        // below — not Explicit — so queries like `update gcc` that match an
+        // installed `gcc-libs` keep working.
+        for &q in queries {
+            if q == "*" {
+                continue;
+            }
+            let matched = query::query_installed(session, &[q], &[])?;
+            if matched.is_empty() {
+                if ignore_failure {
+                    eprintln!(
+                        "failed to resolve '{}': {}",
+                        q,
+                        Error::PackageNotFound(q.to_owned())
+                    );
+                    continue;
+                }
+                return Err(Error::PackageNotFound(q.to_owned()));
+            }
+        }
+
         packages = query::query_installed(session, queries, &[QueryOption::Upgradable])?;
 
         // Replace the packages with their upgradable references.
@@ -244,8 +270,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let mut matched = synced
                 .iter()
                 .filter(|&p| {
-                    let (query_bucket, query_name) = query.split_once('/').unwrap_or(("", query));
-                    let bucket_matched = query_bucket.is_empty() || p.bucket() == query_bucket;
+                    let (query_bucket, query_name) = query::split_bucket_query(query);
+                    let bucket_matched = query_bucket
+                        .as_deref()
+                        .map_or(true, |b| p.bucket() == b);
                     let name_matched = p.name() == query_name;
                     bucket_matched && name_matched
                 })
@@ -950,5 +978,58 @@ mod tests {
         let expanded = expand_installer_vars(&args, &session, &pkg, &working_dir, "install");
         assert_eq!(expanded[0], "directory");
         assert_eq!(expanded[1], "scoopdirectory");
+    }
+
+    // ── only_upgrade existence check ─────────────────────────────────────────
+
+    const TEST_MANIFEST: &str =
+        r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#;
+
+    /// A named package that is not installed must fail fast instead of
+    /// silently reporting "all apps are up to date".
+    #[test]
+    fn only_upgrade_missing_package_errors() {
+        let root = crate::test_utils::tmpdir("only_upgrade_missing");
+        let session = crate::test_utils::test_session(&root);
+
+        let err = install(&session, &["ghost"], &[SyncOption::OnlyUpgrade]).unwrap_err();
+        assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An installed package without a newer version must NOT be reported as
+    /// missing — the Upgradable filter below silently skips it.
+    #[test]
+    fn only_upgrade_installed_without_upgrade_is_ok() {
+        let root = crate::test_utils::tmpdir("only_upgrade_no_new");
+        let session = crate::test_utils::test_session(&root);
+
+        crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
+
+        // No bucket manifest → nothing upgradable → Ok, no error raised.
+        install(&session, &["curl"], &[SyncOption::OnlyUpgrade]).unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With IgnoreFailure, a missing package is skipped (reported to stderr)
+    /// instead of aborting the whole upgrade.
+    #[test]
+    fn only_upgrade_ignore_failure_skips_missing() {
+        let root = crate::test_utils::tmpdir("only_upgrade_ignore");
+        let session = crate::test_utils::test_session(&root);
+
+        crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
+
+        // "ghost" is missing but IgnoreFailure lets the rest proceed.
+        install(
+            &session,
+            &["ghost", "curl"],
+            &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailure],
+        )
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
