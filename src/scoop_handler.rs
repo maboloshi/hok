@@ -89,6 +89,11 @@ impl EventHandler for ScoopHandler {
                 output::detail(rust_i18n::t!("detail.shim_done"));
             }
 
+            // --- Shim warnings ---
+            Event::PackageShimConflict(path) => {
+                output::warn(rust_i18n::t!("detail.shim_conflict", path = path));
+            }
+
             // --- Shortcut operations ---
             Event::PackageShortcutRemoveStart => {}
             Event::PackageShortcutRemoveProgress(ctx) => {

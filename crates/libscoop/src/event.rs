@@ -147,6 +147,10 @@ pub enum Event {
     /// Package shim creation has finished.
     PackageShimAddDone,
 
+    /// Package shim already exists and belongs to another package; it will
+    /// be overwritten.
+    PackageShimConflict(String),
+
     /// Package shortcut creation has started.
     PackageShortcutAddStart,
 

@@ -13,9 +13,10 @@
 //! - **Shim info file (`.shim`)**: Alongside each shim, a metadata file is
 //!   written containing the target path, arguments, and shim type. This is
 //!   read by `hok-shim-ref` at runtime.
-//! - **Conflict resolution**: When two packages provide the same shim name,
-//!   the second one gets an alternative filename via [`alt_filename()`]
-//!   (e.g. `foo.ps1.scoop` for a PowerShell script from the "scoop" package).
+//! - **Conflict resolution**: Mirrors upstream Scoop's `warn_on_overwrite`:
+//!   an existing shim is preserved by renaming it to `{name}.{ext}.{owner}`
+//!   (e.g. `foo.ps1.scoop`) and a warning is emitted only when it belongs to
+//!   a *different* package; same-package updates overwrite silently.
 //! - **Known gaps vs Scoop**: JAR shims are simpler (no `pushd`/`popd`);
 //!   GUI `.exe` detection (PE subsystem) is not implemented.
 
@@ -37,6 +38,109 @@ fn alt_filename(path: &Path, pkg: &str) -> PathBuf {
         Some(ext) if !ext.is_empty() => path.with_file_name(format!("{}.{}.{}", stem, ext, pkg)),
         _ => path.with_file_name(format!("{}.{}", stem, pkg)),
     }
+}
+
+/// Determine the package an existing shim file belongs to by parsing the
+/// target path it points at (upstream Scoop's `get_app_name_from_shim`).
+///
+/// Both shim styles are recognized:
+/// - hok metadata / relative: `path = "~\\..\\apps\\<pkg>\\current\\..."` (.shim)
+/// - upstream absolute: `path = "C:\\...\\apps\\<pkg>\\current\\..."` (.shim)
+///   and `@rem C:\\...\\apps\\<pkg>\\...` comment lines (.cmd/.ps1 shims)
+///
+/// Returns `None` when the owner cannot be determined (unreadable file, or no
+/// `apps\\<pkg>\\` segment) — upstream returns an empty string in that case
+/// and the caller falls back to warn + overwrite.
+fn shim_owner_package(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    owner_from_content(&content)
+}
+
+fn owner_from_content(content: &str) -> Option<String> {
+    // Tokenize like the shortcut ownership probe: split on path separators,
+    // keep "word" segments, then look for `apps -> <pkg> -> version-dir`.
+    // The version-dir anchor (`current` or containing a digit) rejects
+    // lookalikes such as a scoop root nested under an `apps` dir
+    // (`D:\apps\scoop\apps\git\current\...` -> `git`, not `scoop`).
+    let lower = content.to_ascii_lowercase();
+    let mut words: Vec<String> = Vec::new();
+    for seg in lower.split(['\\', '/', '\0']) {
+        if seg.is_empty() {
+            continue;
+        }
+        if seg.len() >= 2
+            && seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            words.push(seg.to_owned());
+        }
+    }
+    for w in words.windows(3) {
+        if w[0] == "apps" && is_version_dir(&w[2]) {
+            return Some(w[1].clone());
+        }
+    }
+    None
+}
+
+/// A directory that looks like a package version dir: `current`, or
+/// containing a digit (e.g. `2.44.0`, `nightly-20240801`).
+fn is_version_dir(s: &str) -> bool {
+    s == "current" || s.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Warn about and back up an existing shim file before overwriting it,
+/// mirroring upstream Scoop's `warn_on_overwrite`:
+///
+/// - no existing file: nothing to do
+/// - same package (e.g. a reinstall/update): silent overwrite
+/// - another package: warn, then preserve the existing shim by renaming it to
+///   `{name}.{ext}.{owner}` (suffix = the *old* owner, matching upstream's
+///   `$shim.$shim_app`); a stale backup under the *new* package name is
+///   removed first, as upstream does
+/// - unparseable owner: warn + overwrite without a rename — upstream's empty
+///   `$shim_app` also fails to produce a valid rename (a trailing-dot name)
+///   and silently proceeds to overwrite
+fn handle_existing_shim(session: &Session, path: &Path, pkg_name: &str) -> Fallible<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let owner = shim_owner_package(path);
+    let belongs_to_self = owner
+        .as_deref()
+        .is_some_and(|o| o.eq_ignore_ascii_case(pkg_name));
+    if belongs_to_self {
+        return Ok(());
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageShimConflict(path.to_string_lossy().into_owned()));
+    }
+
+    if let Some(owner) = owner {
+        // upstream: `Remove-Item "$shim.$path_app"` first, then
+        // `Rename-Item $shim "$shim.$shim_app"`
+        let stale = alt_filename(path, pkg_name);
+        let _ = std::fs::remove_file(&stale);
+        let backup = alt_filename(path, &owner);
+        if backup.exists() {
+            let _ = std::fs::remove_file(&backup);
+        }
+        // best-effort backup (upstream: -ErrorAction SilentlyContinue); on
+        // failure the new shim simply overwrites the old one
+        let _ = std::fs::rename(path, &backup);
+    }
+    Ok(())
+}
+
+/// Whether `name` is one of the main shim variants of `fname` (e.g. `foo.shim`
+/// for `foo`), which are handled by their own loop iterations in `remove()`
+/// rather than being backups — mirrors upstream `rm_shim`'s
+/// `-Exclude '*.shim', '*.cmd', '*.ps1'`.
+fn is_main_shim_variant(fname: &str, name: &str) -> bool {
+    [".shim", ".cmd", ".ps1"].iter().any(|e| name == format!("{fname}{e}"))
 }
 
 #[derive(Debug)]
@@ -150,18 +254,11 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
                 let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
 
-                // Handle conflicts: if .exe or .shim already exist (from another package),
-                // rename them to alt names before writing ours
-                if shim_exe.exists() {
-                    let alt_exe =
-                        shim_exe.with_file_name(format!("{}.{}.exe", shim.name, pkg_name));
-                    std::fs::rename(&shim_exe, &alt_exe)?;
-                }
-                if shim_meta.exists() {
-                    let alt_meta =
-                        shim_meta.with_file_name(format!("{}.{}.shim", shim.name, pkg_name));
-                    std::fs::rename(&shim_meta, &alt_meta)?;
-                }
+                // Upstream Scoop overwrites the .exe stub unconditionally
+                // (Copy-Item -Force — it is a generic binary with no owner);
+                // only the .shim metadata file carries ownership and gets the
+                // `warn_on_overwrite` treatment.
+                handle_existing_shim(session, &shim_meta, pkg_name)?;
 
                 // Write the embedded shim
                 std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
@@ -189,18 +286,21 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
                 for (path, content) in batches {
                     let full_path = shims_dir.join(&path);
-                    // Check if the shim already exists (from another package)
-                    let dest = if full_path.exists() {
-                        // Add package name suffix to avoid conflict
-                        alt_filename(&full_path, pkg_name)
-                    } else {
-                        full_path
-                    };
+                    // Only the ownership-carrier file gets the
+                    // `warn_on_overwrite` treatment (upstream checks the
+                    // `.ps1` shim itself, not the `.cmd` wrapper, which is
+                    // overwritten unconditionally); same-package updates of
+                    // the carrier are overwritten silently.
+                    let is_carrier = shim.ty != ShimType::PowerShell
+                        || path.extension().and_then(|e| e.to_str()) != Some("cmd");
+                    if is_carrier {
+                        handle_existing_shim(session, &full_path, pkg_name)?;
+                    }
 
-                    std::fs::write(&dest, content.as_bytes())?;
+                    std::fs::write(&full_path, content.as_bytes())?;
 
                     if let Some(tx) = session.emitter() {
-                        let name = dest.file_name().unwrap().to_string_lossy().to_string();
+                        let name = full_path.file_name().unwrap().to_string_lossy().to_string();
                         let _ = tx.send(Event::PackageShimAddProgress(name));
                     }
                 }
@@ -309,7 +409,10 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 
         for shim in bins.into_iter().map(Shim::new) {
             let exts = match shim.ty {
-                ShimType::Exe => vec!["exe", "shim"],
+                // Upstream rm_shim never removes the .exe stub directly: the
+                // .shim metadata is the ownership carrier, and the stub is
+                // removed only when the .shim had no backup to restore.
+                ShimType::Exe => vec!["shim"],
                 ShimType::PowerShell => vec!["cmd", "ps1", ""],
                 _ => vec!["cmd", ""],
             };
@@ -348,7 +451,14 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                             let path = entry.path();
                             let name = path.file_name().unwrap().to_str().unwrap();
 
-                            if name.starts_with(fname) && name != fname {
+                            // matches `{fname}.{owner}` backups, excluding the
+                            // main shim variants (`.shim`/`.cmd`/`.ps1` are
+                            // handled by their own loop iterations — upstream
+                            // `rm_shim` excludes them with `-Exclude`)
+                            if name.starts_with(fname)
+                                && name != fname
+                                && !is_main_shim_variant(fname, name)
+                            {
                                 Some(entry)
                             } else {
                                 None
@@ -357,6 +467,22 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                         .collect::<Vec<_>>();
 
                     if alt_shims.is_empty() {
+                        // upstream: when the removed `.shim` had no backup to
+                        // restore, its `.exe` stub is orphaned — remove it too
+                        if ext == "shim" {
+                            let exe_path = shims_dir.join(format!("{}.exe", shim.name));
+                            if exe_path.exists() {
+                                if let Some(tx) = session.emitter() {
+                                    let name = exe_path
+                                        .file_name()
+                                        .unwrap()
+                                        .to_string_lossy()
+                                        .to_string();
+                                    let _ = tx.send(Event::PackageShimRemoveProgress(name));
+                                }
+                                std::fs::remove_file(&exe_path)?;
+                            }
+                        }
                         continue;
                     }
 
@@ -382,4 +508,222 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Event;
+    use crate::package::manifest::Manifest;
+    use crate::package::{InstallState, InstallStateInstalled, Package};
+    use crate::test_utils;
+
+    /// Build a package whose manifest declares a single `bin` entry.
+    fn make_package(name: &str, bin: &str) -> Package {
+        let json = format!(
+            r#"{{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT", "bin": {}}}"#,
+            bin
+        );
+        Package::from(name, "test", Manifest::from_json(name, &json).unwrap())
+    }
+
+    fn mark_installed(pkg: &Package) {
+        pkg.fill_install_state(InstallState::Installed(InstallStateInstalled {
+            version: "1.0.0".into(),
+            bucket: Some("test".into()),
+            arch: "64bit".into(),
+            held: false,
+            url: None,
+        }));
+    }
+
+    fn conflict_count(rx: &flume::Receiver<Event>) -> usize {
+        rx.try_iter()
+            .filter(|e| matches!(e, Event::PackageShimConflict(_)))
+            .count()
+    }
+
+    #[test]
+    fn test_owner_from_content() {
+        // hok relative .shim metadata
+        assert_eq!(
+            owner_from_content(r#"path = "~\..\apps\git\current\usr\bin\bash.exe""#),
+            Some("git".into())
+        );
+        // upstream absolute .shim metadata
+        assert_eq!(
+            owner_from_content(r#"path = "C:\Users\me\scoop\apps\python\current\python.exe""#),
+            Some("python".into())
+        );
+        // upstream .cmd comment line
+        assert_eq!(
+            owner_from_content("@rem C:\\Users\\me\\scoop\\apps\\git\\current\\bin\\git.exe"),
+            Some("git".into())
+        );
+        // hok PowerShell shim body
+        assert_eq!(
+            owner_from_content(
+                "if ($MyInvocation.ExpectingInput) { $input | & \"$PSScriptRoot\\..\\apps\\python\\current\\Scripts\\foo.ps1\"  @args }"
+            ),
+            Some("python".into())
+        );
+        // case-insensitive `apps` marker; owner returned lowercased
+        assert_eq!(
+            owner_from_content(r#"path = "~\..\APPS\Git\current\bin\git.exe""#),
+            Some("git".into())
+        );
+        // a scoop root nested under an `apps` dir must not misattribute
+        assert_eq!(
+            owner_from_content(r#"path = "D:\apps\scoop\apps\git\current\bin\git.exe""#),
+            Some("git".into())
+        );
+        // version dir may be a version number
+        assert_eq!(
+            owner_from_content(r#"path = "~\..\apps\git\2.44.0\bin\git.exe""#),
+            Some("git".into())
+        );
+        // no `apps` segment at all
+        assert_eq!(owner_from_content("not a shim at all"), None);
+        // `apps` with no version dir after the candidate package
+        assert_eq!(owner_from_content(r#"path = "~\..\apps\python\""#), None);
+    }
+
+    #[test]
+    fn test_add_exe_shim_creates_files() {
+        let root = test_utils::tmpdir("shim_add_basic");
+        let session = test_utils::test_session(&root);
+        let pkg = make_package("foo", r#"[["main.exe", "foo"]]"#);
+
+        add(&session, &pkg).unwrap();
+
+        let shims = root.join("shims");
+        assert!(shims.join("foo.exe").exists(), "stub missing");
+        let meta = std::fs::read_to_string(shims.join("foo.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\foo\current\main.exe"),
+            "unexpected meta: {meta}"
+        );
+    }
+
+    #[test]
+    fn test_add_same_package_update_overwrites_silently() {
+        let root = test_utils::tmpdir("shim_add_update");
+        let session = test_utils::test_session(&root);
+        let rx = session.event_bus().receiver();
+        let pkg = make_package("foo", r#"[["main.exe", "foo"]]"#);
+
+        add(&session, &pkg).unwrap();
+        add(&session, &pkg).unwrap(); // update: same package
+
+        let shims = root.join("shims");
+        assert!(shims.join("foo.shim").exists());
+        // no backup was created, no conflict was warned
+        assert!(!shims.join("foo.shim.foo").exists());
+        assert_eq!(conflict_count(&rx), 0);
+    }
+
+    #[test]
+    fn test_add_other_package_renames_and_warns() {
+        let root = test_utils::tmpdir("shim_add_conflict");
+        let session = test_utils::test_session(&root);
+        let rx = session.event_bus().receiver();
+        add(&session, &make_package("git", r#"[["git.exe", "git"]]"#)).unwrap();
+        add(&session, &make_package("bgit", r#"[["bgit.exe", "git"]]"#)).unwrap();
+
+        let shims = root.join("shims");
+        // old shim preserved under the *old* owner suffix (upstream $shim.$shim_app)
+        assert!(shims.join("git.shim.git").exists(), "backup missing");
+        assert!(shims.join("git.exe").exists(), "stub missing");
+        // new shim now points at the overwriting package
+        let meta = std::fs::read_to_string(shims.join("git.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\bgit\current\bgit.exe"),
+            "unexpected meta: {meta}"
+        );
+        assert_eq!(conflict_count(&rx), 1);
+    }
+
+    #[test]
+    fn test_add_unknown_owner_warns_and_overwrites() {
+        let root = test_utils::tmpdir("shim_add_unknown");
+        let session = test_utils::test_session(&root);
+        let rx = session.event_bus().receiver();
+        let shims = root.join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::write(shims.join("foo.shim"), "not a scoop shim at all").unwrap();
+
+        add(&session, &make_package("foo", r#"[["main.exe", "foo"]]"#)).unwrap();
+
+        let meta = std::fs::read_to_string(shims.join("foo.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\foo\current\main.exe"),
+            "unexpected meta: {meta}"
+        );
+        // unknown owner -> warned, but no rename (upstream also fails to rename)
+        assert!(!shims.join("foo.shim.foo").exists());
+        assert_eq!(conflict_count(&rx), 1);
+    }
+
+    #[test]
+    fn test_add_script_shim_conflict_renames_carrier_only() {
+        let root = test_utils::tmpdir("shim_add_ps_conflict");
+        let session = test_utils::test_session(&root);
+        let rx = session.event_bus().receiver();
+        add(&session, &make_package("alpha", r#"[["tool.ps1", "tool"]]"#)).unwrap();
+        add(&session, &make_package("beta", r#"[["tool2.ps1", "tool"]]"#)).unwrap();
+
+        let shims = root.join("shims");
+        // the .ps1 carrier is backed up under the old owner...
+        assert!(shims.join("tool.ps1.alpha").exists(), "ps1 backup missing");
+        // ...but the .cmd wrapper is overwritten unconditionally (upstream)
+        assert!(!shims.join("tool.cmd.alpha").exists());
+        assert!(shims.join("tool.cmd").exists());
+        assert_eq!(conflict_count(&rx), 1);
+    }
+
+    #[test]
+    fn test_remove_other_package_restores_backup() {
+        let root = test_utils::tmpdir("shim_remove_restore");
+        let session = test_utils::test_session(&root);
+        let pkg_x = make_package("git", r#"[["git.exe", "git"]]"#);
+        let pkg_y = make_package("bgit", r#"[["bgit.exe", "git"]]"#);
+        add(&session, &pkg_x).unwrap();
+        add(&session, &pkg_y).unwrap();
+
+        // removing the overwriter (bgit) must restore git's shim
+        mark_installed(&pkg_y);
+        remove(&session, &pkg_y).unwrap();
+
+        let shims = root.join("shims");
+        assert!(shims.join("git.shim").exists(), "main shim missing");
+        let meta = std::fs::read_to_string(shims.join("git.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\git\current\git.exe"),
+            "expected git's shim restored: {meta}"
+        );
+        assert!(shims.join("git.exe").exists(), "stub must remain");
+    }
+
+    #[test]
+    fn test_remove_overwritten_package_keeps_owner_shim() {
+        let root = test_utils::tmpdir("shim_remove_overwritten");
+        let session = test_utils::test_session(&root);
+        let pkg_x = make_package("git", r#"[["git.exe", "git"]]"#);
+        let pkg_y = make_package("bgit", r#"[["bgit.exe", "git"]]"#);
+        add(&session, &pkg_x).unwrap();
+        add(&session, &pkg_y).unwrap();
+
+        // removing the overwritten package (git) must only drop its backup
+        mark_installed(&pkg_x);
+        remove(&session, &pkg_x).unwrap();
+
+        let shims = root.join("shims");
+        assert!(!shims.join("git.shim.git").exists(), "backup should be gone");
+        let meta = std::fs::read_to_string(shims.join("git.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\bgit\current\bgit.exe"),
+            "bgit's shim must stay: {meta}"
+        );
+        assert!(shims.join("git.exe").exists(), "stub stays");
+    }
 }
