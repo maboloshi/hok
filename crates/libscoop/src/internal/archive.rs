@@ -26,7 +26,11 @@ use crate::Error;
 use flume::Sender;
 
 /// Detect archive format from filename extension.
-fn detect_format(filename: &str) -> Option<&'static str> {
+///
+/// Single source of truth for "is this a downloadable archive?" — also used
+/// by [`crate::package::operations::extract`] to decide which downloaded
+/// files to decompress, so the two lists cannot drift apart.
+pub(crate) fn detect_format(filename: &str) -> Option<&'static str> {
     if filename.ends_with(".7z") {
         return Some("7z");
     }

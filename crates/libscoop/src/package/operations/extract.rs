@@ -8,9 +8,10 @@ use crate::{error::Fallible, internal, package::Package, Event, Session};
 /// Extract the downloaded archive files of `pkg` into `working_dir`.
 ///
 /// An index into [`Package::download_filenames`][1] is treated as an archive
-/// when its URL's extension is a known archive format. Each existing archive
-/// is extracted via [`internal::archive::extract`] with the manifest's
-/// `extract_dir` / `extract_to` / `innosetup` settings applied.
+/// when its URL-derived filename is recognised by
+/// [`internal::archive::detect_format`] (the single format source of truth).
+/// Each existing archive is extracted via [`internal::archive::extract`] with
+/// the manifest's `extract_dir` / `extract_to` / `innosetup` settings applied.
 ///
 /// # Returns
 ///
@@ -26,7 +27,10 @@ pub fn extract_archives(
     let files = pkg.download_filenames();
     let urls = pkg.manifest().url();
 
-    // Collect the files that need to be decompressed
+    // Collect the files that need to be decompressed.
+    // The archive decision is delegated to `internal::archive::detect_format`
+    // (the single source of truth) — this also covers `.tar.bz`, `.lzma`,
+    // `.iso`, etc. that a hand-maintained extension list would drift from.
     let archives: Vec<usize> = files
         .iter()
         .enumerate()
@@ -38,24 +42,7 @@ pub fn extract_archives(
             let stripped = internal::url::strip_url_query(url);
             let target_name = stripped.rsplit('/').next().unwrap_or(f);
 
-            let ext = Path::new(target_name)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            if matches!(
-                ext,
-                "7z" | "zip"
-                    | "nupkg"
-                    | "rar"
-                    | "lzh"
-                    | "iso"
-                    | "gz"
-                    | "bz2"
-                    | "xz"
-                    | "zst"
-                    | "tgz"
-                    | "tar"
-            ) {
+            if internal::archive::detect_format(target_name).is_some() {
                 Some(idx)
             } else {
                 None
@@ -244,6 +231,29 @@ mod tests {
         path
     }
 
+    /// Create a small real tar.bz2 archive containing `app/hello.txt` and
+    /// `app/sub/deep.txt` (same layout as `create_zip`).
+    fn create_tar_bz2(path: &Path) {
+        use bzip2::write::BzEncoder;
+        use bzip2::Compression as BzCompression;
+        use tar::{Builder, Header};
+
+        fn append(tar: &mut Builder<BzEncoder<std::fs::File>>, name: &str, data: &[u8]) {
+            let mut header = Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, data).unwrap();
+        }
+
+        let file = std::fs::File::create(path).unwrap();
+        let encoder = BzEncoder::new(file, BzCompression::fast());
+        let mut tar = Builder::new(encoder);
+        append(&mut tar, "app/hello.txt", b"Hello, World!");
+        append(&mut tar, "app/sub/deep.txt", b"Deep content");
+        tar.into_inner().unwrap().finish().unwrap();
+    }
+
     // ─── extract_archives ───────────────────────────────────────────
 
     #[test]
@@ -303,14 +313,62 @@ mod tests {
 
     #[test]
     fn test_extract_archives_iso_detected_as_archive() {
-        // `.iso` must be recognised as an archive (aligned with
-        // `internal::archive::detect_format`, which extracts via 7z). The
-        // actual extraction is not exercised here: it requires the external
-        // `7z` executable, so the cache file is deliberately not staged —
-        // `extract_archives` skips missing files but still reports the index.
+        // `.iso` is recognised via `internal::archive::detect_format` (which
+        // extracts via 7z). The actual extraction is not exercised here: it
+        // requires the external `7z` executable, so the cache file is
+        // deliberately not staged — `extract_archives` skips missing files
+        // but still reports the index.
         let root = tmpdir("extract_archives_iso");
         let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/disk.iso"));
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert_eq!(archives, vec![0]);
+    }
+
+    #[test]
+    fn test_extract_archives_tar_bz_detected_and_extracted() {
+        // `.tar.bz` is recognised via detect_format (bz2 branch) and actually
+        // extracted — covers the `.bz` extension end to end.
+        let root = tmpdir("extract_archives_tar_bz");
+        let session = test_session(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest("https://example.com/pkg.tar.bz"),
+        );
+
+        let staged = stage_cache_file(&session, &pkg, 0, &[]);
+        create_tar_bz2(&staged);
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        assert_eq!(archives, vec![0]);
+        assert!(working_dir.join("app/hello.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("app/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+        assert!(working_dir.join("app/sub/deep.txt").exists());
+    }
+
+    #[test]
+    fn test_extract_archives_lzma_detected() {
+        // `.tar.lzma` / `.lzma` are recognised via detect_format (xz branch).
+        // Extraction is not exercised here (needs a real lzma stream); the
+        // cache file is not staged, so only the detection is asserted.
+        let root = tmpdir("extract_archives_lzma");
+        let session = test_session(&root);
+        let pkg = Package::from(
+            "test-pkg",
+            "main",
+            manifest("https://example.com/pkg.tar.lzma"),
+        );
 
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
