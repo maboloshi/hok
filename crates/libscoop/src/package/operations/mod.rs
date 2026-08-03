@@ -1,8 +1,9 @@
-//! Pure file-operation primitives for the package sync pipeline.
+//! Pure operation primitives for the package sync pipeline.
 //!
-//! Contains only filesystem primitives — symlink (de)registration, archive
-//! extraction, downloaded-file copying, persist-dir handling, and shortcut
-//! creation/removal. **No transaction logic lives here**: orchestration,
+//! Contains only self-contained primitives — symlink (de)registration, archive
+//! extraction, downloaded-file copying, persist-dir handling, shortcut
+//! creation/removal, and PowerShell script execution with installer-variable
+//! expansion. **No transaction logic lives here**: orchestration,
 //! confirmation, and event sequencing stay in [`super::sync`].
 //!
 //! # Design
@@ -22,6 +23,7 @@
 mod extract;
 mod link;
 mod persist;
+mod script;
 mod shortcut;
 
 // ─── Re-exports ─────────────────────────────────────────────────────────────
@@ -29,4 +31,5 @@ mod shortcut;
 pub use extract::*;
 pub use link::*;
 pub use persist::*;
+pub use script::*;
 pub use shortcut::*;

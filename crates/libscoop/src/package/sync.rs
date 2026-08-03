@@ -39,9 +39,6 @@ mod sync_remove;
 pub use sync_install::install;
 pub use sync_remove::{remove, reset};
 
-/// Installer-variable expansion reused outside `sync` (e.g. `env::add`).
-pub(crate) use sync_install::expand_installer_vars;
-
 /// Options that may be used to tweak behavior of package sync operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[non_exhaustive]
@@ -374,51 +371,9 @@ fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible
     Err(Error::Custom("event bus closed unexpectedly".to_owned()))
 }
 
-/// Removes the given file paths when dropped. Ensures cleanup even when
-/// the calling function returns early via `?`.
-struct TempFileGuard(Vec<std::path::PathBuf>);
-
-impl TempFileGuard {
-    fn new(paths: Vec<std::path::PathBuf>) -> Self {
-        Self(paths)
-    }
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        for path in &self.0 {
-            let _ = std::fs::remove_file(path);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// Test that TempFileGuard removes files on Drop.
-    #[test]
-    fn test_temp_file_guard_cleanup() {
-        let dir = crate::test_utils::tmpdir("temp_file_guard");
-        let path1 = dir.join("test1.txt");
-        let path2 = dir.join("test2.txt");
-
-        std::fs::write(&path1, b"hello").unwrap();
-        std::fs::write(&path2, b"world").unwrap();
-        assert!(path1.exists());
-        assert!(path2.exists());
-
-        {
-            let _guard = TempFileGuard::new(vec![path1.clone(), path2.clone()]);
-            // Guard is alive — files should still exist
-            assert!(path1.exists());
-            assert!(path2.exists());
-        }
-        // Guard dropped — files should be removed
-        assert!(!path1.exists());
-        assert!(!path2.exists());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     /// Helper to create a session with an active event bus for confirm tests.
     fn setup_confirm_test() -> (Session, flume::Sender<Event>, flume::Receiver<Event>) {

@@ -19,7 +19,7 @@
 //!   entries first, then variables), for the event loop.
 //! - **`$dir` expansion**: `env_set` values go through the same
 //!   installer-variable expansion as `installer.args` (via
-//!   [`expand_installer_vars`](crate::package::sync::expand_installer_vars)),
+//!   [`expand_installer_vars`](crate::package::operations::expand_installer_vars)),
 //!   covering the common `$dir` / `$persist_dir` / `$scoopdir`-style tokens
 //!   that Scoop's `ExpandString` handles.
 //! - **Global support**: In global mode ([`Session::is_global`]) paths are
@@ -30,8 +30,8 @@
 use std::ffi::OsString;
 
 use crate::{
-    config, error::Fallible, internal, internal::env::EnvScope, package::sync::expand_installer_vars,
-    package::{Manifest, Package}, Error, Event, Session,
+    config, error::Fallible, internal, internal::env::EnvScope,
+    package::operations::expand_installer_vars, package::{Manifest, Package}, Error, Event, Session,
 };
 
 /// Apply all environment variable definitions of a given package.

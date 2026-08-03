@@ -13,12 +13,13 @@ use tracing::{debug, info};
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::{
     manifest::{InstallInfo, Manifest},
-    operations, query, resolve, InstallState, InstallStateInstalled, Package,
+    operations::{self, expand_installer_vars, run_script},
+    query, resolve, InstallState, InstallStateInstalled, Package,
 };
 use crate::{env, error::Fallible, internal, psmodule, shim, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, Transaction};
-use super::sync_install::{check_not_running, expand_installer_vars, run_script};
+use super::sync_install::check_not_running;
 
 /// Sync operation: remove packages.
 pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
