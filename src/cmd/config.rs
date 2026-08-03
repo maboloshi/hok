@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use libscoop::{config, Session};
 
-use crate::{output, util, Result};
+use crate::{output, Result};
 
 /// Configuration management
 #[derive(Debug, Parser)]
@@ -38,7 +38,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         Command::Edit => {
             let path = &session.config().path;
             if !config::edit(session)? {
-                util::open_file(path)?;
+                libscoop::os::open_file(path)?;
             }
             Ok(())
         }

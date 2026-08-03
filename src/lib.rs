@@ -62,10 +62,6 @@ mod output;
 mod i18n;
 mod scoop_handler;
 
-// ─── Utilities ───────────────────────────────────────────────────────────
-
-mod util;
-
 type Result<T> = anyhow::Result<T>;
 
 static DETAIL_MODE: AtomicBool = AtomicBool::new(false);

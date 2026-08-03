@@ -319,3 +319,60 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
         Ok(exit_code as i32)
     }
 }
+
+// ─── shell-open (ShellExecuteW) ─────────────────────────────────────────
+
+/// Open a URL in the default system browser.
+#[cfg(windows)]
+pub fn open_url(url: &str) -> std::io::Result<()> {
+    shell_open(url)
+}
+
+/// Open a file or directory with the system default handler.
+#[cfg(windows)]
+pub fn open_file(path: &Path) -> std::io::Result<()> {
+    shell_open(&path.as_os_str().to_string_lossy())
+}
+
+/// Shell-open a path via `ShellExecuteW` (shared by `open_url` / `open_file`).
+// Safety: `file` is converted to a null-terminated UTF-16 string.
+#[cfg(windows)]
+fn shell_open(file: &str) -> std::io::Result<()> {
+    let wide = encode_wide(file);
+    let verb = encode_wide("open");
+
+    // Safety: lpOperation and lpFile point to valid null-terminated UTF-16
+    // strings. lpParameters and lpDirectory are null. hwnd is null (no parent).
+    let ret = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+
+    if ret as isize <= 32 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+// Safety: lpOperation, lpFile, lpParameters, lpDirectory must point to
+// null-terminated UTF-16 strings, or be null. hwnd must be a valid window
+// handle or null.
+#[cfg(windows)]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut std::ffi::c_void,
+        lp_operation: *const u16,
+        lp_file: *const u16,
+        lp_parameters: *const u16,
+        lp_directory: *const u16,
+        n_show_cmd: i32,
+    ) -> isize;
+}

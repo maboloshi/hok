@@ -1,7 +1,7 @@
 use clap::Parser;
 use libscoop::{package, QueryOption, Session};
 
-use crate::{output, util, Result};
+use crate::{output, Result};
 
 /// Browse the homepage of a package
 #[derive(Debug, Parser)]
@@ -23,7 +23,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         1 => {
             let package = &result[0];
             let url = package.homepage();
-            util::open_url(url)?;
+            libscoop::os::open_url(url)?;
         }
         _ => {
             result.sort_by_key(|p| p.ident());
@@ -45,7 +45,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 if num < result.len() {
                     let package = &result[num];
                     let url = package.homepage();
-                    util::open_url(url)?;
+                    libscoop::os::open_url(url)?;
                     return Ok(());
                 }
             }

@@ -67,7 +67,9 @@ pub mod fs {
 
 /// Public OS / process helpers (thin facade over [`internal::os`]).
 pub mod os {
-    pub use crate::internal::os::{is_program_available, run_program};
+    pub use crate::internal::os::{
+        is_program_available, open_file, open_url, run_program,
+    };
     pub use crate::internal::string::encode_wide;
 }
 
