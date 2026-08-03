@@ -102,17 +102,6 @@ pub fn strip_url_query(raw: &str) -> String {
     }
 }
 
-/// Determine whether `name` passes `app_filters`.
-///
-/// Returns `true` when the first filter is `"*"` (wildcard) or when any
-/// filter is a substring of `name`.
-pub fn app_filter_matches(name: &str, app_filters: &[String]) -> bool {
-    if app_filters.first().map(|s| s.as_str()) == Some("*") {
-        return true;
-    }
-    app_filters.iter().any(|p| name.contains(p.as_str()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,42 +209,5 @@ mod tests {
     #[test]
     fn strip_query_empty_string() {
         assert_eq!(strip_url_query(""), "");
-    }
-
-    // ── app_filter_matches ──────────────────────────────────────────────────
-
-    #[test]
-    fn wildcard_filter_matches_any_name() {
-        let filters = vec!["*".to_string()];
-        assert!(app_filter_matches("anyapp", &filters));
-        assert!(app_filter_matches("", &filters));
-    }
-
-    #[test]
-    fn specific_filter_matches_substring() {
-        let filters = vec!["curl".to_string()];
-        assert!(app_filter_matches("curl", &filters));
-        assert!(app_filter_matches("libcurl", &filters));
-    }
-
-    #[test]
-    fn specific_filter_no_match() {
-        let filters = vec!["wget".to_string()];
-        assert!(!app_filter_matches("curl", &filters));
-    }
-
-    #[test]
-    fn multiple_filters_any_match() {
-        let filters = vec!["wget".to_string(), "curl".to_string()];
-        assert!(app_filter_matches("curl", &filters));
-        assert!(app_filter_matches("wget", &filters));
-        assert!(!app_filter_matches("git", &filters));
-    }
-
-    #[test]
-    fn empty_filters_no_match_unless_wildcard() {
-        let filters: Vec<String> = vec![];
-        // Empty filter list ≠ wildcard; first() is None, and no iter match.
-        assert!(!app_filter_matches("app", &filters));
     }
 }

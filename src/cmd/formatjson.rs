@@ -25,10 +25,10 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     // Determine app filter patterns
-    let patterns: Vec<&str> = if args.app.is_empty() || args.app[0] == "*" {
+    let patterns: Vec<String> = if args.app.is_empty() || args.app[0] == "*" {
         Vec::new()
     } else {
-        args.app.iter().map(|s| s.as_str()).collect()
+        args.app.clone()
     };
 
     let entries = libscoop::fs::walkdir_files(dir);
@@ -38,7 +38,7 @@ pub fn execute(args: Args) -> Result<()> {
         // Apply app filter on the file stem using libscoop's glob matching
         if !patterns.is_empty() {
             let name = path.file_stem().unwrap().to_string_lossy();
-            if !patterns.iter().any(|p| formatjson::app_matches(&name, p)) {
+            if !libscoop::string::matches_any_glob(&name, &patterns) {
                 continue;
             }
         }

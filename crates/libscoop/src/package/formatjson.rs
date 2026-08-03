@@ -26,40 +26,8 @@
 //! - If the input file contains a BOM (`\u{FEFF}`), it will be automatically stripped.
 
 use crate::{error::Fallible, Error};
-use regex::Regex;
 use serde::Serialize;
 use std::path::Path;
-
-/// Convert a simple glob pattern (`*`, `?`) to an anchored regex string.
-///
-/// `*` expands to `.*`, `?` expands to `.`.  All other regex metacharacters
-/// in the original pattern are escaped.
-///
-/// # Examples
-///
-/// ```
-/// # use libscoop::package::formatjson::glob_to_regex;
-/// assert_eq!(glob_to_regex("curl*"), "^curl.*$");
-/// assert_eq!(glob_to_regex("app?name"), "^app.name$");
-/// ```
-pub fn glob_to_regex(pattern: &str) -> String {
-    let escaped = regex::escape(pattern);
-    let re_str = escaped.replace(r"\*", ".*").replace(r"\?", ".");
-    format!("^{re_str}$")
-}
-
-/// Check whether `name` matches the given app `pattern`.
-///
-/// When the pattern contains `*` or `?`, it is treated as a glob.
-/// Otherwise, an exact stem match is performed (case-sensitive).
-pub fn app_matches(name: &str, pattern: &str) -> bool {
-    if pattern.contains('*') || pattern.contains('?') {
-        let re_str = glob_to_regex(pattern);
-        Regex::new(&re_str).is_ok_and(|re| re.is_match(name))
-    } else {
-        name == pattern
-    }
-}
 
 /// Format a single manifest JSON file in place using Scoop conventions.
 ///
@@ -77,7 +45,6 @@ pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
 
     let value: serde_json::Value = json5::from_str(cleaned)
         .map_err(|e| Error::Custom(format!("{}: parse error: {}", path.display(), e)))?;
-
     let formatted = to_scoop_json(&value)?;
 
     if formatted != content {
@@ -109,50 +76,6 @@ pub fn to_scoop_json(value: &serde_json::Value) -> Fallible<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── glob_to_regex ────────────────────────────────────────────────────────
-
-    #[test]
-    fn glob_star_becomes_dotstar() {
-        let re = glob_to_regex("curl*");
-        assert_eq!(re, "^curl.*$");
-    }
-
-    #[test]
-    fn glob_question_becomes_dot() {
-        let re = glob_to_regex("app?name");
-        assert_eq!(re, "^app.name$");
-    }
-
-    #[test]
-    fn glob_no_wildcards_anchored_literal() {
-        let re = glob_to_regex("exact");
-        assert_eq!(re, "^exact$");
-    }
-
-    // ── app_matches ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn app_matches_exact_same_name() {
-        assert!(app_matches("curl", "curl"));
-    }
-
-    #[test]
-    fn app_matches_exact_different_name() {
-        assert!(!app_matches("wget", "curl"));
-    }
-
-    #[test]
-    fn app_matches_glob_star() {
-        assert!(app_matches("curl-7z", "curl*"));
-        assert!(!app_matches("wget", "curl*"));
-    }
-
-    #[test]
-    fn app_matches_glob_question() {
-        assert!(app_matches("curl", "cur?"));
-        assert!(!app_matches("curl2", "cur?"));
-    }
 
     // ── to_scoop_json ────────────────────────────────────────────────────────
 

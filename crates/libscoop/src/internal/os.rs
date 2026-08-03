@@ -8,6 +8,7 @@ use std::ffi::c_void;
 use std::path::Path;
 
 use crate::error::{Error, Fallible};
+use crate::internal::string::encode_wide;
 
 // ─── FFI declarations ─────────────────────────────────────────────────────
 
@@ -317,12 +318,4 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
         CloseHandle(info.h_process as isize);
         Ok(exit_code as i32)
     }
-}
-
-pub fn encode_wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }

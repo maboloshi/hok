@@ -12,6 +12,7 @@
 //! - [`network`] — HTTP networking via `ureq`
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
+//! - [`string`] — String utilities (encoding, glob matching)
 //!
 //! It also exports [`compare_versions()`], a Scoop-compatible semantic
 //! version comparator used across the package lifecycle.
@@ -33,6 +34,7 @@ pub mod hash;
 pub mod network;
 pub mod os;
 pub mod path;
+pub mod string;
 pub mod url;
 
 /// Compare two semantic version strings.

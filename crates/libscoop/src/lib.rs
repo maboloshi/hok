@@ -67,5 +67,11 @@ pub mod fs {
 
 /// Public OS / process helpers (thin facade over [`internal::os`]).
 pub mod os {
-    pub use crate::internal::os::{encode_wide, is_program_available, run_program};
+    pub use crate::internal::os::{is_program_available, run_program};
+    pub use crate::internal::string::encode_wide;
+}
+
+/// Public string helpers (thin facade over [`internal::string`]).
+pub mod string {
+    pub use crate::internal::string::{glob_to_regex, matches_any_glob};
 }

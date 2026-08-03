@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::internal::url::{app_filter_matches, strip_url_fragment};
+use crate::internal::string::matches_any_glob;
+use crate::internal::url::strip_url_fragment;
 use crate::package::manifest_walker;
 use crate::{error::Fallible, network, Manifest, Session};
 
@@ -45,7 +46,7 @@ pub fn check_urls(
             None => continue,
         };
 
-        if !app_filter_matches(&name, app_filters) {
+        if !matches_any_glob(&name, app_filters) {
             continue;
         }
 
