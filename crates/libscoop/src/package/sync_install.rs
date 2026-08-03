@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::Path;
 use tracing::{debug, info};
 
-use crate::package::{download, operations, query, resolve, Package};
+use crate::package::{download, identity, operations, query, resolve, Package};
 use crate::{error::Fallible, env, internal, shim, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, TempFileGuard, Transaction};
@@ -268,7 +268,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let mut matched = synced
                 .iter()
                 .filter(|&p| {
-                    let (query_bucket, query_name) = query::split_bucket_query(query);
+                    let (query_bucket, query_name) = identity::split_bucket_query(query);
                     let bucket_matched = query_bucket
                         .as_deref()
                         .map_or(true, |b| p.bucket() == b);

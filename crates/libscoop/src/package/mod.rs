@@ -34,6 +34,7 @@
 //!   to scan bucket manifests in parallel without requiring ownership of `Session`.
 
 pub mod auto_pr;
+// ─── Submodules ────────────────────────────────────────────────────────────
 pub mod checkhashes;
 pub mod checkup;
 pub mod checkurls;
@@ -45,6 +46,7 @@ pub(crate) mod download;
 pub mod export;
 pub mod formatjson;
 pub mod hold;
+pub(crate) mod identity;
 pub mod import;
 pub mod list;
 pub(crate) mod manifest;
@@ -58,12 +60,16 @@ pub mod shim;
 pub mod sync;
 pub mod virustotal;
 
+// ─── Core types & re-exports ───────────────────────────────────────────────
+
 use std::cell::OnceCell;
 use std::{fmt, path::PathBuf};
 
 pub use manifest::{HashString, InstallInfo, License, Manifest};
 pub use query::QueryOption;
 pub use sync::SyncOption;
+
+pub(crate) use identity::*;
 
 use crate::{constant::ISOLATED_PACKAGE_BUCKET, internal};
 
@@ -464,16 +470,6 @@ impl PartialEq for Package {
     fn eq(&self, other: &Package) -> bool {
         self.name() == other.name()
     }
-}
-
-/// Extact `name` from `bucket/name`.
-pub(super) fn extract_name<S: AsRef<str>>(input: S) -> String {
-    input
-        .as_ref()
-        .split_once('/')
-        .map(|(_, n)| n)
-        .unwrap_or(input.as_ref())
-        .to_owned()
 }
 
 /// Hash mismatch context.

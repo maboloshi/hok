@@ -80,7 +80,7 @@ pub(crate) fn resolve_dependencies(
                     let mut matched = synced
                         .iter()
                         .filter(|p| {
-                            let (query_bucket, query_name) = query::split_bucket_query(query);
+                            let (query_bucket, query_name) = super::identity::split_bucket_query(query);
                             let bucket_matched = query_bucket
                                 .as_deref()
                                 .map_or(true, |b| p.bucket() == b);
