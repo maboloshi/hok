@@ -46,12 +46,24 @@ use std::{fmt::Display, io};
 
 rust_i18n::i18n!("locales");
 
+// ─── CLI framework infrastructure ────────────────────────────────────────
+
 mod cmd;
 mod cui;
 mod eventloop;
-mod i18n;
+
+// ─── Output & formatting ──────────────────────────────────────────────────
+
+mod format;
 mod output;
+
+// ─── Config & initialisation ─────────────────────────────────────────────
+
+mod i18n;
 mod scoop_handler;
+
+// ─── Utilities ───────────────────────────────────────────────────────────
+
 mod util;
 
 type Result<T> = anyhow::Result<T>;

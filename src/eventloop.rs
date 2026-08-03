@@ -40,7 +40,7 @@
 //! For detailed examples, see the documentation of [`EventHandler`] and the
 //! implementations in the `scoop_handler` module.
 
-use crate::{cui, output, util};
+use crate::{cui, format, output};
 use crossterm::{cursor, ExecutableCommand};
 use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
@@ -202,7 +202,7 @@ pub fn run_event_loop(
                     }
 
                     if let Some(download_size) = transaction.download_size() {
-                        let out = util::humansize(download_size.total, true);
+                        let out = format::humansize(download_size.total, true);
                         if download_size.total > 0 {
                             if download_size.estimated {
                                 println!("\nTotal download size: {out} (estimated)");

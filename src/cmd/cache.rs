@@ -1,7 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand};
 use libscoop::{cache, Session};
 
-use crate::{output, util, Result};
+use crate::{format, output, Result};
 
 /// Package cache management
 #[derive(Debug, Parser)]
@@ -52,7 +52,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
                 println!(
                     "{:>8} {} ({}) {:>}",
-                    util::humansize(size, true),
+                    format::humansize(size, true),
                     f.package_name(),
                     f.version(),
                     f.file_name()
@@ -63,7 +63,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 "{:>8} {} files, {}",
                 "Total:",
                 total_count,
-                util::humansize(total_size, true)
+                format::humansize(total_size, true)
             );
 
             Ok(())

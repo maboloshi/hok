@@ -2,39 +2,8 @@ use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
 use libscoop::{package, QueryOption, Session};
 
+use crate::format::pad_visual;
 use crate::{output, Result};
-
-/// Approximate visual width of a string in a terminal.
-/// CJK characters count as 2, everything else as 1.
-fn visual_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| {
-            if c >= '\u{1100}' && (c <= '\u{115F}' || c == '\u{2329}' || c == '\u{232A}'
-                || ('\u{2E80}'..='\u{9FFF}').contains(&c)
-                || ('\u{A000}'..='\u{A4CF}').contains(&c)
-                || ('\u{AC00}'..='\u{D7AF}').contains(&c)
-                || ('\u{F900}'..='\u{FAFF}').contains(&c)
-                || ('\u{FE30}'..='\u{FE6F}').contains(&c)
-                || ('\u{FF01}'..='\u{FF60}').contains(&c)
-                || ('\u{FFE0}'..='\u{FFE6}').contains(&c))
-            {
-                2
-            } else {
-                1
-            }
-        })
-        .sum()
-}
-
-/// Pad a string to a target visual width by appending spaces.
-fn pad_visual(s: &str, width: usize) -> String {
-    let vw = visual_width(s);
-    if vw >= width {
-        s.to_owned()
-    } else {
-        format!("{}{}", s, " ".repeat(width - vw))
-    }
-}
 
 /// List installed package(s)
 #[derive(Debug, Parser)]
