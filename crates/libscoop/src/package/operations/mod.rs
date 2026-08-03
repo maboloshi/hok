@@ -17,10 +17,14 @@
 //!
 //! [1]: crate::error::Fallible
 
+// ─── Submodules ────────────────────────────────────────────────────────────
+
 mod extract;
 mod link;
 mod persist;
 mod shortcut;
+
+// ─── Re-exports ─────────────────────────────────────────────────────────────
 
 pub use extract::*;
 pub use link::*;
