@@ -212,17 +212,11 @@ fn owner_from_segments(view: &[u8]) -> Option<String> {
         }
     }
     for w in words.windows(3) {
-        if w[0] == "apps" && is_version_dir(&w[2]) {
+        if w[0] == "apps" && crate::internal::path::is_version_dir(&w[2]) {
             return Some(w[1].clone());
         }
     }
     None
-}
-
-/// A directory that looks like a package version dir: `current`, or
-/// containing a digit (e.g. `2.44.0`, `nightly-20240801`).
-fn is_version_dir(s: &str) -> bool {
-    s == "current" || s.chars().any(|c| c.is_ascii_digit())
 }
 
 /// Remove shortcut(s) for a given package.

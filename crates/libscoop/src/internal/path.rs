@@ -15,6 +15,12 @@
 #![allow(dead_code)]
 use std::path::{Component, Path, PathBuf};
 
+/// A directory that looks like a package version dir: `current`, or
+/// containing a digit (e.g. `2.44.0`, `nightly-20240801`).
+pub(crate) fn is_version_dir(s: &str) -> bool {
+    s == "current" || s.chars().any(|c| c.is_ascii_digit())
+}
+
 /// Return the Leaf, i.e. file name (with extension), or directory name
 /// of given path.
 #[inline(always)]
