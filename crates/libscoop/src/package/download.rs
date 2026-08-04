@@ -9,7 +9,10 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 use tracing::debug;
 
@@ -259,14 +262,37 @@ impl<'a> PackageSet<'a> {
                         // whole file.
                         let url_str = dlinfo.url.to_owned();
                         let cookie_clone = cookie.clone();
+                        // Aggregate per-chunk deltas into a file-level count so
+                        // the progress event matches the single-stream path.
+                        let progress_total = Arc::new(AtomicU64::new(0));
+                        let progress_total_h = progress_total.clone();
+                        let emitter_h = emitter.clone();
+                        let ident_h = ident.clone();
+                        let filename_h = filename.to_owned();
+                        let url_h = url_str.clone();
+                        let on_progress = move |delta: u64| {
+                            let dlnow =
+                                progress_total_h.fetch_add(delta, Ordering::Relaxed) + delta;
+                            if let Some(tx) = &emitter_h {
+                                let _ = tx.send(Event::PackageDownloadProgress(
+                                    PackageDownloadProgressContext {
+                                        ident: ident_h.clone(),
+                                        url: url_h.clone(),
+                                        filename: filename_h.clone(),
+                                        dltotal: dlinfo.remote_size,
+                                        dlnow,
+                                    },
+                                ));
+                            }
+                        };
                         let part_paths = download_fragmented(
                             agent,
                             &url_str,
                             &cookie_clone,
-                            proxy,
                             dlinfo.remote_size,
                             chunk_count,
                             &part_dir,
+                            &on_progress,
                         )
                         .map_err(crate::error::Error::Custom)?;
 
@@ -514,10 +540,10 @@ fn download_fragmented(
     agent: &ureq::Agent,
     url: &str,
     cookie: &[(&str, &str)],
-    proxy: Option<&str>,
     remote_size: u64,
     chunk_count: u64,
     part_dir: &std::path::Path,
+    on_progress: &(dyn Fn(u64) + Sync),
 ) -> Result<Vec<PathBuf>, String> {
     let chunk_size = remote_size / chunk_count;
     // (part path, start, end) for every range to verify — initially one entry
@@ -545,7 +571,9 @@ fn download_fragmented(
             let failed = failed_ranges.clone();
 
             scope.spawn(move || {
-                if let Err(e) = download_range(agent, &url, start, end, &part_path, &ck, proxy) {
+                if let Err(e) =
+                    download_range(agent, &url, start, end, &part_path, &ck, on_progress)
+                {
                     debug!("chunk {}-{} failed: {}", start, end, e);
                     // Drop the partial part so the fallback re-downloads the
                     // whole range from scratch.
@@ -564,10 +592,12 @@ fn download_fragmented(
         parts.retain(|(_, s, _)| !failed.iter().any(|(fs, _)| fs == s));
         for (idx, (s, e)) in merge_adjacent_ranges(failed).iter().enumerate() {
             let fb_path = part_dir.join(format!("fallback.{}", idx));
-            download_range(agent, url, *s, *e, &fb_path, cookie, proxy).map_err(|e| {
-                let _ = std::fs::remove_file(&fb_path);
-                format!("fallback download of {}-{} failed: {}", s, e, e)
-            })?;
+            download_range(agent, url, *s, *e, &fb_path, cookie, on_progress).map_err(
+                |e| {
+                    let _ = std::fs::remove_file(&fb_path);
+                    format!("fallback download of {}-{} failed: {}", s, e, e)
+                },
+            )?;
             parts.push((fb_path, *s, *e));
         }
     }
@@ -653,6 +683,10 @@ impl std::fmt::Display for ChunkError {
 /// Retrying is safe because every attempt resumes from the current size of
 /// `dest` (callers keep the part file across attempts), so a failed attempt
 /// only re-downloads the missing tail.
+///
+/// Every byte written to `dest` is reported through `on_progress` (as a
+/// delta), exactly once, so callers can aggregate download progress across
+/// concurrent chunks.
 fn download_range(
     agent: &ureq::Agent,
     url: &str,
@@ -660,13 +694,11 @@ fn download_range(
     end: u64,
     dest: &std::path::Path,
     cookie: &[(&str, &str)],
-    proxy: Option<&str>,
+    on_progress: &(dyn Fn(u64) + Sync),
 ) -> Result<(), String> {
-    let _ = proxy; // proxy already baked into agent
-
     let mut attempt = 1u32;
     loop {
-        match try_download_range(agent, url, start, end, dest, cookie) {
+        match try_download_range(agent, url, start, end, dest, cookie, on_progress) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if attempt >= MAX_CHUNK_ATTEMPTS || matches!(&e, ChunkError::Final(_)) {
@@ -705,6 +737,7 @@ fn try_download_range(
     end: u64,
     dest: &std::path::Path,
     cookie: &[(&str, &str)],
+    on_progress: &(dyn Fn(u64) + Sync),
 ) -> Result<(), ChunkError> {
     let expected_size = end - start + 1;
 
@@ -795,8 +828,20 @@ fn try_download_range(
     };
 
     let mut reader = resp.into_body().into_reader();
-    let written = std::io::copy(&mut reader, &mut file)
-        .map_err(|e| ChunkError::Transient(format!("read/write failed: {}", e)))?;
+    let mut buf = [0u8; 32768];
+    let mut written = 0u64;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| ChunkError::Transient(format!("read failed: {}", e)))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| ChunkError::Transient(format!("write failed: {}", e)))?;
+        written += n as u64;
+        on_progress(n as u64);
+    }
 
     // Guard against servers that report a 206 but deliver fewer bytes than
     // the range covers (short read or truncated body).
@@ -832,7 +877,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1106,10 +1151,10 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_retry").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let mut result = download_range(&test_agent(), &url, 0, 99, &dest, &[], None);
+        let mut result = download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {});
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&test_agent(), &url, 0, 99, &dest, &[], None);
+            result = download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {});
         }
         result.unwrap();
 
@@ -1136,7 +1181,7 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_giveup").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], None).unwrap_err();
+        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], &|_| {}).unwrap_err();
 
         server.shutdown();
         assert!(err.contains("500"), "unexpected error: {}", err);
@@ -1159,7 +1204,7 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_404").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], None).unwrap_err();
+        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], &|_| {}).unwrap_err();
 
         server.shutdown();
         assert!(err.contains("404"), "unexpected error: {}", err);
@@ -1185,7 +1230,7 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_200").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], None).unwrap_err();
+        let err = download_range(&test_agent(), &url, 0, 63, &dest, &[], &|_| {}).unwrap_err();
 
         server.shutdown();
         assert!(err.contains("206"), "unexpected error: {}", err);
@@ -1213,7 +1258,7 @@ mod tests {
         std::fs::write(&dest, &data[..40]).unwrap();
 
         let url = format!("http://{}/file.bin", server.addr);
-        download_range(&test_agent(), &url, 0, 99, &dest, &[], None).unwrap();
+        download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {}).unwrap();
 
         server.shutdown();
         let got = std::fs::read(&dest).unwrap();
@@ -1238,7 +1283,7 @@ mod tests {
         std::fs::write(&dest, &junk).unwrap();
 
         let url = format!("http://{}/file.bin", server.addr);
-        download_range(&test_agent(), &url, 0, 99, &dest, &[], None).unwrap();
+        download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {}).unwrap();
 
         server.shutdown();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
@@ -1253,10 +1298,10 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_429").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let mut result = download_range(&test_agent(), &url, 0, 63, &dest, &[], None);
+        let mut result = download_range(&test_agent(), &url, 0, 63, &dest, &[], &|_| {});
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&test_agent(), &url, 0, 63, &dest, &[], None);
+            result = download_range(&test_agent(), &url, 0, 63, &dest, &[], &|_| {});
         }
         result.unwrap();
 
@@ -1283,10 +1328,10 @@ mod tests {
         let dest = crate::test_utils::tmpdir("download_range_short").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
-        let mut result = download_range(&test_agent(), &url, 0, 99, &dest, &[], None);
+        let mut result = download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {});
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&test_agent(), &url, 0, 99, &dest, &[], None);
+            result = download_range(&test_agent(), &url, 0, 99, &dest, &[], &|_| {});
         }
         result.unwrap();
 
@@ -1332,14 +1377,14 @@ mod tests {
         std::fs::create_dir_all(&part_dir).unwrap();
 
         let url = format!("http://{}/file.bin", server.addr);
-        let mut parts = download_fragmented(&test_agent(), &url, &[], None, 1000, 4, &part_dir);
+        let mut parts = download_fragmented(&test_agent(), &url, &[], 1000, 4, &part_dir, &|_| {});
         if parts.is_err() {
             // Retried once to tolerate the spurious pre-request connection
             // drop (see the retries test); failed parts were removed, so a
             // fresh run only re-downloads the failed range.
             let _ = std::fs::remove_dir_all(&part_dir);
             std::fs::create_dir_all(&part_dir).unwrap();
-            parts = download_fragmented(&test_agent(), &url, &[], None, 1000, 4, &part_dir);
+            parts = download_fragmented(&test_agent(), &url, &[], 1000, 4, &part_dir, &|_| {});
         }
         let parts = parts.unwrap();
 
@@ -1362,5 +1407,63 @@ mod tests {
         let fails = responses.iter().filter(|&&s| s == 500).count();
         assert!(fails >= 2, "responses: {:?}", responses);
         assert_eq!(*responses.last().unwrap(), 206, "responses: {:?}", responses);
+    }
+
+    #[test]
+    fn test_download_range_reports_progress() {
+        let data: Vec<u8> = (0..100u8).collect();
+        let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
+        let dest = crate::test_utils::tmpdir("download_range_progress").join("part.0");
+
+        let url = format!("http://{}/file.bin", server.addr);
+        let total = Arc::new(AtomicU64::new(0));
+        let total_h = total.clone();
+        download_range(
+            &test_agent(),
+            &url,
+            0,
+            99,
+            &dest,
+            &[],
+            &move |n| {
+                total_h.fetch_add(n, Ordering::Relaxed);
+            },
+        )
+        .unwrap();
+
+        server.shutdown();
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+        // Every byte read by the client is reported exactly once.
+        assert_eq!(total.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn test_download_fragmented_reports_total_progress() {
+        let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
+        let dir = crate::test_utils::tmpdir("fragmented_progress");
+        let part_dir = dir.join("file.bin.parts");
+        std::fs::create_dir_all(&part_dir).unwrap();
+
+        let url = format!("http://{}/file.bin", server.addr);
+        let total = Arc::new(AtomicU64::new(0));
+        let total_h = total.clone();
+        let parts = download_fragmented(
+            &test_agent(),
+            &url,
+            &[],
+            1000,
+            4,
+            &part_dir,
+            &move |n| {
+                total_h.fetch_add(n, Ordering::Relaxed);
+            },
+        )
+        .unwrap();
+
+        server.shutdown();
+        assert_eq!(parts.len(), 4);
+        // Concurrent chunk deltas aggregate to the full file size.
+        assert_eq!(total.load(Ordering::Relaxed), 1000);
     }
 }
