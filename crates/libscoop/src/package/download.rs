@@ -241,7 +241,10 @@ impl<'a> PackageSet<'a> {
                     && !dlinfo.estimated
                     && dlinfo.remote_size >= min_split_size
                     && dlinfo.remote_size > 0
-                    && chunk_count > 1;
+                    && chunk_count > 1
+                    // Avoid `(chunk_idx + 1) * chunk_size - 1` underflow when
+                    // the file is smaller than the configured chunk count.
+                    && chunk_count <= dlinfo.remote_size;
 
                 let result = (|| -> Fallible<()> {
                     if use_fragments {
@@ -298,13 +301,13 @@ impl<'a> PackageSet<'a> {
                                     part.display()
                                 )));
                             }
-                            if actual < expected {
+                            if actual != expected {
                                 debug!(
-                                    "chunk {} is incomplete ({} < {}), will retry",
+                                    "chunk {} size mismatch ({} != {}), will retry",
                                     idx, actual, expected
                                 );
                                 return Err(crate::error::Error::Custom(format!(
-                                    "incomplete chunk {}: {} < {}",
+                                    "chunk {} size mismatch: {} != {}",
                                     idx, actual, expected
                                 )));
                             }
