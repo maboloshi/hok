@@ -539,6 +539,37 @@ impl<'a> PackageSet<'a> {
     }
 }
 
+/// Max attempts for a single chunk download (1 initial try + 2 retries).
+const MAX_CHUNK_ATTEMPTS: u32 = 3;
+
+/// Base exponential-backoff delay in milliseconds, doubled after each failed
+/// attempt. A small random jitter is added so concurrently failing chunks
+/// don't retry in lockstep and hammer the server.
+const CHUNK_BACKOFF_BASE_MS: u64 = 500;
+
+/// Error while downloading one chunk. [`ChunkError::Transient`] failures are
+/// retried with exponential backoff; [`ChunkError::Final`] ones are not.
+enum ChunkError {
+    /// Retrying cannot help (HTTP 4xx, server ignoring `Range`).
+    Final(String),
+    /// Transport-level, 5xx or short-write failure — safe to retry.
+    Transient(String),
+}
+
+impl std::fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChunkError::Final(msg) | ChunkError::Transient(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+/// Download `[start, end]` of `url` into `dest`, retrying transient failures
+/// with exponential backoff (up to [`MAX_CHUNK_ATTEMPTS`] attempts).
+///
+/// Retrying is safe because every attempt resumes from the current size of
+/// `dest` (callers keep the part file across attempts), so a failed attempt
+/// only re-downloads the missing tail.
 fn download_range(
     agent: &ureq::Agent,
     url: &str,
@@ -550,15 +581,65 @@ fn download_range(
 ) -> Result<(), String> {
     let _ = proxy; // proxy already baked into agent
 
-    // Resume check: if part exists and has the full expected size, skip
+    let mut attempt = 1u32;
+    loop {
+        match try_download_range(agent, url, start, end, dest, cookie) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if attempt >= MAX_CHUNK_ATTEMPTS || matches!(&e, ChunkError::Final(_)) {
+                    return Err(e.to_string());
+                }
+                let delay = chunk_retry_delay(attempt);
+                debug!(
+                    "chunk download failed (attempt {}/{}): {}; retrying in {:?}",
+                    attempt, MAX_CHUNK_ATTEMPTS, e, delay
+                );
+                std::thread::sleep(delay);
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Exponential backoff with jitter: `BASE * 2^(attempt-1)` plus a random
+/// offset below `BASE` (derived from the clock to avoid a `rand` dependency).
+fn chunk_retry_delay(attempt: u32) -> std::time::Duration {
+    let base = CHUNK_BACKOFF_BASE_MS;
+    let exp = base * (1u64 << (attempt - 1).min(6));
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 % base)
+        .unwrap_or(0);
+    std::time::Duration::from_millis(exp + jitter)
+}
+
+/// One download attempt for a chunk range; the retry loop lives in
+/// [`download_range`].
+fn try_download_range(
+    agent: &ureq::Agent,
+    url: &str,
+    start: u64,
+    end: u64,
+    dest: &std::path::Path,
+    cookie: &[(&str, &str)],
+) -> Result<(), ChunkError> {
     let expected_size = end - start + 1;
+
+    // Inspect the existing part: skip when complete, drop when corrupted
+    // (e.g. a previous attempt where the server ignored `Range` and wrote
+    // the whole body), otherwise resume from where it stopped.
     if let Ok(meta) = dest.metadata() {
-        if meta.len() >= expected_size {
-            return Ok(());
+        match meta.len().cmp(&expected_size) {
+            std::cmp::Ordering::Equal => return Ok(()),
+            std::cmp::Ordering::Greater => {
+                std::fs::remove_file(dest)
+                    .map_err(|e| ChunkError::Transient(format!("failed to reset part: {}", e)))?;
+            }
+            std::cmp::Ordering::Less => {}
         }
     }
 
-    // Determine resume offset
+    // Determine resume offset and the Range header
     let resume_start = dest.metadata().ok().map(|m| m.len()).unwrap_or(0);
     let range = if resume_start > 0 {
         format!("bytes={}-{}", start + resume_start, end)
@@ -576,20 +657,75 @@ fn download_range(
         req = req.header("Cookie", &cookie_val);
     }
 
-    let resp = req.call().map_err(|e| e.to_string())?;
+    let resp = match req.call() {
+        Ok(resp) => resp,
+        // 4xx (except retryable 408/429) — the server rejected the request,
+        // retrying won't help.
+        Err(ureq::Error::StatusCode(code))
+            if (400..500).contains(&code) && code != 408 && code != 429 =>
+        {
+            return Err(ChunkError::Final(format!("HTTP {} for {}", code, url)));
+        }
+        // Everything else — 5xx, 408/429, Io, Timeout, ConnectionFailed, ... —
+        // is a transient failure handled by the retry loop in `download_range`.
+        Err(e) => return Err(ChunkError::Transient(e.to_string())),
+    };
+
+    // A Range request must yield a 206. If the server ignores `Range` and
+    // returns the full body (200), writing it would corrupt the part file —
+    // treat that as a hard failure instead of silently accepting bad data.
+    if resp.status() != 206 {
+        return Err(ChunkError::Final(format!(
+            "expected 206 Partial Content, got {} (server ignored Range request)",
+            resp.status()
+        )));
+    }
+
+    // Guard against 206 responses whose payload starts at a different offset
+    // than requested (a broken server that returns `bytes=0-59` for a
+    // `bytes=40-99` request): appending it would corrupt the part file.
+    // A missing `Content-Range` header is tolerated for leniency.
+    if let Some(cr) = resp.headers().get("Content-Range") {
+        if let Ok(cr) = cr.to_str() {
+            if let Some(start_str) = cr.strip_prefix("bytes ").and_then(|r| r.split('-').next()) {
+                if let Ok(cr_start) = start_str.parse::<u64>() {
+                    let expected_start = start + resume_start;
+                    if cr_start != expected_start {
+                        return Err(ChunkError::Transient(format!(
+                            "Content-Range starts at {}, expected {} (range {}-{})",
+                            cr_start, expected_start, start, end
+                        )));
+                    }
+                }
+            }
+        }
+    }
 
     // Open file in append mode if resuming, create if new
     let mut file = if resume_start > 0 {
         std::fs::OpenOptions::new()
             .append(true)
             .open(dest)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| ChunkError::Transient(e.to_string()))?
     } else {
-        std::fs::File::create(dest).map_err(|e| e.to_string())?
+        std::fs::File::create(dest).map_err(|e| ChunkError::Transient(e.to_string()))?
     };
 
     let mut reader = resp.into_body().into_reader();
-    std::io::copy(&mut reader, &mut file).map_err(|e| e.to_string())?;
+    let written = std::io::copy(&mut reader, &mut file)
+        .map_err(|e| ChunkError::Transient(format!("read/write failed: {}", e)))?;
+
+    // Guard against servers that report a 206 but deliver fewer bytes than
+    // the range covers (short read or truncated body).
+    if resume_start + written != expected_size {
+        return Err(ChunkError::Transient(format!(
+            "short chunk: got {} bytes, expected {} (range {}-{})",
+            resume_start + written,
+            expected_size,
+            start,
+            end
+        )));
+    }
     Ok(())
 }
 
