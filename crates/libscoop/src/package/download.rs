@@ -9,6 +9,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
+    sync::{Arc, Mutex},
 };
 use tracing::debug;
 
@@ -252,66 +253,22 @@ impl<'a> PackageSet<'a> {
                         let part_dir = cache_root.join(format!("{}.parts", filename));
                         internal::fs::ensure_dir(&part_dir)?;
 
-                        let chunk_size = dlinfo.remote_size / chunk_count;
-                        let mut part_paths: Vec<PathBuf> = Vec::new();
-
-                        // Launch threads for parallel chunk downloads
+                        // Chunks whose retries are exhausted are re-downloaded
+                        // serially (see `download_fragmented`), so a weak link
+                        // degrades to fewer connections instead of failing the
+                        // whole file.
                         let url_str = dlinfo.url.to_owned();
                         let cookie_clone = cookie.clone();
-
-                        std::thread::scope(|scope| {
-                            for chunk_idx in 0..chunk_count {
-                                let start = chunk_idx * chunk_size;
-                                let end = if chunk_idx == chunk_count - 1 {
-                                    dlinfo.remote_size - 1
-                                } else {
-                                    (chunk_idx + 1) * chunk_size - 1
-                                };
-
-                                let part_path = part_dir.join(format!("part.{}", chunk_idx));
-                                part_paths.push(part_path.clone());
-
-                                // Don't remove — allow resume if part exists
-
-                                let part_path = part_path.clone();
-                                let url = url_str.clone();
-                                let ck = cookie_clone.clone();
-
-                                scope.spawn(move || {
-                                    if let Err(e) = download_range(
-                                        agent, &url, start, end, &part_path, &ck, proxy,
-                                    ) {
-                                        debug!("chunk download failed: {}", e);
-                                    }
-                                });
-                            }
-                        });
-
-                        // Check all parts downloaded OK (respect resume — allow complete parts)
-                        for (idx, part) in part_paths.iter().enumerate() {
-                            let expected = if idx as u64 == chunk_count - 1 {
-                                dlinfo.remote_size - (chunk_count - 1) * chunk_size
-                            } else {
-                                chunk_size
-                            };
-                            let actual = part.metadata().map(|m| m.len()).unwrap_or(0);
-                            if actual == 0 {
-                                return Err(crate::error::Error::Custom(format!(
-                                    "failed to download chunk: {}",
-                                    part.display()
-                                )));
-                            }
-                            if actual != expected {
-                                debug!(
-                                    "chunk {} size mismatch ({} != {}), will retry",
-                                    idx, actual, expected
-                                );
-                                return Err(crate::error::Error::Custom(format!(
-                                    "chunk {} size mismatch: {} != {}",
-                                    idx, actual, expected
-                                )));
-                            }
-                        }
+                        let part_paths = download_fragmented(
+                            agent,
+                            &url_str,
+                            &cookie_clone,
+                            proxy,
+                            dlinfo.remote_size,
+                            chunk_count,
+                            &part_dir,
+                        )
+                        .map_err(crate::error::Error::Custom)?;
 
                         chunk_file_map.insert(path, (part_paths, ident.clone()));
                     } else {
@@ -540,6 +497,129 @@ impl<'a> PackageSet<'a> {
 
         Ok(DownloadSize { total, estimated })
     }
+}
+
+// ─── Fragmented download ──────────────────────────────────────────────────
+
+/// Download `remote_size` bytes of `url` split into `chunk_count` parallel
+/// ranges, returning the part file paths in ascending range order.
+///
+/// Chunks whose retries are exhausted are not fatal: the failed ranges are
+/// merged (see [`merge_adjacent_ranges`]) and re-downloaded serially with a
+/// single connection, so a weak link degrades to a plain sequential download
+/// instead of failing the whole file. Every returned part is verified
+/// complete, and the ranges are checked to tile `[0, remote_size)` with no
+/// gaps or overlaps.
+fn download_fragmented(
+    agent: &ureq::Agent,
+    url: &str,
+    cookie: &[(&str, &str)],
+    proxy: Option<&str>,
+    remote_size: u64,
+    chunk_count: u64,
+    part_dir: &std::path::Path,
+) -> Result<Vec<PathBuf>, String> {
+    let chunk_size = remote_size / chunk_count;
+    // (part path, start, end) for every range to verify — initially one entry
+    // per chunk, extended with fallback ranges for failed chunks.
+    let mut parts: Vec<(PathBuf, u64, u64)> = Vec::new();
+    let failed_ranges = Arc::new(Mutex::new(Vec::<(u64, u64)>::new()));
+
+    std::thread::scope(|scope| {
+        for chunk_idx in 0..chunk_count {
+            let start = chunk_idx * chunk_size;
+            let end = if chunk_idx == chunk_count - 1 {
+                remote_size - 1
+            } else {
+                (chunk_idx + 1) * chunk_size - 1
+            };
+
+            let part_path = part_dir.join(format!("part.{}", chunk_idx));
+            parts.push((part_path.clone(), start, end));
+
+            // Don't remove — allow resume if part exists
+
+            let part_path = part_path.clone();
+            let url = url.to_owned();
+            let ck = cookie.to_vec();
+            let failed = failed_ranges.clone();
+
+            scope.spawn(move || {
+                if let Err(e) = download_range(agent, &url, start, end, &part_path, &ck, proxy) {
+                    debug!("chunk {}-{} failed: {}", start, end, e);
+                    // Drop the partial part so the fallback re-downloads the
+                    // whole range from scratch.
+                    let _ = std::fs::remove_file(&part_path);
+                    failed.lock().unwrap().push((start, end));
+                }
+            });
+        }
+    });
+
+    // Re-download failed ranges serially. The more chunks fail, the fewer
+    // concurrent connections remain — degrading to a plain sequential
+    // download on a weak link instead of failing the whole file.
+    let failed = failed_ranges.lock().unwrap().clone();
+    if !failed.is_empty() {
+        parts.retain(|(_, s, _)| !failed.iter().any(|(fs, _)| fs == s));
+        for (idx, (s, e)) in merge_adjacent_ranges(failed).iter().enumerate() {
+            let fb_path = part_dir.join(format!("fallback.{}", idx));
+            download_range(agent, url, *s, *e, &fb_path, cookie, proxy).map_err(|e| {
+                let _ = std::fs::remove_file(&fb_path);
+                format!("fallback download of {}-{} failed: {}", s, e, e)
+            })?;
+            parts.push((fb_path, *s, *e));
+        }
+    }
+
+    // Verify the parts tile the whole file: each part must be complete and
+    // the ranges must cover [0, remote_size) without gaps or overlaps.
+    parts.sort_by_key(|(_, s, _)| *s);
+    let mut cursor = 0u64;
+    for (part, s, e) in &parts {
+        if *s != cursor {
+            return Err(format!(
+                "gap in parts: expected range at {}, covered up to {}",
+                s, cursor
+            ));
+        }
+        let expected = e - s + 1;
+        let actual = part.metadata().map(|m| m.len()).unwrap_or(0);
+        if actual != expected {
+            return Err(format!(
+                "part {} size mismatch: {} != {}",
+                part.display(),
+                actual,
+                expected
+            ));
+        }
+        cursor = e + 1;
+    }
+    if cursor != remote_size {
+        return Err(format!(
+            "parts cover {} bytes, expected {}",
+            cursor, remote_size
+        ));
+    }
+
+    Ok(parts.into_iter().map(|(p, _, _)| p).collect())
+}
+
+/// Merge ranges that are adjacent (or overlapping) into contiguous ranges.
+/// Used to coalesce failed chunk ranges before the serial fallback download.
+fn merge_adjacent_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    ranges.sort();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (s, e) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if s <= last.1 + 1 {
+                last.1 = last.1.max(e);
+                continue;
+            }
+        }
+        merged.push((s, e));
+    }
+    merged
 }
 
 /// Max attempts for a single chunk download (1 initial try + 2 retries).
@@ -839,12 +919,17 @@ mod tests {
     /// exercise the retry path; later ones answer 206 with the requested
     /// slice. With `ignore_range = true` the server always answers 200 with
     /// the full body, mimicking servers that don't support `Range`.
+    /// `fail_range = Some((start, end, attempts))` makes every request whose
+    /// range overlaps `[start, end]` answer `fail_status` for its first
+    /// `attempts` occurrences — used to exercise the serial fallback in
+    /// [`download_fragmented`].
     fn spawn_range_server(
         data: Vec<u8>,
         fail_first: u32,
         fail_status: u16,
         ignore_range: bool,
         truncate_first: bool,
+        fail_range: Option<(usize, usize, u32)>,
     ) -> RangeServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -854,11 +939,13 @@ mod tests {
         let ranges = Arc::new(Mutex::new(Vec::new()));
         let count = Arc::new(AtomicU32::new(0));
         let responses = Arc::new(Mutex::new(Vec::new()));
+        let fail_range_count = Arc::new(AtomicU32::new(0));
 
         let stop_h = stop.clone();
         let ranges_h = ranges.clone();
         let count_h = count.clone();
         let responses_h = responses.clone();
+        let fail_range_count_h = fail_range_count.clone();
         let handle = std::thread::spawn(move || {
             while !stop_h.load(Ordering::SeqCst) {
                 match listener.accept() {
@@ -896,6 +983,26 @@ mod tests {
                         }
                         let (s, e) = parse_range(&range, data.len());
                         let slice = &data[s..=e];
+
+                        // Range-conditioned failure: any request whose range
+                        // overlaps `fail_range` answers `fail_status` for the
+                        // first `attempts` such requests — used to exercise
+                        // the serial fallback in `download_fragmented`.
+                        if let Some((fs, fe, attempts)) = fail_range {
+                            if s <= fe && fs <= e {
+                                let n =
+                                    fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
+                                if n <= attempts {
+                                    responses_h.lock().unwrap().push(fail_status);
+                                    let _ = write!(
+                                        stream,
+                                        "HTTP/1.1 {} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                        fail_status
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
 
                         // Simulate a server that reports a 206 but delivers
                         // only half the requested bytes (truncated body): the
@@ -995,7 +1102,7 @@ mod tests {
         // request is sent — surfaced to the server as an empty accept — which
         // consumes one of the client's retry slots. Retrying the whole
         // operation once below keeps this test robust against that noise.)
-        let mut server = spawn_range_server(data.clone(), 1, 500, false, false);
+        let mut server = spawn_range_server(data.clone(), 1, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_retry").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1025,7 +1132,7 @@ mod tests {
     #[test]
     fn test_download_range_gives_up_after_max_attempts() {
         let data = vec![7u8; 64];
-        let mut server = spawn_range_server(data.clone(), u32::MAX, 500, false, false);
+        let mut server = spawn_range_server(data.clone(), u32::MAX, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_giveup").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1048,7 +1155,7 @@ mod tests {
     #[test]
     fn test_download_range_4xx_not_retried() {
         let data = vec![7u8; 64];
-        let mut server = spawn_range_server(data.clone(), u32::MAX, 404, false, false);
+        let mut server = spawn_range_server(data.clone(), u32::MAX, 404, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_404").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1074,7 +1181,7 @@ mod tests {
     fn test_download_range_rejects_full_body_200() {
         let data = vec![7u8; 64];
         // Server ignores `Range` and always answers 200 with the full body.
-        let mut server = spawn_range_server(data.clone(), 0, 500, true, false);
+        let mut server = spawn_range_server(data.clone(), 0, 500, true, false, None);
         let dest = crate::test_utils::tmpdir("download_range_200").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1100,7 +1207,7 @@ mod tests {
     #[test]
     fn test_download_range_resumes_partial_part() {
         let data: Vec<u8> = (0..100u8).collect();
-        let mut server = spawn_range_server(data.clone(), 0, 500, false, false);
+        let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_resume").join("part.0");
         // Pretend 40 bytes were already downloaded by an earlier attempt.
         std::fs::write(&dest, &data[..40]).unwrap();
@@ -1123,7 +1230,7 @@ mod tests {
     #[test]
     fn test_download_range_resets_corrupted_part() {
         let data: Vec<u8> = (0..100u8).collect();
-        let mut server = spawn_range_server(data.clone(), 0, 500, false, false);
+        let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_reset").join("part.0");
         // Over-sized part: a previous attempt where the server ignored `Range`
         // and wrote the whole body (1000 bytes). It must be dropped and redone.
@@ -1142,7 +1249,7 @@ mod tests {
         // 429 Too Many Requests is transient (rate limiting) — unlike other
         // 4xx codes it must be retried until success.
         let data: Vec<u8> = (0..64u8).collect();
-        let mut server = spawn_range_server(data.clone(), 1, 429, false, false);
+        let mut server = spawn_range_server(data.clone(), 1, 429, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_429").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1172,7 +1279,7 @@ mod tests {
         // to tolerate the spurious pre-request connection drop (see the
         // retries test); the response sequence [206, 206] holds either way.
         let data: Vec<u8> = (0..100u8).collect();
-        let mut server = spawn_range_server(data.clone(), 0, 500, false, true);
+        let mut server = spawn_range_server(data.clone(), 0, 500, false, true, None);
         let dest = crate::test_utils::tmpdir("download_range_short").join("part.0");
 
         let url = format!("http://{}/file.bin", server.addr);
@@ -1188,5 +1295,72 @@ mod tests {
         // First response was truncated (206), second one completed the part.
         let responses = server.responses.lock().unwrap().clone();
         assert_eq!(responses, vec![206, 206], "responses: {:?}", responses);
+    }
+
+    #[test]
+    fn test_merge_adjacent_ranges() {
+        assert_eq!(merge_adjacent_ranges(vec![]), Vec::<(u64, u64)>::new());
+        assert_eq!(merge_adjacent_ranges(vec![(5, 9)]), vec![(5, 9)]);
+        // Adjacent ranges coalesce into a single contiguous one.
+        assert_eq!(
+            merge_adjacent_ranges(vec![(10, 19), (0, 9), (20, 29)]),
+            vec![(0, 29)]
+        );
+        // A gap keeps the ranges separate.
+        assert_eq!(
+            merge_adjacent_ranges(vec![(0, 9), (12, 19)]),
+            vec![(0, 9), (12, 19)]
+        );
+        // Overlapping ranges merge; input order does not matter.
+        assert_eq!(
+            merge_adjacent_ranges(vec![(50, 99), (0, 24), (20, 60)]),
+            vec![(0, 99)]
+        );
+    }
+
+    #[test]
+    fn test_download_fragmented_fallback_recovers_failed_chunk() {
+        // 1000 bytes split into 4 chunks of 250. The third chunk's range
+        // (500-749) answers 500 for its first 3 requests — exhausting the
+        // per-chunk retries — and succeeds afterwards. The fallback must
+        // re-download it serially and the parts must tile the whole file.
+        let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let mut server =
+            spawn_range_server(data.clone(), 0, 500, false, false, Some((500, 749, 3)));
+        let dir = crate::test_utils::tmpdir("fragmented_fallback");
+        let part_dir = dir.join("file.bin.parts");
+        std::fs::create_dir_all(&part_dir).unwrap();
+
+        let url = format!("http://{}/file.bin", server.addr);
+        let mut parts = download_fragmented(&test_agent(), &url, &[], None, 1000, 4, &part_dir);
+        if parts.is_err() {
+            // Retried once to tolerate the spurious pre-request connection
+            // drop (see the retries test); failed parts were removed, so a
+            // fresh run only re-downloads the failed range.
+            let _ = std::fs::remove_dir_all(&part_dir);
+            std::fs::create_dir_all(&part_dir).unwrap();
+            parts = download_fragmented(&test_agent(), &url, &[], None, 1000, 4, &part_dir);
+        }
+        let parts = parts.unwrap();
+
+        server.shutdown();
+        // 4 chunks − 1 failed + 1 fallback = 4 parts, in range order.
+        assert_eq!(parts.len(), 4);
+        let mut file = Vec::new();
+        for p in &parts {
+            let bytes = std::fs::read(p).unwrap();
+            assert!(!bytes.is_empty(), "empty part: {}", p.display());
+            file.extend_from_slice(&bytes);
+        }
+        assert_eq!(file, data, "reassembled file mismatch");
+
+        // The failing range was retried to exhaustion and then re-downloaded
+        // successfully by the fallback. (A spurious pre-request connection
+        // drop can consume one of the client's retry slots, so only the shape
+        // is asserted.)
+        let responses = server.responses.lock().unwrap().clone();
+        let fails = responses.iter().filter(|&&s| s == 500).count();
+        assert!(fails >= 2, "responses: {:?}", responses);
+        assert_eq!(*responses.last().unwrap(), 206, "responses: {:?}", responses);
     }
 }
