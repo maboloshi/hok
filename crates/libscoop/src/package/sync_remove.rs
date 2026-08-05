@@ -16,7 +16,7 @@ use crate::package::{
     operations::{self, expand_installer_vars, run_script},
     query, resolve, InstallState, InstallStateInstalled, Package,
 };
-use crate::{env, error::Fallible, internal, psmodule, shim, Error, Event, QueryOption, Session};
+use crate::{env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, Transaction};
 use super::sync_install::check_not_running;
@@ -213,7 +213,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         package.name()
     );
     shim::remove(session, package)?;
-    operations::shortcut_remove(session, package)?;
+    shortcut::remove(session, package)?;
 
     // Scoop order: `unlink_current` runs right after shims/shortcuts and
     // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
@@ -229,7 +229,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     // uninstaller removed it), keep going like upstream does. Skipped when
     // no current version could be resolved (broken install).
     if let Some(version_dir) = &version_dir {
-        operations::persist_unlink(session, package, version_dir)?;
+        persist::unlink(session, package, version_dir)?;
         match internal::fs::remove_dir(version_dir) {
             Ok(()) => {}
             Err(_e) if !version_dir.exists() => {}
@@ -264,7 +264,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             }
             let old_dir = app_dir.join(&name);
             debug!("remove: {} - removing older version {}", package.name(), name);
-            operations::persist_unlink(session, package, &old_dir)?;
+            persist::unlink(session, package, &old_dir)?;
             match internal::fs::remove_dir(&old_dir) {
                 Ok(()) => {}
                 Err(_e) if !old_dir.exists() => {}
@@ -295,7 +295,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     }
 
     if purge {
-        operations::persist_purge(session, package.name())?;
+        persist::purge(session, package.name())?;
     }
 
     if let Some(tx) = session.emitter() {
@@ -327,13 +327,13 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     operations::link_current(&pkg_dir, &version_dir)?;
 
     // Re-link persistent data
-    operations::persist_link(session, &pkg)?;
+    persist::link(session, &pkg)?;
 
     // Re-create shims + shortcuts
     shim::remove(session, &pkg)?;
     shim::add(session, &pkg)?;
-    operations::shortcut_remove(session, &pkg)?;
-    operations::shortcut_add(session, &pkg)?;
+    shortcut::remove(session, &pkg)?;
+    shortcut::add(session, &pkg)?;
 
     // Re-apply env (mirrors scoop-reset.ps1: env_rm_path/env_rm then
     // env_add_path/env_set — unset all potential old env before re-adding)

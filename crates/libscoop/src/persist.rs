@@ -16,7 +16,9 @@
 
 use std::path::Path;
 
-use crate::{error::Fallible, internal, package::Package, Session};
+use tracing::debug;
+
+use crate::{error::Fallible, internal, package::Package, Event, Session};
 
 /// Link persistent data for a package.
 ///
@@ -109,6 +111,24 @@ pub fn unlink(session: &Session, package: &Package, version_dir: &Path) -> Falli
             let src_path = internal::path::normalize_path(version_dir.join(source));
             let _ = internal::fs::remove_symlink(&src_path);
         }
+    }
+    Ok(())
+}
+
+/// Purge the persistent data directory of `pkg_name` entirely.
+///
+/// Mirrors Scoop's `Remove-Item "$persistDir\$app"` on purge (scoop uninstall
+/// `-p`). Emits [`Event::PackagePersistPurgeStart`] / [`Event::PackagePersistPurgeDone`]
+/// around the removal.
+pub fn purge(session: &Session, pkg_name: &str) -> Fallible<()> {
+    debug!("persist: purging data for {}", pkg_name);
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackagePersistPurgeStart);
+    }
+    let persist_dir = session.config().root_path().join("persist").join(pkg_name);
+    internal::fs::remove_dir(persist_dir)?;
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackagePersistPurgeDone);
     }
     Ok(())
 }

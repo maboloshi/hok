@@ -11,7 +11,7 @@ use std::io::Read;
 use tracing::{debug, info};
 
 use crate::package::{download, identity, operations, query, resolve, Package};
-use crate::{error::Fallible, env, internal, shim, Error, Event, QueryOption, Session};
+use crate::{error::Fallible, env, internal, persist, shim, shortcut, Error, Event, QueryOption, Session};
 
 use super::{confirm_transaction, SyncOption, Transaction};
 
@@ -491,7 +491,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         pkg.version()
     );
     shim::add(session, pkg)?;
-    operations::shortcut_add(session, pkg)?;
+    shortcut::add(session, pkg)?;
 
     // 5.5 env (Scoop order: after shims/shortcuts, before persist)
     debug!("commit: {} v{} - env", pkg.name(), pkg.version());
@@ -499,7 +499,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
-    operations::persist_link(session, pkg)?;
+    persist::link(session, pkg)?;
 
     // 7. post_install (Scoop order: last hook)
     if pkg.manifest().post_install().is_some() {
