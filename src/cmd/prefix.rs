@@ -1,3 +1,5 @@
+//! Return the install path of a package.
+
 use clap::Parser;
 use libscoop::Session;
 
@@ -29,6 +31,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     println!("{}", app_dir.display());
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

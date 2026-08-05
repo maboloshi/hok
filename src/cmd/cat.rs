@@ -1,3 +1,5 @@
+//! Inspect the manifest of a package.
+
 use clap::Parser;
 use libscoop::{fs, os, package, QueryOption, Session};
 use std::path::Path;
@@ -76,6 +78,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

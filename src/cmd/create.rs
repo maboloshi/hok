@@ -1,3 +1,5 @@
+//! Create a package manifest.
+
 use clap::Parser;
 use libscoop::{fs, package::create, Session};
 use std::path::PathBuf;
@@ -46,6 +48,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

@@ -1,7 +1,9 @@
+//! Reinstall a package.
+
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session, SyncOption};
 
-use crate::cmd::shared_args::{Cmd, SyncArgs};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 use crate::{eventloop, output, Result};
 
 /// Reinstall a package
@@ -32,99 +34,108 @@ pub struct Args {
     global: bool,
 }
 
-impl Cmd for Args {
-    type Args = Self;
-
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        session.set_global(args.global);
-        if args.global && !session.is_admin() {
-            anyhow::bail!("ERROR: you need admin rights to install global apps");
-        }
-
-        // Build SyncArgs once, reuse for both phases
-        let sync = SyncArgs {
-            global: args.global,
+impl SyncFlags for Args {
+    fn sync_args(&self) -> SyncArgs {
+        SyncArgs {
+            global: self.global,
+            // Reinstall always runs non-interactively; the remaining flags
+            // are not exposed by `scoop reinstall`.
             assume_yes: true,
-            ignore_failure: args.ignore_failure,
-            offline: args.offline,
-            no_hash_check: args.no_hash_check,
+            ignore_failure: self.ignore_failure,
+            offline: self.offline,
+            no_hash_check: self.no_hash_check,
             independent: false,
             no_replace: false,
             escape_hold: false,
             no_upgrade: false,
-            ignore_cache: args.ignore_cache,
+            ignore_cache: self.ignore_cache,
             download_only: false,
-        };
-
-        let mut hold_set = std::collections::BTreeSet::new();
-        let mut exact_queries = Vec::new();
-
-        // Resolve queries to exact bucket-qualified names.
-        // Only installed packages (with install.json + manifest.json) are accepted.
-        for q in &args.package {
-            match package::query::query(
-                session,
-                vec![q.as_str()],
-                vec![libscoop::QueryOption::Explicit],
-                true,
-            ) {
-                Ok(pkgs) if !pkgs.is_empty() => {
-                    for pkg in &pkgs {
-                        if pkg.is_held() {
-                            hold_set.insert(pkg.name().to_string());
-                        }
-                        exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
-                    }
-                }
-                // Empty resolution must not silently succeed: sync() would
-                // otherwise run both phases with zero queries and merely
-                // report "all apps are up to date".
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        rust_i18n::t!("cmd.reinstall_not_installed", name = q)
-                    ));
-                }
-            }
         }
-
-        // Release held packages temporarily
-        let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
-        if !held.is_empty() {
-            output::status(format!("Releasing held packages: {}", held.join(", ")));
-            for name in &held {
-                package::hold::hold(session, name, false)?;
-            }
-            output::done(rust_i18n::t!("reinstall.released"));
-        }
-
-        let queries: Vec<&str> = exact_queries.iter().map(|s| s.as_str()).collect();
-
-        // Step 1: Uninstall
-        let all_opts = sync.to_sync_options(session);
-        let mut remove_opts = all_opts.clone();
-        remove_opts.push(SyncOption::Remove);
-        run_remove(session, &queries, &remove_opts)?;
-
-        // Step 2: Install
-        run_install(session, &queries, &all_opts)?;
-
-        // Re-hold packages that were held before
-        if !held.is_empty() {
-            output::status(format!("Re-holding packages: {}", held.join(", ")));
-            for name in &held {
-                package::hold::hold(session, name, true)?;
-            }
-            output::done(rust_i18n::t!("reinstall.reheld"));
-        }
-
-        Ok(())
     }
 }
 
-/// Module-level execute for dispatch compatibility.
-#[inline]
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    <Args as Cmd>::execute(args, session)
+    session.set_global(args.global);
+    if args.global && !session.is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to install global apps");
+    }
+
+    // Build sync options once, reuse for both phases
+    let all_opts = args.to_sync_options(session);
+
+    let mut hold_set = std::collections::BTreeSet::new();
+    let mut exact_queries = Vec::new();
+
+    // Resolve queries to exact bucket-qualified names.
+    // Only installed packages (with install.json + manifest.json) are accepted.
+    for q in &args.package {
+        match package::query::query(
+            session,
+            vec![q.as_str()],
+            vec![libscoop::QueryOption::Explicit],
+            true,
+        ) {
+            Ok(pkgs) if !pkgs.is_empty() => {
+                for pkg in &pkgs {
+                    if pkg.is_held() {
+                        hold_set.insert(pkg.name().to_string());
+                    }
+                    exact_queries.push(format!("{}/{}", pkg.bucket(), pkg.name()));
+                }
+            }
+            // Empty resolution must not silently succeed: sync() would
+            // otherwise run both phases with zero queries and merely
+            // report "all apps are up to date".
+            _ => {
+                return Err(anyhow::anyhow!(rust_i18n::t!(
+                    "cmd.reinstall_not_installed",
+                    name = q
+                )));
+            }
+        }
+    }
+
+    // Release held packages temporarily
+    let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
+    if !held.is_empty() {
+        output::status(format!("Releasing held packages: {}", held.join(", ")));
+        for name in &held {
+            package::hold::hold(session, name, false)?;
+        }
+        output::done(rust_i18n::t!("reinstall.released"));
+    }
+
+    let queries: Vec<&str> = exact_queries.iter().map(|s| s.as_str()).collect();
+
+    // Step 1: Uninstall
+    let mut remove_opts = all_opts.clone();
+    remove_opts.push(SyncOption::Remove);
+    run_remove(session, &queries, &remove_opts)?;
+
+    // Step 2: Install
+    run_install(session, &queries, &all_opts)?;
+
+    // Re-hold packages that were held before
+    if !held.is_empty() {
+        output::status(format!("Re-holding packages: {}", held.join(", ")));
+        for name in &held {
+            package::hold::hold(session, name, true)?;
+        }
+        output::done(rust_i18n::t!("reinstall.reheld"));
+    }
+
+    Ok(())
+}
+
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        execute(args, session)
+    }
 }
 
 /// Uninstall phase.

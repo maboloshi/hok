@@ -1,3 +1,5 @@
+//! Reset a package to its current version.
+
 use clap::Parser;
 use libscoop::{package, Session};
 
@@ -18,6 +20,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     package::sync::reset(session, &name, version)?;
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

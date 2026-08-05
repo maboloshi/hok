@@ -12,7 +12,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session};
 
-use crate::cmd::shared_args::{Cmd, SyncArgs};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 use crate::{output, Result};
 
 /// Install package(s)
@@ -68,63 +68,68 @@ pub struct Args {
     no_hash_check: bool,
 }
 
-impl Cmd for Args {
-    type Args = Self;
-
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        session.set_global(args.global);
-        if args.global && !session.is_admin() {
-            anyhow::bail!("ERROR: you need admin rights to install global apps");
+impl SyncFlags for Args {
+    fn sync_args(&self) -> SyncArgs {
+        SyncArgs {
+            global: self.global,
+            assume_yes: self.assume_yes,
+            ignore_failure: self.ignore_failure,
+            offline: self.offline,
+            no_hash_check: self.no_hash_check,
+            independent: self.independent,
+            no_replace: self.no_replace,
+            escape_hold: self.escape_hold,
+            no_upgrade: self.no_upgrade,
+            ignore_cache: self.ignore_cache,
+            download_only: self.download_only,
         }
-
-        let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-
-        // Prune already-installed packages (matching PS1's prune_installed behavior)
-        let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
-        for name in &already_installed {
-            output::warn(format!("'{name}' is already installed. Skipping."));
-        }
-        if to_install.is_empty() {
-            return Ok(());
-        }
-
-        // Build SyncArgs from individual fields, then convert to options
-        let sync = SyncArgs {
-            global: args.global,
-            assume_yes: args.assume_yes,
-            ignore_failure: args.ignore_failure,
-            offline: args.offline,
-            no_hash_check: args.no_hash_check,
-            independent: args.independent,
-            no_replace: args.no_replace,
-            escape_hold: args.escape_hold,
-            no_upgrade: args.no_upgrade,
-            ignore_cache: args.ignore_cache,
-            download_only: args.download_only,
-        };
-        let options = sync.to_sync_options(session);
-
-        let handle = crate::eventloop::run_event_loop_default(session);
-
-        package::sync::sync(session, to_install.clone(), options)?;
-        handle.join().unwrap();
-
-        // Show unsatisfied suggestions from manifests of installed packages
-        let suggestions = package::query::suggest(session, &to_install)?;
-        for entry in &suggestions {
-            let joined = entry.candidates.join("' or '");
-            output::info(format!(
-                "'{}' suggests installing '{}'.",
-                entry.package, joined
-            ));
-        }
-
-        Ok(())
     }
 }
 
-/// Module-level execute for dispatch compatibility.
-#[inline]
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    <Args as Cmd>::execute(args, session)
+    session.set_global(args.global);
+    if args.global && !session.is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to install global apps");
+    }
+
+    let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+
+    // Prune already-installed packages (matching PS1's prune_installed behavior)
+    let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
+    for name in &already_installed {
+        output::warn(format!("'{name}' is already installed. Skipping."));
+    }
+    if to_install.is_empty() {
+        return Ok(());
+    }
+
+    let options = args.to_sync_options(session);
+
+    let handle = crate::eventloop::run_event_loop_default(session);
+
+    package::sync::sync(session, to_install.clone(), options)?;
+    handle.join().unwrap();
+
+    // Show unsatisfied suggestions from manifests of installed packages
+    let suggestions = package::query::suggest(session, &to_install)?;
+    for entry in &suggestions {
+        let joined = entry.candidates.join("' or '");
+        output::info(format!(
+            "'{}' suggests installing '{}'.",
+            entry.package, joined
+        ));
+    }
+
+    Ok(())
+}
+
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        execute(args, session)
+    }
 }

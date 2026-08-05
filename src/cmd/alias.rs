@@ -1,3 +1,5 @@
+//! Manage Scoop aliases.
+
 use clap::{Parser, Subcommand};
 use libscoop::{config, Session};
 
@@ -80,6 +82,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

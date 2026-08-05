@@ -1,3 +1,5 @@
+//! Check for outdated package manifests.
+
 use clap::Parser;
 use libscoop::package::checkver::{self, ReportSeverity};
 use libscoop::Session;

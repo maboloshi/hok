@@ -1,3 +1,5 @@
+//! Import installed apps from a JSON file.
+
 use clap::Parser;
 use libscoop::{fs, package, SyncOption, Session};
 
@@ -45,6 +47,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

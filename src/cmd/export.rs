@@ -1,3 +1,5 @@
+//! Export installed apps to a JSON file.
+
 use clap::Parser;
 use libscoop::{package::export, Session};
 
@@ -16,6 +18,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

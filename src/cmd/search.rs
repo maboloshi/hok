@@ -1,3 +1,5 @@
+//! Search available packages.
+
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session};
 
@@ -74,6 +76,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

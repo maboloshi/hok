@@ -1,3 +1,5 @@
+//! Report package manifests that are missing checkver.
+
 use clap::Parser;
 use libscoop::package::missing_checkver;
 use libscoop::Session;

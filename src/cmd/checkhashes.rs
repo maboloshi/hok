@@ -1,3 +1,5 @@
+//! Check for hash problems in package manifests.
+
 use clap::Parser;
 use libscoop::package::checkhashes::{self, CheckHashesOptions, CheckHashesStatus};
 use libscoop::Session;

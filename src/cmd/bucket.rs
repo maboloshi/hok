@@ -1,3 +1,5 @@
+//! Manage buckets.
+
 use clap::{ArgAction, Parser, Subcommand};
 use crossterm::style::Stylize;
 use libscoop::{bucket, Session};
@@ -93,6 +95,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
     }
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

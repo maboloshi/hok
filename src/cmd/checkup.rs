@@ -1,3 +1,5 @@
+//! Check for potential problems with installed packages.
+
 use clap::Parser;
 use libscoop::{package::checkup, Session};
 
@@ -28,6 +30,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

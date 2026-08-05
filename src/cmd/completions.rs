@@ -1,3 +1,5 @@
+//! Generate shell completions.
+
 use clap::{crate_name, CommandFactory, Parser};
 use clap_complete::Shell;
 
@@ -21,6 +23,7 @@ pub fn execute(args: Args) -> Result<()> {
     );
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

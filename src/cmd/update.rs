@@ -1,7 +1,9 @@
+//! Fetch and update subscribed buckets, or upgrade installed package(s).
+
 use clap::{ArgAction, Parser};
 use libscoop::{bucket, package, Event, Session, SyncOption};
 
-use crate::cmd::shared_args::{Cmd, SyncArgs};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 use crate::{output, Result};
 
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
@@ -14,79 +16,99 @@ use crate::{output, Result};
 pub struct Args {
     /// The package(s) to be upgraded (omit to only update buckets)
     #[arg(action = ArgAction::Append)]
-    pub package: Vec<String>,
+    package: Vec<String>,
 
     /// Ignore failures to ensure a complete transaction
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    pub ignore_failure: bool,
+    ignore_failure: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
-    pub offline: bool,
+    offline: bool,
 
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
-    pub assume_yes: bool,
+    assume_yes: bool,
 
     /// Escape hold to allow to upgrade held package(s)
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    pub escape_hold: bool,
+    escape_hold: bool,
 
     /// Skip package integrity check
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
-    pub no_hash_check: bool,
+    no_hash_check: bool,
 
     /// Force update even within cooldown period
     #[arg(long, action = ArgAction::SetTrue)]
-    pub force: bool,
+    force: bool,
 
     /// Do not install dependencies (may break packages)
     #[arg(short = 'I', long, action = ArgAction::SetTrue)]
-    pub independent: bool,
+    independent: bool,
 
     /// Do not upgrade package(s)
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
-    pub no_upgrade: bool,
+    no_upgrade: bool,
 
     /// Do not replace package(s)
     #[arg(short = 'R', long, action = ArgAction::SetTrue)]
-    pub no_replace: bool,
+    no_replace: bool,
 
     /// Ignore cache and force download
     #[arg(short = 'D', long, action = ArgAction::SetTrue)]
-    pub ignore_cache: bool,
+    ignore_cache: bool,
 
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
-    pub global: bool,
+    global: bool,
 
     /// Update all installed packages (alternative to '*')
     #[arg(short = 'a', long, action = ArgAction::SetTrue)]
-    pub all: bool,
+    all: bool,
 }
+
+impl SyncFlags for Args {
+    fn sync_args(&self) -> SyncArgs {
+        SyncArgs {
+            global: self.global,
+            assume_yes: self.assume_yes,
+            ignore_failure: self.ignore_failure,
+            offline: self.offline,
+            no_hash_check: self.no_hash_check,
+            independent: self.independent,
+            no_replace: self.no_replace,
+            escape_hold: self.escape_hold,
+            no_upgrade: self.no_upgrade,
+            ignore_cache: self.ignore_cache,
+            // `update` never downloads without installing (unlike `install`)
+            download_only: false,
+        }
+    }
+}
+
+pub fn execute(args: Args, session: &Session) -> Result<()> {
+    // --all is a shorthand for upgrading all packages (like passing '*')
+    if args.all && args.package.is_empty() {
+        return execute_upgrade(session, &[String::from("*")], &args.sync_args(), args.force);
+    }
+
+    if !args.package.is_empty() {
+        return execute_upgrade(session, &args.package, &args.sync_args(), args.force);
+    }
+
+    // Bucket update mode (no packages specified)
+    update_buckets(session, args.force)
+}
+
+use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {
     type Args = Self;
 
+    #[inline]
     fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        // --all is a shorthand for upgrading all packages (like passing '*')
-        if args.all && args.package.is_empty() {
-            return execute_upgrade(session, &[String::from("*")], &args);
-        }
-
-        if !args.package.is_empty() {
-            return execute_upgrade(session, &args.package, &args);
-        }
-
-        // Bucket update mode (no packages specified)
-        update_buckets(session, args.force)
+        execute(args, session)
     }
-}
-
-/// Module-level execute for dispatch compatibility.
-#[inline]
-pub fn execute(args: Args, session: &Session) -> Result<()> {
-    <Args as Cmd>::execute(args, session)
 }
 
 /// Update all buckets with simple inline status.
@@ -136,36 +158,26 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
 }
 
 /// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.
-pub fn execute_upgrade(session: &Session, packages: &[String], args: &Args) -> Result<()> {
+pub fn execute_upgrade(
+    session: &Session,
+    packages: &[String],
+    sync: &SyncArgs,
+    force: bool,
+) -> Result<()> {
     let mut queries = packages.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     if queries.is_empty() {
         queries.push("*");
     }
 
-    session.set_global(args.global);
-    if args.global && !session.is_admin() {
+    session.set_global(sync.global);
+    if sync.global && !session.is_admin() {
         anyhow::bail!("ERROR: you need admin rights to install global apps");
     }
-
-    // Build SyncArgs from individual fields, then convert to options
-    let sync = SyncArgs {
-        global: args.global,
-        assume_yes: args.assume_yes,
-        ignore_failure: args.ignore_failure,
-        offline: args.offline,
-        no_hash_check: args.no_hash_check,
-        independent: args.independent,
-        no_replace: args.no_replace,
-        escape_hold: args.escape_hold,
-        no_upgrade: args.no_upgrade,
-        ignore_cache: args.ignore_cache,
-        download_only: false,
-    };
 
     // When --force is set, skip OnlyUpgrade so that packages already at the
     // latest version are still reinstalled (matching PS1's "force update").
     let mut options = sync.to_sync_options(session);
-    if !args.force {
+    if !force {
         options.push(SyncOption::OnlyUpgrade);
     }
 

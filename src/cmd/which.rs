@@ -1,3 +1,5 @@
+//! Locate the shim or executable of a package.
+
 use clap::Parser;
 use libscoop::{package, QueryOption, Session};
 
@@ -49,6 +51,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

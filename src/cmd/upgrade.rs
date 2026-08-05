@@ -1,7 +1,9 @@
+//! Upgrade installed package(s).
+
 use clap::{ArgAction, Parser};
 use libscoop::Session;
 
-use crate::cmd::shared_args::Cmd;
+use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 use crate::Result;
 
 /// Upgrade installed package(s)
@@ -33,31 +35,46 @@ pub struct Args {
     all: bool,
 }
 
-impl Cmd for Args {
-    type Args = Self;
-
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        let update_args = super::update::Args {
-            package: args.package,
-            ignore_failure: args.ignore_failure,
-            offline: args.offline,
-            assume_yes: args.assume_yes,
-            escape_hold: args.escape_hold,
-            no_hash_check: args.no_hash_check,
-            global: args.global,
-            all: args.all,
-            force: false,
+impl SyncFlags for Args {
+    fn sync_args(&self) -> SyncArgs {
+        SyncArgs {
+            global: self.global,
+            assume_yes: self.assume_yes,
+            ignore_failure: self.ignore_failure,
+            offline: self.offline,
+            no_hash_check: self.no_hash_check,
             independent: false,
-            no_upgrade: false,
             no_replace: false,
+            escape_hold: self.escape_hold,
+            no_upgrade: false,
             ignore_cache: false,
-        };
-        super::update::execute_upgrade(session, &update_args.package, &update_args)
+            download_only: false,
+        }
     }
 }
 
-/// Module-level execute for dispatch compatibility.
-#[inline]
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    <Args as Cmd>::execute(args, session)
+    // --all is a shorthand for upgrading all packages (like passing '*'),
+    // matching `update --all` semantics.
+    if args.all && args.package.is_empty() {
+        return super::update::execute_upgrade(
+            session,
+            &[String::from("*")],
+            &args.sync_args(),
+            false,
+        );
+    }
+
+    super::update::execute_upgrade(session, &args.package, &args.sync_args(), false)
+}
+
+use crate::cmd::shared_args::Cmd;
+
+impl Cmd for Args {
+    type Args = Self;
+
+    #[inline]
+    fn execute(args: Self::Args, session: &Session) -> Result<()> {
+        execute(args, session)
+    }
 }

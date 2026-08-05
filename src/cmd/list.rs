@@ -1,3 +1,5 @@
+//! List installed package(s).
+
 use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
 use libscoop::{package, QueryOption, Session};
@@ -154,6 +156,7 @@ fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Sessi
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

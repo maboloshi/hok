@@ -1,3 +1,5 @@
+//! Format package manifests in-place.
+
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -62,6 +64,7 @@ pub fn execute(args: Args) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {

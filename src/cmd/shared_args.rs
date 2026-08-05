@@ -1,16 +1,19 @@
 //! Shared argument groups for use across multiple commands.
 //!
-//! These `#[derive(clap::Args)]` structs standardize commonly-repeated flag
-//! definitions. Use them via `#[clap(flatten)]` in any command's `Args`:
+//! [`SyncArgs`] centralizes the flag→option conversion shared by the sync
+//! commands (install / update / upgrade / reinstall). Each command declares
+//! its own `Args` fields privately — matching Scoop's per-command flag sets —
+//! and implements [`SyncFlags`] to project them into a [`SyncArgs`]:
 //!
 //! ```ignore
-//! #[derive(Parser)]
-//! pub struct Args {
-//!     #[clap(flatten)]
-//!     pub sync: SyncArgs,
-//!     // command-specific flags follow
+//! impl SyncFlags for Args {
+//!     fn sync_args(&self) -> SyncArgs {
+//!         SyncArgs { global: self.global, /* ... */ }
+//!     }
 //! }
 //! ```
+//!
+//! [`QueryArgs`] is the same idea for query operations (search etc.).
 
 use libscoop::{QueryOption, Session, SyncOption};
 
@@ -102,6 +105,26 @@ impl SyncArgs {
     }
 }
 
+/// Standard interface for commands that share the sync flag set.
+///
+/// Each sync command (install / update / upgrade / reinstall) declares its
+/// own `Args` fields privately and implements this trait to project them into
+/// a [`SyncArgs`]. The default `to_sync_options()` reuses the shared
+/// conversion (including the config `ignore_failures` merge), so execute
+/// bodies stay free of flag plumbing.
+///
+/// Commands may bake in command-specific defaults here (e.g. `reinstall`
+/// always runs with `assume_yes`).
+pub trait SyncFlags {
+    /// Project this command's sync flags into a [`SyncArgs`].
+    fn sync_args(&self) -> SyncArgs;
+
+    /// Convert sync flags to a `Vec<SyncOption>`.
+    fn to_sync_options(&self, session: &Session) -> Vec<SyncOption> {
+        self.sync_args().to_sync_options(session)
+    }
+}
+
 /// Shared arguments for query/search operations (list, search, info, depends, etc.).
 ///
 /// Provides `.to_query_options()` to convert flags to a `Vec<QueryOption>`.
@@ -142,6 +165,11 @@ impl QueryArgs {
 /// Each command module defines its own `Args` struct
 /// (via `#[derive(clap::Parser)]`) and implements this trait.
 /// The trait enables uniform dispatch and future auto-registration.
+///
+/// Note: dispatch currently calls each module's `execute()` function
+/// directly (see `cmd/mod.rs`); the trait is reserved for a future
+/// uniform dispatch / auto-registration, hence the allow.
+#[allow(dead_code)]
 pub trait Cmd {
     /// The clap argument type for this command.
     type Args: clap::Args;

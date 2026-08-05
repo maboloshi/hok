@@ -1,3 +1,5 @@
+//! Check for broken download URLs in package manifests.
+
 use clap::Parser;
 use libscoop::{package::checkurls, Session};
 use std::path::PathBuf;
@@ -86,6 +88,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     Ok(())
 }
+
 use crate::cmd::shared_args::Cmd;
 
 impl Cmd for Args {
