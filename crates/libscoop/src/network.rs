@@ -12,7 +12,6 @@
 //!   token for GitHub API (`checkver`).
 
 use std::path::Path;
-use tracing::warn;
 
 use crate::{error::Fallible, internal, Error, Session};
 
@@ -37,21 +36,10 @@ pub fn head_url(
 
     // Build PRIVATE_HOSTS extra headers
     let extra_headers = config.private_hosts().and_then(|hosts| {
-        let matched: std::collections::HashMap<String, String> = hosts
-            .iter()
-            .filter(|h| {
-                regex::Regex::new(h.match_pattern())
-                    .inspect_err(|e| warn!("invalid regex pattern '{}': {e}", h.match_pattern()))
-                    .ok()
-                    .is_some_and(|re| re.is_match(url))
-            })
-            .flat_map(|h| h.parse_headers())
-            .collect();
-        if matched.is_empty() {
-            None
-        } else {
-            Some(matched)
-        }
+        internal::network::match_private_hosts(
+            hosts.iter().map(|h| (h.match_pattern(), h.headers())),
+            url,
+        )
     });
 
     let opts = internal::network::RequestOptions {
@@ -103,21 +91,10 @@ pub fn download_page(
 
     // Build PRIVATE_HOSTS extra headers
     let extra_headers = config.private_hosts().and_then(|hosts| {
-        let matched: std::collections::HashMap<String, String> = hosts
-            .iter()
-            .filter(|h| {
-                regex::Regex::new(h.match_pattern())
-                    .inspect_err(|e| warn!("invalid regex pattern '{}': {e}", h.match_pattern()))
-                    .ok()
-                    .is_some_and(|re| re.is_match(url))
-            })
-            .flat_map(|h| h.parse_headers())
-            .collect();
-        if matched.is_empty() {
-            None
-        } else {
-            Some(matched)
-        }
+        internal::network::match_private_hosts(
+            hosts.iter().map(|h| (h.match_pattern(), h.headers())),
+            url,
+        )
     });
 
     // User-Agent: use session's custom UA or default

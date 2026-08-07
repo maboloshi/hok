@@ -272,22 +272,6 @@ impl PrivateHosts {
     pub fn headers(&self) -> &str {
         &self.headers
     }
-
-    /// Parse headers into a map (key=value, newline-separated).
-    pub fn parse_headers(&self) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        for line in self.headers.lines() {
-            let line = line.trim();
-            if let Some(eq_pos) = line.find('=') {
-                let key = line[..eq_pos].trim().to_string();
-                let val = line[eq_pos + 1..].trim().to_string();
-                if !key.is_empty() {
-                    map.insert(key, val);
-                }
-            }
-        }
-        map
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,8 +44,8 @@ pub struct RequestOptions<'a> {
     pub user_agent: Option<&'a str>,
     pub referer: Option<&'a str>,
     pub cookies: Option<&'a HashMap<String, String>>,
-    pub extra_headers: Option<&'a HashMap<String, String>>,
     pub token: Option<&'a str>,
+    pub extra_headers: Option<&'a HashMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,53 @@ pub(crate) fn apply_headers<B>(
         }
     }
     req
+}
+
+/// Match PRIVATE_HOSTS entries (`(match_pattern, headers_string)` pairs)
+/// against a URL and return the merged headers. Returns `None` when nothing
+/// matched.
+///
+/// `headers_string` is the raw newline-separated `key=value` text from the
+/// config; it is parsed only for entries whose pattern matches. Matching is
+/// case-insensitive, mirroring PowerShell's `-match` operator used by upstream
+/// Scoop. Callers fold the result into [`RequestOptions::extra_headers`]; the
+/// matching itself lives here so all call sites share one implementation.
+pub(crate) fn match_private_hosts<'a>(
+    hosts: impl IntoIterator<Item = (&'a str, &'a str)>,
+    url: &str,
+) -> Option<HashMap<String, String>> {
+    let matched: HashMap<String, String> = hosts
+        .into_iter()
+        .filter(|(pattern, _)| {
+            regex::RegexBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+                .inspect_err(|e| warn!("invalid regex pattern '{pattern}': {e}"))
+                .ok()
+                .is_some_and(|re| re.is_match(url))
+        })
+        .flat_map(|(_, headers)| parse_headers(headers))
+        .collect();
+    if matched.is_empty() {
+        None
+    } else {
+        Some(matched)
+    }
+}
+
+/// Parse a newline-separated `key=value` header string (same format as the
+/// `PRIVATE_HOSTS` config value, mirroring Scoop's `ConvertFrom-StringData`).
+fn parse_headers(headers: &str) -> impl Iterator<Item = (String, String)> + '_ {
+    headers.lines().filter_map(|line| {
+        let line = line.trim();
+        let (key, val) = line.split_once('=')?;
+        let key = key.trim();
+        if key.is_empty() {
+            None
+        } else {
+            Some((key.to_string(), val.trim().to_string()))
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -163,5 +211,70 @@ pub fn strip_filename(url: &str) -> String {
         trimmed[..=pos].to_string()
     } else {
         format!("{}/", without_fragment)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn entries(pairs: &[(&str, &[(&str, &str)])]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(pattern, headers)| {
+                let text = headers
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (pattern.to_string(), text)
+            })
+            .collect()
+    }
+
+    fn match_url(
+        pairs: &[(&str, &[(&str, &str)])],
+        url: &str,
+    ) -> Option<HashMap<String, String>> {
+        let entries = entries(pairs);
+        match_private_hosts(entries.iter().map(|(p, h)| (p.as_str(), h.as_str())), url)
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_like_powershell_match() {
+        let h = match_url(
+            &[("^https://API\\.EXAMPLE\\.com", &[("X-Token", "abc")])],
+            "https://api.example.com/resource",
+        )
+        .unwrap();
+        assert_eq!(h.get("X-Token").map(|s| s.as_str()), Some("abc"));
+    }
+
+    #[test]
+    fn no_match_returns_none() {
+        assert_eq!(
+            match_url(&[("example\\.com", &[("X-Token", "abc")])], "https://other.org/x"),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_hosts_returns_none() {
+        assert_eq!(match_private_hosts(std::iter::empty(), "https://a.example.com/"), None);
+    }
+
+    #[test]
+    fn matched_headers_are_merged() {
+        let h = match_url(
+            &[
+                ("a\\.example\\.com", &[("X-One", "1")]),
+                ("b\\.example\\.com", &[("X-Two", "2")]),
+            ],
+            "https://B.Example.COM/x",
+        )
+        .unwrap();
+        assert_eq!(h.get("X-Two").map(|s| s.as_str()), Some("2"));
+        assert_eq!(h.get("X-One"), None);
     }
 }

@@ -142,7 +142,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     let private_hosts = session.config().private_hosts().map(|hosts| {
         hosts
             .iter()
-            .map(|h| (h.match_pattern().to_string(), h.parse_headers()))
+            .map(|h| (h.match_pattern().to_string(), h.headers().to_string()))
             .collect::<Vec<_>>()
     });
     let user_agent = session
@@ -328,20 +328,15 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                 let url = item.url.clone();
                 let token = gh_token.clone();
                 handles.push(Some(s.spawn(move || {
-                    // Build PRIVATE_HOSTS extra headers for this URL
-                    // (computed inside the closure so the HashMap is owned by the thread)
-                    let extra = hosts_ref.as_ref().map(|hosts| {
-                        hosts
-                            .iter()
-                            .filter(|(pattern, _)| {
-                                regex::Regex::new(pattern)
-                                    .ok()
-                                    .is_some_and(|re| re.is_match(&url))
-                            })
-                            .flat_map(|(_, headers)| headers.clone().into_iter())
-                            .collect::<std::collections::HashMap<String, String>>()
+                    // PRIVATE_HOSTS entries matched against the URL here
+                    // (computed inside the closure so the HashMap is owned by the thread).
+                    let extra = hosts_ref.as_ref().and_then(|v| {
+                        crate::internal::network::match_private_hosts(
+                            v.iter().map(|(p, h)| (p.as_str(), h.as_str())),
+                            &url,
+                        )
                     });
-                    let extra_ref = extra.as_ref().filter(|m| !m.is_empty());
+                    let extra_ref = extra.as_ref();
                     let referer = crate::internal::network::strip_filename(&url);
                     let dl_opts = crate::internal::network::RequestOptions {
                         proxy: proxy_ref,
@@ -349,8 +344,8 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                         user_agent: Some(ua_ref),
                         referer: Some(&referer),
                         cookies: None,
-                        extra_headers: extra_ref,
                         token: token.as_deref(),
+                        extra_headers: extra_ref,
                     };
                     crate::internal::network::download(&url, &dl_opts)
                         .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
