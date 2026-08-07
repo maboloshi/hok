@@ -105,6 +105,24 @@ impl SyncArgs {
     }
 }
 
+/// Apply the `--global` scope and verify admin rights when requested.
+///
+/// Mirrors Scoop's per-command `if ($global -and !(is_admin))` guard (see
+/// scoop-install.ps1 / scoop-uninstall.ps1 / scoop-hold.ps1): sets the
+/// session's global scope, then bails with a per-command message when a
+/// global operation runs without elevation. `verb` fills the message
+/// (e.g. "install", "uninstall", "hold").
+pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crate::Result<()> {
+    session.set_global(global);
+    if global && !session.is_admin() {
+        return Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.admin_rights_required",
+            verb = verb
+        )));
+    }
+    Ok(())
+}
+
 /// Standard interface for commands that share the sync flag set.
 ///
 /// Each sync command (install / update / upgrade / reinstall) declares its

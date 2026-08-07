@@ -12,7 +12,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session};
 
-use crate::cmd::shared_args::{SyncArgs, SyncFlags};
+use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
 use crate::{output, Result};
 
 /// Install package(s)
@@ -87,10 +87,7 @@ impl SyncFlags for Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
-    if args.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to install global apps");
-    }
+    ensure_global(session, args.global, "install")?;
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 

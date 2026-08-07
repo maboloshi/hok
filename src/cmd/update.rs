@@ -3,7 +3,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{bucket, package, Event, Session, SyncOption};
 
-use crate::cmd::shared_args::{SyncArgs, SyncFlags};
+use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
 use crate::{output, Result};
 
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
@@ -96,7 +96,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return execute_upgrade(session, &args.package, &args.sync_args(), args.force);
     }
 
-    // Bucket update mode (no packages specified)
+    // Bucket update mode (no packages specified).
+    // Mirrors scoop-update.ps1: `--global` is invalid without an explicit
+    // <app> — reject it instead of silently ignoring the flag.
+    if args.global {
+        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.update_global_no_app")));
+    }
     update_buckets(session, args.force)
 }
 
@@ -169,10 +174,7 @@ pub fn execute_upgrade(
         queries.push("*");
     }
 
-    session.set_global(sync.global);
-    if sync.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to install global apps");
-    }
+    ensure_global(session, sync.global, "upgrade")?;
 
     // When --force is set, skip OnlyUpgrade so that packages already at the
     // latest version are still reinstalled (matching PS1's "force update").

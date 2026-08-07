@@ -78,14 +78,11 @@ pub(super) fn hold_packages(
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
-    if args.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to hold global apps");
-    }
+    ensure_global(session, args.global, "hold")?;
     hold_packages(session, &args.package, true, rust_i18n::t!("cmd.holding"))
 }
 
-use crate::cmd::shared_args::Cmd;
+use crate::cmd::shared_args::{ensure_global, Cmd};
 
 impl Cmd for Args {
     type Args = Self;

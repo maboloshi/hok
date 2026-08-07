@@ -158,6 +158,8 @@ cmd:
   no_download_urls: "没有下载 URL"
   held_skip: "'%{name}' 已锁定到版本 %{version}"
   reinstall_not_installed: "'%{name}' 未安装。请使用 'hok install' 进行安装。"
+  admin_rights_required: "错误：需要管理员权限才能对全局应用执行 %{verb} 操作"
+  update_global_no_app: "hok update：未指定 <app> 时 --global 参数无效。"
   auto_err_token: "ci-auto-pr 需要设置 GITHUB_TOKEN 环境变量"
   auto_err_mode: "必须指定 --push 或 --request 参数"
   auto_err_upstream: "--request 模式需要 --upstream 参数（格式：<user>/<repo>:<branch>）"

@@ -158,6 +158,8 @@ cmd:
   no_download_urls: "no download URLs"
   held_skip: "'%{name}' is held to version %{version}"
   reinstall_not_installed: "'%{name}' is not installed. Use 'hok install' to install it."
+  admin_rights_required: "ERROR: you need admin rights to %{verb} global apps"
+  update_global_no_app: "hok update: --global is invalid when <app> is not specified."
   auto_err_token: "GITHUB_TOKEN is required for ci-auto-pr"
   auto_err_mode: "Must specify --push or --request"
   auto_err_upstream: "--request requires --upstream (<user>/<repo>:<branch>)"

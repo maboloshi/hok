@@ -3,7 +3,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session, SyncOption};
 
-use crate::cmd::shared_args::{SyncArgs, SyncFlags};
+use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
 use crate::{eventloop, output, Result};
 
 /// Reinstall a package
@@ -55,10 +55,7 @@ impl SyncFlags for Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
-    if args.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to install global apps");
-    }
+    ensure_global(session, args.global, "reinstall")?;
 
     // Build sync options once, reuse for both phases
     let all_opts = args.to_sync_options(session);

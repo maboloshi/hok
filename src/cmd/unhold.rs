@@ -22,14 +22,11 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
-    if args.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to unhold global apps");
-    }
+    ensure_global(session, args.global, "unhold")?;
     hold_packages(session, &args.package, false, rust_i18n::t!("cmd.unholding"))
 }
 
-use crate::cmd::shared_args::Cmd;
+use crate::cmd::shared_args::{ensure_global, Cmd};
 
 impl Cmd for Args {
     type Args = Self;

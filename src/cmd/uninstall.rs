@@ -29,11 +29,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
-
-    if args.global && !session.is_admin() {
-        anyhow::bail!("ERROR: you need admin rights to uninstall global apps");
-    }
+    ensure_global(session, args.global, "uninstall")?;
 
     let mut options = vec![SyncOption::Remove];
 
@@ -62,7 +58,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-use crate::cmd::shared_args::Cmd;
+use crate::cmd::shared_args::{ensure_global, Cmd};
 
 impl Cmd for Args {
     type Args = Self;
