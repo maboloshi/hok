@@ -5,6 +5,18 @@
 
 use crate::{error::Fallible, internal, package::InstallInfo, Error, Session};
 
+/// Result of a hold/unhold toggle.
+///
+/// Mirrors Scoop's per-package branches in `scoop-hold.ps1` / `scoop-unhold.ps1`:
+/// an already-held package reports "already held" instead of rewriting state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldResult {
+    /// The `held` flag was actually changed and persisted.
+    Changed,
+    /// The package already had the requested state; nothing was written.
+    Unchanged,
+}
+
 /// Hold or unhold a package.
 ///
 /// # Errors
@@ -18,7 +30,7 @@ use crate::{error::Fallible, internal, package::InstallInfo, Error, Session};
 /// Serde errors will be returned if the install info cannot be serialized.
 ///
 /// [1]: crate::Error::PackageHoldBrokenInstall
-pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
+pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<HoldResult> {
     let mut path = session.effective_root_path();
     path.push("apps");
     path.push(name);
@@ -31,8 +43,12 @@ pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<()> {
     path.push("install.json");
 
     if let Ok(mut install_info) = InstallInfo::parse(&path) {
+        if install_info.is_held() == flag {
+            return Ok(HoldResult::Unchanged);
+        }
         install_info.set_held(flag);
-        internal::fs::write_json(path, install_info)
+        internal::fs::write_json(path, install_info)?;
+        Ok(HoldResult::Changed)
     } else {
         Err(Error::PackageHoldBrokenInstall(name.to_owned()))
     }
@@ -98,6 +114,17 @@ mod tests {
         assert_eq!(info.arch(), "32bit");
         assert_eq!(info.bucket(), Some("main"));
         assert!(info.is_held());
+    }
+
+    #[test]
+    fn hold_idempotent_reports_unchanged() {
+        let (session, root) = setup("idempotent");
+        write_install_json(&root.0, "app", r#"{"architecture": "64bit"}"#);
+
+        assert_eq!(hold(&session, "app", true).unwrap(), HoldResult::Changed);
+        assert_eq!(hold(&session, "app", true).unwrap(), HoldResult::Unchanged);
+        assert_eq!(hold(&session, "app", false).unwrap(), HoldResult::Changed);
+        assert_eq!(hold(&session, "app", false).unwrap(), HoldResult::Unchanged);
     }
 
     #[test]

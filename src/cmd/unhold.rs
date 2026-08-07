@@ -1,9 +1,13 @@
 //! Unhold a package to allow upgrades.
+//!
+//! Thin shell over [`crate::cmd::hold::hold_packages`] with `flag = false` —
+//! the batch loop is shared with the `hold` command (see `hold.rs`).
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::Session;
 
-use crate::{output, Result};
+use crate::cmd::hold::hold_packages;
+use crate::Result;
 
 /// Unhold package(s) to enable changes
 #[derive(Debug, Parser)]
@@ -19,18 +23,10 @@ pub struct Args {
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     session.set_global(args.global);
-    let packages = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    for name in packages {
-        output::progress(rust_i18n::t!("cmd.unholding"), name);
-        match package::hold::hold(session, name, false) {
-            Ok(..) => output::ok(),
-            Err(err) => {
-                output::err(rust_i18n::t!("cmd.hold_err"));
-                return Err(err.into());
-            }
-        }
+    if args.global && !session.is_admin() {
+        anyhow::bail!("ERROR: you need admin rights to unhold global apps");
     }
-    Ok(())
+    hold_packages(session, &args.package, false, rust_i18n::t!("cmd.unholding"))
 }
 
 use crate::cmd::shared_args::Cmd;
