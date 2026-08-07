@@ -12,7 +12,7 @@ use std::io::Write;
 fn test_default_architecture_config_override() {
     let dir = std::env::temp_dir().join("hok-arch-config-test");
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("config.json");
+    let path = dir.join("hok.json");
 
     let mut file = std::fs::File::create(&path).unwrap();
     file.write_all(br#"{"default_architecture": "x86"}"#)

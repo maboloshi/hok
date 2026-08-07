@@ -29,7 +29,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     // Get API key: env var > config > none
-    let api_key = std::env::var("VT_API_KEY").ok();
+    let api_key = std::env::var("VT_API_KEY")
+        .ok()
+        .or_else(|| session.config().virustotal_api_key.clone());
 
     for pkg in &pkgs {
         let urls = pkg.manifest().url();

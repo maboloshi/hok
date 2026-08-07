@@ -10,7 +10,7 @@ pub fn tmpdir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-/// Create a [`Session`][1] rooted at `root`: writes a minimal `config.json`
+/// Create a [`Session`][1] rooted at `root`: writes a minimal `hok.json`
 /// (with `root_path` and `cache_path` pointing at `root`) and loads it via
 /// `Session::new_with`.
 ///
@@ -20,7 +20,7 @@ pub fn tmpdir(name: &str) -> std::path::PathBuf {
 ///
 /// [1]: crate::Session
 pub fn test_session(root: &std::path::Path) -> crate::Session {
-    let config_path = root.join("config.json");
+    let config_path = root.join("hok.json");
     let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
     let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
     std::fs::write(

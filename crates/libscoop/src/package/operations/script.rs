@@ -263,8 +263,8 @@ mod tests {
         let guard = TestDirGuard(tmp.clone());
         let root = &tmp;
 
-        // Write minimal Scoop config
-        let config_path = root.join("config.json");
+        // Write minimal hok config
+        let config_path = root.join("hok.json");
         let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
         std::fs::write(
             &config_path,

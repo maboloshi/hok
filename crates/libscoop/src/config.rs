@@ -5,18 +5,22 @@
 //!
 //! # Design
 //!
-//! - **JSON-backed**: Scoop's native config format is JSON. This module
-//!   reads and writes it via `serde_json`. Unknown fields are preserved
-//!   transparently during (de)serialisation to avoid erasing Scoop settings
-//!   that Hok does not natively support.
-//! - **Builder pattern**: [`ConfigBuilder`] sets the config path and loads
-//!   it; [`Config`] provides typed accessors for known keys plus a
-//!   catch-all `get()` / `set()` for arbitrary keys.
-//! - **Path discovery**: [`possible_config_paths()`] returns the known
-//!   config file locations (user-local and global), searched in order by
-//!   [`Session::new()`].
+//! - **One file, one-time migration**: hok's own config file
+//!   (`~/.config/hok/config.json`) is the only config file hok reads or
+//!   writes. [`ConfigInner`] contains only the keys hok actually supports,
+//!   so the serialized file is exactly the supported set by construction.
+//!   On the first run, when hok's file does not exist yet, the supported
+//!   keys are migrated once from Scoop's `config.json` (found via
+//!   [`possible_config_paths()`]); afterwards Scoop's file is never
+//!   consulted again and never modified.
+//! - **Builder pattern**: [`ConfigBuilder`] sets the hok config path (and an
+//!   optional read-only Scoop path used only for the first-run migration);
+//!   [`Config`] provides typed accessors for supported keys.
+//! - **Path discovery**: [`possible_config_paths()`] returns the known Scoop
+//!   config file locations (user-local and global); [`Session::new()`] picks
+//!   the first one that exists as the migration source.
 //! - **Defaults**: If no config file exists, [`Config::init()`] creates a
-//!   blank config with sensible defaults.
+//!   blank hok config with sensible defaults.
 //!
 //! # Thread safety
 //!
@@ -35,10 +39,15 @@ use crate::internal;
 
 /// Builder pattern for generating [`Config`].
 pub struct ConfigBuilder {
-    /// Path of the config file.
+    /// Path of hok's own config file (the only file hok writes to).
     ///
-    /// default is [`default::config_path()`].
+    /// Default is [`default::hok_config_path()`].
     path: PathBuf,
+
+    /// Optional path of Scoop's config file, used as a read-only fallback:
+    /// values from this file are merged in first, then hok's own file
+    /// overrides them. Never written to.
+    scoop_path: Option<PathBuf>,
 }
 
 impl Default for ConfigBuilder {
@@ -50,35 +59,83 @@ impl Default for ConfigBuilder {
 impl ConfigBuilder {
     pub fn new() -> ConfigBuilder {
         Self {
-            path: default::config_path(),
+            path: default::hok_config_path(),
+            scoop_path: None,
         }
     }
 
     pub fn path<P: AsRef<Path>>(&mut self, path: P) -> ConfigBuilder {
         Self {
             path: path.as_ref().to_owned(),
+            scoop_path: self.scoop_path.clone(),
         }
     }
 
-    /// Load the config file from the config path.
-    pub fn load(&self) -> Fallible<Config> {
-        let mut buf = vec![];
-        let path = self.path.clone();
-
-        std::fs::File::open(&path)?.read_to_end(&mut buf)?;
-
-        let inner = serde_json::from_slice(&buf)?;
-        let config = Config { path, inner };
-        Ok(config)
+    /// Set the read-only Scoop config file to merge as a fallback.
+    pub fn scoop_path<P: AsRef<Path>>(&mut self, path: P) -> ConfigBuilder {
+        Self {
+            path: self.path.clone(),
+            scoop_path: Some(path.as_ref().to_owned()),
+        }
     }
+
+    /// Load hok's own config file.
+    ///
+    /// On first run (hok's file does not exist yet), the supported keys are
+    /// migrated once from Scoop's read-only config file into a new hok
+    /// config file; afterwards only hok's file is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when neither file exists (matching the previous
+    /// single-file behavior), or when the config fails to parse.
+    pub fn load(&self) -> Fallible<Config> {
+        // hok's own file exists: load it directly. Scoop's file is only
+        // consulted on first run.
+        if let Ok(value) = read_json_file(&self.path) {
+            let inner = serde_json::from_value(value)?;
+            return Ok(Config {
+                path: self.path.clone(),
+                inner,
+            });
+        }
+
+        // First run: migrate the supported keys from Scoop's read-only file
+        // into a new hok config file, then use only that from now on.
+        // Unsupported Scoop keys are dropped by deserialization.
+        if let Some(scoop_path) = &self.scoop_path {
+            if let Ok(value) = read_json_file(scoop_path) {
+                let inner: ConfigInner = serde_json::from_value(value)?;
+                internal::fs::write_json(&self.path, &inner)?;
+                return Ok(Config {
+                    path: self.path.clone(),
+                    inner,
+                });
+            }
+        }
+
+        // Neither file exists: report the missing hok config file.
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("config file not found: {}", self.path.display()),
+        )
+        .into())
+    }
+}
+
+/// Read a JSON config file into a [`serde_json::Value`], returning `Ok`
+/// only when the file exists and parses.
+fn read_json_file(path: &Path) -> Fallible<serde_json::Value> {
+    let mut buf = vec![];
+    std::fs::File::open(path)?.read_to_end(&mut buf)?;
+    Ok(serde_json::from_slice(&buf)?)
 }
 
 /// Scoop Configuration representation.
 ///
-/// **NOTE**: Not all fields are supported. For the purpose of not erasing unused
-/// fields during serialization, they are implemented to be (de)serializable.
-/// However, most of them are set to private and transparent during the whole
-/// (de)serialization process.
+/// **NOTE**: `ConfigInner` contains only the fields hok actually supports;
+/// Scoop-only settings (e.g. `use_external_7zip`, `scoop_repo`) are not
+/// modeled and are silently dropped when a Scoop config is read.
 #[derive(Clone, Debug)]
 pub struct Config {
     /// The file path of this [`Config`].
@@ -108,25 +165,10 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_min_split_size: Option<String>,
 
-    #[serde(alias = "aria2_options")]
-    #[serde(rename = "aria2-options")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aria2_options: Option<String>,
-
-    #[serde(alias = "aria2_retry_wait")]
-    #[serde(rename = "aria2-retry-wait")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aria2_retry_wait: Option<u32>,
-
     #[serde(alias = "aria2_split")]
     #[serde(rename = "aria2-split")]
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_split: Option<u32>,
-
-    #[serde(alias = "aria2_warning_enabled")]
-    #[serde(rename = "aria2-warning-enabled")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    aria2_warning_enabled: Option<bool>,
 
     #[serde(alias = "cachePath")]
     #[serde(default = "default::cache_path")]
@@ -157,36 +199,22 @@ pub struct ConfigInner {
     default_architecture: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    debug: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    force_update: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub gh_token: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub virustotal_api_key: Option<String>,
 
     #[serde(alias = "globalPath")]
     #[serde(default = "default::global_path")]
     #[serde(skip_serializing_if = "default::is_default_global_path")]
     global_path: PathBuf,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ignore_running_processes: Option<bool>,
-
     #[serde(alias = "lastupdate")]
     #[serde(skip_serializing_if = "Option::is_none")]
     last_update: Option<String>,
 
-    #[serde(alias = "manifest_review")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    show_manifest: Option<bool>,
-
     #[serde(skip_serializing_if = "Option::is_none")]
     use_isolated_path: Option<IsolatedPath>,
-
-    #[serde(alias = "msiextract_use_lessmsi")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    use_lessmsi: Option<bool>,
 
     /// Use SQLite to cache manifests.
     ///
@@ -234,22 +262,6 @@ pub struct ConfigInner {
     #[serde(default = "default::root_path")]
     #[serde(skip_serializing_if = "default::is_default_root_path")]
     root_path: PathBuf,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scoop_branch: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scoop_repo: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shim: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    show_update_log: Option<bool>,
-
-    #[serde(alias = "7zipextract_use_external")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    use_external_7zip: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -307,12 +319,12 @@ impl FromStr for IsolatedPath {
 impl Config {
     /// Initialize the config with default values.
     ///
-    /// This function will try to write the default config to the default path,
-    /// located in the XDG_CONFIG_HOME directory.
+    /// This function will try to write the default config to hok's own config
+    /// path (`~/.config/hok/config.json`).
     pub(crate) fn init() -> Config {
         let config = Config::default();
         // try to write the default config to the default path, error is ignored
-        let _ = internal::fs::write_json(default::config_path(), &config.inner);
+        let _ = internal::fs::write_json(default::hok_config_path(), &config.inner);
         config
     }
 
@@ -508,13 +520,6 @@ impl Config {
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Fallible<()> {
         let is_unset = value.is_empty();
         match key {
-            "use_external_7zip" => match is_unset {
-                true => self.inner.use_external_7zip = None,
-                false => match value.parse::<bool>() {
-                    Ok(value) => self.inner.use_external_7zip = Some(value),
-                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
-                },
-            },
             "aria2_enabled" | "aria2-enabled" => match is_unset {
                 true => self.inner.aria2_enabled = None,
                 false => match value.parse::<bool>() {
@@ -560,13 +565,6 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "use_lessmsi" => match is_unset {
-                true => self.inner.use_lessmsi = None,
-                false => match value.parse::<bool>() {
-                    Ok(value) => self.inner.use_lessmsi = Some(value),
-                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
-                },
-            },
             "default_architecture" => match is_unset {
                 true => self.inner.default_architecture = None,
                 false => match crate::internal::arch::Arch::parse(value) {
@@ -585,13 +583,84 @@ impl Config {
                 "" | "none" => self.inner.proxy = None,
                 _ => self.inner.proxy = Some(value.to_string()),
             },
+            "no_junction" | "no_junctions" => match is_unset {
+                true => self.inner.no_junction = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.no_junction = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
+            "no_color" | "no-color" => match is_unset {
+                true => self.inner.no_color = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.no_color = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
+            "aria2_split" | "aria2-split" => match is_unset {
+                true => self.inner.aria2_split = None,
+                false => match value.parse::<u32>() {
+                    Ok(v) => self.inner.aria2_split = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
+            "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => match is_unset {
+                true => self.inner.aria2_max_connection_per_server = None,
+                false => match value.parse::<u32>() {
+                    Ok(v) => self.inner.aria2_max_connection_per_server = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
+            "aria2_min_split_size" | "aria2-min-split-size" => {
+                self.inner.aria2_min_split_size = match is_unset {
+                    true => None,
+                    false => Some(value.to_string()),
+                }
+            }
+            "language" => {
+                self.inner.language = match is_unset {
+                    true => None,
+                    false => Some(value.to_string()),
+                }
+            }
+            "virustotal_api_key" => {
+                self.inner.virustotal_api_key = match is_unset {
+                    true => None,
+                    false => Some(value.to_string()),
+                }
+            }
+            "root_path" => {
+                self.inner.root_path = if is_unset {
+                    default::root_path()
+                } else {
+                    PathBuf::from(value)
+                }
+            }
+            "global_path" => {
+                self.inner.global_path = if is_unset {
+                    default::global_path()
+                } else {
+                    PathBuf::from(value)
+                }
+            }
+            "cache_path" => {
+                self.inner.cache_path = if is_unset {
+                    default::cache_path()
+                } else {
+                    PathBuf::from(value)
+                }
+            }
             key => return Err(Error::ConfigKeyInvalid(key.to_owned())),
         }
 
         self.commit()
     }
 
-    /// Commit config changes and save to the config file
+    /// Commit config changes and save to hok's own config file.
+    ///
+    /// `ConfigInner` only contains hok-supported keys, so the serialized
+    /// file is exactly the supported set; Scoop-only settings are never
+    /// copied over.
     pub(crate) fn commit(&self) -> Fallible<()> {
         internal::fs::write_json(&self.path, &self.inner)
     }
@@ -609,25 +678,18 @@ impl Default for Config {
             aria2_enabled: Default::default(),
             aria2_max_connection_per_server: Default::default(),
             aria2_min_split_size: Default::default(),
-            aria2_options: Default::default(),
-            aria2_retry_wait: Default::default(),
             aria2_split: Default::default(),
-            aria2_warning_enabled: Default::default(),
             // default_cache_path: default::cache_path(),
             cache_path: default::cache_path(),
             cat_style: Default::default(),
             default_architecture: Default::default(),
-            debug: Default::default(),
-            force_update: Default::default(),
             gh_token: Default::default(),
+            virustotal_api_key: Default::default(),
             // default_global_path: default::global_path(),
             global_path: default::global_path(),
             ignore_failures: Default::default(),
-            ignore_running_processes: Default::default(),
             last_update: Default::default(),
-            show_manifest: Default::default(),
             use_isolated_path: Default::default(),
-            use_lessmsi: Default::default(),
             use_sqlite_cache: Default::default(),
             no_junction: Default::default(),
             output_style: Default::default(),
@@ -637,14 +699,9 @@ impl Default for Config {
             proxy: Default::default(),
             // default_root_path: default::root_path(),
             root_path: default::root_path(),
-            scoop_branch: Default::default(),
-            scoop_repo: Default::default(),
-            shim: Default::default(),
-            show_update_log: Default::default(),
-            use_external_7zip: Default::default(),
         };
         Config {
-            path: default::config_path(),
+            path: default::hok_config_path(),
             inner,
         }
     }
@@ -715,7 +772,7 @@ pub(crate) fn possible_config_paths() -> Vec<PathBuf> {
 
     // 3) config.json located in the XDG_CONFIG_HOME directory, i.e.,
     // `~/.config/scoop/config.json`
-    ret.push(default::config_path());
+    ret.push(default::scoop_config_path());
 
     ret
 }
@@ -734,9 +791,22 @@ mod default {
     }
 
     /// Get the default Scoop config path: `$HOME/.config/scoop/config.json`.
+    ///
+    /// This is the *read-only compatibility source*: Scoop's own config file,
+    /// used only for the first-run migration of supported keys into hok's
+    /// own config file.
     #[inline]
-    pub(super) fn config_path() -> PathBuf {
+    pub(super) fn scoop_config_path() -> PathBuf {
         normalize_path(home_join(".config/scoop/config.json"))
+    }
+
+    /// Get the default hok config path: `$HOME/.config/hok/config.json`.
+    ///
+    /// hok's own config file — the only file hok ever writes to. It stores
+    /// only the config keys hok actually supports.
+    #[inline]
+    pub(super) fn hok_config_path() -> PathBuf {
+        normalize_path(home_join(".config/hok/config.json"))
     }
 
     /// Get the default Scoop root path.
@@ -866,4 +936,227 @@ pub fn alias_add(session: &crate::Session, name: &str, command: &str) -> Fallibl
 pub fn alias_remove(session: &crate::Session, name: &str) -> Fallible<()> {
     let mut config = session.config_mut()?;
     config.set_alias(name, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_session(name: &str) -> crate::Session {
+        let root = crate::test_utils::tmpdir(name);
+        crate::test_utils::test_session(&root)
+    }
+
+    fn bool_field(config: &ConfigInner, key: &str) -> Option<bool> {
+        match key {
+            "no_junction" => config.no_junction,
+            "no-color" => config.no_color,
+            _ => panic!("not a bool key: {key}"),
+        }
+    }
+
+    fn u32_field(config: &ConfigInner, key: &str) -> Option<u32> {
+        match key {
+            "aria2-split" | "aria2_split" => config.aria2_split,
+            "aria2-max-connection-per-server" => config.aria2_max_connection_per_server,
+            _ => panic!("not a u32 key: {key}"),
+        }
+    }
+
+    fn string_field<'a>(config: &'a ConfigInner, key: &str) -> Option<&'a str> {
+        match key {
+            "aria2-min-split-size" => config.aria2_min_split_size.as_deref(),
+            "language" => config.language.as_deref(),
+            "virustotal_api_key" => config.virustotal_api_key.as_deref(),
+            _ => panic!("not a string key: {key}"),
+        }
+    }
+
+    /// Every key reachable through `hok config set` must round-trip:
+    /// set a value, verify it landed, then unset and verify it cleared.
+    #[test]
+    fn set_unset_roundtrip() {
+        let session = test_session("config_set_roundtrip");
+
+        // bool keys
+        for key in ["no_junction", "no-color"] {
+            crate::config::set(&session, key, "true").unwrap();
+            assert_eq!(bool_field(&session.config().inner, key), Some(true));
+            crate::config::set(&session, key, "false").unwrap();
+            assert_eq!(bool_field(&session.config().inner, key), Some(false));
+            crate::config::set(&session, key, "").unwrap();
+            assert_eq!(bool_field(&session.config().inner, key), None);
+        }
+
+        // u32 keys (including underscore alias)
+        for key in ["aria2-split", "aria2_split", "aria2-max-connection-per-server"] {
+            crate::config::set(&session, key, "7").unwrap();
+            assert_eq!(u32_field(&session.config().inner, key), Some(7));
+            crate::config::set(&session, key, "").unwrap();
+            assert_eq!(u32_field(&session.config().inner, key), None);
+        }
+
+        // string keys
+        for key in ["aria2-min-split-size", "language", "virustotal_api_key"] {
+            crate::config::set(&session, key, "value").unwrap();
+            assert_eq!(string_field(&session.config().inner, key), Some("value"));
+            crate::config::set(&session, key, "").unwrap();
+            assert_eq!(string_field(&session.config().inner, key), None);
+        }
+
+        // path keys: unset restores the default
+        for key in ["root_path", "global_path", "cache_path"] {
+            crate::config::set(&session, key, "C:\\custom\\path").unwrap();
+            {
+                let config = &session.config().inner;
+                let field = match key {
+                    "root_path" => &config.root_path,
+                    "global_path" => &config.global_path,
+                    _ => &config.cache_path,
+                };
+                assert_eq!(field, &PathBuf::from("C:\\custom\\path"));
+            }
+            crate::config::set(&session, key, "").unwrap();
+            {
+                let config = &session.config().inner;
+                let field = match key {
+                    "root_path" => &config.root_path,
+                    "global_path" => &config.global_path,
+                    _ => &config.cache_path,
+                };
+                let expected = match key {
+                    "root_path" => default::root_path(),
+                    "global_path" => default::global_path(),
+                    _ => default::cache_path(),
+                };
+                assert_eq!(field, &expected);
+            }
+        }
+    }
+
+    /// Invalid values for typed keys are rejected; unknown keys are rejected.
+    #[test]
+    fn invalid_values_and_keys_rejected() {
+        let session = test_session("config_set_invalid");
+        let err = crate::config::set(&session, "no_junction", "notabool").unwrap_err();
+        assert!(matches!(err, Error::ConfigValueInvalid(_)));
+        let err = crate::config::set(&session, "aria2-split", "abc").unwrap_err();
+        assert!(matches!(err, Error::ConfigValueInvalid(_)));
+        let err = crate::config::set(&session, "totally_unknown_key", "x").unwrap_err();
+        assert!(matches!(err, Error::ConfigKeyInvalid(_)));
+    }
+
+    /// Scoop-only settings that hok does not support must be rejected by the
+    /// CLI setter (they can still be read from Scoop's read-only file, but
+    /// never written to hok's own file).
+    #[test]
+    fn unsupported_keys_rejected() {
+        let session = test_session("config_unsupported");
+        for key in [
+            "use_external_7zip",
+            "use_lessmsi",
+            "scoop_repo",
+            "scoop_branch",
+            "show_update_log",
+            "show_manifest",
+            "ignore_running_processes",
+            "aria2-warning-enabled",
+            "aria2-retry-wait",
+            "aria2-options",
+            "debug",
+            "force_update",
+            "shim",
+        ] {
+            let err = crate::config::set(&session, key, "x").unwrap_err();
+            assert!(
+                matches!(err, Error::ConfigKeyInvalid(_)),
+                "{key}: unexpected error {err}"
+            );
+        }
+    }
+
+    /// First run migrates supported keys from Scoop's read-only file into a
+    /// new hok config file; unsupported keys are not migrated.
+    #[test]
+    fn first_run_migrates_supported_keys_from_scoop() {
+        let root = crate::test_utils::tmpdir("config_migrate");
+        let scoop = root.join("scoop.json");
+        let hok = root.join("hok.json");
+        std::fs::write(
+            &scoop,
+            r#"{"root_path": "C:\\scoop", "proxy": "scoop-proxy", "use_external_7zip": true}"#,
+        )
+        .unwrap();
+
+        let config = ConfigBuilder::new()
+            .path(&hok)
+            .scoop_path(&scoop)
+            .load()
+            .unwrap();
+        // supported keys migrated
+        assert_eq!(config.proxy(), Some("scoop-proxy"));
+        assert_eq!(config.root_path(), Path::new("C:\\scoop"));
+        // hok's file was created with only supported keys: the Scoop-only
+        // `use_external_7zip` key is silently dropped, not migrated
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hok).unwrap()).unwrap();
+        let obj = written.as_object().unwrap();
+        assert!(obj.contains_key("proxy"));
+        assert!(!obj.contains_key("use_external_7zip"));
+    }
+
+    /// Once hok's own file exists, Scoop's file is no longer consulted.
+    #[test]
+    fn existing_hok_file_ignores_scoop() {
+        let root = crate::test_utils::tmpdir("config_existing_hok");
+        let scoop = root.join("scoop.json");
+        let hok = root.join("hok.json");
+        std::fs::write(&scoop, r#"{"proxy": "scoop-proxy", "use_external_7zip": true}"#).unwrap();
+        std::fs::write(&hok, r#"{"proxy": "hok-proxy"}"#).unwrap();
+
+        let config = ConfigBuilder::new()
+            .path(&hok)
+            .scoop_path(&scoop)
+            .load()
+            .unwrap();
+        // hok's file wins; Scoop's file is not even consulted
+        assert_eq!(config.proxy(), Some("hok-proxy"));
+    }
+
+    /// Loading fails when neither hok's nor Scoop's config file exists.
+    #[test]
+    fn load_fails_when_no_config_exists() {
+        let root = crate::test_utils::tmpdir("config_missing");
+        let err = ConfigBuilder::new()
+            .path(root.join("hok.json"))
+            .load()
+            .unwrap_err();
+        assert!(matches!(err, Error::Io(_)));
+    }
+
+    /// Writing (commit) writes the whole `ConfigInner`, which by construction
+    /// contains only hok-supported keys.
+    #[test]
+    fn commit_writes_only_supported_keys() {
+        let root = crate::test_utils::tmpdir("config_write_filter");
+        let hok = root.join("hok.json");
+        std::fs::write(&hok, "{}").unwrap();
+        let mut config = ConfigBuilder::new().path(&hok).load().unwrap();
+        config.inner.proxy = Some("p".to_string());
+        config.inner.no_junction = Some(true);
+        config.commit().unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hok).unwrap()).unwrap();
+        let obj = written.as_object().unwrap();
+        assert_eq!(obj.get("proxy").and_then(|v| v.as_str()), Some("p"));
+        assert_eq!(obj.get("no_junction").and_then(|v| v.as_bool()), Some(true));
+        // no Scoop-only keys leak into the written file
+        for unsupported in ["use_external_7zip", "show_manifest", "debug"] {
+            assert!(
+                !obj.contains_key(unsupported),
+                "unsupported key {unsupported} must not be written"
+            );
+        }
+    }
 }

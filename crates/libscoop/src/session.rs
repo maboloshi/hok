@@ -77,14 +77,28 @@ impl Session {
     ///
     /// A new session.
     pub fn new() -> Session {
-        // Try to load config from the possible config paths, once a successful
-        // load is done, return the session immediately.
-        for path in possible_config_paths() {
-            debug!("trying to load config from {}", path.display());
-            if let Ok(session) = Self::new_with(&path) {
-                info!("config loaded from {}", path.display());
-                return session;
-            }
+        // Find the first existing Scoop config file to use as a read-only
+        // fallback source; hok's own config file overlays it.
+        let scoop_path = possible_config_paths().into_iter().find(|p| p.exists());
+        if let Some(path) = &scoop_path {
+            debug!("using scoop config as fallback: {}", path.display());
+        }
+
+        let mut builder = ConfigBuilder::new();
+        if let Some(path) = &scoop_path {
+            builder = builder.scoop_path(path);
+        }
+        if let Ok(config) = builder.load() {
+            info!("config loaded from {}", config.path.display());
+            apply_default_architecture(&config);
+            let session = Session {
+                config: RefCell::new(config),
+                event_bus: OnceCell::new(),
+                user_agent: OnceCell::new(),
+                global: Cell::new(false),
+            };
+            let _ = session.event_bus();
+            return session;
         }
 
         // Config loading failed, create a new default config and return.
