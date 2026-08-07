@@ -125,6 +125,12 @@ impl EventHandler for ScoopHandler {
             }
 
             // --- Environment operations ---
+            Event::PackageEnvPathAddStart => {
+                output::detail(rust_i18n::t!("detail.adding_env_path"));
+            }
+            Event::PackageEnvPathAddDone => {
+                output::detail(rust_i18n::t!("detail.env_path_added"));
+            }
             Event::PackageEnvPathRemoveStart => {
                 output::detail(rust_i18n::t!("detail.removing_env_path"));
             }
@@ -132,6 +138,12 @@ impl EventHandler for ScoopHandler {
                 output::detail(rust_i18n::t!("detail.env_path_removed"));
             }
 
+            Event::PackageEnvVarSetStart => {
+                output::detail(rust_i18n::t!("detail.setting_env_var"));
+            }
+            Event::PackageEnvVarSetDone => {
+                output::detail(rust_i18n::t!("detail.env_var_set"));
+            }
             Event::PackageEnvVarRemoveStart => {
                 output::detail(rust_i18n::t!("detail.removing_env_var"));
             }
