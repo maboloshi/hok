@@ -518,9 +518,22 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
     }
 
-    // Emit post-install notes if the manifest has them
+    // Emit post-install notes if the manifest has them.
+    // Mirror Scoop's `show_notes` (install.ps1): substitute the `$dir` /
+    // `$original_dir` / `$persist_dir` placeholders with real paths.
     if let Some(notes) = pkg.manifest().notes() {
-        let notes_text = notes.join("\n");
+        let dir = working_dir.to_string_lossy().to_string();
+        let persist_dir = session
+            .effective_root_path()
+            .join("persist")
+            .join(pkg.name())
+            .to_string_lossy()
+            .to_string();
+        let notes_text = notes
+            .iter()
+            .map(|n| expand_note(n, &dir, &persist_dir))
+            .collect::<Vec<_>>()
+            .join("\n");
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageNotes(notes_text));
         }
@@ -579,9 +592,39 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     Ok(())
 }
 
+/// Substitute Scoop path placeholders in a post-install note, mirroring
+/// Scoop's `show_notes` (install.ps1). Only `$dir`, `$original_dir` and
+/// `$persist_dir` are replaced; in the install flow `$original_dir` equals
+/// `$dir` (install.ps1: `$original_dir = $dir`).
+fn expand_note(note: &str, dir: &str, persist_dir: &str) -> String {
+    note.replace("$original_dir", dir)
+        .replace("$persist_dir", persist_dir)
+        .replace("$dir", dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Post-install notes expand `$dir` / `$original_dir` / `$persist_dir`
+    /// placeholders (mirror Scoop's `show_notes`).
+    #[test]
+    fn test_expand_note() {
+        let dir = r"D:\apps\uv\1.0.0";
+        let persist_dir = r"D:\persist\uv";
+        let expanded = expand_note(
+            "Run \"$dir\\Setup-UVEnv.ps1 $persist_dir\"",
+            dir,
+            persist_dir,
+        );
+        assert_eq!(
+            expanded,
+            r#"Run "D:\apps\uv\1.0.0\Setup-UVEnv.ps1 D:\persist\uv""#
+        );
+
+        // $original_dir maps to the same dir in the install flow
+        assert_eq!(expand_note("$dir vs $original_dir", "X", "Y"), "X vs X");
+    }
 
     /// Test that installer.file execution path works correctly.
     #[test]
