@@ -223,6 +223,30 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         return Ok(());
     }
 
+    // Detect apps that are still running before downloading anything
+    // (mirrors scoop-update.ps1: test_running_process runs before
+    // downloading the new version). A running app aborts the whole batch
+    // unless `ignore_failures` is enabled — the app's failure (including
+    // process-in-use) is then skipped while the rest of the batch
+    // continues. Newly installed apps have no apps/<name> directory yet, so
+    // they never match.
+    let packages = {
+        let mut kept = Vec::new();
+        for &pkg in packages.iter() {
+            match check_not_running(session, pkg.name(), "updating") {
+                // Not running, or running but ignored (warning printed):
+                // update proceeds either way (matches Scoop's
+                // IGNORE_RUNNING_PROCESSES branch, which continues).
+                Ok(_) => kept.push(pkg),
+                Err(Error::AppRunning(name)) if ignore_failure => {
+                    eprintln!("Running process detected, skip updating '{name}'.");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        kept
+    };
+
     // Idents of packages that failed to download / verify and must be skipped.
     // Only populated when IgnoreFailure is enabled.
     let mut failed: HashSet<String> = HashSet::new();
@@ -340,23 +364,47 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     Ok(())
 }
 
-/// Commit package installation: extract files, run scripts, create symlinks,
-/// shims, and shortcuts.
-/// Check if the given package's process is currently running under the apps
-/// directory. Returns an error if so, to prevent install/upgrade/uninstall
-/// while the app is in use (matches PS1's test_running_process).
-pub(super) fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<()> {
-    let apps_dir = session.effective_root_path().join("apps");
-    let running = internal::os::running_apps(&apps_dir).unwrap_or_default();
-    if running.iter().any(|p| p.eq_ignore_ascii_case(name)) {
-        return Err(Error::Custom(format!(
-            "'{}' is still running! Close the app(s) before {}.",
-            name, action
-        )));
-    }
-    Ok(())
+/// Result of a running-process check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunningCheck {
+    /// No process is running under `apps/<name>`; the operation may proceed.
+    NotRunning,
+    /// The app is running but `ignore_running_processes` is enabled.
+    /// A warning (with the process list) was already printed; the caller
+    /// decides whether to proceed or skip this package.
+    Ignored,
 }
 
+/// Check if the given package's process is currently running under
+/// `apps/<name>`. Returns an error if so, to prevent install/upgrade/
+/// uninstall/reset while the app is in use (matches PS1's
+/// `test_running_process`).
+///
+/// When `ignore_running_processes` is enabled, prints a warning listing the
+/// running processes and returns `Ok(RunningCheck::Ignored)` instead — the
+/// caller decides whether to proceed or skip the package (matches PS1's
+/// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
+pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
+    let app_dir = session.effective_root_path().join("apps").join(name);
+    let running = internal::os::running_processes_under(&app_dir).unwrap_or_default();
+    if running.is_empty() {
+        return Ok(RunningCheck::NotRunning);
+    }
+    if session.config().ignore_running_processes() {
+        eprintln!(
+            "'{name}' is still running. hok is configured to ignore this condition \
+             (ignore_running_processes), continuing to {action}."
+        );
+        for p in &running {
+            eprintln!("  {} (pid {})", p.name, p.pid);
+        }
+        return Ok(RunningCheck::Ignored);
+    }
+    Err(Error::AppRunning(name.to_owned()))
+}
+
+/// Commit package installation: extract files, run scripts, create symlinks,
+/// shims, and shortcuts.
 fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
     for &pkg in packages.iter() {
         if let Err(e) = commit_one_install(session, pkg) {
@@ -374,9 +422,6 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
 fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
     let apps_dir = session.effective_root_path().join("apps");
-
-    // Check if the app is currently running before installing/upgrading
-    check_not_running(session, pkg.name(), "installing")?;
 
     let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
     internal::fs::ensure_dir(&working_dir)?;

@@ -143,15 +143,43 @@ pub fn run_program(
     Ok(status.code().unwrap_or(-1))
 }
 
-/// Find all running processes whose executable is under `apps_dir`.
-pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
+/// A running process whose executable is under a directory.
+#[derive(Clone, Debug)]
+pub struct RunningProcess {
+    /// Executable file stem (name without extension), e.g. `git-bash`.
+    pub name: String,
+    /// Process id.
+    pub pid: u32,
+}
+
+/// Component-wise `Path::starts_with` that ignores ASCII case, matching
+/// PowerShell's case-insensitive `-like "$processdir\*"` comparison.
+fn starts_with_ignore_case(path: &Path, dir: &Path) -> bool {
+    let mut path_components = path.components();
+    for dir_comp in dir.components() {
+        match path_components.next() {
+            Some(p) if p
+                .as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&dir_comp.as_os_str().to_string_lossy()) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Find all running processes whose executable is under `dir`
+/// (e.g. `apps/<app>`), matching Scoop's
+/// `Get-Process | Where-Object { $_.Path -like "$processdir\*" }` directory
+/// prefix comparison. Returns one entry per running instance.
+pub fn running_processes_under(dir: &Path) -> Fallible<Vec<RunningProcess>> {
     let h_snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if h_snapshot == -1 || h_snapshot == 0 {
         // INVALID_HANDLE_VALUE is -1, NULL is also possible
         return Err(Error::Custom("CreateToolhelp32Snapshot failed".into()));
     }
 
-    let mut names = Vec::new();
+    let mut processes = Vec::new();
     let mut pe = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         cntUsage: 0,
@@ -183,11 +211,14 @@ pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
                     let path_str = String::from_utf16_lossy(&buf[..size as usize]);
                     let path = Path::new(&path_str);
 
-                    // Check if exe is under the Scoop apps directory
-                    if path.starts_with(apps_dir) {
+                    // Check if exe is under the target app directory
+                    if starts_with_ignore_case(path, dir) {
                         // Extract the exe name without extension
                         if let Some(file_stem) = path.file_stem() {
-                            names.push(file_stem.to_string_lossy().into_owned());
+                            processes.push(RunningProcess {
+                                name: file_stem.to_string_lossy().into_owned(),
+                                pid,
+                            });
                         }
                     }
                 }
@@ -200,9 +231,8 @@ pub fn running_apps(apps_dir: &Path) -> Fallible<Vec<String>> {
 
     unsafe { CloseHandle(h_snapshot) };
 
-    names.sort();
-    names.dedup();
-    Ok(names)
+    processes.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(processes)
 }
 
 // ─── Old sysinfo implementation (kept for reference) ───────────────────────
@@ -375,4 +405,22 @@ extern "system" {
         lp_directory: *const u16,
         n_show_cmd: i32,
     ) -> isize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn starts_with_ignore_case_matches_components() {
+        let dir = Path::new(r"C:\scoop\apps\git");
+        assert!(starts_with_ignore_case(Path::new(r"C:\scoop\apps\git\git.exe"), dir));
+        assert!(starts_with_ignore_case(Path::new(r"C:\SCOOP\Apps\GIT\current\git-bash.exe"), dir));
+        // Same prefix but different component: must not match (Path::starts_with semantics).
+        assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps\git2\git.exe"), dir));
+        assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps\other\x.exe"), dir));
+        // Shorter path than dir.
+        assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps"), dir));
+    }
 }

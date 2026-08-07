@@ -92,6 +92,30 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         }
     }
 
+    // Per-package running-process check. A running app aborts the whole
+    // reinstall unless `ignore_failures` is enabled — the app's
+    // process-in-use failure is then skipped while the rest of the batch is
+    // reinstalled. When `ignore_running_processes` is enabled,
+    // check_not_running already printed a warning and the app proceeds.
+    // Skipped apps are also dropped from the hold set so their hold is
+    // never released.
+    let mut keep = Vec::new();
+    for q in &exact_queries {
+        let name = q.rsplit('/').next().unwrap_or(q.as_str());
+        match package::sync::check_not_running(session, name, "reinstalling") {
+            Ok(_) => keep.push(q.clone()),
+            Err(libscoop::Error::AppRunning(name)) if all_opts.contains(&SyncOption::IgnoreFailure) => {
+                eprintln!("Running process detected, skip reinstalling '{name}'.");
+                hold_set.remove(&name);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let exact_queries = keep;
+    if exact_queries.is_empty() {
+        return Ok(());
+    }
+
     // Release held packages temporarily
     let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
     if !held.is_empty() {

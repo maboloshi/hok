@@ -102,6 +102,9 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::ConfigValueInvalid(value) => {
             rust_i18n::t!("error.config_value_invalid", value = value).to_string()
         }
+        libscoop::Error::AppRunning(name) => {
+            rust_i18n::t!("error.app_running", name = name).to_string()
+        }
         libscoop::Error::ExtractionFailed(reason) => {
             rust_i18n::t!("error.extraction_failed", reason = reason).to_string()
         }

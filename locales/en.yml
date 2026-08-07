@@ -185,6 +185,7 @@ error:
   package_multiple_candidates: "Found multiple candidates for package named '%{name}'"
   package_hold_not_installed: "package '%{name}' is not installed"
   package_hold_broken_install: "package '%{name}' is broken"
+  app_running: "'%{name}' is still running! Close the app(s) before proceeding."
   custom: "%{msg}"
   extraction_failed: "failed to extract archive: %{reason}"
   path_traversal_detected: "path traversal detected: %{detail}"

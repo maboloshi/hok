@@ -103,6 +103,12 @@ pub enum Error {
     #[error("package '{0}' is broken")]
     PackageHoldBrokenInstall(String),
 
+    /// Thrown when the app is currently running and must not be touched
+    /// (matches PS1's `test_running_process`). Callers skip this package and
+    /// continue with the rest of the batch, like Scoop's update/uninstall.
+    #[error("'{0}' is still running! Close the app(s) before proceeding.")]
+    AppRunning(String),
+
     /// A custom error.
     #[error("{0}")]
     Custom(String),
@@ -169,6 +175,7 @@ impl Error {
             Error::PackageMultipleCandidates(_) => "error.package_multiple_candidates",
             Error::PackageHoldNotInstalled(_) => "error.package_hold_not_installed",
             Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
+            Error::AppRunning(_) => "error.app_running",
             Error::Custom(_) => "error.custom",
             Error::ExtractionFailed(_) => "error.extraction_failed",
             Error::PathTraversalDetected(_) => "error.path_traversal_detected",
@@ -233,6 +240,10 @@ mod tests {
         assert_eq!(
             Error::PackageHoldNotInstalled("7zip".into()).error_key(),
             "error.package_hold_not_installed"
+        );
+        assert_eq!(
+            Error::AppRunning("7zip".into()).error_key(),
+            "error.app_running"
         );
     }
 

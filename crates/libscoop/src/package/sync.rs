@@ -37,6 +37,7 @@ mod sync_install;
 mod sync_remove;
 
 pub use sync_install::install;
+pub use sync_install::{check_not_running, RunningCheck};
 pub use sync_remove::{remove, reset};
 
 /// Options that may be used to tweak behavior of package sync operation.

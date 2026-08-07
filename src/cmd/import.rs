@@ -38,7 +38,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     output::info(format!("Found {} packages to install.", packages.len()));
 
     let queries: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
-    let options = vec![SyncOption::AssumeYes];
+    // Non-interactive restore: always assume yes, and always tolerate
+    // per-package failures (a broken app must not abort the whole import).
+    let options = vec![SyncOption::AssumeYes, SyncOption::IgnoreFailure];
 
     match package::sync::sync(session, queries, options) {
         Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),

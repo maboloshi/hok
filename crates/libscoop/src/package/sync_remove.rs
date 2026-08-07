@@ -129,12 +129,24 @@ fn commit_remove(
 ) -> Fallible<()> {
     for package in packages.iter() {
         if let Err(e) = commit_one_remove(session, package, purge) {
+            if matches!(e, Error::AppRunning(_)) && ignore_failure {
+                // App is still running: skip this package and continue with
+                // the rest (its process-in-use failure is covered by
+                // `ignore_failures`). Without it, the whole batch aborts.
+                eprintln!(
+                    "Running process detected, skip uninstalling '{}'.",
+                    package.name()
+                );
+                continue;
+            }
             let msg = format!("failed to remove '{}': {}", package.name(), e);
             if ignore_failure {
                 eprintln!("{}", msg);
                 continue;
             }
-            return Err(Error::Custom(msg));
+            // Return the original error (keeps the AppRunning variant and
+            // its i18n key) instead of wrapping it in Error::Custom.
+            return Err(e);
         }
     }
     Ok(())
@@ -144,9 +156,6 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     let root_dir = session.effective_root_path();
 
     debug!("remove: {} - starting", package.name());
-
-    // Check if the app is currently running before proceeding
-    check_not_running(session, package.name(), "uninstalling")?;
 
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
@@ -173,6 +182,12 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         "uninstall",
         package.manifest().pre_uninstall(),
     )?;
+
+    // Check if the app is currently running after running pre_uninstall
+    // (mirrors scoop-uninstall.ps1: pre_uninstall hook runs first, then
+    // test_running_process). An AppRunning error is handled by the caller
+    // (commit_remove) which skips this package and continues the batch.
+    check_not_running(session, package.name(), "uninstalling")?;
 
     if let Some(uninstaller) = package.manifest().uninstaller() {
         if let Some(script) = uninstaller.script() {
@@ -320,6 +335,16 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
     let (pkg, pkg_dir, version_dir) = resolve_reset_target(session, name, target_version)?;
     let version = pkg.installed_version().unwrap_or(pkg.version());
+
+    // Check if the app is currently running before resetting (mirrors
+    // scoop-reset.ps1: test_running_process before re-linking). The check is
+    // per-package only: when `ignore_running_processes` is enabled, print a
+    // warning (with the process list, already done by check_not_running) and
+    // proceed with the reset; without it, AppRunning aborts.
+    match check_not_running(session, name, "resetting") {
+        Ok(_) => {}
+        Err(e) => return Err(e),
+    }
 
     info!("resetting {} ({})", name, version);
 

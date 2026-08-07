@@ -242,6 +242,12 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     ignore_failures: Option<bool>,
 
+    /// When `true`, install/update/uninstall/reset proceed even if the app
+    /// is currently running; only a warning is shown instead of aborting
+    /// (matches Scoop's `ignore_running_processes` config).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ignore_running_processes: Option<bool>,
+
     /// A list of private hosts.
     ///
     /// # Note
@@ -359,10 +365,18 @@ impl Config {
         self.no_junction.unwrap_or_default()
     }
 
-    /// Get the `ignore_failures` config. Defaults to `false`.
+    /// Get the `ignore_failures` config. Defaults to `true`: a package
+    /// failure (including process-in-use) skips that package and the rest
+    /// of the batch continues.
     #[inline]
     pub fn ignore_failures(&self) -> bool {
-        self.inner.ignore_failures.unwrap_or(false)
+        self.inner.ignore_failures.unwrap_or(true)
+    }
+
+    /// Get the `ignore_running_processes` config. Defaults to `false`.
+    #[inline]
+    pub fn ignore_running_processes(&self) -> bool {
+        self.inner.ignore_running_processes.unwrap_or(false)
     }
 
     /// Get the configured aliases (`alias` field in config).
@@ -546,6 +560,13 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
+            "ignore_running_processes" => match is_unset {
+                true => self.inner.ignore_running_processes = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.ignore_running_processes = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "gh_token" => {
                 self.inner.gh_token = match is_unset {
                     true => None,
@@ -688,6 +709,7 @@ impl Default for Config {
             // default_global_path: default::global_path(),
             global_path: default::global_path(),
             ignore_failures: Default::default(),
+            ignore_running_processes: Default::default(),
             last_update: Default::default(),
             use_isolated_path: Default::default(),
             use_sqlite_cache: Default::default(),
@@ -951,6 +973,7 @@ mod tests {
         match key {
             "no_junction" => config.no_junction,
             "no-color" => config.no_color,
+            "ignore_running_processes" => config.ignore_running_processes,
             _ => panic!("not a bool key: {key}"),
         }
     }
@@ -979,7 +1002,7 @@ mod tests {
         let session = test_session("config_set_roundtrip");
 
         // bool keys
-        for key in ["no_junction", "no-color"] {
+        for key in ["no_junction", "no-color", "ignore_running_processes"] {
             crate::config::set(&session, key, "true").unwrap();
             assert_eq!(bool_field(&session.config().inner, key), Some(true));
             crate::config::set(&session, key, "false").unwrap();
@@ -1040,6 +1063,8 @@ mod tests {
         let session = test_session("config_set_invalid");
         let err = crate::config::set(&session, "no_junction", "notabool").unwrap_err();
         assert!(matches!(err, Error::ConfigValueInvalid(_)));
+        let err = crate::config::set(&session, "ignore_running_processes", "notabool").unwrap_err();
+        assert!(matches!(err, Error::ConfigValueInvalid(_)));
         let err = crate::config::set(&session, "aria2-split", "abc").unwrap_err();
         assert!(matches!(err, Error::ConfigValueInvalid(_)));
         let err = crate::config::set(&session, "totally_unknown_key", "x").unwrap_err();
@@ -1059,7 +1084,6 @@ mod tests {
             "scoop_branch",
             "show_update_log",
             "show_manifest",
-            "ignore_running_processes",
             "aria2-warning-enabled",
             "aria2-retry-wait",
             "aria2-options",
