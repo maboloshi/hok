@@ -35,8 +35,10 @@ pub fn check_urls(
     app_filters: &[String],
     timeout_secs: u64,
     skip_valid: bool,
+    on_result: impl FnMut(&ManifestUrlCheck),
 ) -> Fallible<CheckUrlsReport> {
     let mut report = CheckUrlsReport::default();
+    let mut on_result = on_result;
 
     for (path, name) in manifest_walker::discover_matching(dir, app_filters)? {
         let manifest = match Manifest::parse(path) {
@@ -94,13 +96,15 @@ pub fn check_urls(
             continue;
         }
 
-        report.results.push(ManifestUrlCheck {
+        let check = ManifestUrlCheck {
             name: name.clone(),
             total_urls: urls.len() as u32,
             ok_count,
             failed_count,
             errors,
-        });
+        };
+        on_result(&check);
+        report.results.push(check);
     }
 
     Ok(report)

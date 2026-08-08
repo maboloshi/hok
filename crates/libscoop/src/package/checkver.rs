@@ -123,7 +123,12 @@ impl CheckverReport {
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
+pub fn execute(
+    args: Args,
+    session: &Session,
+    on_report: impl FnMut(&CheckverReport),
+) -> Result<()> {
+    let mut on_report = on_report;
     let dir = &args.dir;
 
     // Don't use --version with wildcard app pattern
@@ -170,7 +175,6 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     }
 
     let mut pending: Vec<PendingItem> = Vec::new();
-    let mut reports: Vec<CheckverReport> = Vec::new();
 
     for (path, stem) in manifest_walker::discover_matching(dir, &args.app)? {
         let manifest = match Manifest::parse(&path) {
@@ -210,7 +214,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                     }
                 }
             }
-            reports.push(report);
+            on_report(&report);
             continue;
         }
 
@@ -244,7 +248,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                     report.message =
                         Some(rust_i18n::t!("cmd.checkver_sourceforge_err").to_string());
                     report.severity = ReportSeverity::Error;
-                    reports.push(report);
+                    on_report(&report);
                     continue;
                 }
             }
@@ -256,7 +260,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                     let mut report = CheckverReport::new(stem, current);
                     report.message = Some(rust_i18n::t!("cmd.checkver_github_err").to_string());
                     report.severity = ReportSeverity::Error;
-                    reports.push(report);
+                    on_report(&report);
                     continue;
                 }
             }
@@ -267,7 +271,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                 let mut report = CheckverReport::new(stem, current);
                 report.message = Some(rust_i18n::t!("cmd.checkver_no_url").to_string());
                 report.severity = ReportSeverity::Error;
-                reports.push(report);
+                on_report(&report);
                 continue;
             }
             hp
@@ -309,17 +313,27 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     let proxy_ref: Option<&str> = proxy.as_deref();
     let ua_ref: &str = &user_agent;
     let hosts_ref = &private_hosts;
-    let download_results: Vec<Option<std::result::Result<String, String>>> =
-        std::thread::scope(|s| {
-            let mut handles = Vec::with_capacity(pending.len());
-            for item in &pending {
-                if item.script_text.is_some() {
-                    handles.push(None);
-                    continue;
-                }
-                let url = item.url.clone();
-                let token = gh_token.clone();
-                handles.push(Some(s.spawn(move || {
+    let (tx, rx) =
+        std::sync::mpsc::channel::<(usize, Option<std::result::Result<String, String>>)>();
+    std::thread::scope(|s| {
+        for (i, item) in pending.iter().enumerate() {
+            if item.script_text.is_some() {
+                // Script-based items run on the main thread below; enqueue a
+                // placeholder now so every item is processed exactly once.
+                // Note: because these placeholders are sent before any download
+                // worker finishes, script-based reports are emitted first, then
+                // download results in completion order.
+                tx.send((i, None)).unwrap();
+                continue;
+            }
+            let url = item.url.clone();
+            let token = gh_token.clone();
+            let tx = tx.clone();
+            s.spawn(move || {
+                // catch_unwind: a panicking worker must still send its message
+                // so the receiver loop below (which expects exactly one message
+                // per item) never deadlocks or panics on RecvError.
+                let result = std::panic::catch_unwind(|| {
                     // PRIVATE_HOSTS entries matched against the URL here
                     // (computed inside the closure so the HashMap is owned by the thread).
                     let extra = hosts_ref.as_ref().and_then(|v| {
@@ -341,112 +355,127 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                     };
                     crate::internal::network::download(&url, &dl_opts)
                         .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
-                })));
-            }
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.map(|h| {
-                        h.join()
-                            .unwrap_or_else(|_| Err("thread panicked".to_string()))
-                    })
-                })
-                .collect()
-        });
+                });
+                let _ = tx.send((
+                    i,
+                    Some(result.unwrap_or_else(|_| Err("thread panicked".to_string()))),
+                ));
+            });
+        }
+        drop(tx);
 
-    // ── Phase 3: Process each result sequentially ────────────────────────
-    // (matching Scoop's event loop in checkver.ps1 lines 257-419)
-    for (item, dl_result) in pending.into_iter().zip(download_results) {
-        let PendingItem {
-            stem,
-            path,
-            manifest,
-            current,
-            url: _,
-            github_mode,
-            effective_jsonpath,
-            effective_regex,
-            cv,
-            script_text,
-        } = item;
+        // ── Phase 3: Process each result as it completes ────────────────
+        // (matching Scoop's event loop in checkver.ps1 lines 257-419; each
+        // completed download is reported immediately, in completion order)
+        for _ in 0..pending.len() {
+            let (idx, dl_result) = rx.recv().unwrap();
+            let PendingItem {
+                stem,
+                path,
+                manifest,
+                current,
+                url: _,
+                github_mode,
+                effective_jsonpath,
+                effective_regex,
+                cv,
+                script_text,
+            } = &pending[idx];
 
-        let mut report = CheckverReport::new(stem, current);
+            let mut report = CheckverReport::new(stem.clone(), current.clone());
 
-        // Get the downloaded page content (or error out, matching Scoop's error handling)
-        let mut raw = match dl_result {
-            Some(Ok(content)) => content,
-            Some(Err(e)) => {
-                report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
-                report.severity = ReportSeverity::Error;
-                reports.push(report);
-                continue;
-            }
-            None => String::new(),
-        };
-
-        // Script output overrides the downloaded page
-        // (matching Scoop checkver.ps1 lines 298-301)
-        if let Some(ref script) = script_text {
-            match run_checkver_script(session, script, cv.url.as_deref(), timeout) {
-                Ok(Some(page)) => {
-                    raw = page;
-                }
-                Ok(None) => {
-                    report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
-                    report.severity = ReportSeverity::Warn;
-                    reports.push(report);
-                    continue;
-                }
-                Err(e) => {
-                    report.message =
-                        Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+            // Get the downloaded page content (or error out, matching Scoop's error handling)
+            let mut raw = match dl_result {
+                Some(Ok(content)) => content,
+                Some(Err(e)) => {
+                    report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
                     report.severity = ReportSeverity::Error;
-                    reports.push(report);
+                    on_report(&report);
                     continue;
                 }
+                None => String::new(),
+            };
+
+            // Script output overrides the downloaded page
+            // (matching Scoop checkver.ps1 lines 298-301)
+            if let Some(ref script) = script_text {
+                match run_checkver_script(session, script, cv.url.as_deref(), timeout) {
+                    Ok(Some(page)) => {
+                        raw = page;
+                    }
+                    Ok(None) => {
+                        report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
+                        report.severity = ReportSeverity::Warn;
+                        on_report(&report);
+                        continue;
+                    }
+                    Err(e) => {
+                        report.message =
+                            Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                        report.severity = ReportSeverity::Error;
+                        on_report(&report);
+                        continue;
+                    }
+                }
             }
-        }
 
-        // Extract version
-        let extract_result = extract_version(
-            &raw,
-            &cv,
-            effective_jsonpath.as_deref(),
-            effective_regex.as_deref(),
-        );
+            // Extract version
+            let extract_result = extract_version(
+                &raw,
+                cv,
+                effective_jsonpath.as_deref(),
+                effective_regex.as_deref(),
+            );
 
-        // Auto-strip leading v/V prefix only for GitHub API JSONPath results
-        // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
-        let (mut ver, captures, named_captures) = match extract_result {
-            Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
-            None => {
-                report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
-                report.severity = ReportSeverity::Error;
-                reports.push(report);
-                continue;
+            // Auto-strip leading v/V prefix only for GitHub API JSONPath results
+            // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
+            let (mut ver, captures, named_captures) = match extract_result {
+                Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
+                None => {
+                    report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
+                    report.severity = ReportSeverity::Error;
+                    on_report(&report);
+                    continue;
+                }
+            };
+
+            if *github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
+                ver = ver.trim_start_matches(['v', 'V']).to_string();
             }
-        };
 
-        if github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
-            ver = ver.trim_start_matches(['v', 'V']).to_string();
-        }
+            report.new_version = Some(ver.clone());
+            report.autoupdate_available = manifest.autoupdate().is_some()
+                && ver != report.current
+                && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
 
-        report.new_version = Some(ver.clone());
-        report.autoupdate_available = manifest.autoupdate().is_some()
-            && ver != report.current
-            && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
+            // ForceUpdate implies Update (matching Scoop behavior)
+            let do_update = args.update || args.force_update;
 
-        // ForceUpdate implies Update (matching Scoop behavior)
-        let do_update = args.update || args.force_update;
-
-        if ver == report.current {
-            // SkipUpdated: skip display (and update) for up-to-date manifests
-            if args.skip_updated && !args.force_update {
-                continue;
-            }
-            if args.force_update {
-                match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures)
-                {
+            if ver == report.current {
+                // SkipUpdated: skip display (and update) for up-to-date manifests
+                if args.skip_updated && !args.force_update {
+                    continue;
+                }
+                if args.force_update {
+                    match apply_autoupdate(
+                        session,
+                        path,
+                        manifest,
+                        &ver,
+                        &captures,
+                        &named_captures,
+                    ) {
+                        Ok(()) => report.updated = true,
+                        Err(e) => {
+                            report.message = Some(
+                                rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string(),
+                            );
+                            report.severity = ReportSeverity::Error;
+                        }
+                    }
+                }
+            } else if do_update {
+                match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures) {
                     Ok(()) => report.updated = true,
                     Err(e) => {
                         report.message =
@@ -455,20 +484,11 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
                     }
                 }
             }
-        } else if do_update {
-            match apply_autoupdate(session, &path, &manifest, &ver, &captures, &named_captures) {
-                Ok(()) => report.updated = true,
-                Err(e) => {
-                    report.message =
-                        Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
-                    report.severity = ReportSeverity::Error;
-                }
-            }
+            on_report(&report);
         }
-        reports.push(report);
-    }
+    });
 
-    Ok(reports)
+    Ok(())
 }
 
 // ─── URL helpers ────────────────────────────────────────────────────────────

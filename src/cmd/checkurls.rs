@@ -35,44 +35,44 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     // Scoop-style header: [U]RLs [O]kay [F]ailed
     // The ps1 prints: '[' + 'U' (cyan) + ']RLs | [' + 'O' (green) + ']kay |  | [' + 'F' (red) + ']ailed |  |  |'
     use crossterm::style::Stylize;
-    eprintln!(
-        "[{}] RLs   [{}] [{}]",
-        "U".cyan(),
-        "O".green(),
-        "F".red(),
-    );
+    eprintln!("[{}] RLs   [{}] [{}]", "U".cyan(), "O".green(), "F".red(),);
     eprintln!();
 
-    let report = checkurls::check_urls(session, dir, &args.app, args.timeout, args.skip_valid)?;
-
-    for result in &report.results {
-        eprint!("[{}]", result.total_urls.to_string().cyan());
-        eprint!("[{}]",
-            if result.ok_count == result.total_urls {
-                result.ok_count.to_string().green()
-            } else if result.ok_count == 0 {
-                result.ok_count.to_string().red()
-            } else {
-                result.ok_count.to_string().yellow()
-            }
-        );
-        eprint!("[{}]",
-            if result.failed_count == 0 {
-                result.failed_count.to_string().green()
-            } else {
-                result.failed_count.to_string().red()
-            }
-        );
-        eprintln!(" {}", result.name);
-
-        for err in &result.errors {
-            eprintln!(
-                "        > {} ({})",
-                err.message.clone().dark_red(),
-                err.url
+    // Stream results: each manifest is reported as soon as its URL check
+    // completes, matching Scoop's per-manifest output while checking.
+    let report = checkurls::check_urls(
+        session,
+        dir,
+        &args.app,
+        args.timeout,
+        args.skip_valid,
+        |result| {
+            eprint!("[{}]", result.total_urls.to_string().cyan());
+            eprint!(
+                "[{}]",
+                if result.ok_count == result.total_urls {
+                    result.ok_count.to_string().green()
+                } else if result.ok_count == 0 {
+                    result.ok_count.to_string().red()
+                } else {
+                    result.ok_count.to_string().yellow()
+                }
             );
-        }
-    }
+            eprint!(
+                "[{}]",
+                if result.failed_count == 0 {
+                    result.failed_count.to_string().green()
+                } else {
+                    result.failed_count.to_string().red()
+                }
+            );
+            eprintln!(" {}", result.name);
+
+            for err in &result.errors {
+                eprintln!("        > {} ({})", err.message.clone().dark_red(), err.url);
+            }
+        },
+    )?;
 
     if report.total_manifests == 0 {
         output::info(rust_i18n::t!("cmd.checkurls_no_manifests"));

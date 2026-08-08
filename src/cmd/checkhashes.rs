@@ -54,29 +54,31 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         cache: args.cache,
     };
 
-    let report = checkhashes::execute(inner, session)?;
-
-    for item in &report.items {
-        match item.status {
-            CheckHashesStatus::Passed => {
-                if !args.skip_correct {
-                    output::done(&item.name);
-                }
-            }
-            CheckHashesStatus::Updated => {
-                output::change(rust_i18n::t!("cmd.checkhashes_mismatch_upd"), "->", &item.name);
-                for msg in &item.messages {
-                    output::warn(msg);
-                }
-            }
-            CheckHashesStatus::Failed => {
-                output::err(&item.name);
-                for msg in &item.messages {
-                    output::err(format!("  {msg}"));
-                }
+    // Stream results: each manifest is reported as soon as its hash check
+    // completes, matching Scoop's per-manifest output while checking.
+    let report = checkhashes::execute(inner, session, |item| match item.status {
+        CheckHashesStatus::Passed => {
+            if !args.skip_correct {
+                output::done(&item.name);
             }
         }
-    }
+        CheckHashesStatus::Updated => {
+            output::change(
+                rust_i18n::t!("cmd.checkhashes_mismatch_upd"),
+                "->",
+                &item.name,
+            );
+            for msg in &item.messages {
+                output::warn(msg);
+            }
+        }
+        CheckHashesStatus::Failed => {
+            output::err(&item.name);
+            for msg in &item.messages {
+                output::err(format!("  {msg}"));
+            }
+        }
+    })?;
 
     output::info(rust_i18n::t!(
         "cmd.checkhashes_summary",

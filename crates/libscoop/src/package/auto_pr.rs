@@ -129,7 +129,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         version: None,
         timeout: 30,
     };
-    let _ = crate::package::checkver::execute(cv_args, session);
+    let _ = crate::package::checkver::execute(cv_args, session, |_| {});
     session.output().ok();
 
     // Force-update special manifests
@@ -144,7 +144,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
             version: None,
             timeout: 30,
         };
-        let _ = crate::package::checkver::execute(cv_args, session);
+        let _ = crate::package::checkver::execute(cv_args, session, |_| {});
         session.output().ok();
     }
 

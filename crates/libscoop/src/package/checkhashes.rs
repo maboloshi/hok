@@ -43,7 +43,12 @@ struct HashEntry {
     index: usize,
 }
 
-pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
+pub fn execute(
+    args: Args,
+    session: &Session,
+    on_item: impl FnMut(&CheckHashesItem),
+) -> Fallible<CheckHashesReport> {
+    let mut on_item = on_item;
     let cache_dir = args
         .cache
         .clone()
@@ -77,6 +82,7 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
                 item.messages
                     .push("URL and hash count mismatch".to_string());
                 report.failed += 1;
+                on_item(&item);
                 report.items.push(item);
             }
             continue;
@@ -115,16 +121,16 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
                 }
             }
 
-            let actual_hash = match crate::internal::hash::compute_file_hash(&cache_path, hash_str.algorithm())
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    item.status = CheckHashesStatus::Failed;
-                    item.messages.push(format!("hash failed: {}", e));
-                    has_any_failure = true;
-                    break;
-                }
-            };
+            let actual_hash =
+                match crate::internal::hash::compute_file_hash(&cache_path, hash_str.algorithm()) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        item.status = CheckHashesStatus::Failed;
+                        item.messages.push(format!("hash failed: {}", e));
+                        has_any_failure = true;
+                        break;
+                    }
+                };
             actual_hashes.push(crate::internal::hash::format_hash_value(
                 hash_str.algorithm(),
                 &actual_hash,
@@ -133,6 +139,7 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
 
         if has_any_failure {
             report.failed += 1;
+            on_item(&item);
             report.items.push(item);
             continue;
         }
@@ -151,6 +158,7 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
         if mismatches.is_empty() {
             item.status = CheckHashesStatus::Passed;
             report.passed += 1;
+            on_item(&item);
             report.items.push(item);
             continue;
         }
@@ -184,8 +192,10 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
         } else {
             for (i, _entry) in &mismatches {
                 let expected = manifest.all_hashes()[*i];
-                let expected_str =
-                    crate::internal::hash::format_hash_value(expected.algorithm(), expected.value());
+                let expected_str = crate::internal::hash::format_hash_value(
+                    expected.algorithm(),
+                    expected.value(),
+                );
                 let actual = &actual_hashes[*i];
                 item.messages.push(format!(
                     "mismatch expected={} actual={} url={}",
@@ -197,6 +207,7 @@ pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
             item.status = CheckHashesStatus::Failed;
             report.failed += 1;
         }
+        on_item(&item);
         report.items.push(item);
     }
 

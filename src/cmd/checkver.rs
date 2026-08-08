@@ -54,18 +54,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         timeout: args.timeout,
     };
 
-    let reports = checkver::execute(inner, session)?;
-    for r in &reports {
+    // Stream results: each manifest is reported as soon as its check completes,
+    // matching Scoop's event-driven output in checkver.ps1.
+    checkver::execute(inner, session, |r| {
         if let Some(msg) = &r.message {
             match r.severity {
                 ReportSeverity::Warn => output::warn(format!("{}: {}", r.stem, msg)),
                 _ => output::err(format!("{}: {}", r.stem, msg)),
             }
-            continue;
+            return;
         }
 
         let Some(ver) = &r.new_version else {
-            continue;
+            return;
         };
 
         if ver == &r.current {
@@ -82,7 +83,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                 output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         }
-    }
+    })?;
 
     Ok(())
 }
