@@ -35,10 +35,10 @@ use crate::constant::{REGEX_ARCHIVE_7Z, REGEX_HASH};
 use crate::error::Fallible;
 use crate::internal;
 
-#[path = "manifest_parse.rs"]
-mod manifest_parse;
 #[path = "manifest_license.rs"]
 mod manifest_license;
+#[path = "manifest_parse.rs"]
+mod manifest_parse;
 
 pub use manifest_license::License;
 
@@ -163,8 +163,6 @@ pub struct ManifestSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<Vectorized<String>>,
 }
-
-
 
 /// A [`Vectorized<T>`] represents a derivative [`Vec<T>`] data structure which
 /// can be constructed from either an array of T **or a single T**. That means
@@ -562,7 +560,9 @@ impl Manifest {
         let path = internal::path::normalize_path(path);
 
         // SHA256 of the manifest file itself (kept for cache validation).
-        let mut checksum = crate::internal::hash::ChecksumBuilder::new().sha256().build();
+        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
+            .sha256()
+            .build();
         checksum.consume(&bytes);
         let hash = checksum.finalize();
 
@@ -584,7 +584,9 @@ impl Manifest {
         let path = PathBuf::from(name);
 
         // SHA256 of the manifest JSON, consistent with `parse()`.
-        let mut checksum = crate::internal::hash::ChecksumBuilder::new().sha256().build();
+        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
+            .sha256()
+            .build();
         checksum.consume(json.as_bytes());
         let hash = checksum.finalize();
 
@@ -950,7 +952,6 @@ impl Manifest {
     }
 }
 
-
 impl HashString {
     /// Create a [`HashString`] representation.
     pub fn new(raw: &str) -> Fallible<HashString> {
@@ -1107,7 +1108,6 @@ impl From<Vectorized<Vectorized<String>>> for Vec<Vec<String>> {
         veced.0.into_iter().map(|v| v.0).collect()
     }
 }
-
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct InstallInfo {

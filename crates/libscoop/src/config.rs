@@ -625,7 +625,8 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => match is_unset {
+            "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => match is_unset
+            {
                 true => self.inner.aria2_max_connection_per_server = None,
                 false => match value.parse::<u32>() {
                     Ok(v) => self.inner.aria2_max_connection_per_server = Some(v),
@@ -1012,7 +1013,11 @@ mod tests {
         }
 
         // u32 keys (including underscore alias)
-        for key in ["aria2-split", "aria2_split", "aria2-max-connection-per-server"] {
+        for key in [
+            "aria2-split",
+            "aria2_split",
+            "aria2-max-connection-per-server",
+        ] {
             crate::config::set(&session, key, "7").unwrap();
             assert_eq!(u32_field(&session.config().inner, key), Some(7));
             crate::config::set(&session, key, "").unwrap();
@@ -1135,7 +1140,11 @@ mod tests {
         let root = crate::test_utils::tmpdir("config_existing_hok");
         let scoop = root.join("scoop.json");
         let hok = root.join("hok.json");
-        std::fs::write(&scoop, r#"{"proxy": "scoop-proxy", "use_external_7zip": true}"#).unwrap();
+        std::fs::write(
+            &scoop,
+            r#"{"proxy": "scoop-proxy", "use_external_7zip": true}"#,
+        )
+        .unwrap();
         std::fs::write(&hok, r#"{"proxy": "hok-proxy"}"#).unwrap();
 
         let config = ConfigBuilder::new()
