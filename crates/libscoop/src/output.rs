@@ -7,10 +7,10 @@
 //! # Design
 //!
 //! - **Channel, not renderer**: Rendering is *not* this module's job. A
-//!   frontend injects a sink via [`Session::set_output`] and renders each
+//!   frontend injects a sink via [`crate::Session::set_output`] and renders each
 //!   [`Output`] request in its own UI layer (the hok CLI renders in
 //!   `src/output.rs`). Library code must never write to stdout/stderr
-//!   directly — use [`Session::output`] instead.
+//!   directly — use [`crate::Session::output`] instead.
 //! - **Silent without a sink**: When no sink is injected, output is silently
 //!   dropped. The library itself never produces user-facing output.
 //! - **Synchronous**: Requests are forwarded to the sink synchronously (unlike
@@ -55,7 +55,7 @@ pub enum Output {
 /// Sink consuming [`Output`] requests; injected by the frontend.
 pub type OutputSink = Arc<dyn Fn(Output) + Send + Sync>;
 
-/// Handle returned by [`Session::output`] for emitting structured output.
+/// Handle returned by [`crate::Session::output`] for emitting structured output.
 ///
 /// Each method forwards the corresponding [`Output`] request to the session's
 /// sink. When no sink is set, the request is silently dropped.

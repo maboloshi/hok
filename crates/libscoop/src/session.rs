@@ -20,9 +20,18 @@
 //! - **Global flag**: [`Session::set_global()`] / [`is_global()`] control
 //!   whether operations use the system-wide Scoop root (`global_path`) or
 //!   the user-local root (`root_path`). Checked by operations at runtime.
+//! - **Output sink**: structured output is emitted through
+//!   [`Session::output()`] and forwarded to the sink injected by the frontend
+//!   via [`Session::set_output()`]. Without a sink, output is silently
+//!   dropped — the library never writes to stdout/stderr itself. The sink is
+//!   synchronous (unlike the async [`Event`][1] bus), so commands that do not
+//!   run an event loop (e.g. `ci-auto-pr`, `cache`, `cleanup`) can still
+//!   emit output safely.
 //! - **Config borrowing**: `config()` returns a `Ref<Config>` (immutable);
 //!   `config_mut()` (crate-internal) returns a `RefMut<Config>` and fails
 //!   with `ConfigInUse` if the config is already borrowed.
+//!
+//! [1]: crate::Event
 //!
 //! # Thread safety
 //!

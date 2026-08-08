@@ -14,6 +14,29 @@
 //! libscoop. Most of the functions exposed by this crate take a session as
 //! their first argument.
 //!
+//! # Output architecture
+//!
+//! Library code never writes to stdout/stderr directly — all user-facing
+//! output is routed to the frontend through one of two channels owned by the
+//! [`Session`]:
+//!
+//! - **Structured output sink** (synchronous): operations emit [`Output`][1]
+//!   requests via [`Session::output`]; a frontend injects a sink with
+//!   [`Session::set_output`] and renders each request in its own UI layer.
+//!   Without a sink, output is silently dropped. Used for progress messages,
+//!   warnings and errors emitted directly by operations (e.g. `auto_pr`,
+//!   cache/cleanup failure reports).
+//! - **Event bus** (asynchronous): operations send [`Event`] variants
+//!   through the event bus; a frontend runs an event loop (see
+//!   `hok::eventloop`) to render progress bars, prompts, and sub-step status.
+//!   Used for long-running flows such as install/update/uninstall.
+//!
+//! The hok CLI bridges both channels: it injects a sink mapping
+//! [`Output`][1] to its renderer (`src/output.rs`) and runs the event loop
+//! for sync operations.
+//!
+//! [1]: crate::output::Output
+//!
 //! ## Examples
 //!
 //! Initialize a Scoop session, get the configuration associated with the
