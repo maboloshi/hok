@@ -38,9 +38,15 @@ pub fn list_installed_versions(session: &Session, name: &str) -> Fallible<Vec<In
         return Ok(Vec::new());
     }
 
-    let current_target = std::fs::read_link(apps_dir.join("current"))
-        .ok()
-        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()));
+    let current_target = if session.config().no_junction() {
+        // No `current` junction under NO_JUNCTION: resolve via
+        // Select-CurrentVersion fallback (mtime of version dirs).
+        super::query::select_current_version(&apps_dir)
+    } else {
+        std::fs::read_link(apps_dir.join("current"))
+            .ok()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+    };
 
     let mut versions: Vec<String> = std::fs::read_dir(&apps_dir)
         .map(|entries| {

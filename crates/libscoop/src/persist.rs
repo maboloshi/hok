@@ -34,14 +34,16 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
         None => return Ok(()),
     };
 
-    let current_dir = session.current_dir(package.name());
+    let version_dir = session
+        .app_dir(package.name())
+        .join(session.current_dir_name(package.version()));
     let persist_root = session.persist_dir(package.name());
 
     for entry in &persists {
         let source = entry[0];
         let target = entry.get(1).unwrap_or(&entry[0]);
 
-        let src_path = internal::path::normalize_path(current_dir.join(source));
+        let src_path = internal::path::normalize_path(version_dir.join(source));
         let tgt_path = internal::path::normalize_path(persist_root.join(target));
 
         // Ensure persist parent directory exists

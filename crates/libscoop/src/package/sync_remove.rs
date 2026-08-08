@@ -5,8 +5,7 @@
 //! reset — split out of [`super`] (`sync.rs`). It is a private sub-module
 //! of `sync`; the entry points are re-exported by `sync.rs`.
 
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::path::PathBuf;
 
 use tracing::{debug, info};
 
@@ -168,14 +167,22 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     // resolves (broken install), upstream still proceeds to the old-version
     // cleanup loop below, so this is `Option` — the current-version block is
     // skipped and removal falls through to the old-version loop.
-    let version_dir = select_current_version(&app_dir)
+    let version_dir = query::select_current_version(&app_dir)
         .or_else(|| package.installed_version().map(str::to_owned))
         .map(|v| app_dir.join(&v));
+
+    // Scripts run against the version dir (`$dir`), mirroring
+    // scoop-uninstall.ps1 (`$dir = versiondir $app $version $global`); with
+    // junctions the `current` junction resolves to it, and under `NO_JUNCTION`
+    // the version dir is used directly. Fall back to `current` only when no
+    // version could be resolved (broken install).
+    let fallback_dir = app_dir.join("current");
+    let script_dir = version_dir.as_deref().unwrap_or(&fallback_dir);
 
     run_script(
         session,
         package,
-        &app_dir.join("current"),
+        script_dir,
         "pre_uninstall",
         "uninstall",
         package.manifest().pre_uninstall(),
@@ -192,7 +199,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             run_script(
                 session,
                 package,
-                &app_dir.join("current"),
+                script_dir,
                 "uninstaller",
                 "uninstall",
                 Some(script),
@@ -202,7 +209,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             operations::run_installer_file(
                 session,
                 package,
-                &app_dir.join("current"),
+                script_dir,
                 "uninstaller",
                 "uninstall",
                 file,
@@ -222,7 +229,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
     // `env::remove` resolve their own paths, so they don't need the
     // `$refdir` return value that upstream passes along.
-    operations::unlink_current(&app_dir)?;
+    operations::unlink_current(&app_dir, session.config().no_junction())?;
     psmodule::remove(session, package)?;
     env::remove(session, package)?;
 
@@ -337,7 +344,7 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
     info!("resetting {} ({})", name, version);
 
     // Re-create the `current` symlink
-    operations::link_current(&pkg_dir, &version_dir)?;
+    operations::link_current(&pkg_dir, &version_dir, session.config().no_junction())?;
 
     // Re-link persistent data
     persist::link(session, &pkg)?;
@@ -394,7 +401,7 @@ fn resolve_reset_target(
             }
             v.to_owned()
         }
-        None => match select_current_version(&pkg_dir) {
+        None => match query::select_current_version(&pkg_dir) {
             Some(v) => v,
             None => return Err(Error::PackageNotFound(name.to_owned())),
         },
@@ -437,51 +444,13 @@ fn resolve_reset_target(
     Ok((pkg, pkg_dir, version_dir))
 }
 
-/// Resolve the current installed version of an app, mirroring upstream
-/// `Select-CurrentVersion` (lib/versions.ps1):
-///
-/// 1. `current\manifest.json`'s `version` — a `nightly` version resolves to
-///    the junction target's directory name;
-/// 2. otherwise, the version directory whose `install.json` was most recently
-///    modified (`Get-InstalledVersion`, excluding `current` and `_*.old*`).
-fn select_current_version(pkg_dir: &Path) -> Option<String> {
-    // 1. current\manifest.json version
-    if let Ok(manifest) = Manifest::parse(pkg_dir.join("current").join("manifest.json")) {
-        let version = manifest.version().to_owned();
-        if version == "nightly" {
-            if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
-                if let Some(name) = target.file_name().and_then(|s| s.to_str()) {
-                    return Some(name.to_owned());
-                }
-            }
-        } else {
-            return Some(version);
-        }
-    }
-
-    // 2. version dirs with install.json, newest by modification time
-    let mut candidates: Vec<(SystemTime, String)> = vec![];
-    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == "current" || (name.starts_with('_') && name.contains(".old")) {
-                continue;
-            }
-            let install_json = entry.path().join("install.json");
-            if let Ok(meta) = std::fs::metadata(&install_json) {
-                let time = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                candidates.push((time, name));
-            }
-        }
-    }
-    candidates.sort_by(|a, b| a.0.cmp(&b.0));
-    candidates.pop().map(|(_, v)| v)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package::query::select_current_version;
     use crate::test_utils::{test_session, tmpdir};
+    use std::path::Path;
+    use std::time::SystemTime;
 
     fn mini_manifest(version: &str) -> String {
         format!(

@@ -50,12 +50,8 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let config = session.config();
     let app_path = session
         .app_dir(package.name());
-    let version = if config.no_junction() {
-        package.version().to_owned()
-    } else {
-        "current".to_owned()
-    };
-    let working_dir = app_path.join(&version);
+    let version = session.current_dir_name(package.version());
+    let working_dir = app_path.join(version);
 
     // Add environment path (Scoop order: env_add_path first, then env_set)
     if let Some(env_add_path) = package.manifest().env_add_path() {
@@ -73,7 +69,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
         let add_paths = env_add_path
             .into_iter()
-            .map(|p| internal::path::normalize_path(app_path.join(&version).join(p)))
+            .map(|p| internal::path::normalize_path(app_path.join(version).join(p)))
             .collect::<Vec<_>>();
 
         // Lowercase forms for the case-insensitive dedup below (Scoop's
@@ -130,11 +126,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     assert!(package.is_installed());
 
-    let version = if session.config().no_junction() {
-        package.installed_version().unwrap()
-    } else {
-        "current"
-    };
+    let version = session.current_dir_name(package.installed_version().unwrap());
 
     remove_impl(session, package, package.manifest(), version)
 }

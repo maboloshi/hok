@@ -20,6 +20,7 @@
 use rayon::prelude::{ParallelBridge, ParallelIterator};
 use regex::{Regex, RegexBuilder};
 use std::path::Path;
+use std::time::SystemTime;
 use tracing::{debug, info};
 
 use crate::{
@@ -182,10 +183,62 @@ fn manifest_matches(
     false
 }
 
-fn load_install_state(apps_dir: &Path, name: &str) -> Option<InstallState> {
-    let current = apps_dir.join(name).join("current");
-    let install_info = InstallInfo::parse(current.join("install.json")).ok()?;
-    let install_manifest = Manifest::parse(current.join("manifest.json")).ok()?;
+/// Resolve the current installed version of an app, mirroring upstream
+/// `Select-CurrentVersion` (lib/versions.ps1):
+///
+/// 1. `current\manifest.json`'s `version` — a `nightly` version resolves to
+///    the junction target's directory name;
+/// 2. otherwise, the version directory whose `install.json` was most recently
+///    modified (`Get-InstalledVersion`, excluding `current` and `_*.old*`).
+///
+/// Under `NO_JUNCTION` there is no `current` junction, so step 1 fails and
+/// the mtime fallback of step 2 (which scans the versioned dirs) applies.
+pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
+    // 1. current\manifest.json version
+    if let Ok(manifest) = Manifest::parse(pkg_dir.join("current").join("manifest.json")) {
+        let version = manifest.version().to_owned();
+        if version == "nightly" {
+            if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
+                if let Some(name) = target.file_name().and_then(|s| s.to_str()) {
+                    return Some(name.to_owned());
+                }
+            }
+        } else {
+            return Some(version);
+        }
+    }
+
+    // 2. version dirs with install.json, newest by modification time
+    let mut candidates: Vec<(SystemTime, String)> = vec![];
+    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "current" || (name.starts_with('_') && name.contains(".old")) {
+                continue;
+            }
+            let install_json = entry.path().join("install.json");
+            if let Ok(meta) = std::fs::metadata(&install_json) {
+                let time = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                candidates.push((time, name));
+            }
+        }
+    }
+    candidates.sort_by_key(|c| c.0);
+    candidates.pop().map(|(_, v)| v)
+}
+
+fn load_install_state(apps_dir: &Path, name: &str, no_junction: bool) -> Option<InstallState> {
+    let pkg_dir = apps_dir.join(name);
+    // Under NO_JUNCTION there is no `current` junction: resolve the current
+    // version via the `Select-CurrentVersion` fallback and read the versioned
+    // dir's metadata (upstream `currentdir`, lib/core.ps1).
+    let meta_dir = if no_junction {
+        pkg_dir.join(select_current_version(&pkg_dir)?)
+    } else {
+        pkg_dir.join("current")
+    };
+    let install_info = InstallInfo::parse(meta_dir.join("install.json")).ok()?;
+    let install_manifest = Manifest::parse(meta_dir.join("manifest.json")).ok()?;
 
     Some(InstallState::Installed(InstallStateInstalled {
         version: install_manifest.version().to_owned(),
@@ -196,9 +249,9 @@ fn load_install_state(apps_dir: &Path, name: &str) -> Option<InstallState> {
     }))
 }
 
-fn fill_install_state(package: &Package, apps_dir: &Path, name: &str) {
+fn fill_install_state(package: &Package, apps_dir: &Path, name: &str, no_junction: bool) {
     package.fill_install_state(
-        load_install_state(apps_dir, name).unwrap_or(InstallState::NotInstalled),
+        load_install_state(apps_dir, name, no_junction).unwrap_or(InstallState::NotInstalled),
     );
 }
 
@@ -260,6 +313,7 @@ pub(crate) fn query_installed(
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let apps_dir = session.apps_dir();
     let root_path = session.config().root_path().to_path_buf();
+    let no_junction = session.config().no_junction();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let mut ret = vec![];
@@ -277,9 +331,17 @@ pub(crate) fn query_installed(
                         let name = filename.to_str().unwrap();
                         // The name `scoop` is reserved for Scoop, ignore it
                         let is_scoop = name == "scoop";
-                        let current = apps_dir.join(name).join("current");
-                        let manifest_path = current.join("manifest.json");
-                        let install_info_path = current.join("install.json");
+                        let pkg_dir = apps_dir.join(name);
+                        let meta_dir = if no_junction {
+                            match select_current_version(&pkg_dir) {
+                                Some(v) => pkg_dir.join(v),
+                                None => return None,
+                            }
+                        } else {
+                            pkg_dir.join("current")
+                        };
+                        let manifest_path = meta_dir.join("manifest.json");
+                        let install_info_path = meta_dir.join("install.json");
                         let is_not_broken = manifest_path.exists() && install_info_path.exists();
 
                         if !is_dir || is_scoop || !is_not_broken {
@@ -367,6 +429,7 @@ pub(crate) fn query_synced(
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let buckets = crate::bucket::bucket_added(session)?;
     let apps_dir = session.apps_dir();
+    let no_junction = session.config().no_junction();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let packages = buckets
@@ -401,7 +464,7 @@ pub(crate) fn query_synced(
                             }
 
                             let package = Package::from(name, bucket, manifest);
-                            fill_install_state(&package, &apps_dir, name);
+                            fill_install_state(&package, &apps_dir, name, no_junction);
 
                             return Some(package);
                         }
@@ -436,6 +499,7 @@ fn query_synced_cached(
     let entries = manifest_cache::query(&conn, None, None)?;
     let apps_dir = session.apps_dir();
     let root_path = session.config().root_path().to_path_buf();
+    let no_junction = session.config().no_junction();
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
@@ -474,7 +538,7 @@ fn query_synced_cached(
         }
 
         let package = Package::from(name, bucket, manifest);
-        fill_install_state(&package, &apps_dir, name);
+        fill_install_state(&package, &apps_dir, name, no_junction);
 
         packages.push(package);
     }
@@ -486,6 +550,32 @@ fn query_synced_cached(
 mod tests {
     use super::*;
     use crate::package::manifest::Manifest;
+    use crate::test_utils;
+
+    #[test]
+    fn load_install_state_no_junction_reads_version_dir() {
+        let root = test_utils::tmpdir("query_no_junction_state");
+        let vdir = root.join("apps").join("app").join("1.2.3");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(
+            vdir.join("manifest.json"),
+            r#"{"version": "1.2.3", "homepage": "https://example.com", "license": "MIT"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            vdir.join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "test"}"#,
+        )
+        .unwrap();
+
+        let state = load_install_state(&root.join("apps"), "app", true).unwrap();
+        match state {
+            InstallState::Installed(s) => assert_eq!(s.version, "1.2.3"),
+            _ => panic!("expected installed state"),
+        }
+        // With junctions enabled and no `current` link, nothing resolves.
+        assert!(load_install_state(&root.join("apps"), "app", false).is_none());
+    }
 
     // ── build_matchers ───────────────────────────────────────────────────────
 

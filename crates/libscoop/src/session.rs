@@ -271,9 +271,31 @@ impl Session {
         self.app_dir(name).join("current")
     }
 
-    /// Get the version directory of a package: `<root>/apps/<name>/<version>`.
+    /// Get the directory name a package's runtime entries (shims, shortcuts,
+    /// env) should resolve to: `current` when junctions are enabled,
+    /// otherwise the actual version directory name.
+    ///
+    /// Mirrors upstream Scoop's `currentdir` (lib/core.ps1), which resolves
+    /// `NO_JUNCTION` to `Select-CurrentVersion` and otherwise returns
+    /// `current`; `link_current` (lib/install.ps1) likewise returns the
+    /// version dir under `NO_JUNCTION`.
     #[inline]
-    pub fn version_dir(&self, name: &str, version: &str) -> std::path::PathBuf {
+    pub fn current_dir_name<'a>(&self, version: &'a str) -> &'a str {
+        if self.config().no_junction() {
+            version
+        } else {
+            "current"
+        }
+    }
+
+    /// Get the versioned directory of a package: `<root>/apps/<name>/<version>`.
+    ///
+    /// This is the *real* per-version directory — extraction target,
+    /// `link_current` target, and uninstall/removal location. It is distinct
+    /// from [`Session::current_dir`] (the junction path) and
+    /// [`Session::current_dir_name`] (the runtime entry directory name).
+    #[inline]
+    pub fn versioned_dir(&self, name: &str, version: &str) -> std::path::PathBuf {
         self.app_dir(name).join(version)
     }
 
@@ -407,5 +429,37 @@ fn apply_default_architecture(config: &Config) {
                 "invalid default architecture configured: {raw}; using the system architecture"
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils;
+
+    #[test]
+    fn current_dir_name_defaults_to_current() {
+        let root = test_utils::tmpdir("session_current_dir_name");
+        let session = test_utils::test_session(&root);
+        assert_eq!(session.current_dir_name("1.2.3"), "current");
+        assert_eq!(session.versioned_dir("git", "1.2.3"), root.join("apps/git/1.2.3"));
+    }
+
+    #[test]
+    fn current_dir_name_uses_version_with_no_junction() {
+        let root = test_utils::tmpdir("session_current_dir_name_no_junction");
+        let config_path = root.join("hok.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": true}}"#,
+                root_escaped, cache_escaped
+            ),
+        )
+        .unwrap();
+        let session = Session::new_with(&config_path).unwrap();
+        assert_eq!(session.current_dir_name("1.2.3"), "1.2.3");
     }
 }

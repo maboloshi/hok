@@ -231,6 +231,10 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
     if let Some(bins) = package.manifest().bin() {
         let pkg_name = package.name();
+        // Runtime entry dir: `current` junction, or the version dir under
+        // `NO_JUNCTION` (upstream `create_shims` receives the `link_current`
+        // result as `$dir`).
+        let version_dir = session.current_dir_name(package.version());
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageShimAddStart(pkg_name.to_owned()));
@@ -258,7 +262,8 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
 
                 // Write .shim metadata file
-                let target_rel = format!(r#"~\..\apps\{}\current\{}"#, pkg_name, shim.real_name);
+                let target_rel =
+                    format!(r#"~\..\apps\{}\{}\{}"#, pkg_name, version_dir, shim.real_name);
                 let meta_content = if let Some(args) = &shim.args {
                     format!(
                         "path = \"{target_rel}\"\r\nargs = \"{}\"\r\n",
@@ -276,7 +281,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 }
             } else {
                 // Use script-based shim (.cmd, .ps1, etc.)
-                let batches = generate_shim_batches(&shim, pkg_name);
+                let batches = generate_shim_batches(&shim, pkg_name, version_dir);
 
                 for (path, content) in batches {
                     let full_path = shims_dir.join(&path);
@@ -312,11 +317,11 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 /// Generate shim files content for a given shim definition.
 ///
 /// Returns a list of `(target_path, content)` pairs.
-fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> {
+fn generate_shim_batches(shim: &Shim, pkg_name: &str, version_dir: &str) -> Vec<(PathBuf, String)> {
     let mut result = Vec::new();
 
-    // The target path relative to the shims dir: ..\apps\pkgname\current\real_name
-    let target_rel = format!(r#"..\apps\{}\current\{}"#, pkg_name, shim.real_name);
+    // The target path relative to the shims dir: ..\apps\pkgname\<version_dir>\real_name
+    let target_rel = format!(r#"..\apps\{}\{}\{}"#, pkg_name, version_dir, shim.real_name);
 
     let arg_suffix = shim
         .args
@@ -334,8 +339,8 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
 
             // .shim metadata file (Scoop-compatible format)
             let shim_meta = format!(
-                "path = \"~\\..\\apps\\{}\\current\\{}\"\r\n",
-                pkg_name, shim.real_name
+                "path = \"~\\..\\apps\\{}\\{}\\{}\"\r\n",
+                pkg_name, version_dir, shim.real_name
             );
             result.push((PathBuf::from(format!("{}.shim", shim.name)), shim_meta));
         }
@@ -673,6 +678,33 @@ mod tests {
         assert!(!shims.join("tool.cmd.alpha").exists());
         assert!(shims.join("tool.cmd").exists());
         assert_eq!(conflict_count(&rx), 1);
+    }
+
+    #[test]
+    fn test_add_shim_no_junction_points_at_version_dir() {
+        let root = test_utils::tmpdir("shim_add_no_junction");
+        let config_path = root.join("hok.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": true}}"#,
+                root_escaped, cache_escaped
+            ),
+        )
+        .unwrap();
+        let session = crate::Session::new_with(&config_path).unwrap();
+        let pkg = make_package("foo", r#"[["main.exe", "foo"]]"#);
+
+        add(&session, &pkg).unwrap();
+
+        let shims = root.join("shims");
+        let meta = std::fs::read_to_string(shims.join("foo.shim")).unwrap();
+        assert!(
+            meta.contains(r"apps\foo\1.0.0\main.exe"),
+            "no_junction shim should point at the version dir: {meta}"
+        );
     }
 
     #[test]

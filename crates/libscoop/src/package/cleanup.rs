@@ -51,14 +51,19 @@ pub fn cleanup(
             continue;
         }
 
-        // Determine current version by reading the "current" symlink target
-        let current_version = (|| -> Option<String> {
-            let current_link = pkg_dir.join("current");
-            std::fs::read_link(&current_link)
-                .ok()?
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-        })();
+        // Determine current version: read the "current" symlink target, or
+        // under NO_JUNCTION resolve via Select-CurrentVersion fallback.
+        let current_version = if session.config().no_junction() {
+            super::query::select_current_version(&pkg_dir)
+        } else {
+            (|| -> Option<String> {
+                let current_link = pkg_dir.join("current");
+                std::fs::read_link(&current_link)
+                    .ok()?
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })()
+        };
 
         let Some(ref current_ver) = current_version else {
             // No install info — skip broken package

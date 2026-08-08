@@ -431,7 +431,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
     let apps_dir = session.apps_dir();
 
-    let working_dir = session.version_dir(pkg.name(), pkg.version());
+    let working_dir = session.versioned_dir(pkg.name(), pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
 
     debug!("commit: {} v{} - starting", pkg.name(), pkg.version());
@@ -504,11 +504,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             pkg.version(),
             old_version
         );
-        let version = if config.no_junction() {
-            old_version.to_owned()
-        } else {
-            "current".to_owned()
-        };
+        let version = session.current_dir_name(old_version);
         // Locate the old manifest: with junctions, `current` still points at
         // the old version; without junctions, use the versioned dir directly.
         // Fall back to the new manifest if the old one can't be read.
@@ -522,14 +518,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         };
         let old_manifest = crate::package::Manifest::parse(old_manifest_path).ok();
         match old_manifest {
-            Some(m) => env::remove_with_manifest(session, pkg, &m, &version)?,
+            Some(m) => env::remove_with_manifest(session, pkg, &m, version)?,
             None => env::remove(session, pkg)?,
         }
     }
 
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
-    operations::link_current(&apps_dir.join(pkg.name()), &working_dir)?;
+    operations::link_current(&apps_dir.join(pkg.name()), &working_dir, config.no_junction())?;
 
     // 5. shims + shortcuts
     debug!(
@@ -588,9 +584,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     );
 
     // 7. Write install metadata
-    let current_dir = session.current_dir(pkg.name());
+    // The metadata dir mirrors the `$dir` upstream uses after `link_current`
+    // (lib/install.ps1): the junction path with junctions, the version dir
+    // under `NO_JUNCTION`.
+    let meta_dir = session
+        .app_dir(pkg.name())
+        .join(session.current_dir_name(pkg.version()));
 
-    // 1. Copy manifest from bucket to current/manifest.json
+    // 1. Copy manifest from bucket to <meta_dir>/manifest.json
     // Use bucket path (manifest.path() may be virtual when loaded from cache)
     let bucket_path = session.bucket_dir(pkg.bucket());
     let manifest_src = {
@@ -604,7 +605,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             fallback
         }
     };
-    let manifest_dst = current_dir.join("manifest.json");
+    let manifest_dst = meta_dir.join("manifest.json");
     match std::fs::copy(&manifest_src, manifest_dst) {
         Ok(_) => {}
         Err(e) => {
@@ -615,13 +616,13 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         }
     }
 
-    // 2. Write current/install.json
+    // 2. Write <meta_dir>/install.json
     let arch = crate::internal::os::scoop_arch();
     let install_info = serde_json::json!({
         "architecture": arch,
         "bucket": pkg.bucket(),
     });
-    if let Err(e) = internal::fs::write_json(current_dir.join("install.json"), &install_info) {
+    if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
         return Err(Error::Custom(format!("install.json write: {}", e)));
     }
 

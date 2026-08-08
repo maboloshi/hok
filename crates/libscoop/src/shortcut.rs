@@ -50,6 +50,11 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         // Ensure shortcut dir exists
         internal::fs::ensure_dir(&shortcut_dir)?;
 
+        // Runtime entry dir: `current` junction, or the version dir under
+        // `NO_JUNCTION` (upstream `create_startmenu_shortcuts` receives the
+        // `link_current` result).
+        let version_dir = session.current_dir_name(package.version());
+
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageShortcutAddStart);
         }
@@ -65,7 +70,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             //   [3] = optional icon path (relative to package dir)
             let target = apps_dir
                 .join(package.name())
-                .join("current")
+                .join(version_dir)
                 .join(shortcut[0]);
             let target_str = target.to_string_lossy().into_owned();
 
@@ -73,7 +78,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let icon = shortcut.get(3).map(|s| {
                 apps_dir
                     .join(package.name())
-                    .join("current")
+                    .join(version_dir)
                     .join(s)
                     .to_string_lossy()
                     .into_owned()
