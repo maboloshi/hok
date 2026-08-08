@@ -6,12 +6,12 @@
 //!
 //! This module and its submodules collectively undertake the following responsibilities:
 //!
-//! - **Manifest Management** — Parse and validate Scoop manifest JSON files ([`manifest`]).
-//! - **Package Discovery** — Recursively scan bucket directories for manifest files ([`manifest_walker`]).
+//! - **Manifest Management** — Parse and validate Scoop manifest JSON files (`manifest`).
+//! - **Package Discovery** — Recursively scan bucket directories for manifest files (`manifest_walker`).
 //! - **Package Caching** — Cache bucket manifest indexes into SQLite to speed up queries ([`manifest_cache`]).
 //! - **Package Querying** — Search packages across buckets by name, description, or binary name ([`query`]).
-//! - **Dependency Resolution** — Resolve installation dependency order using a directed acyclic graph (DAG) ([`resolve`]).
-//! - **Downloading** — Concurrent, resumable package file downloads ([`download`]).
+//! - **Dependency Resolution** — Resolve installation dependency order using a directed acyclic graph (DAG) (`resolve`).
+//! - **Downloading** — Concurrent, resumable package file downloads (`download`).
 //! - **Synchronization** — Complete install / upgrade / uninstall pipeline ([`sync`]).
 //! - **Validation** — URL validity checks ([`checkurls`]), hash computation and comparison ([`checkhashes`]),
 //!   version detection ([`checkver`]).

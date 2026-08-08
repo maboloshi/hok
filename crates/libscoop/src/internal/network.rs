@@ -9,7 +9,7 @@
 //! functions [`head`] and [`download`] accept it by reference.  Simple callers
 //! that only need a proxy and timeout can use [`RequestOptions::default()`].
 //!
-//! Internal helpers [`build_agent`] and [`apply_headers`] are `pub(crate)` so
+//! Internal helpers `build_agent` and `apply_headers` are `pub(crate)` so
 //! that `package/download.rs` can reuse them without duplicating logic.
 
 use std::collections::HashMap;

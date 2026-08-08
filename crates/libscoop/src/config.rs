@@ -11,15 +11,15 @@
 //!   so the serialized file is exactly the supported set by construction.
 //!   On the first run, when hok's file does not exist yet, the supported
 //!   keys are migrated once from Scoop's `config.json` (found via
-//!   [`possible_config_paths()`]); afterwards Scoop's file is never
+//!   `possible_config_paths()`); afterwards Scoop's file is never
 //!   consulted again and never modified.
 //! - **Builder pattern**: [`ConfigBuilder`] sets the hok config path (and an
 //!   optional read-only Scoop path used only for the first-run migration);
 //!   [`Config`] provides typed accessors for supported keys.
-//! - **Path discovery**: [`possible_config_paths()`] returns the known Scoop
+//! - **Path discovery**: `possible_config_paths()` returns the known Scoop
 //!   config file locations (user-local and global); [`crate::Session::new()`] picks
 //!   the first one that exists as the migration source.
-//! - **Defaults**: If no config file exists, [`Config::init()`] creates a
+//! - **Defaults**: If no config file exists, `Config::init()` creates a
 //!   blank hok config with sensible defaults.
 //!
 //! # Thread safety
@@ -228,10 +228,10 @@ pub struct ConfigInner {
     /// point to specific version instead.
     ///
     /// This config was introduced in Jan, 2017 with the name `NO_JUNCTIONS`:
-    /// https://github.com/ScoopInstaller/Scoop/commit/a14ffdb5
+    /// <https://github.com/ScoopInstaller/Scoop/commit/a14ffdb5>
     ///
     /// It was renamed to `no_junction` in Aug, 2022 (later in release v0.3.0):
-    /// https://github.com/ScoopInstaller/Scoop/pull/5116
+    /// <https://github.com/ScoopInstaller/Scoop/pull/5116>
     #[serde(alias = "no_junctions")]
     #[serde(skip_serializing_if = "Option::is_none")]
     no_junction: Option<bool>,
@@ -257,7 +257,7 @@ pub struct ConfigInner {
     /// host to this list with 'match' and 'headers' strings.
     ///
     /// This config was introduced in Feb, 2021:
-    /// https://github.com/ScoopInstaller/Scoop/pull/4254
+    /// <https://github.com/ScoopInstaller/Scoop/pull/4254>
     #[serde(skip_serializing_if = "Option::is_none")]
     private_hosts: Option<Vec<PrivateHosts>>,
 

@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Isolated packages (installed via URL or path, not managed by any bucket)
-//! are grouped under the [`crate::constant::ISOLATED_PACKAGE_BUCKET`] key and
+//! are grouped under the `crate::constant::ISOLATED_PACKAGE_BUCKET` key and
 //! are omitted unless `include_all` is set.
 
 use serde_json::{Map, Value};

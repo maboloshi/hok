@@ -6,7 +6,7 @@
 //!
 //! # Design
 //!
-//! - **Format detection**: [`detect_format()`] maps extensions (`.7z`,
+//! - **Format detection**: `detect_format()` maps extensions (`.7z`,
 //!   `.zip`, `.tar`, `.gz`, `.xz`, etc.) to archive types.
 //! - **External tools**: 7z archives use the `7z` executable; other
 //!   formats are handled natively.

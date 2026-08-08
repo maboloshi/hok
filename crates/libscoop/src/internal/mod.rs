@@ -5,7 +5,7 @@
 //! - [`arch`] — Runtime OS architecture detection (Scoop-compatible)
 //! - [`archive`] — Archive extraction (7z, zip, tar, ...)
 //! - [`dag`] — Directed Acyclic Graph for dependency resolution
-//! - [`env`](crate::env) — Windows Registry-backed environment variable management
+//! - `env` — Windows Registry-backed environment variable management
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
 //! - [`hash`] — Hash utilities (MD5/SHA1/SHA256/SHA512) via RustCrypto
