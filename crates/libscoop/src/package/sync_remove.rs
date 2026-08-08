@@ -13,7 +13,7 @@ use tracing::{debug, info};
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::{
     manifest::{InstallInfo, Manifest},
-    operations::{self, expand_installer_vars, run_script},
+    operations::{self, run_script},
     query, resolve, InstallState, InstallStateInstalled, Package,
 };
 use crate::{env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption, Session};
@@ -200,26 +200,16 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
                 Some(script),
             )?;
         } else if let Some(file) = uninstaller.file() {
-            debug!("remove: {} - uninstaller.file", package.name());
-            let exe_path = app_dir.join("current").join(file);
             let raw_args: Vec<&str> = uninstaller.args().unwrap_or_default();
-            let expanded = expand_installer_vars(
-                &raw_args,
+            operations::run_installer_file(
                 session,
                 package,
                 &app_dir.join("current"),
+                "uninstaller",
                 "uninstall",
-            );
-            let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-            crate::internal::os::run_gui(&exe_path, &args, Some(&app_dir.join("current")))
-                .map_err(|e| {
-                    Error::Custom(format!(
-                        "failed to run uninstaller '{}' for '{}': {}",
-                        file,
-                        package.name(),
-                        e
-                    ))
-                })?;
+                file,
+                &raw_args,
+            )?;
         }
     }
 

@@ -200,6 +200,39 @@ pub fn expand_installer_vars(
         .collect()
 }
 
+/// Run a manifest `installer.file` / `uninstaller.file` executable via
+/// `run_gui`, with installer-variable-expanded arguments (see
+/// [`expand_installer_vars`]).
+///
+/// Mirrors Scoop's `Invoke-InstallerFile` / `Invoke-UninstallerFile`: the
+/// binary runs detached (GUI-style) with `working_dir` as its working
+/// directory. `stage` (`"installer"` / `"uninstaller"`) is used in error
+/// messages; `cmd` (`"install"` / `"uninstall"`) is substituted for `$cmd`.
+pub fn run_installer_file(
+    session: &Session,
+    package: &Package,
+    working_dir: &Path,
+    stage: &str,
+    cmd: &str,
+    file: &str,
+    raw_args: &[&str],
+) -> Fallible<()> {
+    debug!("run_installer_file: {} - {}.file", package.name(), stage);
+    let exe_path = working_dir.join(file);
+    let expanded = expand_installer_vars(raw_args, session, package, working_dir, cmd);
+    let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
+    internal::os::run_gui(&exe_path, &args, Some(working_dir)).map_err(|e| {
+        Error::Custom(format!(
+            "failed to run {} '{}' for '{}': {}",
+            stage,
+            file,
+            package.name(),
+            e
+        ))
+    })?;
+    Ok(())
+}
+
 /// Removes the given file paths when dropped. Ensures cleanup even when
 /// the calling function returns early via `?`.
 struct TempFileGuard(Vec<std::path::PathBuf>);

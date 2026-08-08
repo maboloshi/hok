@@ -473,19 +473,16 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 Some(script),
             )?;
         } else if let Some(file) = installer.file() {
-            debug!("commit: {} v{} - installer.file", pkg.name(), pkg.version());
-            let exe_path = working_dir.join(file);
             let raw_args: Vec<&str> = installer.args().unwrap_or_default();
-            let expanded = operations::expand_installer_vars(&raw_args, session, pkg, &working_dir, "install");
-            let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-            crate::internal::os::run_gui(&exe_path, &args, Some(&working_dir)).map_err(|e| {
-                Error::Custom(format!(
-                    "failed to run installer '{}' for '{}': {}",
-                    file,
-                    pkg.name(),
-                    e
-                ))
-            })?;
+            operations::run_installer_file(
+                session,
+                pkg,
+                &working_dir,
+                "installer",
+                "install",
+                file,
+                &raw_args,
+            )?;
         }
     }
 
