@@ -202,3 +202,52 @@ pub fn compute_file_hash(path: &Path, algo: &str) -> std::io::Result<String> {
     }
     Ok(hasher.finalize())
 }
+
+/// Format a raw hash value with the Scoop-compatible algorithm prefix.
+///
+/// `sha256` hashes are written bare; `md5`/`sha1`/`sha512` get an
+/// `algo:` prefix (matching Scoop's `format_hash`). Unknown algorithms
+/// are returned bare.
+///
+/// This is the single source of truth for hash prefix formatting, shared
+/// by `checkhashes` (algo-name based) and `checkver_hash` (length based).
+pub fn format_hash_value(algo: &str, hash: &str) -> String {
+    match algo {
+        "md5" => format!("md5:{hash}"),
+        "sha1" => format!("sha1:{hash}"),
+        "sha512" => format!("sha512:{hash}"),
+        _ => hash.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_hash_value ───────────────────────────────────────────────────
+
+    #[test]
+    fn format_sha256_returns_bare_value() {
+        assert_eq!(format_hash_value("sha256", "abc123"), "abc123");
+    }
+
+    #[test]
+    fn format_md5_adds_prefix() {
+        assert_eq!(format_hash_value("md5", "deadbeef"), "md5:deadbeef");
+    }
+
+    #[test]
+    fn format_sha1_adds_prefix() {
+        assert_eq!(format_hash_value("sha1", "aabbcc"), "sha1:aabbcc");
+    }
+
+    #[test]
+    fn format_sha512_adds_prefix() {
+        assert_eq!(format_hash_value("sha512", "longvalue"), "sha512:longvalue");
+    }
+
+    #[test]
+    fn format_unknown_algo_returns_bare() {
+        assert_eq!(format_hash_value("crc32", "deadcode"), "deadcode");
+    }
+}

@@ -53,6 +53,33 @@ pub(crate) fn discover(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Discover manifests and filter them by app patterns, returning
+/// `(path, stem)` pairs.
+///
+/// Combines [`discover`] with Scoop's app-pattern filtering
+/// ([`crate::internal::string::matches_any_glob`]): a first pattern of
+/// `"*"` matches everything; otherwise each stem must match at least one
+/// pattern (glob `*`/`?` supported, plain patterns match exactly).
+///
+/// Shared by the bucket-scanning commands `checkhashes` / `checkver` /
+/// `checkurls`.
+pub(crate) fn discover_matching(
+    dir: &Path,
+    app: &[String],
+) -> std::io::Result<Vec<(PathBuf, String)>> {
+    let mut out = Vec::new();
+    for path in discover(dir)? {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let stem = stem.to_string();
+        if crate::internal::string::matches_any_glob(&stem, app) {
+            out.push((path, stem));
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +175,48 @@ mod tests {
             result.is_err(),
             "A non-existent directory should return Err."
         );
+    }
+
+    // ── discover_matching ───────────────────────────────────────────────────
+
+    #[test]
+    fn matching_wildcard_returns_all_with_stems() {
+        let dir = tmpdir("match_wildcard");
+        fs::write(dir.join("app1.json"), "{}").unwrap();
+        fs::write(dir.join("app2.json"), "{}").unwrap();
+
+        let result = discover_matching(&dir, &["*".to_string()]).unwrap();
+        assert_eq!(result.len(), 2);
+        let stems: Vec<&str> = result.iter().map(|(_, s)| s.as_str()).collect();
+        assert!(stems.contains(&"app1"));
+        assert!(stems.contains(&"app2"));
+    }
+
+    #[test]
+    fn matching_exact_pattern_filters() {
+        let dir = tmpdir("match_exact");
+        fs::write(dir.join("curl.json"), "{}").unwrap();
+        fs::write(dir.join("git-lfs.json"), "{}").unwrap();
+
+        // Plain patterns match exactly (no substring match).
+        let result = discover_matching(&dir, &["git".to_string()]).unwrap();
+        assert!(
+            result.is_empty(),
+            "exact pattern must not substring-match git-lfs"
+        );
+
+        let result = discover_matching(&dir, &["git*".to_string()]).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1, "git-lfs");
+    }
+
+    #[test]
+    fn matching_empty_app_list_matches_nothing_without_panic() {
+        let dir = tmpdir("match_empty");
+        fs::write(dir.join("app1.json"), "{}").unwrap();
+
+        // Empty app list must not panic (checkver used to index [0]).
+        let result = discover_matching(&dir, &[]).unwrap();
+        assert!(result.is_empty());
     }
 }

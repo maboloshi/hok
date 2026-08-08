@@ -440,6 +440,25 @@ impl<T: Serialize> Serialize for Vectorized<T> {
     }
 }
 
+/// Collapse a list of strings into a single JSON value the way Scoop
+/// manifests do: one element becomes a bare string, multiple elements
+/// become an array.
+///
+/// Shared by `checkver`/`checkhashes` when rewriting manifest fields
+/// (url / hash) — mirrors [`Vectorized`]'s serialization semantics.
+pub(crate) fn json_str_array(items: &[String]) -> serde_json::Value {
+    if items.len() == 1 {
+        serde_json::Value::String(items[0].clone())
+    } else {
+        serde_json::Value::Array(
+            items
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        )
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //  Implementations for types
 ////////////////////////////////////////////////////////////////////////////////
@@ -1151,6 +1170,26 @@ mod tests {
 
     fn manifest_from(json: &str) -> Manifest {
         Manifest::from_json("test-pkg", json).unwrap()
+    }
+
+    // ── json_str_array ──────────────────────────────────────────────────────
+
+    #[test]
+    fn json_str_array_single_element_is_bare_string() {
+        let v = json_str_array(&["one".to_string()]);
+        assert_eq!(v, serde_json::Value::String("one".to_string()));
+    }
+
+    #[test]
+    fn json_str_array_multiple_elements_is_array() {
+        let v = json_str_array(&["a".to_string(), "b".to_string()]);
+        assert_eq!(v, serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn json_str_array_empty_is_empty_array() {
+        let v = json_str_array(&[]);
+        assert_eq!(v, serde_json::json!([]));
     }
 
     #[test]
