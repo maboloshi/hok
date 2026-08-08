@@ -125,6 +125,31 @@ pub fn is_pwsh_available() -> bool {
     })
 }
 
+/// Construct a PowerShell `Command` (pwsh preferred), pre-configured with
+/// `-NoProfile -ExecutionPolicy Bypass`. Callers add `-File` / `-Command`,
+/// env vars, and stdout/stderr handling as needed.
+pub fn ps_command() -> std::process::Command {
+    let ps_exe = if is_pwsh_available() {
+        "pwsh.exe"
+    } else {
+        "powershell.exe"
+    };
+    let mut cmd = std::process::Command::new(ps_exe);
+    cmd.arg("-NoProfile").arg("-ExecutionPolicy").arg("Bypass");
+    cmd
+}
+
+/// Current target architecture in Scoop naming ("64bit" / "32bit" / "arm64").
+pub fn scoop_arch() -> &'static str {
+    if cfg!(target_arch = "x86_64") {
+        "64bit"
+    } else if cfg!(target_arch = "x86") {
+        "32bit"
+    } else {
+        "arm64"
+    }
+}
+
 /// Run a program with the given arguments and wait for it to complete.
 ///
 /// Returns the process exit code (or `-1` if the process was terminated by a
@@ -158,10 +183,10 @@ fn starts_with_ignore_case(path: &Path, dir: &Path) -> bool {
     let mut path_components = path.components();
     for dir_comp in dir.components() {
         match path_components.next() {
-            Some(p) if p
-                .as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case(&dir_comp.as_os_str().to_string_lossy()) => {}
+            Some(p)
+                if p.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&dir_comp.as_os_str().to_string_lossy()) => {}
             _ => return false,
         }
     }
@@ -415,11 +440,23 @@ mod tests {
     #[test]
     fn starts_with_ignore_case_matches_components() {
         let dir = Path::new(r"C:\scoop\apps\git");
-        assert!(starts_with_ignore_case(Path::new(r"C:\scoop\apps\git\git.exe"), dir));
-        assert!(starts_with_ignore_case(Path::new(r"C:\SCOOP\Apps\GIT\current\git-bash.exe"), dir));
+        assert!(starts_with_ignore_case(
+            Path::new(r"C:\scoop\apps\git\git.exe"),
+            dir
+        ));
+        assert!(starts_with_ignore_case(
+            Path::new(r"C:\SCOOP\Apps\GIT\current\git-bash.exe"),
+            dir
+        ));
         // Same prefix but different component: must not match (Path::starts_with semantics).
-        assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps\git2\git.exe"), dir));
-        assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps\other\x.exe"), dir));
+        assert!(!starts_with_ignore_case(
+            Path::new(r"C:\scoop\apps\git2\git.exe"),
+            dir
+        ));
+        assert!(!starts_with_ignore_case(
+            Path::new(r"C:\scoop\apps\other\x.exe"),
+            dir
+        ));
         // Shorter path than dir.
         assert!(!starts_with_ignore_case(Path::new(r"C:\scoop\apps"), dir));
     }

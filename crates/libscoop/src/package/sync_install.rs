@@ -11,7 +11,9 @@ use std::io::Read;
 use tracing::{debug, info};
 
 use crate::package::{download, identity, operations, query, resolve, Package};
-use crate::{error::Fallible, env, internal, persist, shim, shortcut, Error, Event, QueryOption, Session};
+use crate::{
+    env, error::Fallible, internal, persist, shim, shortcut, Error, Event, QueryOption, Session,
+};
 
 use super::{confirm_transaction, SyncOption, Transaction};
 
@@ -75,9 +77,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 .iter()
                 .filter(|&p| {
                     let (query_bucket, query_name) = identity::split_bucket_query(query);
-                    let bucket_matched = query_bucket
-                        .as_deref()
-                        .map_or(true, |b| p.bucket() == b);
+                    let bucket_matched = query_bucket.as_deref().map_or(true, |b| p.bucket() == b);
                     let name_matched = p.name() == query_name;
                     bucket_matched && name_matched
                 })
@@ -566,16 +566,14 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // Emit post-install notes if the manifest has them.
-    // Mirror Scoop's `show_notes` (install.ps1): substitute the `$dir` /
-    // `$original_dir` / `$persist_dir` placeholders with real paths.
+    // Mirror Scoop's `show_notes` (install.ps1): substitute the Scoop path
+    // placeholders (`$dir`, `$original_dir`, `$persist_dir`, etc.) with real
+    // paths — full expansion via `expand_scoop_str` matches Scoop's
+    // `substitute` (all params, not just the three path vars).
     if let Some(notes) = pkg.manifest().notes() {
-        let dir = working_dir.to_string_lossy().to_string();
-        let persist_dir = session.persist_dir(pkg.name())
-            .to_string_lossy()
-            .to_string();
         let notes_text = notes
             .iter()
-            .map(|n| expand_note(n, &dir, &persist_dir))
+            .map(|n| operations::expand_scoop_str(n, session, pkg, &working_dir, "install"))
             .collect::<Vec<_>>()
             .join("\n");
         if let Some(tx) = session.emitter() {
@@ -618,13 +616,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 2. Write current/install.json
-    let arch = if cfg!(target_arch = "x86_64") {
-        "64bit"
-    } else if cfg!(target_arch = "x86") {
-        "32bit"
-    } else {
-        "arm64"
-    };
+    let arch = crate::internal::os::scoop_arch();
     let install_info = serde_json::json!({
         "architecture": arch,
         "bucket": pkg.bucket(),
@@ -636,39 +628,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     Ok(())
 }
 
-/// Substitute Scoop path placeholders in a post-install note, mirroring
-/// Scoop's `show_notes` (install.ps1). Only `$dir`, `$original_dir` and
-/// `$persist_dir` are replaced; in the install flow `$original_dir` equals
-/// `$dir` (install.ps1: `$original_dir = $dir`).
-fn expand_note(note: &str, dir: &str, persist_dir: &str) -> String {
-    note.replace("$original_dir", dir)
-        .replace("$persist_dir", persist_dir)
-        .replace("$dir", dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Post-install notes expand `$dir` / `$original_dir` / `$persist_dir`
-    /// placeholders (mirror Scoop's `show_notes`).
-    #[test]
-    fn test_expand_note() {
-        let dir = r"D:\apps\uv\1.0.0";
-        let persist_dir = r"D:\persist\uv";
-        let expanded = expand_note(
-            "Run \"$dir\\Setup-UVEnv.ps1 $persist_dir\"",
-            dir,
-            persist_dir,
-        );
-        assert_eq!(
-            expanded,
-            r#"Run "D:\apps\uv\1.0.0\Setup-UVEnv.ps1 D:\persist\uv""#
-        );
-
-        // $original_dir maps to the same dir in the install flow
-        assert_eq!(expand_note("$dir vs $original_dir", "X", "Y"), "X vs X");
-    }
 
     /// Test that installer.file execution path works correctly.
     #[test]
@@ -686,25 +648,15 @@ mod tests {
 
         // Test 2: create a file via PowerShell (used in many Scoop installer scripts)
         let marker = tmp.join("ran.txt");
-        let ps = if crate::internal::os::is_pwsh_available() {
-            "pwsh.exe"
-        } else {
-            "powershell.exe"
-        };
-        let exit_code = crate::internal::os::run_gui(
-            &std::path::PathBuf::from(ps),
-            &[
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "New-Item -Path '{}' -ItemType File -Force | Out-Null",
-                    marker.display()
-                ),
-            ],
-            Some(&tmp),
-        )
-        .unwrap();
-        assert_eq!(exit_code, 0, "powershell script should exit 0");
+        let status = crate::internal::os::ps_command()
+            .arg("-Command")
+            .arg(format!(
+                "New-Item -Path '{}' -ItemType File -Force | Out-Null",
+                marker.display()
+            ))
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(0), "powershell script should exit 0");
         assert!(
             marker.exists(),
             "powershell should have created marker file"

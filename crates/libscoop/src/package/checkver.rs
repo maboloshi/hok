@@ -836,23 +836,12 @@ fn run_checkver_script(
     use std::io::Read;
     use std::time::Duration;
 
-    // Prefer pwsh.exe (PowerShell Core, faster startup) over Windows PowerShell.
-    let ps_exe = if crate::internal::os::is_pwsh_available() {
-        "pwsh.exe"
-    } else {
-        "powershell.exe"
-    };
-    let mut cmd = std::process::Command::new(ps_exe);
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        script,
-    ])
-    .env("url", url.unwrap_or(""))
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
+    let mut cmd = crate::internal::os::ps_command();
+    cmd.arg("-Command")
+        .arg(script)
+        .env("url", url.unwrap_or(""))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     let mut child = cmd
         .spawn()
