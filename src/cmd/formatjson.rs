@@ -26,40 +26,16 @@ pub fn execute(args: Args) -> Result<()> {
         return Ok(());
     }
 
-    // Determine app filter patterns
-    let patterns: Vec<String> = if args.app.is_empty() || args.app[0] == "*" {
-        Vec::new()
-    } else {
-        args.app.clone()
-    };
+    let report = formatjson::format_manifests(dir, &args.app)?;
 
-    let entries = libscoop::fs::walkdir_files(dir);
-    let mut count = 0u32;
-
-    for path in &entries {
-        // Apply app filter on the file stem using libscoop's glob matching
-        if !patterns.is_empty() {
-            let name = path.file_stem().unwrap().to_string_lossy();
-            if !libscoop::string::matches_any_glob(&name, &patterns) {
-                continue;
-            }
-        }
-
-        // Delegate formatting to libscoop
-        match formatjson::format_manifest_file(path) {
-            Ok(true) => {
-                output::done(format!("{}", path.display()));
-                count += 1;
-            }
-            Ok(false) => {}
-            Err(e) => output::err(format!("{e}")),
-        }
+    for msg in &report.errors {
+        output::err(msg);
     }
 
-    if count == 0 {
+    if report.formatted == 0 && report.errors.is_empty() {
         output::info(rust_i18n::t!("cmd.formatjson_none"));
     } else {
-        output::info(rust_i18n::t!("cmd.formatjson_count", count = count));
+        output::info(rust_i18n::t!("cmd.formatjson_count", count = report.formatted));
     }
 
     Ok(())

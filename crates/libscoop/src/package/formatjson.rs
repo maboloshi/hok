@@ -6,8 +6,7 @@
 //!
 //! # Usage
 //!
-//! Typically used in conjunction with [`crate::package::manifest_walker::discover`],
-//! to batch-scan manifests in a bucket directory and format them.
+//! Format a single manifest:
 //!
 //! ```no_run
 //! use std::path::Path;
@@ -18,6 +17,10 @@
 //!     println!("Reformatted app.json");
 //! }
 //! ```
+//!
+//! Or batch-format a whole bucket directory (with the same app-pattern
+//! filtering as `checkhashes`/`checkver`/`checkurls`) via [`format_manifests`].
+//! Both entry points are used by the `hok formatjson` command.
 //!
 //! # Notes
 //!
@@ -33,6 +36,7 @@
 //!   are expanded across lines.  Escape sequences inside strings are *not* unescaped
 //!   (official behavior would alter string semantics, so this is intentionally skipped).
 
+use crate::package::manifest_walker;
 use crate::{error::Fallible, Error};
 use serde::Serialize;
 use std::path::Path;
@@ -61,6 +65,40 @@ pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Batch result of [`format_manifests`].
+#[derive(Debug, Clone, Default)]
+pub struct FormatReport {
+    /// Manifests that were rewritten.
+    pub formatted: u32,
+    /// Manifests already correctly formatted (not rewritten).
+    pub unchanged: u32,
+    /// Error messages from manifests that could not be formatted.
+    pub errors: Vec<String>,
+}
+
+/// Format every manifest under `dir`, filtered by `app` patterns.
+///
+/// Uses the same app-filtering semantics as `checkhashes` / `checkver` /
+/// `checkurls` ([`manifest_walker::discover_matching`] / `matches_any_glob`):
+/// a first pattern of `"*"` matches everything, otherwise each stem must
+/// match at least one pattern (glob `*`/`?` supported, plain patterns match
+/// exactly). `package.json` is skipped, and results are processed in sorted
+/// path order.
+///
+/// Per-file failures are collected into [`FormatReport::errors`] instead of
+/// aborting the whole batch.
+pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
+    let mut report = FormatReport::default();
+    for (path, _stem) in manifest_walker::discover_matching(dir, app)? {
+        match format_manifest_file(&path) {
+            Ok(true) => report.formatted += 1,
+            Ok(false) => report.unchanged += 1,
+            Err(e) => report.errors.push(e.to_string()),
+        }
+    }
+    Ok(report)
 }
 
 /// Serialise a JSON value to a string with 4-space indentation and CRLF endings.
@@ -373,5 +411,53 @@ mod tests {
         assert!(format_manifest_file(&path).unwrap());
         let out = std::fs::read_to_string(&path).unwrap();
         assert_eq!(out, "{\r\n    \"a\": \"x\"\r\n}\r\n");
+    }
+
+    // ── format_manifests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_manifests_batch_formats_all_with_wildcard() {
+        let dir = crate::test_utils::tmpdir("formatjson_dir_wildcard");
+        std::fs::write(dir.join("app1.json"), "{\"a\":[\"x\"]}").unwrap();
+        std::fs::write(dir.join("app2.json"), "{\"b\":[\"y\"]}").unwrap();
+
+        let report = format_manifests(&dir, &["*".to_string()]).unwrap();
+        assert_eq!(report.formatted, 2);
+        assert_eq!(report.unchanged, 0);
+        assert!(report.errors.is_empty());
+
+        // Idempotent second pass: nothing to rewrite.
+        let report = format_manifests(&dir, &["*".to_string()]).unwrap();
+        assert_eq!(report.formatted, 0);
+        assert_eq!(report.unchanged, 2);
+    }
+
+    #[test]
+    fn format_manifests_exact_pattern_does_not_substring_match() {
+        let dir = crate::test_utils::tmpdir("formatjson_dir_filter");
+        std::fs::write(dir.join("app1.json"), "{\"a\":[\"x\"]}").unwrap();
+        std::fs::write(dir.join("app2.json"), "{\"b\":[\"y\"]}").unwrap();
+
+        // Plain pattern matches exactly: only app1 is formatted.
+        let report = format_manifests(&dir, &["app1".to_string()]).unwrap();
+        assert_eq!(report.formatted, 1);
+        assert_eq!(report.unchanged, 0);
+    }
+
+    #[test]
+    fn format_manifests_skips_package_json_and_collects_errors() {
+        let dir = crate::test_utils::tmpdir("formatjson_dir_errors");
+        std::fs::write(dir.join("app.json"), "{\"a\":[\"x\"]}").unwrap();
+        std::fs::write(dir.join("package.json"), "{\"name\":\"x\"}").unwrap();
+        // Invalid JSON5: parse failure is collected, not fatal.
+        std::fs::write(dir.join("bad.json"), "{ not json").unwrap();
+
+        let report = format_manifests(&dir, &["*".to_string()]).unwrap();
+        assert_eq!(report.formatted, 1, "app.json formatted");
+        assert_eq!(report.errors.len(), 1, "bad.json collected as error");
+        assert!(
+            !report.errors[0].contains("package.json"),
+            "package.json must be skipped"
+        );
     }
 }
