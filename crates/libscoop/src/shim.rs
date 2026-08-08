@@ -226,7 +226,7 @@ impl Shim<'_> {
 
 /// Add shims for a package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
-    let shims_dir = session.effective_root_path().join("shims");
+    let shims_dir = session.shims_dir();
     internal::fs::ensure_dir(&shims_dir)?;
 
     if let Some(bins) = package.manifest().bin() {
@@ -388,7 +388,7 @@ fn generate_shim_batches(shim: &Shim, pkg_name: &str) -> Vec<(PathBuf, String)> 
 pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     assert!(package.is_installed());
 
-    let shims_dir = session.effective_root_path().join("shims");
+    let shims_dir = session.shims_dir();
 
     if let Some(bins) = package.manifest().bin() {
         let pkg_name = package.name();

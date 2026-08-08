@@ -34,15 +34,14 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
         None => return Ok(()),
     };
 
-    let root = session.effective_root_path();
-    let app_dir = root.join("apps").join(package.name()).join("current");
-    let persist_root = root.join("persist").join(package.name());
+    let current_dir = session.current_dir(package.name());
+    let persist_root = session.persist_dir(package.name());
 
     for entry in &persists {
         let source = entry[0];
         let target = entry.get(1).unwrap_or(&entry[0]);
 
-        let src_path = internal::path::normalize_path(app_dir.join(source));
+        let src_path = internal::path::normalize_path(current_dir.join(source));
         let tgt_path = internal::path::normalize_path(persist_root.join(target));
 
         // Ensure persist parent directory exists
@@ -125,7 +124,7 @@ pub fn purge(session: &Session, pkg_name: &str) -> Fallible<()> {
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackagePersistPurgeStart);
     }
-    let persist_dir = session.config().root_path().join("persist").join(pkg_name);
+    let persist_dir = session.persist_dir(pkg_name);
     internal::fs::remove_dir(persist_dir)?;
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackagePersistPurgeDone);

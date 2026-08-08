@@ -391,7 +391,7 @@ pub enum RunningCheck {
 /// caller decides whether to proceed or skip the package (matches PS1's
 /// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
 pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
-    let app_dir = session.effective_root_path().join("apps").join(name);
+    let app_dir = session.app_dir(name);
     let running = internal::os::running_processes_under(&app_dir).unwrap_or_default();
     if running.is_empty() {
         return Ok(RunningCheck::NotRunning);
@@ -429,9 +429,9 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
 
 fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
 
-    let working_dir = apps_dir.join(pkg.name()).join(pkg.version());
+    let working_dir = session.version_dir(pkg.name(), pkg.version());
     internal::fs::ensure_dir(&working_dir)?;
 
     debug!("commit: {} v{} - starting", pkg.name(), pkg.version());
@@ -518,10 +518,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 .join(old_version)
                 .join("manifest.json")
         } else {
-            apps_dir
-                .join(pkg.name())
-                .join("current")
-                .join("manifest.json")
+            session.current_dir(pkg.name()).join("manifest.json")
         };
         let old_manifest = crate::package::Manifest::parse(old_manifest_path).ok();
         match old_manifest {
@@ -573,10 +570,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // `$original_dir` / `$persist_dir` placeholders with real paths.
     if let Some(notes) = pkg.manifest().notes() {
         let dir = working_dir.to_string_lossy().to_string();
-        let persist_dir = session
-            .effective_root_path()
-            .join("persist")
-            .join(pkg.name())
+        let persist_dir = session.persist_dir(pkg.name())
             .to_string_lossy()
             .to_string();
         let notes_text = notes
@@ -596,11 +590,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     );
 
     // 7. Write install metadata
-    let current_dir = apps_dir.join(pkg.name()).join("current");
+    let current_dir = session.current_dir(pkg.name());
 
     // 1. Copy manifest from bucket to current/manifest.json
     // Use bucket path (manifest.path() may be virtual when loaded from cache)
-    let bucket_path = config.root_path().join("buckets").join(pkg.bucket());
+    let bucket_path = session.bucket_dir(pkg.bucket());
     let manifest_src = {
         let primary = bucket_path
             .join("bucket")

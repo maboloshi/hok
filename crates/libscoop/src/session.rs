@@ -230,7 +230,7 @@ impl Session {
     /// use libscoop::Session;
     ///
     /// let session = Session::new();
-    /// let apps_dir = session.effective_root_path().join("apps");
+    /// let apps_dir = session.apps_dir();
     /// ```
     pub fn effective_root_path(&self) -> std::path::PathBuf {
         let config = self.config();
@@ -239,6 +239,80 @@ impl Session {
         } else {
             config.root_path().to_path_buf()
         }
+    }
+
+    // ─── Layout directories ─────────────────────────────────────────────
+    // Scoop splits its layout into two root families (mirrors upstream
+    // `core.ps1`): `apps`/`shims`/`modules`/`persist` follow the *effective*
+    // root (user or global per `-g`; upstream `appsdir`/`shimdir`/
+    // `persistdir` take `$global`), while `buckets` are pinned to the
+    // *user-level* root (`$scoopdir\buckets`, upstream `buckets.ps1:1`).
+    // These accessors hide that distinction from callers.
+
+    /// Get the `apps` directory under the effective root: `<root>/apps`.
+    ///
+    /// The root follows [`Session::effective_root_path()`], so this already
+    /// accounts for global mode. Use [`Session::app_dir`] / [`Session::version_dir`]
+    /// for the per-package/per-version variants.
+    #[inline]
+    pub fn apps_dir(&self) -> std::path::PathBuf {
+        self.effective_root_path().join("apps")
+    }
+
+    /// Get the install directory of a package: `<root>/apps/<name>`.
+    #[inline]
+    pub fn app_dir(&self, name: &str) -> std::path::PathBuf {
+        self.effective_root_path().join("apps").join(name)
+    }
+
+    /// Get the `current` junction directory of a package: `<root>/apps/<name>/current`.
+    #[inline]
+    pub fn current_dir(&self, name: &str) -> std::path::PathBuf {
+        self.app_dir(name).join("current")
+    }
+
+    /// Get the version directory of a package: `<root>/apps/<name>/<version>`.
+    #[inline]
+    pub fn version_dir(&self, name: &str, version: &str) -> std::path::PathBuf {
+        self.app_dir(name).join(version)
+    }
+
+    /// Get the `shims` directory under the effective root: `<root>/shims`.
+    #[inline]
+    pub fn shims_dir(&self) -> std::path::PathBuf {
+        self.effective_root_path().join("shims")
+    }
+
+    /// Get the PowerShell `modules` directory: `<root>/modules`.
+    #[inline]
+    pub fn modules_dir(&self) -> std::path::PathBuf {
+        self.effective_root_path().join("modules")
+    }
+
+    /// Get the persist directory of a package: `<root>/persist/<name>`.
+    ///
+    /// Follows the *effective* root (upstream `persistdir $app $global`),
+    /// so global installs keep their persist data under the global root.
+    #[inline]
+    pub fn persist_dir(&self, name: &str) -> std::path::PathBuf {
+        self.effective_root_path().join("persist").join(name)
+    }
+
+    /// Get the `buckets` directory: `<root>/buckets`.
+    ///
+    /// Pinned to the *user-level* root (upstream `$scoopdir\buckets`) even
+    /// for global installs — buckets never move with `-g`.
+    #[inline]
+    pub fn buckets_dir(&self) -> std::path::PathBuf {
+        self.config().root_path().join("buckets")
+    }
+
+    /// Get a single bucket directory: `<root>/buckets/<name>`.
+    ///
+    /// User-level root, same as [`Session::buckets_dir`].
+    #[inline]
+    pub fn bucket_dir(&self, name: &str) -> std::path::PathBuf {
+        self.config().root_path().join("buckets").join(name)
     }
 
     /// Get a mutable reference to the config held by the session.

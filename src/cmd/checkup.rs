@@ -15,8 +15,7 @@ pub fn execute(_: Args, session: &Session) -> Result<()> {
     if issues.is_empty() {
         output::info(rust_i18n::t!("cmd.no_issues"));
     } else {
-        let config = session.config();
-        let apps_dir = config.root_path().join("apps");
+        let apps_dir = session.apps_dir();
         if !apps_dir.exists() {
             output::warn(rust_i18n::t!("cmd.no_apps_found"));
             return Ok(());

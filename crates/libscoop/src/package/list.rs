@@ -33,7 +33,7 @@ pub fn compare_versions_desc(a: &str, b: &str) -> Ordering {
 /// is not readable. I/O failures are treated as "no versions" so that a
 /// broken install is reported gracefully by the caller.
 pub fn list_installed_versions(session: &Session, name: &str) -> Fallible<Vec<InstalledVersion>> {
-    let apps_dir = session.effective_root_path().join("apps").join(name);
+    let apps_dir = session.app_dir(name);
     if !apps_dir.exists() {
         return Ok(Vec::new());
     }

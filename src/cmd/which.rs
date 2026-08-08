@@ -33,11 +33,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         for pkg in &pkgs {
             if let Some(shims) = pkg.shims() {
                 if shims.iter().any(|s| s == &command) {
-                    let path = session
-                        .effective_root_path()
-                        .join("apps")
-                        .join(pkg.name())
-                        .join("current");
+                    let path = session.current_dir(pkg.name());
                     println!("{}", path.display());
                     found = true;
                 }

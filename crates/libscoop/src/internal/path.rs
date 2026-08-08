@@ -36,6 +36,30 @@ pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
     path.as_ref().file_stem().and_then(|s| s.to_str())
 }
 
+// ─── Scoop layout helpers ────────────────────────────────────────────────
+// Root-parameterised layout resolvers. Kept only for call sites that cannot
+// use `Session` methods — i.e. rayon parallel scans in `package::query`,
+// where `&Session` is not `Sync` and cannot cross thread boundaries. All
+// other layout accessors live on `Session` (`session.apps_dir()` etc.).
+//
+// # User-level vs effective root
+//
+// `buckets` are pinned to the *user-level* root even for global installs
+// (upstream `$scoopdir\buckets`, buckets.ps1:1) — callers MUST pass
+// `config.root_path()` here, never the effective root.
+
+/// `<root>/buckets`. NOTE: user-level root, see module docs.
+#[inline]
+pub fn buckets_dir(root: &Path) -> PathBuf {
+    root.join("buckets")
+}
+
+/// `<root>/buckets/<name>`. NOTE: user-level root, see module docs.
+#[inline]
+pub fn bucket_dir(root: &Path, name: &str) -> PathBuf {
+    root.join("buckets").join(name)
+}
+
 /// Normalize a path, removing things like `.` and `..`.
 ///
 /// CAUTION: This does not resolve symlinks (unlike

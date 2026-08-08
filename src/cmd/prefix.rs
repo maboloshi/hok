@@ -14,12 +14,11 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let config = session.config();
-    let app_dir = config.root_path().join("apps").join(&args.package).join("current");
+    let app_dir = session.current_dir(&args.package);
 
     if !app_dir.exists() {
         // Check if the app directory exists at all (without /current)
-        let base_dir = config.root_path().join("apps").join(&args.package);
+        let base_dir = session.app_dir(&args.package);
         if base_dir.exists() {
             output::err(rust_i18n::t!("cmd.prefix_installed", pkg = args.package));
         } else {

@@ -153,15 +153,13 @@ fn commit_remove(
 }
 
 fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
-    let root_dir = session.effective_root_path();
-
     debug!("remove: {} - starting", package.name());
 
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
     }
 
-    let app_dir = root_dir.join("apps").join(package.name());
+    let app_dir = session.app_dir(package.name());
 
     // Resolve the current version directory up-front (mirrors Scoop
     // `Select-CurrentVersion` + `versiondir` in scoop-uninstall.ps1); used
@@ -386,7 +384,7 @@ fn resolve_reset_target(
     name: &str,
     target_version: Option<&str>,
 ) -> Fallible<(Package, PathBuf, PathBuf)> {
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
     let pkg_dir = apps_dir.join(name);
 
     let version = match target_version {

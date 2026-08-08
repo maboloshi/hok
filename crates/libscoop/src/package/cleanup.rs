@@ -22,7 +22,7 @@ pub fn cleanup(
     names: &[String],
     ignore_failure: bool,
 ) -> Fallible<Vec<(String, usize, usize)>> {
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
     let mut results = Vec::new();
 
     // If no names given, scan all installed packages

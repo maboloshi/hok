@@ -208,7 +208,7 @@ fn fill_install_state(package: &Package, apps_dir: &Path, name: &str) {
 }
 
 fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -> Option<Manifest> {
-    let bucket_path = root_path.join("buckets").join(bucket);
+    let bucket_path = crate::internal::path::bucket_dir(root_path, bucket);
     let bucket = Bucket::from(&bucket_path).ok()?;
     let manifest_path = bucket.path_of_manifest(name)?;
     Manifest::parse(manifest_path).ok()
@@ -263,7 +263,7 @@ pub(crate) fn query_installed(
 ) -> Fallible<Vec<Package>> {
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
     let root_path = session.config().root_path().to_path_buf();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
@@ -370,7 +370,7 @@ pub(crate) fn query_synced(
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let buckets = crate::bucket::bucket_added(session)?;
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
     let packages = buckets
@@ -438,7 +438,7 @@ fn query_synced_cached(
     }
 
     let entries = manifest_cache::query(&conn, None, None)?;
-    let apps_dir = session.effective_root_path().join("apps");
+    let apps_dir = session.apps_dir();
     let root_path = session.config().root_path().to_path_buf();
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);

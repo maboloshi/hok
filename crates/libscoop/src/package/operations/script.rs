@@ -163,8 +163,8 @@ pub fn expand_scoop_vars(
     cmd: &str,
 ) -> Vec<String> {
     let root_path = session.effective_root_path();
-    let persist_dir = root_path.join("persist").join(pkg.name());
-    let buckets_dir = root_path.join("buckets");
+    let persist_dir = session.persist_dir(pkg.name());
+    let buckets_dir = session.buckets_dir();
     let version = pkg.version();
     let app = pkg.name();
     let bucket = pkg.bucket();

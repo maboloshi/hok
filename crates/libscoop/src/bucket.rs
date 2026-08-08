@@ -273,7 +273,7 @@ fn is_manifest(dir_entry: &DirEntry) -> bool {
 /// The returned list are unsorted.
 pub fn bucket_added(session: &Session) -> Fallible<Vec<Bucket>> {
     let mut buckets = vec![];
-    let buckets_dir = session.config().root_path().join("buckets");
+    let buckets_dir = session.buckets_dir();
 
     match buckets_dir.read_dir() {
         Err(err) => {

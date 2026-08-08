@@ -44,7 +44,7 @@ fn shortcut_dir(global: bool) -> PathBuf {
 /// Add shortcut(s) for a given package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     if let Some(shortcuts) = package.manifest().shortcuts() {
-        let apps_dir = session.effective_root_path().join("apps");
+        let apps_dir = session.apps_dir();
         let shortcut_dir = shortcut_dir(session.is_global());
 
         // Ensure shortcut dir exists

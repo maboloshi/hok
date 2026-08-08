@@ -49,9 +49,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     };
     let config = session.config();
     let app_path = session
-        .effective_root_path()
-        .join("apps")
-        .join(package.name());
+        .app_dir(package.name());
     let version = if config.no_junction() {
         package.version().to_owned()
     } else {
@@ -177,9 +175,7 @@ fn remove_impl(
             _ => "PATH".to_owned(),
         };
         let app_path = session
-            .effective_root_path()
-            .join("apps")
-            .join(package.name());
+            .app_dir(package.name());
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageEnvPathRemoveStart);
