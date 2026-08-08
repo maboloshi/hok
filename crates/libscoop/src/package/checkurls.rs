@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::internal::string::matches_any_glob;
 use crate::internal::url::strip_url_fragment;
 use crate::package::manifest_walker;
 use crate::{error::Fallible, network, Manifest, Session};
@@ -38,18 +37,8 @@ pub fn check_urls(
     skip_valid: bool,
 ) -> Fallible<CheckUrlsReport> {
     let mut report = CheckUrlsReport::default();
-    let manifest_paths = manifest_walker::discover(dir)?;
 
-    for path in &manifest_paths {
-        let name = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-
-        if !matches_any_glob(&name, app_filters) {
-            continue;
-        }
-
+    for (path, name) in manifest_walker::discover_matching(dir, app_filters)? {
         let manifest = match Manifest::parse(path) {
             Ok(m) => m,
             Err(_) => continue,
@@ -106,7 +95,7 @@ pub fn check_urls(
         }
 
         report.results.push(ManifestUrlCheck {
-            name,
+            name: name.clone(),
             total_urls: urls.len() as u32,
             ok_count,
             failed_count,

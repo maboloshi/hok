@@ -19,7 +19,10 @@
 //!   injection is provided by `network::download_page`.
 
 use crate::internal::github;
-use crate::{package::manifest_walker, Manifest, Session};
+use crate::{
+    package::{manifest, manifest_walker},
+    Manifest, Session,
+};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -122,12 +125,6 @@ impl CheckverReport {
 
 pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     let dir = &args.dir;
-    if !dir.is_dir() {
-        return Err(crate::Error::Custom(format!(
-            "checkver: directory not found: {}",
-            dir.display()
-        )));
-    }
 
     // Don't use --version with wildcard app pattern
     if args.version.is_some() && args.app[0] == "*" {
@@ -175,12 +172,7 @@ pub fn execute(args: Args, session: &Session) -> Result<Vec<CheckverReport>> {
     let mut pending: Vec<PendingItem> = Vec::new();
     let mut reports: Vec<CheckverReport> = Vec::new();
 
-    for path in manifest_walker::discover(dir)? {
-        let stem = path.file_stem().unwrap().to_string_lossy().to_string();
-        if args.app[0] != "*" && !args.app.iter().any(|p| stem.contains(p.as_str())) {
-            continue;
-        }
-
+    for (path, stem) in manifest_walker::discover_matching(dir, &args.app)? {
         let manifest = match Manifest::parse(&path) {
             Ok(m) => m,
             Err(_) => continue,
@@ -758,8 +750,8 @@ fn apply_autoupdate(
         let hashes =
             download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir)?;
 
-        root["url"] = json_str_array(&substituted);
-        root["hash"] = json_str_array(&hashes);
+        root["url"] = manifest::json_str_array(&substituted);
+        root["hash"] = manifest::json_str_array(&hashes);
     }
 
     // ── Per-architecture URLs ──────────────────────────────────────────────
@@ -778,8 +770,8 @@ fn apply_autoupdate(
                 let ptr = format!("/architecture/{}", arch_name);
 
                 if let Some(obj) = root.pointer_mut(&ptr) {
-                    obj["url"] = json_str_array(&substituted);
-                    obj["hash"] = json_str_array(&hashes);
+                    obj["url"] = manifest::json_str_array(&substituted);
+                    obj["hash"] = manifest::json_str_array(&hashes);
                 }
             }
         }
@@ -788,7 +780,7 @@ fn apply_autoupdate(
     // ── extract_dir ────────────────────────────────────────────────────────
     if let Some(dirs) = &au.extract_dir {
         let substituted: Vec<String> = dirs.devectorize().iter().map(|d| sub(d)).collect();
-        root["extract_dir"] = json_str_array(&substituted);
+        root["extract_dir"] = manifest::json_str_array(&substituted);
     }
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -796,19 +788,6 @@ fn apply_autoupdate(
     // Write the complete updated JSON (preserving order, 4-space indentation)
     crate::internal::fs::write_json(path, &root)?;
     Ok(())
-}
-
-fn json_str_array(items: &[String]) -> serde_json::Value {
-    if items.len() == 1 {
-        serde_json::Value::String(items[0].clone())
-    } else {
-        serde_json::Value::Array(
-            items
-                .iter()
-                .map(|s| serde_json::Value::String(s.clone()))
-                .collect(),
-        )
-    }
 }
 
 /// Extract $matchHead/$matchTail from a version string (matching Scoop behavior).

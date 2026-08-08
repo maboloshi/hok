@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use crate::package::manifest_walker;
+use crate::package::{manifest, manifest_walker};
 use crate::{error::Fallible, network, Manifest, Session};
 
 #[derive(Debug, Clone)]
-pub struct CheckHashesOptions {
+pub struct Args {
     pub dir: PathBuf,
     pub app: Vec<String>,
     pub update: bool,
@@ -43,27 +43,17 @@ struct HashEntry {
     index: usize,
 }
 
-pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<CheckHashesReport> {
-    let cache_dir = opts
+pub fn execute(args: Args, session: &Session) -> Fallible<CheckHashesReport> {
+    let cache_dir = args
         .cache
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("hok-checkhashes"));
     std::fs::create_dir_all(&cache_dir)?;
 
     let mut report = CheckHashesReport::default();
-    let json_files = manifest_walker::discover(&opts.dir)?;
+    let discovered = manifest_walker::discover_matching(&args.dir, &args.app)?;
 
-    for path in &json_files {
-        let name = match path.file_stem() {
-            Some(s) => s.to_string_lossy().to_string(),
-            None => continue,
-        };
-        if opts.app.first().map(|s| s.as_str()) != Some("*")
-            && !opts.app.iter().any(|p| name.contains(p))
-        {
-            continue;
-        }
-
+    for (path, name) in &discovered {
         let manifest = match Manifest::parse(path) {
             Ok(m) => m,
             Err(_) => continue,
@@ -116,7 +106,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
             );
             let cache_path = cache_dir.join(&cache_filename);
 
-            if !cache_path.exists() || opts.force {
+            if !cache_path.exists() || args.force {
                 if let Err(e) = network::download_file(session, url, &cache_path) {
                     item.status = CheckHashesStatus::Failed;
                     item.messages.push(format!("download failed: {}", e));
@@ -135,7 +125,10 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
                     break;
                 }
             };
-            actual_hashes.push(format_hash_value(hash_str.algorithm(), &actual_hash));
+            actual_hashes.push(crate::internal::hash::format_hash_value(
+                hash_str.algorithm(),
+                &actual_hash,
+            ));
         }
 
         if has_any_failure {
@@ -147,9 +140,10 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
         let mut mismatches: Vec<(usize, &HashEntry)> = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
             let expected = manifest.all_hashes()[i];
-            let formatted_expected = format_hash_value(expected.algorithm(), expected.value());
+            let formatted_expected =
+                crate::internal::hash::format_hash_value(expected.algorithm(), expected.value());
             let actual = &actual_hashes[i];
-            if actual != &formatted_expected || opts.force {
+            if actual != &formatted_expected || args.force {
                 mismatches.push((i, entry));
             }
         }
@@ -161,7 +155,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
             continue;
         }
 
-        if opts.update || opts.force {
+        if args.update || args.force {
             let content = std::fs::read_to_string(path)?;
             let mut root: serde_json::Value = serde_json::from_str(&content)?;
             let mut path_map: std::collections::HashMap<&str, Vec<usize>> =
@@ -175,16 +169,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
                     .iter()
                     .map(|&idx| actual_hashes[idx].clone())
                     .collect();
-                let new_val = if new_hashes.len() == 1 {
-                    serde_json::Value::String(new_hashes[0].clone())
-                } else {
-                    serde_json::Value::Array(
-                        new_hashes
-                            .into_iter()
-                            .map(serde_json::Value::String)
-                            .collect(),
-                    )
-                };
+                let new_val = manifest::json_str_array(&new_hashes);
                 if let Some(obj) = root.pointer_mut(path_prefix) {
                     *obj = new_val;
                 } else {
@@ -199,7 +184,8 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
         } else {
             for (i, _entry) in &mismatches {
                 let expected = manifest.all_hashes()[*i];
-                let expected_str = format_hash_value(expected.algorithm(), expected.value());
+                let expected_str =
+                    crate::internal::hash::format_hash_value(expected.algorithm(), expected.value());
                 let actual = &actual_hashes[*i];
                 item.messages.push(format!(
                     "mismatch expected={} actual={} url={}",
@@ -214,7 +200,7 @@ pub fn check_hashes(session: &Session, opts: &CheckHashesOptions) -> Fallible<Ch
         report.items.push(item);
     }
 
-    if !opts.keep_cache {
+    if !args.keep_cache {
         let _ = std::fs::remove_dir_all(&cache_dir);
     }
     Ok(report)
@@ -241,6 +227,7 @@ fn collect_entries(manifest: &Manifest) -> Option<(Vec<String>, Vec<HashEntry>)>
     }
     Some((urls.into_iter().map(|s| s.to_string()).collect(), entries))
 }
+
 fn hash_entry_index_prefix(entries: &[HashEntry], i: usize) -> String {
     if i < entries.len() {
         let entry = &entries[i];
@@ -259,45 +246,9 @@ fn hash_entry_index_prefix(entries: &[HashEntry], i: usize) -> String {
     }
 }
 
-fn format_hash_value(algo: &str, hash: &str) -> String {
-    match algo {
-        "md5" => format!("md5:{hash}"),
-        "sha1" => format!("sha1:{hash}"),
-        "sha512" => format!("sha512:{hash}"),
-        _ => hash.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── format_hash_value ───────────────────────────────────────────────────
-
-    #[test]
-    fn format_sha256_returns_bare_value() {
-        assert_eq!(format_hash_value("sha256", "abc123"), "abc123");
-    }
-
-    #[test]
-    fn format_md5_adds_prefix() {
-        assert_eq!(format_hash_value("md5", "deadbeef"), "md5:deadbeef");
-    }
-
-    #[test]
-    fn format_sha1_adds_prefix() {
-        assert_eq!(format_hash_value("sha1", "aabbcc"), "sha1:aabbcc");
-    }
-
-    #[test]
-    fn format_sha512_adds_prefix() {
-        assert_eq!(format_hash_value("sha512", "longvalue"), "sha512:longvalue");
-    }
-
-    #[test]
-    fn format_unknown_algo_returns_bare() {
-        assert_eq!(format_hash_value("crc32", "deadcode"), "deadcode");
-    }
 
     // ── hash_entry_index_prefix ─────────────────────────────────────────────
 

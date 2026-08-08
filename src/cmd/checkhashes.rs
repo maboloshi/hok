@@ -1,7 +1,7 @@
 //! Check for hash problems in package manifests.
 
 use clap::Parser;
-use libscoop::package::checkhashes::{self, CheckHashesOptions, CheckHashesStatus};
+use libscoop::package::checkhashes::{self, CheckHashesStatus};
 use libscoop::Session;
 use std::path::PathBuf;
 
@@ -46,7 +46,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
-    let opts = CheckHashesOptions {
+    let inner = checkhashes::Args {
         dir: args.dir,
         app: args.app,
         update: args.update,
@@ -56,12 +56,12 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         cache: args.cache,
     };
 
-    let report = checkhashes::check_hashes(session, &opts)?;
+    let report = checkhashes::execute(inner, session)?;
 
     for item in &report.items {
         match item.status {
             CheckHashesStatus::Passed => {
-                if !opts.skip_correct {
+                if !args.skip_correct {
                     output::done(&item.name);
                 }
             }

@@ -427,13 +427,14 @@ fn format_hash(hash: &str) -> Option<String> {
     } else {
         hash
     };
-    match hash.len() {
-        32 => Some(format!("md5:{hash}")),     // MD5
-        40 => Some(format!("sha1:{hash}")),    // SHA1
-        64 => Some(hash),                      // SHA256 (no prefix)
-        128 => Some(format!("sha512:{hash}")), // SHA512
-        _ => None,                             // Unknown length
-    }
+    let algo = match hash.len() {
+        32 => "md5",     // MD5
+        40 => "sha1",    // SHA1
+        64 => "sha256",  // SHA256 (no prefix)
+        128 => "sha512", // SHA512
+        _ => return None, // Unknown length
+    };
+    Some(crate::internal::hash::format_hash_value(algo, &hash))
 }
 
 /// Extract hash from page content using HashExtraction rules.

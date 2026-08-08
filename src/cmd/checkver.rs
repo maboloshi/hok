@@ -12,34 +12,40 @@ use crate::{output, Result};
 pub struct Args {
     /// Bucket directory to scan for manifests
     #[arg(short = 'd', long, default_value = ".")]
-    pub(crate) dir: PathBuf,
+    dir: PathBuf,
 
     /// Specific app(s) to check (supports wildcards, default: all)
     #[arg(default_value = "*")]
-    pub(crate) app: Vec<String>,
+    app: Vec<String>,
 
     /// Update manifest with new version and trigger autoupdate
     #[arg(short = 'u', long, action = clap::ArgAction::SetTrue)]
-    pub(crate) update: bool,
+    update: bool,
 
     /// Force update even when version is unchanged (useful for hash updates)
     #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    pub(crate) force_update: bool,
+    force_update: bool,
 
     /// Skip manifests that are already up-to-date
     #[arg(short = 's', long = "skip-updated", action = clap::ArgAction::SetTrue)]
-    pub(crate) skip_updated: bool,
+    skip_updated: bool,
 
     /// Update manifest to specific version (skip version detection)
     #[arg(short = 'V', long)]
-    pub(crate) version: Option<String>,
+    version: Option<String>,
 
     /// Request timeout in seconds
     #[arg(short = 't', long, default_value = "30")]
-    pub(crate) timeout: u64,
+    timeout: u64,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    let dir = &args.dir;
+    if !dir.is_dir() {
+        output::err(rust_i18n::t!("cmd.checkver_err_dir", path = dir.display()));
+        return Ok(());
+    }
+
     let inner = checkver::Args {
         dir: args.dir,
         app: args.app,
