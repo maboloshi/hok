@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use crate::error::Fallible as Result;
 
 use crate::internal::github;
+use crate::internal::url;
 use crate::package::manifest_walker;
 use crate::Session;
 
@@ -434,12 +435,9 @@ fn resolve_repo_nwo() -> Result<String> {
     }
 
     let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let url = url.trim_end_matches(".git");
 
-    if let Some(nwo) = url.split("github.com/").nth(1) {
-        Ok(nwo.trim_end_matches('/').to_string())
-    } else if let Some(nwo) = url.split("github.com:").nth(1) {
-        Ok(nwo.trim_end_matches('/').to_string())
+    if let Some((owner, repo)) = url::github_owner_repo(&url) {
+        Ok(format!("{owner}/{repo}"))
     } else {
         Err(crate::Error::Custom(format!(
             "Cannot parse repository NWO from remote URL: {}",

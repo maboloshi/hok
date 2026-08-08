@@ -18,7 +18,7 @@
 //!   features (ThrowError, etc.). UA / Referer / PRIVATE_HOSTS header
 //!   injection is provided by `network::download_page`.
 
-use crate::internal::github;
+use crate::internal::url;
 use crate::{
     package::{manifest, manifest_walker},
     Manifest, Session,
@@ -239,12 +239,12 @@ pub fn execute(
         // `checkver: "github"` and `checkver.github: "owner/repo"`. Also detect via URL pattern.
         let mut github_mode = is_github_checkver(&cv);
         let mut url = if let Some(u) = &cv.url {
-            if u.contains("github.com/") && u.contains("/releases/") {
+            if url::is_github_releases_url(u) {
                 github_mode = true;
             }
             u.clone()
         } else if let Some(sf) = &cv.sourceforge {
-            let extracted = github::extract_sourceforge_project(manifest.homepage());
+            let extracted = url::extract_sourceforge_project(manifest.homepage());
             let project = sf.project.as_deref().or(extracted.as_deref());
             match project {
                 Some(proj) => {
@@ -267,7 +267,7 @@ pub fn execute(
             }
         } else if github_mode {
             // No cv.url set but github detected: extract repo from homepage
-            match github::github_api_url(manifest.homepage()) {
+            match url::github_releases_api_url(manifest.homepage()) {
                 Some(api_url) => api_url,
                 None => {
                     let mut report = CheckverReport::new(stem, current);
@@ -291,15 +291,15 @@ pub fn execute(
         };
 
         // Transform github.com releases URLs to API URLs (Scoop's useGithubAPI behavior)
-        if github_mode && url.contains("github.com/") && !url.contains("api.github.com") {
-            if let Some(api_url) = github::github_api_url(&url) {
+        if github_mode && url::is_github_web_url(&url) {
+            if let Some(api_url) = url::github_releases_api_url(&url) {
                 url = api_url;
             }
         }
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses
         let mut effective_jsonpath = cv.jsonpath.clone();
-        if effective_jsonpath.is_none() && url.contains("api.github.com") {
+        if effective_jsonpath.is_none() && url::is_github_api_url(&url) {
             effective_jsonpath = Some("$.tag_name".to_string());
         }
 
@@ -524,7 +524,7 @@ fn is_github_checkver(cv: &crate::Checkver) -> bool {
     if cv
         .url
         .as_deref()
-        .is_some_and(|u| u.contains("github.com/") && u.contains("/releases/"))
+        .is_some_and(url::is_github_releases_url)
     {
         return true;
     }

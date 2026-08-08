@@ -6,7 +6,7 @@
 
 use regex::Regex;
 
-use crate::internal::github;
+use crate::internal::url;
 use crate::{error::Fallible as Result, network, Session};
 
 use super::checkver_url::sub_url;
@@ -115,7 +115,7 @@ pub(super) fn download_and_hash_multi(
                     "sourceforge" => {
                         // Scoop: fetch SF files page, extract sha1 with regex
                         // Regex: '"$basename":.*?"sha1":\s*"([a-fA-F0-9]{40})"'
-                        let (project, file_path) = github::parse_sourceforge_url(url).ok_or_else(|| {
+                        let (project, file_path) = url::parse_sourceforge_url(url).ok_or_else(|| {
                             crate::Error::Custom(format!(
                                 "could not parse sourceforge URL: {}",
                                 url
@@ -155,11 +155,9 @@ pub(super) fn download_and_hash_multi(
                     "github" => {
                         // Scoop: fetch GitHub API releases, extract digest via jsonpath
                         // jsonpath: "$..assets[?(@.browser_download_url == '" + $url + "')].digest"
-                        let (owner, repo) = github::parse_github_download_url(url).ok_or_else(|| {
+                        let api_url = url::github_releases_list_api_url(url).ok_or_else(|| {
                             crate::Error::Custom(format!("could not parse GitHub URL: {}", url))
                         })?;
-                        let api_url =
-                            format!("https://api.github.com/repos/{owner}/{repo}/releases");
                         let gh_token = session.config().gh_token.clone();
                         let page = if let Some(token) = gh_token {
                             network::download_page(session, &api_url, 30, Some(&token))
@@ -219,7 +217,7 @@ fn detect_hash_mode(url: &str) -> Option<&'static str> {
     if url.contains("sourceforge.net") || url.contains("sf.net") {
         return Some("sourceforge");
     }
-    if url.contains("github.com/") && url.contains("/releases/download/") {
+    if url::is_github_releases_download_url(url) {
         return Some("github");
     }
     None
