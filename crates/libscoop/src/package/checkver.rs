@@ -123,6 +123,19 @@ impl CheckverReport {
     }
 }
 
+/// Outcome of fetching the check page for a single manifest (either a
+/// download or a `checkver.script` execution, both run in worker threads).
+enum CheckverFetch {
+    /// Page content ready for version extraction.
+    Page(String),
+    /// Download failed.
+    DownloadError(String),
+    /// Script ran but produced no version output.
+    ScriptNoVersion,
+    /// Script execution failed.
+    ScriptError(String),
+}
+
 pub fn execute(
     args: Args,
     session: &Session,
@@ -306,69 +319,84 @@ pub fn execute(
         });
     }
 
-    // ── Phase 2: Download all URLs concurrently ──────────────────────────
-    // (matching Scoop's async downloads in checkver.ps1 lines 110-248)
-    // Script-based items are skipped here (their output is produced below).
+    // ── Phase 2: Fetch all URLs and run scripts concurrently ────────────
+    // (matching Scoop's async downloads in checkver.ps1 lines 110-248; each
+    // manifest gets a worker thread that either downloads its URL or runs
+    // its checkver.script — both report back over the channel as they finish)
     // Session data was extracted before the scope because Session is !Sync.
     let proxy_ref: Option<&str> = proxy.as_deref();
     let ua_ref: &str = &user_agent;
     let hosts_ref = &private_hosts;
-    let (tx, rx) =
-        std::sync::mpsc::channel::<(usize, Option<std::result::Result<String, String>>)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, CheckverFetch)>();
     std::thread::scope(|s| {
         for (i, item) in pending.iter().enumerate() {
-            if item.script_text.is_some() {
-                // Script-based items run on the main thread below; enqueue a
-                // placeholder now so every item is processed exactly once.
-                // Note: because these placeholders are sent before any download
-                // worker finishes, script-based reports are emitted first, then
-                // download results in completion order.
-                tx.send((i, None)).unwrap();
-                continue;
-            }
             let url = item.url.clone();
+            let script = item.script_text.clone();
+            let script_url = item.cv.url.clone();
             let token = gh_token.clone();
             let tx = tx.clone();
             s.spawn(move || {
                 // catch_unwind: a panicking worker must still send its message
                 // so the receiver loop below (which expects exactly one message
                 // per item) never deadlocks or panics on RecvError.
-                let result = std::panic::catch_unwind(|| {
-                    // PRIVATE_HOSTS entries matched against the URL here
-                    // (computed inside the closure so the HashMap is owned by the thread).
-                    let extra = hosts_ref.as_ref().and_then(|v| {
-                        crate::internal::network::match_private_hosts(
-                            v.iter().map(|(p, h)| (p.as_str(), h.as_str())),
-                            &url,
-                        )
-                    });
-                    let extra_ref = extra.as_ref();
-                    let referer = crate::internal::network::strip_filename(&url);
-                    let dl_opts = crate::internal::network::RequestOptions {
-                        proxy: proxy_ref,
-                        timeout_secs: timeout,
-                        user_agent: Some(ua_ref),
-                        referer: Some(&referer),
-                        cookies: None,
-                        token: token.as_deref(),
-                        extra_headers: extra_ref,
-                    };
-                    crate::internal::network::download(&url, &dl_opts)
-                        .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
+                let is_script = script.is_some();
+                let fetch = std::panic::catch_unwind(|| {
+                    if let Some(script) = script {
+                        // Script-based check: the script's stdout is the page
+                        // (matching Scoop checkver.ps1 lines 298-301).
+                        match run_checkver_script(&script, script_url.as_deref(), timeout) {
+                            Ok(Some(page)) => CheckverFetch::Page(page),
+                            Ok(None) => CheckverFetch::ScriptNoVersion,
+                            Err(e) => CheckverFetch::ScriptError(e.to_string()),
+                        }
+                    } else {
+                        // PRIVATE_HOSTS entries matched against the URL here
+                        // (computed inside the closure so the HashMap is owned by the thread).
+                        let extra = hosts_ref.as_ref().and_then(|v| {
+                            crate::internal::network::match_private_hosts(
+                                v.iter().map(|(p, h)| (p.as_str(), h.as_str())),
+                                &url,
+                            )
+                        });
+                        let extra_ref = extra.as_ref();
+                        let referer = crate::internal::network::strip_filename(&url);
+                        let dl_opts = crate::internal::network::RequestOptions {
+                            proxy: proxy_ref,
+                            timeout_secs: timeout,
+                            user_agent: Some(ua_ref),
+                            referer: Some(&referer),
+                            cookies: None,
+                            token: token.as_deref(),
+                            extra_headers: extra_ref,
+                        };
+                        match crate::internal::network::download(&url, &dl_opts)
+                            .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
+                        {
+                            Ok(page) => CheckverFetch::Page(page),
+                            Err(e) => CheckverFetch::DownloadError(e),
+                        }
+                    }
                 });
                 let _ = tx.send((
                     i,
-                    Some(result.unwrap_or_else(|_| Err("thread panicked".to_string()))),
+                    fetch.unwrap_or_else(|_| {
+                        if is_script {
+                            CheckverFetch::ScriptError("thread panicked".to_string())
+                        } else {
+                            CheckverFetch::DownloadError("thread panicked".to_string())
+                        }
+                    }),
                 ));
             });
         }
         drop(tx);
 
         // ── Phase 3: Process each result as it completes ────────────────
-        // (matching Scoop's event loop in checkver.ps1 lines 257-419; each
-        // completed download is reported immediately, in completion order)
+        // (matching Scoop's event loop in checkver.ps1 lines 257-419; both
+        // downloads and scripts run concurrently, so every completed item is
+        // reported immediately, in completion order)
         for _ in 0..pending.len() {
-            let (idx, dl_result) = rx.recv().unwrap();
+            let (idx, fetch) = rx.recv().unwrap();
             let PendingItem {
                 stem,
                 path,
@@ -379,45 +407,35 @@ pub fn execute(
                 effective_jsonpath,
                 effective_regex,
                 cv,
-                script_text,
+                script_text: _,
             } = &pending[idx];
 
             let mut report = CheckverReport::new(stem.clone(), current.clone());
 
-            // Get the downloaded page content (or error out, matching Scoop's error handling)
-            let mut raw = match dl_result {
-                Some(Ok(content)) => content,
-                Some(Err(e)) => {
+            // Get the page content (download or script output), reporting
+            // failures immediately (matching Scoop's error handling)
+            let raw = match fetch {
+                CheckverFetch::Page(content) => content,
+                CheckverFetch::DownloadError(e) => {
                     report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
                     report.severity = ReportSeverity::Error;
                     on_report(&report);
                     continue;
                 }
-                None => String::new(),
-            };
-
-            // Script output overrides the downloaded page
-            // (matching Scoop checkver.ps1 lines 298-301)
-            if let Some(ref script) = script_text {
-                match run_checkver_script(session, script, cv.url.as_deref(), timeout) {
-                    Ok(Some(page)) => {
-                        raw = page;
-                    }
-                    Ok(None) => {
-                        report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
-                        report.severity = ReportSeverity::Warn;
-                        on_report(&report);
-                        continue;
-                    }
-                    Err(e) => {
-                        report.message =
-                            Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
-                        report.severity = ReportSeverity::Error;
-                        on_report(&report);
-                        continue;
-                    }
+                CheckverFetch::ScriptNoVersion => {
+                    report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
+                    report.severity = ReportSeverity::Warn;
+                    on_report(&report);
+                    continue;
                 }
-            }
+                CheckverFetch::ScriptError(e) => {
+                    report.message =
+                        Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
+                    on_report(&report);
+                    continue;
+                }
+            };
 
             // Extract version
             let extract_result = extract_version(
@@ -847,8 +865,10 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 ///   $version — the current installed version
 ///
 /// The script's stdout is captured and trimmed as the new version string.
+///
+/// This runs entirely off the `Session` (pure `ps_command()` invocation), so
+/// it can be executed from a worker thread alongside the downloads.
 fn run_checkver_script(
-    _session: &Session,
     script: &str,
     url: Option<&str>,
     timeout_secs: u64,
