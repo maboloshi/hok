@@ -137,7 +137,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         config.dir.clone()
     };
     if !dir.is_dir() {
-        output::err(rust_i18n::t!("cmd.checkver_err_dir", path = dir.display()));
+        output::err(rust_i18n::t!("cmd.dir_not_found", path = dir.display()));
         return Ok(());
     }
 

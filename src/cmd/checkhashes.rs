@@ -40,9 +40,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let dir = &args.dir;
-    if !dir.is_dir() {
-        output::err(rust_i18n::t!("cmd.checkhashes_err_dir", path = dir.display()));
+    if !validate_dir(&args.dir) {
         return Ok(());
     }
 
@@ -91,7 +89,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-use crate::cmd::shared_args::Cmd;
+use crate::cmd::shared_args::{validate_dir, Cmd};
 
 impl Cmd for Args {
     type Args = Self;

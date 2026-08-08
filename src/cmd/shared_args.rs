@@ -16,6 +16,7 @@
 //! [`QueryArgs`] is the same idea for query operations (search etc.).
 
 use libscoop::{QueryOption, Session, SyncOption};
+use std::path::Path;
 
 /// Shared arguments for sync operations (install, update, upgrade, reinstall, etc.).
 ///
@@ -121,6 +122,23 @@ pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crat
         )));
     }
     Ok(())
+}
+
+/// Validate that `dir` is an existing directory, printing a localized error
+/// when it is not.
+///
+/// Shared by the bucket-scan commands (checkhashes / checkurls / checkver /
+/// formatjson / missing_checkver / auto-pr): each mirrors Scoop's
+/// `if (-not (Test-Path $dir -PathType Container))` guard and returns
+/// normally after printing the error. Returns `true` when the directory is
+/// valid; callers should `return Ok(())` on `false`.
+pub(crate) fn validate_dir(dir: &Path) -> bool {
+    if dir.is_dir() {
+        true
+    } else {
+        crate::output::err(rust_i18n::t!("cmd.dir_not_found", path = dir.display()));
+        false
+    }
 }
 
 /// Standard interface for commands that share the sync flag set.
