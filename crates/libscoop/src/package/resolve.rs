@@ -93,12 +93,12 @@ pub(crate) fn resolve_dependencies(
                     match matched.len() {
                         0 => {
                             if ignore_failure {
-                                eprintln!(
+                                session.output().error(format!(
                                     "failed to resolve dependency '{}' of '{}': {}",
                                     query,
                                     pkg.name(),
                                     Error::PackageNotFound(query.to_owned())
-                                );
+                                ));
                                 failed = true;
                                 break;
                             }
@@ -129,12 +129,12 @@ pub(crate) fn resolve_dependencies(
                                     Ok(()) => {}
                                     Err(e) => {
                                         if ignore_failure {
-                                            eprintln!(
+                                            session.output().error(format!(
                                                 "failed to resolve dependency '{}' of '{}': {}",
                                                 query,
                                                 pkg.name(),
                                                 e
-                                            );
+                                            ));
                                             failed = true;
                                             break;
                                         }

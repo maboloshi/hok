@@ -43,6 +43,7 @@ mod event;
 mod handler;
 pub mod internal;
 pub mod network;
+pub mod output;
 pub mod package;
 mod persist;
 mod psmodule;

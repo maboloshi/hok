@@ -95,7 +95,7 @@ pub fn cleanup(
             if let Err(e) = internal::fs::remove_dir(&ver_dir) {
                 let msg = format!("failed to remove {} v{}: {}", name, ver, e);
                 if ignore_failure {
-                    eprintln!("{}", msg);
+                    session.output().error(msg);
                     failed += 1;
                 } else {
                     return Err(Error::Custom(msg));

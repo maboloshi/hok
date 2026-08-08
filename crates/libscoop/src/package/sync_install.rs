@@ -39,11 +39,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let matched = query::query_installed(session, &[q], &[])?;
             if matched.is_empty() {
                 if ignore_failure {
-                    eprintln!(
+                    session.output().error(format!(
                         "failed to resolve '{}': {}",
                         q,
                         Error::PackageNotFound(q.to_owned())
-                    );
+                    ));
                     continue;
                 }
                 return Err(Error::PackageNotFound(q.to_owned()));
@@ -95,11 +95,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             match matched.len() {
                 0 => {
                     if ignore_failure {
-                        eprintln!(
+                        session.output().error(format!(
                             "failed to resolve '{}': {}",
                             query,
                             Error::PackageNotFound(query.to_owned())
-                        );
+                        ));
                         continue;
                     }
                     return Err(Error::PackageNotFound(query.to_owned()));
@@ -125,7 +125,9 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
                     if let Err(e) = resolve::select_candidate(session, &mut matched) {
                         if ignore_failure {
-                            eprintln!("failed to resolve '{}': {}", query, e);
+                            session
+                                .output()
+                                .error(format!("failed to resolve '{}': {}", query, e));
                             continue;
                         }
                         return Err(e);
@@ -239,7 +241,9 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 // IGNORE_RUNNING_PROCESSES branch, which continues).
                 Ok(_) => kept.push(pkg),
                 Err(Error::AppRunning(name)) if ignore_failure => {
-                    eprintln!("Running process detected, skip updating '{name}'.");
+                    session
+                        .output()
+                        .warn(format!("Running process detected, skip updating '{name}'."));
                 }
                 Err(e) => return Err(e),
             }
@@ -334,7 +338,9 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             if let Err(e) = result {
                 if ignore_failure {
                     failed.insert(pkg.ident());
-                    eprintln!("failed to verify '{}': {}", pkg.name(), e);
+                    session
+                        .output()
+                        .error(format!("failed to verify '{}': {}", pkg.name(), e));
                 } else {
                     return Err(e);
                 }
@@ -391,13 +397,15 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
         return Ok(RunningCheck::NotRunning);
     }
     if session.config().ignore_running_processes() {
-        eprintln!(
+        let procs = running
+            .iter()
+            .map(|p| format!("  {} (pid {})", p.name, p.pid))
+            .collect::<Vec<_>>()
+            .join("\n");
+        session.output().warn(format!(
             "'{name}' is still running. hok is configured to ignore this condition \
-             (ignore_running_processes), continuing to {action}."
-        );
-        for p in &running {
-            eprintln!("  {} (pid {})", p.name, p.pid);
-        }
+             (ignore_running_processes), continuing to {action}.\n{procs}"
+        ));
         return Ok(RunningCheck::Ignored);
     }
     Err(Error::AppRunning(name.to_owned()))
@@ -410,7 +418,7 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
         if let Err(e) = commit_one_install(session, pkg) {
             let msg = format!("failed to install '{}': {}", pkg.name(), e);
             if ignore_failure {
-                eprintln!("{}", msg);
+                session.output().error(msg);
                 continue;
             }
             return Err(Error::Custom(msg));

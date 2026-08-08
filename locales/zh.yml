@@ -174,6 +174,7 @@ error:
   config_key_invalid: "无效的配置键 '%{key}'"
   config_value_invalid: "无效的配置值 '%{value}'"
   user_agent_already_set: "User Agent 已设置"
+  output_already_set: "输出通道已设置"
   hash_mismatch: "哈希不匹配"
   invalid_cache_file: "无效的缓存文件"
   invalid_answer: "无效的回答"

@@ -63,6 +63,10 @@ pub enum Error {
     #[error("User agent already set")]
     UserAgentAlreadySet,
 
+    /// Thrown when trying to set the output sink twice.
+    #[error("Output sink already set")]
+    OutputAlreadySet,
+
     /// Hash mismatch error
     #[error("{0}")]
     HashMismatch(HashMismatchContext),
@@ -166,6 +170,7 @@ impl Error {
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
             Error::UserAgentAlreadySet => "error.user_agent_already_set",
+            Error::OutputAlreadySet => "error.output_already_set",
             Error::HashMismatch(_) => "error.hash_mismatch",
             Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
             Error::InvalidAnswer => "error.invalid_answer",
@@ -265,6 +270,10 @@ mod tests {
         assert_eq!(
             Error::UserAgentAlreadySet.error_key(),
             "error.user_agent_already_set"
+        );
+        assert_eq!(
+            Error::OutputAlreadySet.error_key(),
+            "error.output_already_set"
         );
     }
 }

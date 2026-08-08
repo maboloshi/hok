@@ -158,6 +158,24 @@ pub fn start() -> Result<()> {
     let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
     let _ = session.set_user_agent(&user_agent);
 
+    // Route structured output emitted by libscoop to the CLI renderer. The
+    // library never writes to stdout/stderr itself; without this sink its
+    // output would be silently dropped.
+    let _ = session.set_output(std::sync::Arc::new(
+        |out: libscoop::output::Output| match out {
+            libscoop::output::Output::Info(msg) => crate::output::info(msg),
+            libscoop::output::Output::Warn(msg) => crate::output::warn(msg),
+            libscoop::output::Output::Error(msg) => crate::output::err(msg),
+            libscoop::output::Output::Done(msg) => crate::output::done(msg),
+            libscoop::output::Output::Ok => crate::output::ok(),
+            libscoop::output::Output::Progress { action, target } => {
+                crate::output::progress(action, target)
+            }
+            libscoop::output::Output::Header(msg) => crate::output::header(msg),
+            libscoop::output::Output::Named { label, value } => crate::output::field(label, value),
+        },
+    ));
+
     // --- Config-driven initialization ---
     let config = session.config();
 

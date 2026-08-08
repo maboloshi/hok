@@ -105,8 +105,9 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
 /// Remove cache files by query.
 ///
 /// Files that are already gone are silently skipped. Files that fail to
-/// remove (e.g. locked by a running process on Windows) are reported to
-/// stderr and skipped, so a single locked file never aborts the batch.
+/// remove (e.g. locked by a running process on Windows) are reported through
+/// the session output channel and skipped, so a single locked file never
+/// aborts the batch.
 ///
 /// # Errors
 ///
@@ -131,7 +132,11 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
                     // Already gone — treat as success (Scoop's
                     // Remove-Item -Force semantics).
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        eprintln!("failed to remove cache '{}': {}", path.display(), e);
+                        session.output().error(format!(
+                            "failed to remove cache '{}': {}",
+                            path.display(),
+                            e
+                        ));
                     }
                 }
             }
@@ -142,7 +147,11 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
             for f in files.into_iter() {
                 if let Err(e) = std::fs::remove_file(f.path()) {
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        eprintln!("failed to remove cache '{}': {}", f.path().display(), e);
+                        session.output().error(format!(
+                            "failed to remove cache '{}': {}",
+                            f.path().display(),
+                            e
+                        ));
                     }
                 }
             }

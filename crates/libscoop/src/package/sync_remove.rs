@@ -34,11 +34,11 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
         let matched = query::query_installed(session, &[name], &[QueryOption::Explicit])?;
         if matched.is_empty() {
             if ignore_failure {
-                eprintln!(
+                session.output().error(format!(
                     "failed to remove '{}': {}",
                     name,
                     Error::PackageNotFound(name.to_string())
-                );
+                ));
                 continue;
             }
             return Err(Error::PackageNotFound(name.to_string()));
@@ -133,15 +133,15 @@ fn commit_remove(
                 // App is still running: skip this package and continue with
                 // the rest (its process-in-use failure is covered by
                 // `ignore_failures`). Without it, the whole batch aborts.
-                eprintln!(
+                session.output().warn(format!(
                     "Running process detected, skip uninstalling '{}'.",
                     package.name()
-                );
+                ));
                 continue;
             }
             let msg = format!("failed to remove '{}': {}", package.name(), e);
             if ignore_failure {
-                eprintln!("{}", msg);
+                session.output().error(msg);
                 continue;
             }
             // Return the original error (keeps the AppRunning variant and

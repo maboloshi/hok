@@ -41,10 +41,15 @@ use crate::{
     config::{possible_config_paths, Config, ConfigBuilder},
     error::{Error, Fallible},
     event::{Event, EventBus},
+    output::{OutputHandle, OutputSink},
 };
 
 /// A handle representing a Scoop session.
-#[derive(Debug)]
+///
+/// [`Session`] implements [`Debug`] manually (see below) because the
+/// [`output`][1] sink is not `Debug`.
+///
+/// [1]: crate::output::OutputSink
 pub struct Session {
     /// [`Config`][1] for the session
     ///
@@ -57,8 +62,28 @@ pub struct Session {
     /// User agent for the session
     pub(crate) user_agent: OnceCell<String>,
 
+    /// Structured output sink injected by the frontend
+    ///
+    /// [`OutputSink`][1] is not `Debug`, so [`Session`] implements `Debug`
+    /// manually (see below).
+    ///
+    /// [1]: crate::output::OutputSink
+    output: OnceCell<OutputSink>,
+
     /// Whether operations should target the global Scoop root.
     global: Cell<bool>,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("config", &self.config)
+            .field("event_bus", &self.event_bus)
+            .field("user_agent", &self.user_agent)
+            .field("output", &"<sink>")
+            .field("global", &self.global)
+            .finish()
+    }
 }
 
 impl Default for Session {
@@ -95,6 +120,7 @@ impl Session {
                 config: RefCell::new(config),
                 event_bus: OnceCell::new(),
                 user_agent: OnceCell::new(),
+                output: OnceCell::new(),
                 global: Cell::new(false),
             };
             let _ = session.event_bus();
@@ -107,6 +133,7 @@ impl Session {
             config,
             event_bus: OnceCell::new(),
             user_agent: OnceCell::new(),
+            output: OnceCell::new(),
             global: Cell::new(false),
         };
         // Initialize event bus and emit fallback warning
@@ -141,6 +168,7 @@ impl Session {
             config,
             event_bus: OnceCell::new(),
             user_agent: OnceCell::new(),
+            output: OnceCell::new(),
             global: Cell::new(false),
         })
     }
@@ -257,6 +285,32 @@ impl Session {
     /// Get the custom user agent, if set.
     pub fn user_agent(&self) -> Option<&str> {
         self.user_agent.get().map(|s| s.as_str())
+    }
+
+    /// Set the output sink for this session.
+    ///
+    /// All structured output emitted by library operations (via
+    /// [`Session::output`]) is forwarded to the sink. When no sink is set,
+    /// output is silently dropped — the library never writes to
+    /// stdout/stderr itself.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if the output sink has already been
+    /// set.
+    pub fn set_output(&self, sink: OutputSink) -> Fallible<()> {
+        self.output.set(sink).map_err(|_| Error::OutputAlreadySet)
+    }
+
+    /// Get a handle for emitting structured output.
+    ///
+    /// Each method on the returned handle forwards the corresponding
+    /// [`Output`][1] request to the session's sink; without a sink the
+    /// request is silently dropped.
+    ///
+    /// [1]: crate::output::Output
+    pub fn output(&self) -> OutputHandle<'_> {
+        OutputHandle::new(self.output.get())
     }
 }
 

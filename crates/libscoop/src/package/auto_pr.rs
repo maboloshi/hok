@@ -59,33 +59,6 @@ pub struct AutoPrConfig {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-mod output {
-    pub(super) fn info(msg: impl std::fmt::Display) {
-        println!("{msg}");
-    }
-    pub(super) fn warn(msg: impl std::fmt::Display) {
-        eprintln!("WARN  {msg}");
-    }
-    pub(super) fn err(msg: impl std::fmt::Display) {
-        eprintln!("ERROR {msg}");
-    }
-    pub(super) fn progress(verb: &str, subject: &str) {
-        print!("{verb} {subject} ... ");
-    }
-    pub(super) fn ok() {
-        println!("ok");
-    }
-    pub(super) fn done(msg: impl std::fmt::Display) {
-        println!("DONE  {msg}");
-    }
-    pub(super) fn header(msg: impl std::fmt::Display) {
-        println!("=== {msg} ===");
-    }
-    pub(super) fn named(label: &str, value: &str) {
-        println!("  {label}: {value}");
-    }
-}
-
 /// Run the full auto-PR pipeline.
 ///
 /// 1. Snapshots manifests in `config.dir`.
@@ -96,36 +69,34 @@ mod output {
 pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
     // Validate token
     if config.token.is_empty() {
-        output::err(rust_i18n::t!("cmd.auto_err_token"));
-        return Ok(());
+        return Err(crate::Error::Custom(
+            rust_i18n::t!("cmd.auto_err_token").to_string(),
+        ));
     }
 
     // Validate modes
     if !config.push && !config.request {
-        output::err(rust_i18n::t!("cmd.auto_err_mode"));
-        return Ok(());
+        return Err(crate::Error::Custom(
+            rust_i18n::t!("cmd.auto_err_mode").to_string(),
+        ));
     }
     if config.request && config.upstream_repo_nwo.is_empty() {
-        output::err(rust_i18n::t!("cmd.auto_err_upstream"));
-        return Ok(());
+        return Err(crate::Error::Custom(
+            rust_i18n::t!("cmd.auto_err_upstream").to_string(),
+        ));
     }
 
     // Resolve repository info (owner/repo)
-    let repo_nwo = match resolve_repo_nwo() {
-        Ok(r) => r,
-        Err(e) => {
-            output::err(format!("{}", e));
-            return Ok(());
-        }
-    };
+    let repo_nwo = resolve_repo_nwo()?;
+
     let origin_owner = repo_nwo.split('/').next().unwrap_or("").to_string();
 
-    output::header(rust_i18n::t!("cmd.auto_pr_header"));
-    output::named("Repository", &repo_nwo);
-    output::named("Branch", &config.origin_branch);
+    session.output().header(rust_i18n::t!("cmd.auto_pr_header"));
+    session.output().named("Repository", &repo_nwo);
+    session.output().named("Branch", &config.origin_branch);
     if config.request {
         let upstream = format!("{}:{}", config.upstream_repo_nwo, config.upstream_branch);
-        output::named("Upstream", &upstream);
+        session.output().named("Upstream", &upstream);
     }
 
     // Resolve absolute directory
@@ -137,17 +108,18 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         config.dir.clone()
     };
     if !dir.is_dir() {
-        output::err(rust_i18n::t!("cmd.dir_not_found", path = dir.display()));
-        return Ok(());
+        return Err(crate::Error::Custom(
+            rust_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
+        ));
     }
 
     // Snapshot manifests before running checkver
-    output::progress("Snapshoting", "manifests");
-    let before = read_manifests(&dir)?;
-    output::ok();
+    session.output().progress("Snapshoting", "manifests");
+    let before = read_manifests(session, &dir)?;
+    session.output().ok();
 
     // Run checkver to update all manifests
-    output::progress("Checking", "for updates");
+    session.output().progress("Checking", "for updates");
     let cv_args = crate::package::checkver::Args {
         dir: dir.clone(),
         app: vec!["*".to_string()],
@@ -158,11 +130,11 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         timeout: 30,
     };
     let _ = crate::package::checkver::execute(cv_args, session);
-    output::ok();
+    session.output().ok();
 
     // Force-update special manifests
     for name in &config.special {
-        output::progress("Forcing", name);
+        session.output().progress("Forcing", name);
         let cv_args = crate::package::checkver::Args {
             dir: dir.clone(),
             app: vec![name.to_string()],
@@ -173,16 +145,20 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
             timeout: 30,
         };
         let _ = crate::package::checkver::execute(cv_args, session);
-        output::ok();
+        session.output().ok();
     }
 
     // Detect which manifests changed
     let changed = detect_changes(&before);
     if changed.is_empty() {
-        output::info(rust_i18n::t!("cmd.auto_pr_no_changes"));
+        session
+            .output()
+            .info(rust_i18n::t!("cmd.auto_pr_no_changes"));
         return Ok(());
     }
-    output::info(format!("{} manifest(s) updated", changed.len()));
+    session
+        .output()
+        .info(format!("{} manifest(s) updated", changed.len()));
 
     // Process each changed manifest
     let mut success_count = 0u32;
@@ -192,21 +168,27 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         let manifest_str = match std::fs::read_to_string(manifest_path) {
             Ok(s) => s,
             Err(e) => {
-                output::err(format!("read {}: {}", manifest_path.display(), e));
+                session
+                    .output()
+                    .error(format!("read {}: {}", manifest_path.display(), e));
                 continue;
             }
         };
         let json: serde_json::Value = match serde_json::from_str(&manifest_str) {
             Ok(v) => v,
             Err(e) => {
-                output::err(format!("parse {}: {}", manifest_path.display(), e));
+                session
+                    .output()
+                    .error(format!("parse {}: {}", manifest_path.display(), e));
                 continue;
             }
         };
         let version = match json["version"].as_str() {
             Some(v) => v.to_string(),
             None => {
-                output::err(format!("{}: no version field", manifest_path.display()));
+                session
+                    .output()
+                    .error(format!("{}: no version field", manifest_path.display()));
                 continue;
             }
         };
@@ -228,13 +210,17 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
         if config.push {
             // Push mode: commit directly to origin branch
-            output::progress("Pushing", &format!("{} ({})", app, version));
+            session
+                .output()
+                .progress("Pushing", format!("{} ({})", app, version));
 
             let parent_sha =
                 match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
                     Ok(s) => s,
                     Err(e) => {
-                        output::err(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session
+                            .output()
+                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
                         continue;
                     }
                 };
@@ -251,11 +237,15 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &config.token,
             ) {
                 Ok(url) => {
-                    output::done(format!("{} ({}) -> {}", app, version, url));
+                    session
+                        .output()
+                        .done(format!("{} ({}) -> {}", app, version, url));
                     success_count += 1;
                 }
                 Err(e) => {
-                    output::err(format!("{}: commit failed: {}", app, e));
+                    session
+                        .output()
+                        .error(format!("{}: commit failed: {}", app, e));
                 }
             }
         } else {
@@ -266,7 +256,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
             if let Ok(Some(_)) =
                 github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token)
             {
-                output::warn(format!(
+                session.output().warn(format!(
                     "{} ({}): branch already exists, skipping",
                     app, version
                 ));
@@ -274,20 +264,26 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 continue;
             }
 
-            output::progress("Creating", &format!("{} ({})", app, version));
+            session
+                .output()
+                .progress("Creating", format!("{} ({})", app, version));
 
             let parent_sha =
                 match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
                     Ok(s) => s,
                     Err(e) => {
-                        output::err(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session
+                            .output()
+                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
                         continue;
                     }
                 };
 
             if let Err(e) = github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token)
             {
-                output::err(format!("{}: create branch failed: {}", app, e));
+                session
+                    .output()
+                    .error(format!("{}: create branch failed: {}", app, e));
                 continue;
             }
 
@@ -302,7 +298,9 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &parent_sha,
                 &config.token,
             ) {
-                output::err(format!("{}: commit failed: {}", app, e));
+                session
+                    .output()
+                    .error(format!("{}: commit failed: {}", app, e));
                 continue;
             }
 
@@ -326,11 +324,15 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &config.token,
             ) {
                 Ok(pr_url) => {
-                    output::done(format!("{} ({}) -> PR: {}", app, version, pr_url));
+                    session
+                        .output()
+                        .done(format!("{} ({}) -> PR: {}", app, version, pr_url));
                     success_count += 1;
                 }
                 Err(e) => {
-                    output::err(format!("{}: create PR failed: {}", app, e));
+                    session
+                        .output()
+                        .error(format!("{}: create PR failed: {}", app, e));
                 }
             }
         }
@@ -338,13 +340,13 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
     // Summary
     if config.push {
-        output::info(format!(
+        session.output().info(format!(
             "ci-auto-pr completed: {} pushed, {} skipped",
             success_count,
             changed.len() - success_count as usize
         ));
     } else {
-        output::info(format!(
+        session.output().info(format!(
             "ci-auto-pr completed: {} PRs created, {} skipped, {} already existed",
             success_count,
             changed.len() - success_count as usize - skip_count as usize,
@@ -360,12 +362,14 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Read all JSON manifest files in `dir` into a map of `path → raw bytes`.
-fn read_manifests(dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
+fn read_manifests(session: &Session, dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
     let mut map = HashMap::new();
     let manifest_paths = match manifest_walker::discover(dir) {
         Ok(paths) => paths,
         Err(e) => {
-            output::err(format!("read dir {}: {}", dir.display(), e));
+            session
+                .output()
+                .error(format!("read dir {}: {}", dir.display(), e));
             return Ok(map);
         }
     };
@@ -376,7 +380,9 @@ fn read_manifests(dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
                 map.insert(path, content);
             }
             Err(e) => {
-                output::err(format!("read {}: {}", path.display(), e));
+                session
+                    .output()
+                    .error(format!("read {}: {}", path.display(), e));
             }
         }
     }

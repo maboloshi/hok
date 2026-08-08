@@ -365,7 +365,9 @@ impl<'a> PackageSet<'a> {
 
             if let Some(err) = pkg_error {
                 if self.ignore_failure {
-                    eprintln!("failed to download '{}': {}", ident, err);
+                    self.session
+                        .output()
+                        .error(format!("failed to download '{}': {}", ident, err));
                     failed.push(ident);
                 } else {
                     return Err(err);
@@ -395,7 +397,9 @@ impl<'a> PackageSet<'a> {
             })();
             if let Err(e) = reassembled {
                 if self.ignore_failure {
-                    eprintln!("failed to reassemble '{}': {}", ident, e);
+                    self.session
+                        .output()
+                        .error(format!("failed to reassemble '{}': {}", ident, e));
                     failed.push(ident.clone());
                 } else {
                     return Err(e);
@@ -407,7 +411,9 @@ impl<'a> PackageSet<'a> {
         for (tmp, path, ident) in filepaths.iter() {
             if let Err(e) = std::fs::rename(tmp, path) {
                 if self.ignore_failure {
-                    eprintln!("failed to move download of '{}': {}", ident, e);
+                    self.session
+                        .output()
+                        .error(format!("failed to move download of '{}': {}", ident, e));
                     failed.push(ident.clone());
                 } else {
                     return Err(e.into());
