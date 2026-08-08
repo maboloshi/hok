@@ -344,7 +344,7 @@ pub fn execute(
                     if let Some(script) = script {
                         // Script-based check: the script's stdout is the page
                         // (matching Scoop checkver.ps1 lines 298-301).
-                        match run_checkver_script(&script, script_url.as_deref(), timeout) {
+                        match run_checkver_script(&script, script_url.as_deref(), proxy_ref, timeout) {
                             Ok(Some(page)) => CheckverFetch::Page(page),
                             Ok(None) => CheckverFetch::ScriptNoVersion,
                             Err(e) => CheckverFetch::ScriptError(e.to_string()),
@@ -861,8 +861,10 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 ///   powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "{script}"
 ///
 /// Environment variables set:
-///   $url     — the checkver URL (if present)
-///   $version — the current installed version
+///   $url       — the checkver URL (if present)
+///   $version   — the current installed version
+///   HTTP_PROXY / HTTPS_PROXY — the Scoop proxy config, so downloads inside
+///               the script (Invoke-WebRequest, curl, git, ...) honor it
 ///
 /// The script's stdout is captured and trimmed as the new version string.
 ///
@@ -871,6 +873,7 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 fn run_checkver_script(
     script: &str,
     url: Option<&str>,
+    proxy: Option<&str>,
     timeout_secs: u64,
 ) -> Result<Option<String>> {
     use std::io::Read;
@@ -882,6 +885,15 @@ fn run_checkver_script(
         .env("url", url.unwrap_or(""))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Expose the proxy to the script via environment variables. The value
+    // always comes from the Scoop config's `proxy` key (config.rs: "" or
+    // "none" clears it) — hok never reads HTTP_PROXY/HTTPS_PROXY itself.
+    // Set only when configured: on None the child inherits whatever
+    // HTTP_PROXY/HTTPS_PROXY our own environment already has, so explicit
+    // config always wins over inherited system/user proxy settings.
+    if let Some(p) = proxy {
+        cmd.env("HTTP_PROXY", p).env("HTTPS_PROXY", p);
+    }
 
     let mut child = cmd
         .spawn()
