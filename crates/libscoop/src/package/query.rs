@@ -183,14 +183,9 @@ fn manifest_matches(
 }
 
 fn load_install_state(apps_dir: &Path, name: &str) -> Option<InstallState> {
-    let mut path = apps_dir.join(name);
-    path.push("current");
-    path.push("install.json");
-
-    let install_info = InstallInfo::parse(&path).ok()?;
-    path.pop();
-    path.push("manifest.json");
-    let install_manifest = Manifest::parse(path).ok()?;
+    let current = apps_dir.join(name).join("current");
+    let install_info = InstallInfo::parse(current.join("install.json")).ok()?;
+    let install_manifest = Manifest::parse(current.join("manifest.json")).ok()?;
 
     Some(InstallState::Installed(InstallStateInstalled {
         version: install_manifest.version().to_owned(),
@@ -282,8 +277,9 @@ pub(crate) fn query_installed(
                         let name = filename.to_str().unwrap();
                         // The name `scoop` is reserved for Scoop, ignore it
                         let is_scoop = name == "scoop";
-                        let manifest_path = e.path().join("current/manifest.json");
-                        let install_info_path = e.path().join("current/install.json");
+                        let current = apps_dir.join(name).join("current");
+                        let manifest_path = current.join("manifest.json");
+                        let install_info_path = current.join("install.json");
                         let is_not_broken = manifest_path.exists() && install_info_path.exists();
 
                         if !is_dir || is_scoop || !is_not_broken {
