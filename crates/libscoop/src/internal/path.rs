@@ -9,7 +9,7 @@
 //!   segments, converts backslashes to forward slashes, and produces
 //!   a canonical representation for comparison and display.
 //! - **Segment helpers**: [`leaf()`] returns the final path component;
-//!   [`leaf_base()`] strips the extension; [`without_leaf()`] returns
+//!   [`leaf_base()`] strips the extension; `without_leaf()` returns
 //!   the parent path.
 
 #![allow(dead_code)]

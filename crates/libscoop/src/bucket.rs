@@ -12,9 +12,9 @@
 //!   (without a remote) are supported and simply skip updates.
 //! - **Lazy metadata**: `remote_url` and `updated_at` are [`OnceLock`]
 //!   fields, resolved on first access to avoid unnecessary git operations.
-//! - **Concurrent listing**: [`bucket_list()`] uses `rayon` to parallelise
+//! - **Concurrent listing**: `bucket_list()` uses `rayon` to parallelise
 //!   bucket directory scanning for performance.
-//! - **Known buckets**: [`is_known_bucket()`] checks against a built-in
+//! - **Known buckets**: `is_known_bucket()` checks against a built-in
 //!   list (see `constant.rs`) to allow shorthand names like `"extras"`.
 //!
 //! # Important Notes

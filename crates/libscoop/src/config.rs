@@ -17,7 +17,7 @@
 //!   optional read-only Scoop path used only for the first-run migration);
 //!   [`Config`] provides typed accessors for supported keys.
 //! - **Path discovery**: [`possible_config_paths()`] returns the known Scoop
-//!   config file locations (user-local and global); [`Session::new()`] picks
+//!   config file locations (user-local and global); [`crate::Session::new()`] picks
 //!   the first one that exists as the migration source.
 //! - **Defaults**: If no config file exists, [`Config::init()`] creates a
 //!   blank hok config with sensible defaults.

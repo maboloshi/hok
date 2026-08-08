@@ -537,7 +537,7 @@ impl Manifest {
     /// ## Errors
     ///
     /// If the process fails to read the file, this method will return a
-    /// [`std::io::error::Error`].
+    /// [`std::io::Error`].
     ///
     /// It returns a `serde_json::Error` when the JSON deserialization fails.
     pub fn parse<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {

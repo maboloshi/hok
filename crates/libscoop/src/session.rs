@@ -186,11 +186,10 @@ impl Session {
     ///
     /// This method is primarily used for doing a fine-grained read to the
     /// config aside from reading it as a whole via [`config_list`][1]. Caller
-    /// of this method may not be able to perform some [`operations`][2], which
+    /// of this method may not be able to perform some operations, which
     /// will internally alter the config, before the reference is dropped.
     ///
     /// [1]: crate::config::list
-    /// [2]: crate::operation
     pub fn config(&self) -> Ref<'_, Config> {
         self.config.borrow()
     }
@@ -215,7 +214,7 @@ impl Session {
 
     /// Get the effective root path based on the global flag.
     ///
-    /// Returns the corresponding Scoop root directory based on the value of [`is_global()`]:
+    /// Returns the corresponding Scoop root directory based on the value of [`Session::is_global()`]:
     /// - `is_global() == true` → returns the global installation root directory (`global_path`)
     /// - `is_global() == false` → returns the user-level installation root directory (`root_path`)
     ///

@@ -9,7 +9,7 @@
 //! - **Generic over node type**: `DepGraph<T>` works with any hashable,
 //!   equatable, cloneable, displayable key type (typically `String` for
 //!   package names).
-//! - **Cycle detection**: [`DepGraph::resolve_order()`] returns a
+//! - **Cycle detection**: [`DepGraph::walk()`] returns a
 //!   [`CyclicError`] if a cycle is detected, preventing infinite loops.
 //! - **Kahn's algorithm**: Topological sorting uses Kahn's algorithm
 //!   (BFS-based) for O(V+E) complexity.

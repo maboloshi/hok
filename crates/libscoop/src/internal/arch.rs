@@ -14,7 +14,7 @@
 //!
 //! Two additional Scoop behaviours are mirrored here:
 //!
-//! - **Config override**: [`set_default_architecture()`] applies the
+//! - **Config override**: [`Arch::set_default_architecture()`] applies the
 //!   `default_architecture` config (parsed by [`Arch::parse()`], equivalent
 //!   to Scoop's `Format-ArchitectureString`) as a process-wide override on
 //!   top of runtime detection.
@@ -125,7 +125,7 @@ impl Arch {
 
     /// Deterministic architecture resolution from raw environment inputs.
     ///
-    /// Extracted for unit testing; [`current()`] is a thin wrapper over this.
+    /// Extracted for unit testing; [`Arch::current()`] is a thin wrapper over this.
     pub fn from_env(arm_program_files: bool, arch_w6432: Option<&str>, arch: Option<&str>) -> Arch {
         if arm_program_files {
             return Arch::Aarch64;
