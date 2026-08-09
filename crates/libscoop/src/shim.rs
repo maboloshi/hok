@@ -110,7 +110,9 @@ fn handle_existing_shim(session: &Session, path: &Path, pkg_name: &str) -> Falli
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageShimConflict(path.to_string_lossy().into_owned()));
+        let _ = tx.send(Event::PackageShimConflict(
+            path.to_string_lossy().into_owned(),
+        ));
     }
 
     if let Some(owner) = owner {
@@ -134,7 +136,9 @@ fn handle_existing_shim(session: &Session, path: &Path, pkg_name: &str) -> Falli
 /// rather than being backups — mirrors upstream `rm_shim`'s
 /// `-Exclude '*.shim', '*.cmd', '*.ps1'`.
 fn is_main_shim_variant(fname: &str, name: &str) -> bool {
-    [".shim", ".cmd", ".ps1"].iter().any(|e| name == format!("{fname}{e}"))
+    [".shim", ".cmd", ".ps1"]
+        .iter()
+        .any(|e| name == format!("{fname}{e}"))
 }
 
 #[derive(Debug)]
@@ -262,8 +266,10 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
 
                 // Write .shim metadata file
-                let target_rel =
-                    format!(r#"~\..\apps\{}\{}\{}"#, pkg_name, version_dir, shim.real_name);
+                let target_rel = format!(
+                    r#"~\..\apps\{}\{}\{}"#,
+                    pkg_name, version_dir, shim.real_name
+                );
                 let meta_content = if let Some(args) = &shim.args {
                     format!(
                         "path = \"{target_rel}\"\r\nargs = \"{}\"\r\n",
@@ -472,11 +478,8 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                             let exe_path = shims_dir.join(format!("{}.exe", shim.name));
                             if exe_path.exists() {
                                 if let Some(tx) = session.emitter() {
-                                    let name = exe_path
-                                        .file_name()
-                                        .unwrap()
-                                        .to_string_lossy()
-                                        .to_string();
+                                    let name =
+                                        exe_path.file_name().unwrap().to_string_lossy().to_string();
                                     let _ = tx.send(Event::PackageShimRemoveProgress(name));
                                 }
                                 std::fs::remove_file(&exe_path)?;
@@ -668,8 +671,16 @@ mod tests {
         let root = test_utils::tmpdir("shim_add_ps_conflict");
         let session = test_utils::test_session(&root);
         let rx = session.event_bus().receiver();
-        add(&session, &make_package("alpha", r#"[["tool.ps1", "tool"]]"#)).unwrap();
-        add(&session, &make_package("beta", r#"[["tool2.ps1", "tool"]]"#)).unwrap();
+        add(
+            &session,
+            &make_package("alpha", r#"[["tool.ps1", "tool"]]"#),
+        )
+        .unwrap();
+        add(
+            &session,
+            &make_package("beta", r#"[["tool2.ps1", "tool"]]"#),
+        )
+        .unwrap();
 
         let shims = root.join("shims");
         // the .ps1 carrier is backed up under the old owner...
@@ -744,7 +755,10 @@ mod tests {
         remove(&session, &pkg_x).unwrap();
 
         let shims = root.join("shims");
-        assert!(!shims.join("git.shim.git").exists(), "backup should be gone");
+        assert!(
+            !shims.join("git.shim.git").exists(),
+            "backup should be gone"
+        );
         let meta = std::fs::read_to_string(shims.join("git.shim")).unwrap();
         assert!(
             meta.contains(r"apps\bgit\current\bgit.exe"),

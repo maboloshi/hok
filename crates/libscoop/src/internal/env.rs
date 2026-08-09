@@ -49,7 +49,7 @@ mod windows {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use std::sync::LazyLock;
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegType};
+    use winreg::enums::{RegType, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     use winreg::{RegKey, RegValue};
 
     use crate::error::Fallible;

@@ -30,8 +30,13 @@
 use std::ffi::OsString;
 
 use crate::{
-    config, error::Fallible, internal, internal::env::EnvScope,
-    package::operations::expand_scoop_vars, package::{Manifest, Package}, Error, Event, Session,
+    config,
+    error::Fallible,
+    internal,
+    internal::env::EnvScope,
+    package::operations::expand_scoop_vars,
+    package::{Manifest, Package},
+    Error, Event, Session,
 };
 
 /// Apply all environment variable definitions of a given package.
@@ -48,8 +53,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         EnvScope::User
     };
     let config = session.config();
-    let app_path = session
-        .app_dir(package.name());
+    let app_path = session.app_dir(package.name());
     let version = session.current_dir_name(package.version());
     let working_dir = app_path.join(version);
 
@@ -80,7 +84,11 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             .collect::<Vec<_>>();
         let mut existing_lower = paths
             .iter()
-            .map(|p| internal::path::normalize_path(p).to_string_lossy().to_lowercase())
+            .map(|p| {
+                internal::path::normalize_path(p)
+                    .to_string_lossy()
+                    .to_lowercase()
+            })
             .collect::<Vec<_>>();
 
         // Prepend each new path once, keeping manifest order (mirrors Scoop's
@@ -166,8 +174,7 @@ fn remove_impl(
             Some(config::IsolatedPath::Boolean(true)) => "SCOOP_PATH".to_owned(),
             _ => "PATH".to_owned(),
         };
-        let app_path = session
-            .app_dir(package.name());
+        let app_path = session.app_dir(package.name());
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageEnvPathRemoveStart);
@@ -197,7 +204,9 @@ fn remove_impl(
             // Scoop matches case-insensitively (`-like`); normalize both sides
             // so separator and `.`/`..` differences don't leak entries.
             paths.retain(|p| {
-                let norm = internal::path::normalize_path(p).to_string_lossy().to_lowercase();
+                let norm = internal::path::normalize_path(p)
+                    .to_string_lossy()
+                    .to_lowercase();
                 !add_path_lower.iter().any(|t| *t == norm)
             });
 

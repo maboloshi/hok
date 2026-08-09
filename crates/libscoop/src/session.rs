@@ -442,7 +442,10 @@ mod tests {
         let root = test_utils::tmpdir("session_current_dir_name");
         let session = test_utils::test_session(&root);
         assert_eq!(session.current_dir_name("1.2.3"), "current");
-        assert_eq!(session.versioned_dir("git", "1.2.3"), root.join("apps/git/1.2.3"));
+        assert_eq!(
+            session.versioned_dir("git", "1.2.3"),
+            root.join("apps/git/1.2.3")
+        );
     }
 
     #[test]

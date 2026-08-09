@@ -159,9 +159,8 @@ pub fn github_owner_repo(url: &str) -> Option<(String, String)> {
 /// Build the GitHub API "latest release" URL (`.../releases/latest`) from a
 /// github.com homepage or releases URL.
 pub fn github_releases_api_url(url_or_homepage: &str) -> Option<String> {
-    github_owner_repo(url_or_homepage).map(|(owner, repo)| {
-        format!("https://api.github.com/repos/{owner}/{repo}/releases/latest")
-    })
+    github_owner_repo(url_or_homepage)
+        .map(|(owner, repo)| format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"))
 }
 
 /// Build the GitHub API releases-list URL (`.../releases`) from a github.com URL.
@@ -304,7 +303,9 @@ mod tests {
     #[test]
     fn github_web_url_detected() {
         assert!(is_github_web_url("https://github.com/BurntSushi/ripgrep"));
-        assert!(is_github_web_url("https://github.com/sharkdp/bat/releases/latest"));
+        assert!(is_github_web_url(
+            "https://github.com/sharkdp/bat/releases/latest"
+        ));
         assert!(is_github_web_url(
             "https://github.com/owner/repo/releases/download/1.0/app.zip"
         ));
@@ -312,7 +313,9 @@ mod tests {
 
     #[test]
     fn github_web_url_excludes_api_host() {
-        assert!(!is_github_web_url("https://api.github.com/repos/owner/repo"));
+        assert!(!is_github_web_url(
+            "https://api.github.com/repos/owner/repo"
+        ));
     }
 
     #[test]
@@ -330,12 +333,16 @@ mod tests {
 
     #[test]
     fn github_releases_url_detected() {
-        assert!(is_github_releases_url("https://github.com/owner/repo/releases/latest"));
+        assert!(is_github_releases_url(
+            "https://github.com/owner/repo/releases/latest"
+        ));
         assert!(is_github_releases_url(
             "https://github.com/owner/repo/releases/download/1.0/app.zip"
         ));
         assert!(!is_github_releases_url("https://github.com/owner/repo"));
-        assert!(!is_github_releases_url("https://api.github.com/repos/owner/repo/releases"));
+        assert!(!is_github_releases_url(
+            "https://api.github.com/repos/owner/repo/releases"
+        ));
     }
 
     #[test]
@@ -399,7 +406,10 @@ mod tests {
 
     #[test]
     fn github_owner_repo_api_url_returns_none() {
-        assert_eq!(github_owner_repo("https://api.github.com/repos/owner/repo"), None);
+        assert_eq!(
+            github_owner_repo("https://api.github.com/repos/owner/repo"),
+            None
+        );
     }
 
     // ── github_releases_api_url / github_releases_list_api_url ──────────────
@@ -481,6 +491,9 @@ mod tests {
 
     #[test]
     fn parse_sourceforge_url_non_sf_returns_none() {
-        assert_eq!(parse_sourceforge_url("https://example.com/files/x.zip"), None);
+        assert_eq!(
+            parse_sourceforge_url("https://example.com/files/x.zip"),
+            None
+        );
     }
 }

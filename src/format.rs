@@ -51,14 +51,17 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
 pub fn visual_width(s: &str) -> usize {
     s.chars()
         .map(|c| {
-            if c >= '\u{1100}' && (c <= '\u{115F}' || c == '\u{2329}' || c == '\u{232A}'
-                || ('\u{2E80}'..='\u{9FFF}').contains(&c)
-                || ('\u{A000}'..='\u{A4CF}').contains(&c)
-                || ('\u{AC00}'..='\u{D7AF}').contains(&c)
-                || ('\u{F900}'..='\u{FAFF}').contains(&c)
-                || ('\u{FE30}'..='\u{FE6F}').contains(&c)
-                || ('\u{FF01}'..='\u{FF60}').contains(&c)
-                || ('\u{FFE0}'..='\u{FFE6}').contains(&c))
+            if c >= '\u{1100}'
+                && (c <= '\u{115F}'
+                    || c == '\u{2329}'
+                    || c == '\u{232A}'
+                    || ('\u{2E80}'..='\u{9FFF}').contains(&c)
+                    || ('\u{A000}'..='\u{A4CF}').contains(&c)
+                    || ('\u{AC00}'..='\u{D7AF}').contains(&c)
+                    || ('\u{F900}'..='\u{FAFF}').contains(&c)
+                    || ('\u{FE30}'..='\u{FE6F}').contains(&c)
+                    || ('\u{FF01}'..='\u{FF60}').contains(&c)
+                    || ('\u{FFE0}'..='\u{FFE6}').contains(&c))
             {
                 2
             } else {

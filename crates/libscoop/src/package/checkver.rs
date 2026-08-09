@@ -344,7 +344,12 @@ pub fn execute(
                     if let Some(script) = script {
                         // Script-based check: the script's stdout is the page
                         // (matching Scoop checkver.ps1 lines 298-301).
-                        match run_checkver_script(&script, script_url.as_deref(), proxy_ref, timeout) {
+                        match run_checkver_script(
+                            &script,
+                            script_url.as_deref(),
+                            proxy_ref,
+                            timeout,
+                        ) {
                             Ok(Some(page)) => CheckverFetch::Page(page),
                             Ok(None) => CheckverFetch::ScriptNoVersion,
                             Err(e) => CheckverFetch::ScriptError(e.to_string()),
@@ -521,11 +526,7 @@ fn is_github_checkver(cv: &crate::Checkver) -> bool {
         return true;
     }
     // Check by URL pattern (for cases where cv.url is set to a github releases URL)
-    if cv
-        .url
-        .as_deref()
-        .is_some_and(url::is_github_releases_url)
-    {
+    if cv.url.as_deref().is_some_and(url::is_github_releases_url) {
         return true;
     }
     false

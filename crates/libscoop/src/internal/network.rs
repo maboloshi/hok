@@ -233,10 +233,7 @@ mod tests {
             .collect()
     }
 
-    fn match_url(
-        pairs: &[(&str, &[(&str, &str)])],
-        url: &str,
-    ) -> Option<HashMap<String, String>> {
+    fn match_url(pairs: &[(&str, &[(&str, &str)])], url: &str) -> Option<HashMap<String, String>> {
         let entries = entries(pairs);
         match_private_hosts(entries.iter().map(|(p, h)| (p.as_str(), h.as_str())), url)
     }
@@ -254,14 +251,20 @@ mod tests {
     #[test]
     fn no_match_returns_none() {
         assert_eq!(
-            match_url(&[("example\\.com", &[("X-Token", "abc")])], "https://other.org/x"),
+            match_url(
+                &[("example\\.com", &[("X-Token", "abc")])],
+                "https://other.org/x"
+            ),
             None
         );
     }
 
     #[test]
     fn empty_hosts_returns_none() {
-        assert_eq!(match_private_hosts(std::iter::empty(), "https://a.example.com/"), None);
+        assert_eq!(
+            match_private_hosts(std::iter::empty(), "https://a.example.com/"),
+            None
+        );
     }
 
     #[test]

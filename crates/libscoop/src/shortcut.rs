@@ -93,8 +93,9 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             // silently, matching upstream Scoop's `startmenu_shortcut`.
             if link_path.exists() {
                 let owner = shortcut_owner_package(&link_path);
-                let conflicts_other =
-                    owner.as_deref().is_some_and(|o| !o.eq_ignore_ascii_case(package.name()));
+                let conflicts_other = owner
+                    .as_deref()
+                    .is_some_and(|o| !o.eq_ignore_ascii_case(package.name()));
                 if conflicts_other {
                     if let Some(tx) = session.emitter() {
                         let _ = tx.send(Event::PackageShortcutConflict(
@@ -347,7 +348,10 @@ mod tests {
             Some("git".into())
         );
         // no `apps` segment at all
-        assert_eq!(owner_from_bytes(b"\x00Program Files\x00Git\x00bin\x00"), None);
+        assert_eq!(
+            owner_from_bytes(b"\x00Program Files\x00Git\x00bin\x00"),
+            None
+        );
         // `apps` with no version dir after the candidate package
         assert_eq!(owner_from_bytes(b"\x00apps\x00python\x00"), None);
         // backslash-separated ANSI path
@@ -364,8 +368,8 @@ mod tests {
         let path = "D:\\scoop\\apps\\git\\current\\bin";
         let mut bytes: Vec<u8> = path.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         bytes.extend_from_slice(&[0x00, 0x00]); // NUL terminator
-        // The ANSI/NUL view sees only single-char fragments here -> misses,
-        // the UTF-16 view must find it.
+                                                // The ANSI/NUL view sees only single-char fragments here -> misses,
+                                                // the UTF-16 view must find it.
         assert_eq!(owner_from_bytes(&bytes), Some("git".into()));
 
         // Binary junk with non-zero UTF-16 high bytes must not confuse either

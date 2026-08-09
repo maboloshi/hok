@@ -598,12 +598,10 @@ fn download_fragmented(
         parts.retain(|(_, s, _)| !failed.iter().any(|(fs, _)| fs == s));
         for (idx, (s, e)) in merge_adjacent_ranges(failed).iter().enumerate() {
             let fb_path = part_dir.join(format!("fallback.{}", idx));
-            download_range(agent, url, *s, *e, &fb_path, cookie, on_progress).map_err(
-                |e| {
-                    let _ = std::fs::remove_file(&fb_path);
-                    format!("fallback download of {}-{} failed: {}", s, e, e)
-                },
-            )?;
+            download_range(agent, url, *s, *e, &fb_path, cookie, on_progress).map_err(|e| {
+                let _ = std::fs::remove_file(&fb_path);
+                format!("fallback download of {}-{} failed: {}", s, e, e)
+            })?;
             parts.push((fb_path, *s, *e));
         }
     }
@@ -1041,8 +1039,7 @@ mod tests {
                         // the serial fallback in `download_fragmented`.
                         if let Some((fs, fe, attempts)) = fail_range {
                             if s <= fe && fs <= e {
-                                let n =
-                                    fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
+                                let n = fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
                                 if n <= attempts {
                                     responses_h.lock().unwrap().push(fail_status);
                                     let _ = write!(
@@ -1171,7 +1168,12 @@ mod tests {
         // shorten the sequence, so only the shape is asserted).
         let responses = server.responses.lock().unwrap().clone();
         assert!(!responses.is_empty(), "server received no requests");
-        assert_eq!(*responses.last().unwrap(), 206, "responses: {:?}", responses);
+        assert_eq!(
+            *responses.last().unwrap(),
+            206,
+            "responses: {:?}",
+            responses
+        );
         assert!(
             responses[..responses.len() - 1].iter().all(|&s| s == 500),
             "responses: {:?}",
@@ -1220,7 +1222,12 @@ mod tests {
         // is never retried).
         let responses = server.responses.lock().unwrap().clone();
         assert!(!responses.is_empty(), "server received no requests");
-        assert_eq!(*responses.last().unwrap(), 404, "responses: {:?}", responses);
+        assert_eq!(
+            *responses.last().unwrap(),
+            404,
+            "responses: {:?}",
+            responses
+        );
         assert!(
             responses.iter().all(|&s| s == 404),
             "responses: {:?}",
@@ -1241,13 +1248,21 @@ mod tests {
         server.shutdown();
         assert!(err.contains("206"), "unexpected error: {}", err);
         // Hard failure: nothing must be written to the part file.
-        assert!(!dest.exists(), "part must not be written when server ignores Range");
+        assert!(
+            !dest.exists(),
+            "part must not be written when server ignores Range"
+        );
         // A non-206 response is a hard failure: every response must be 200 and
         // the client must stop after the last one (see the 4xx test for the
         // spurious-drop note).
         let responses = server.responses.lock().unwrap().clone();
         assert!(!responses.is_empty(), "server received no requests");
-        assert_eq!(*responses.last().unwrap(), 200, "responses: {:?}", responses);
+        assert_eq!(
+            *responses.last().unwrap(),
+            200,
+            "responses: {:?}",
+            responses
+        );
         assert!(
             responses.iter().all(|&s| s == 200),
             "responses: {:?}",
@@ -1269,7 +1284,8 @@ mod tests {
         server.shutdown();
         let got = std::fs::read(&dest).unwrap();
         assert_eq!(
-            got, data,
+            got,
+            data,
             "part content mismatch: got {} bytes, expected {}",
             got.len(),
             data.len()
@@ -1314,7 +1330,12 @@ mod tests {
         server.shutdown();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
         let responses = server.responses.lock().unwrap().clone();
-        assert_eq!(*responses.last().unwrap(), 206, "responses: {:?}", responses);
+        assert_eq!(
+            *responses.last().unwrap(),
+            206,
+            "responses: {:?}",
+            responses
+        );
         assert!(
             responses[..responses.len() - 1].iter().all(|&s| s == 429),
             "responses: {:?}",
@@ -1412,7 +1433,12 @@ mod tests {
         let responses = server.responses.lock().unwrap().clone();
         let fails = responses.iter().filter(|&&s| s == 500).count();
         assert!(fails >= 2, "responses: {:?}", responses);
-        assert_eq!(*responses.last().unwrap(), 206, "responses: {:?}", responses);
+        assert_eq!(
+            *responses.last().unwrap(),
+            206,
+            "responses: {:?}",
+            responses
+        );
     }
 
     #[test]
@@ -1424,17 +1450,9 @@ mod tests {
         let url = format!("http://{}/file.bin", server.addr);
         let total = Arc::new(AtomicU64::new(0));
         let total_h = total.clone();
-        download_range(
-            &test_agent(),
-            &url,
-            0,
-            99,
-            &dest,
-            &[],
-            &move |n| {
-                total_h.fetch_add(n, Ordering::Relaxed);
-            },
-        )
+        download_range(&test_agent(), &url, 0, 99, &dest, &[], &move |n| {
+            total_h.fetch_add(n, Ordering::Relaxed);
+        })
         .unwrap();
 
         server.shutdown();
@@ -1454,17 +1472,9 @@ mod tests {
         let url = format!("http://{}/file.bin", server.addr);
         let total = Arc::new(AtomicU64::new(0));
         let total_h = total.clone();
-        let parts = download_fragmented(
-            &test_agent(),
-            &url,
-            &[],
-            1000,
-            4,
-            &part_dir,
-            &move |n| {
-                total_h.fetch_add(n, Ordering::Relaxed);
-            },
-        )
+        let parts = download_fragmented(&test_agent(), &url, &[], 1000, 4, &part_dir, &move |n| {
+            total_h.fetch_add(n, Ordering::Relaxed);
+        })
         .unwrap();
 
         server.shutdown();

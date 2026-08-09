@@ -525,7 +525,11 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
-    operations::link_current(&apps_dir.join(pkg.name()), &working_dir, config.no_junction())?;
+    operations::link_current(
+        &apps_dir.join(pkg.name()),
+        &working_dir,
+        config.no_junction(),
+    )?;
 
     // 5. shims + shortcuts
     debug!(

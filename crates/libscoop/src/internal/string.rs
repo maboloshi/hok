@@ -49,15 +49,13 @@ pub fn matches_any_glob(name: &str, patterns: &[String]) -> bool {
     if patterns.first().map(|s| s.as_str()) == Some("*") {
         return true;
     }
-    patterns
-        .iter()
-        .any(|p| {
-            if p.contains('*') || p.contains('?') {
-                regex::Regex::new(&glob_to_regex(p)).is_ok_and(|re| re.is_match(name))
-            } else {
-                name == p
-            }
-        })
+    patterns.iter().any(|p| {
+        if p.contains('*') || p.contains('?') {
+            regex::Regex::new(&glob_to_regex(p)).is_ok_and(|re| re.is_match(name))
+        } else {
+            name == p
+        }
+    })
 }
 
 #[cfg(test)]

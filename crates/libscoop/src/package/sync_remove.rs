@@ -15,10 +15,13 @@ use crate::package::{
     operations::{self, run_script},
     query, resolve, InstallState, InstallStateInstalled, Package,
 };
-use crate::{env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption, Session};
+use crate::{
+    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
+    Session,
+};
 
-use super::{confirm_transaction, SyncOption, Transaction};
 use super::sync_install::check_not_running;
+use super::{confirm_transaction, SyncOption, Transaction};
 
 /// Sync operation: remove packages.
 pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
@@ -273,7 +276,11 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
                 continue;
             }
             let old_dir = app_dir.join(&name);
-            debug!("remove: {} - removing older version {}", package.name(), name);
+            debug!(
+                "remove: {} - removing older version {}",
+                package.name(),
+                name
+            );
             persist::unlink(session, package, &old_dir)?;
             match internal::fs::remove_dir(&old_dir) {
                 Ok(()) => {}

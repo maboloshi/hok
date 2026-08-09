@@ -61,4 +61,3 @@ impl fmt::Display for License {
         }
     }
 }
-

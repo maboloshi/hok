@@ -115,12 +115,13 @@ pub(super) fn download_and_hash_multi(
                     "sourceforge" => {
                         // Scoop: fetch SF files page, extract sha1 with regex
                         // Regex: '"$basename":.*?"sha1":\s*"([a-fA-F0-9]{40})"'
-                        let (project, file_path) = url::parse_sourceforge_url(url).ok_or_else(|| {
-                            crate::Error::Custom(format!(
-                                "could not parse sourceforge URL: {}",
-                                url
-                            ))
-                        })?;
+                        let (project, file_path) =
+                            url::parse_sourceforge_url(url).ok_or_else(|| {
+                                crate::Error::Custom(format!(
+                                    "could not parse sourceforge URL: {}",
+                                    url
+                                ))
+                            })?;
                         let sf_page_url =
                             format!("https://sourceforge.net/projects/{project}/files/{file_path}");
                         let page = network::download_page(session, &sf_page_url, 30, None)
@@ -426,10 +427,10 @@ fn format_hash(hash: &str) -> Option<String> {
         hash
     };
     let algo = match hash.len() {
-        32 => "md5",     // MD5
-        40 => "sha1",    // SHA1
-        64 => "sha256",  // SHA256 (no prefix)
-        128 => "sha512", // SHA512
+        32 => "md5",      // MD5
+        40 => "sha1",     // SHA1
+        64 => "sha256",   // SHA256 (no prefix)
+        128 => "sha512",  // SHA512
         _ => return None, // Unknown length
     };
     Some(crate::internal::hash::format_hash_value(algo, &hash))

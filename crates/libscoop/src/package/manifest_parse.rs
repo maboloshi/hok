@@ -187,7 +187,6 @@ impl<'de> Deserialize<'de> for Sourceforge {
 }
 
 impl<'de> Deserialize<'de> for HashString {
-
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
