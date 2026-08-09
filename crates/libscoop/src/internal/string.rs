@@ -58,6 +58,42 @@ pub fn matches_any_glob(name: &str, patterns: &[String]) -> bool {
     })
 }
 
+/// Normalize a JSONPath expression so `jsonpath-rust` can parse dotted field
+/// names that contain characters outside `[A-Za-z0-9_]`.
+///
+/// `jsonpath-rust` 1.0.4's grammar only accepts plain identifiers after `.`,
+/// so an expression like `$.dist-tags.latest` (a standard JSONPath form that
+/// Scoop's PowerShell implementation accepts) fails to parse. This rewrites
+/// such dotted segments into bracket notation: `$.dist-tags.latest` becomes
+/// `$['dist-tags'].latest`, which `jsonpath-rust` does parse.
+///
+/// Only simple dotted paths (`$` followed by `.segment` segments) are
+/// rewritten. Anything containing `[`, `*`, `?`, `..` (filters, wildcards,
+/// recursive descent, existing bracket notation) is returned unchanged, and a
+/// segment that cannot be safely quoted (empty, or containing `'` / `\`) also
+/// short-circuits to the original expression — the caller's original query
+/// then decides success or failure as before.
+pub fn normalize_jsonpath(jp: &str) -> String {
+    if !jp.starts_with("$.") || jp.contains(['[', '*', '?']) || jp.contains("..") {
+        return jp.to_string();
+    }
+    let mut out = String::from("$");
+    for seg in jp[2..].split('.') {
+        if seg.is_empty() || seg.contains(['\'', '\\']) {
+            return jp.to_string();
+        }
+        if seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            out.push('.');
+            out.push_str(seg);
+        } else {
+            out.push_str("['");
+            out.push_str(seg);
+            out.push_str("']");
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +167,43 @@ mod tests {
         let filters = vec!["cur?".to_string()];
         assert!(matches_any_glob("curl", &filters));
         assert!(!matches_any_glob("curl2", &filters));
+    }
+
+    // ── normalize_jsonpath ───────────────────────────────────────────────────
+
+    #[test]
+    fn jsonpath_rewrites_special_char_segments_to_bracket() {
+        assert_eq!(
+            normalize_jsonpath("$.dist-tags.latest"),
+            "$['dist-tags'].latest"
+        );
+        assert_eq!(normalize_jsonpath("$.a-b-c.d"), "$['a-b-c'].d");
+        assert_eq!(normalize_jsonpath("$.a.b-c.d_e"), "$.a['b-c'].d_e");
+    }
+
+    #[test]
+    fn jsonpath_plain_identifiers_unchanged() {
+        assert_eq!(normalize_jsonpath("$.tag_name"), "$.tag_name");
+        assert_eq!(normalize_jsonpath("$.version"), "$.version");
+    }
+
+    #[test]
+    fn jsonpath_complex_expressions_unchanged() {
+        assert_eq!(
+            normalize_jsonpath("$..assets[?(@.browser_download_url == 'x')].digest"),
+            "$..assets[?(@.browser_download_url == 'x')].digest"
+        );
+        assert_eq!(
+            normalize_jsonpath("$['dist-tags'].latest"),
+            "$['dist-tags'].latest"
+        );
+        assert_eq!(normalize_jsonpath("$.*"), "$.*");
+    }
+
+    #[test]
+    fn jsonpath_unquotable_or_malformed_unchanged() {
+        assert_eq!(normalize_jsonpath("$"), "$");
+        assert_eq!(normalize_jsonpath("$.a."), "$.a.");
+        assert_eq!(normalize_jsonpath("$.a'b"), "$.a'b");
     }
 }

@@ -446,7 +446,10 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Result<Stri
     {
         use jsonpath_rust::JsonPath;
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(content) {
-            if let Ok(found) = val.query(jp) {
+            // jsonpath-rust cannot parse unquoted field names with special
+            // characters (e.g. `$.dist-tags.latest`); normalize to bracket form.
+            let jp = crate::internal::string::normalize_jsonpath(jp);
+            if let Ok(found) = val.query(&jp) {
                 let found_str = found.first().and_then(|v| match v {
                     serde_json::Value::String(s) => Some(s.clone()),
                     _ => v.as_str().map(|s| s.to_string()),

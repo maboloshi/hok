@@ -549,7 +549,10 @@ fn extract_version(
     if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
         use jsonpath_rust::JsonPath;
         let value: serde_json::Value = serde_json::from_str(content).ok()?;
-        let found = value.query(jp).ok()?;
+        // jsonpath-rust cannot parse unquoted field names with special
+        // characters (e.g. `$.dist-tags.latest`); normalize to bracket form.
+        let jp = crate::internal::string::normalize_jsonpath(jp);
+        let found = value.query(&jp).ok()?;
         let ver = found.first()?.as_str()?;
         if !ver.is_empty() {
             let caps = vec![ver.to_string()];
