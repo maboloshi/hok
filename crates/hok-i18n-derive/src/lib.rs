@@ -203,7 +203,11 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         fn i18n_cli_long_about(key: &str, fallback: &str) -> String {
             let v = rust_i18n::t!(key).to_string();
-            if v.starts_with("cli_help.") { fallback.to_owned() } else { v }
+            if v.starts_with("cli_help.") {
+                rust_i18n::t!(fallback).to_string()
+            } else {
+                v
+            }
         }
 
         impl #struct_name {

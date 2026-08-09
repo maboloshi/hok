@@ -18,7 +18,11 @@ pub enum Command {
     Edit,
     /// List all settings in key-value
     #[clap(alias = "ls")]
-    List,
+    List {
+        /// Also show the effective default value of every setting
+        #[arg(long)]
+        all: bool,
+    },
     /// Add a new setting to the config file
     #[clap(arg_required_else_help = true)]
     Set {
@@ -44,10 +48,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
             Ok(())
         }
-        Command::List => {
-            let config_json = config::list(session)?;
-            output::info(session.config().path.display().to_string());
-            println!("{}", config_json);
+        Command::List { all } => {
+            if all {
+                println!("{}", config::list_all(session)?);
+            } else {
+                let config_json = config::list(session)?;
+                output::info(session.config().path.display().to_string());
+                println!("{}", config_json);
+            }
             Ok(())
         }
         Command::Set { key, value } => {

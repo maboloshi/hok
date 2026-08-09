@@ -898,6 +898,204 @@ pub fn list(session: &crate::Session) -> Fallible<String> {
     config.pretty()
 }
 
+/// List every supported setting with its current value and effective default.
+///
+/// Returns an aligned three-column table (`key`, `value`, `default`). The
+/// current value is what hok actually uses at runtime (defaults apply when
+/// the key is unset); the default column shows the built-in default,
+/// including environment-resolved paths (`$SCOOP`, `$SCOOP_CACHE`, ...).
+///
+/// # Errors
+///
+/// Returns an error if the config is currently borrowed elsewhere.
+pub fn list_all(session: &crate::Session) -> Fallible<String> {
+    let config = session.config();
+
+    let no = || "none".to_owned();
+    let mut rows: Vec<[String; 3]> = vec![];
+
+    rows.push([
+        "aria2-enabled".into(),
+        fmt_bool(config.aria2_enabled()).into(),
+        "true".into(),
+    ]);
+    rows.push([
+        "aria2-split".into(),
+        config.aria2_split().to_string(),
+        "5".into(),
+    ]);
+    rows.push([
+        "aria2-max-connection-per-server".into(),
+        config.aria2_max_connection_per_server().to_string(),
+        "5".into(),
+    ]);
+    rows.push([
+        "aria2-min-split-size".into(),
+        fmt_size(config.aria2_min_split_size()),
+        "5M".into(),
+    ]);
+    rows.push([
+        "cache_path".into(),
+        config.cache_path().display().to_string(),
+        default::cache_path().display().to_string(),
+    ]);
+    let cat_style = config.cat_style();
+    rows.push([
+        "cat_style".into(),
+        if cat_style.is_empty() {
+            no()
+        } else {
+            cat_style.to_owned()
+        },
+        no(),
+    ]);
+    rows.push([
+        "default_architecture".into(),
+        config
+            .default_architecture()
+            .unwrap_or("auto-detected")
+            .to_owned(),
+        "auto-detected".into(),
+    ]);
+    rows.push([
+        "global_path".into(),
+        config.global_path().display().to_string(),
+        default::global_path().display().to_string(),
+    ]);
+    rows.push([
+        "gh_token".into(),
+        config.gh_token.as_deref().unwrap_or("none").to_owned(),
+        no(),
+    ]);
+    rows.push([
+        "ignore-failures".into(),
+        fmt_bool(config.ignore_failures()).into(),
+        "true".into(),
+    ]);
+    rows.push([
+        "ignore_running_processes".into(),
+        fmt_bool(config.ignore_running_processes()).into(),
+        "false".into(),
+    ]);
+    rows.push([
+        "language".into(),
+        config.language().to_owned(),
+        "auto".into(),
+    ]);
+    rows.push([
+        "last_update".into(),
+        config
+            .inner
+            .last_update
+            .as_deref()
+            .unwrap_or("none")
+            .to_owned(),
+        no(),
+    ]);
+    rows.push([
+        "no-color".into(),
+        fmt_bool(config.no_color()).into(),
+        "false".into(),
+    ]);
+    rows.push([
+        "no_junction".into(),
+        fmt_bool(config.no_junction()).into(),
+        "false".into(),
+    ]);
+    rows.push([
+        "output-style".into(),
+        config.output_style().to_owned(),
+        "scoop".into(),
+    ]);
+    rows.push([
+        "private_hosts".into(),
+        config
+            .private_hosts()
+            .map(|v| format!("{} host(s)", v.len()))
+            .unwrap_or_else(no),
+        no(),
+    ]);
+    rows.push([
+        "proxy".into(),
+        config.proxy().unwrap_or("none").to_owned(),
+        no(),
+    ]);
+    rows.push([
+        "root_path".into(),
+        config.root_path().display().to_string(),
+        default::root_path().display().to_string(),
+    ]);
+    let isolated = config.use_isolated_path();
+    rows.push([
+        "use_isolated_path".into(),
+        match isolated {
+            None => no(),
+            Some(IsolatedPath::Boolean(b)) => fmt_bool(*b).to_owned(),
+            Some(IsolatedPath::Named(name)) => name.clone(),
+        },
+        no(),
+    ]);
+    rows.push([
+        "use_sqlite_cache".into(),
+        fmt_bool(config.use_sqlite_cache()).into(),
+        "false".into(),
+    ]);
+    rows.push([
+        "virustotal_api_key".into(),
+        config
+            .virustotal_api_key
+            .as_deref()
+            .unwrap_or("none")
+            .to_owned(),
+        no(),
+    ]);
+
+    let key_w = rows
+        .iter()
+        .map(|r| r[0].len())
+        .max()
+        .unwrap_or(0)
+        .max("key".len());
+    let val_w = rows
+        .iter()
+        .map(|r| r[1].len())
+        .max()
+        .unwrap_or(0)
+        .max("value".len());
+    let mut out = format!("{:<key_w$}  {:<val_w$}  default\n", "key", "value");
+    for row in &rows {
+        out.push_str(&format!(
+            "{:<key_w$}  {:<val_w$}  {}\n",
+            row[0], row[1], row[2]
+        ));
+    }
+    Ok(out)
+}
+
+fn fmt_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// Format a byte size back into the `aria2-min-split-size` style (5M, 10M).
+fn fmt_size(bytes: u64) -> String {
+    const G: u64 = 1024 * 1024 * 1024;
+    const M: u64 = 1024 * 1024;
+    const K: u64 = 1024;
+    if bytes >= G && bytes % G == 0 {
+        format!("{}G", bytes / G)
+    } else if bytes >= M && bytes % M == 0 {
+        format!("{}M", bytes / M)
+    } else if bytes >= K && bytes % K == 0 {
+        format!("{}K", bytes / K)
+    } else {
+        bytes.to_string()
+    }
+}
+
 /// Open the config file in the user's configured editor.
 ///
 /// Launches `$EDITOR` (if set) with the config file path as its argument and
@@ -1064,6 +1262,65 @@ mod tests {
         assert!(matches!(err, Error::ConfigValueInvalid(_)));
         let err = crate::config::set(&session, "totally_unknown_key", "x").unwrap_err();
         assert!(matches!(err, Error::ConfigKeyInvalid(_)));
+    }
+
+    /// `list_all` shows every supported key with its current value and
+    /// effective default; after `config set` the current value updates.
+    #[test]
+    fn list_all_shows_supported_keys_with_current_and_default() {
+        let session = test_session("config_list_all");
+
+        let table = crate::config::list_all(&session).unwrap();
+        // header row
+        assert!(
+            table.lines().next().unwrap().contains("default"),
+            "expected header row, got:\n{table}"
+        );
+        // every key reachable through `hok config set` is listed
+        for key in [
+            "aria2-enabled",
+            "aria2-split",
+            "aria2-max-connection-per-server",
+            "aria2-min-split-size",
+            "cache_path",
+            "cat_style",
+            "default_architecture",
+            "global_path",
+            "gh_token",
+            "ignore-failures",
+            "ignore_running_processes",
+            "language",
+            "last_update",
+            "no-color",
+            "no_junction",
+            "output-style",
+            "private_hosts",
+            "proxy",
+            "root_path",
+            "use_isolated_path",
+            "use_sqlite_cache",
+            "virustotal_api_key",
+        ] {
+            assert!(
+                table.lines().any(|l| l.starts_with(key)),
+                "missing key {key} in:\n{table}"
+            );
+        }
+
+        // unset bool key: current value equals the default
+        assert!(no_junction_row(&table).contains("false"), "{table}");
+
+        // after setting, the current value column shows the new value
+        crate::config::set(&session, "no_junction", "true").unwrap();
+        let table = crate::config::list_all(&session).unwrap();
+        assert!(no_junction_row(&table).contains("true"), "{table}");
+    }
+
+    fn no_junction_row(table: &str) -> &str {
+        table
+            .lines()
+            .find(|l| l.starts_with("no_junction"))
+            .expect("no_junction row")
     }
 
     /// Scoop-only settings that hok does not support must be rejected by the

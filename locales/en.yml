@@ -282,9 +282,67 @@ cli_help:
     about: Generate shell completions
   config:
     about: Configuration management
+    long_about: |-
+      Configuration management
+
+      Config file: ~/.config/hok/config.json
+
+      Settings
+      --------
+
+      aria2-enabled: bool, default true
+            Enable fragmented downloads (hok's built-in HTTP range splitter).
+      aria2-split: int, default 5
+            Number of connections used for each fragmented download.
+      aria2-max-connection-per-server: int, default 5
+            Maximum number of connections to one server per download.
+      aria2-min-split-size: size, default 5M
+            Minimum file size to trigger fragmented downloads (e.g. 5M, 10M).
+      cache_path: path, default $SCOOP_CACHE or <root>/cache
+            Download cache directory.
+      cat_style: string, default none
+            When set, use 'bat' to display manifests (requires bat installed).
+      default_architecture: 64bit|32bit|arm64, default auto-detected
+            Preferred architecture used for installation.
+      global_path: path, default $SCOOP_GLOBAL or %ProgramData%\scoop
+            Root directory for globally installed apps.
+      gh_token: string, default none
+            GitHub API token used for authenticated requests.
+      ignore-failures: bool, default true
+            Continue multi-package operations despite individual failures.
+      ignore_running_processes: bool, default false
+            Proceed even if the app is running (warning instead of abort).
+      language: auto|en|zh, default auto
+            CLI language for messages and help text.
+      last_update: string, internal
+            Timestamp of the last bucket update (managed by hok).
+      no-color: bool, default false
+            Disable colored output.
+      no_junction: bool, default false
+            Do not use the 'current' junction; shims point to version dirs instead.
+      output-style: scoop|pacman, default scoop
+            Output style of progress and status messages.
+      private_hosts: array, edit file
+            Private hosts needing extra auth headers; edit the config file directly.
+      proxy: string, default none
+            Proxy settings: none | default | currentuser | [username:password@]host:port.
+      root_path: path, default $SCOOP or ~/scoop
+            Scoop root directory.
+      use_isolated_path: bool|string, default none
+            Store apps' PATH entries in a dedicated env var (SCOOP_PATH by default).
+      use_sqlite_cache: bool, default false
+            Use SQLite database for manifest caching (Scoop-compatible schema).
+      virustotal_api_key: string, default none
+            VirusTotal API key used for uploading/scanning files.
+
+      Most settings can be changed with 'hok config set <key> <value>' (empty
+      value unsets). private_hosts and last_update are only editable in the
+      file. Run 'hok config list --all' to see current values and effective
+      defaults.
     args:
       edit: "Edit the config file [default: system default editor]"
-      list: List all settings in key-value
+      list: "List all settings in key-value (--all also shows defaults)"
+      list.all: Also show the effective default value of every setting
       set: Add a new setting to the config file
       unset: Remove a setting from config file
   create:

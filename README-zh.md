@@ -143,6 +143,45 @@ hok config set output-style scoop
 Scoop 风格（默认）：`  Extracting... done` 逐步进度。
 Pacman 风格：`::` 标题前缀、`✓`/`⚠`/`✗` 状态符号，粗体标签 + 普通信息内容。
 
+### 配置参考（Settings）
+
+hok 的配置文件位于 `~/.config/hok/config.json`（与 Scoop 的 `config.json` 格式兼容）。首次运行时会把受支持的键从 Scoop 配置文件迁移过来，之后只读写 hok 自己的文件。
+
+```bash
+hok config list           # 当前配置（pretty JSON）
+hok config list --all     # 所有受支持键 + 当前值 + 默认值
+hok config set <key> <value>
+hok config unset <key>    # 删除键（回退到默认值）
+hok config --help         # 完整设置参考（含默认值与取值样式）
+```
+
+| 键 | 类型 | 默认值 | 说明 |
+|----|------|--------|------|
+| `aria2-enabled` | bool | `true` | 启用分片下载（hok 内置 HTTP Range 分片下载器） |
+| `aria2-split` | int | `5` | 每次分片下载使用的连接数 |
+| `aria2-max-connection-per-server` | int | `5` | 每个下载对单个服务器的最大连接数 |
+| `aria2-min-split-size` | 大小 | `5M` | 触发分片下载的最小文件大小（如 `5M`、`10M`） |
+| `cache_path` | 路径 | `$SCOOP_CACHE` 或 `<root>/cache` | 下载缓存目录 |
+| `cat_style` | 字符串 | *(空)* | 设置后使用 `bat` 显示清单（需安装 `bat`） |
+| `default_architecture` | `64bit`\|`32bit`\|`arm64` | 自动检测 | 安装时使用的首选架构 |
+| `global_path` | 路径 | `$SCOOP_GLOBAL` 或 `%ProgramData%\scoop` | 全局应用安装的根目录 |
+| `gh_token` | 字符串 | *(空)* | 用于认证请求的 GitHub API token |
+| `ignore-failures` | bool | `true` | 多包操作中单个包失败时继续处理其余包 |
+| `ignore_running_processes` | bool | `false` | 应用正在运行时仍继续（仅警告，不中止） |
+| `language` | `auto`\|`en`\|`zh` | `auto` | 消息与帮助文本使用的 CLI 语言 |
+| `last_update` | 字符串 | *(空)* | 上次 bucket 更新时间戳（由 hok 管理，仅可编辑文件） |
+| `no-color` | bool | `false` | 禁用彩色输出 |
+| `no_junction` | bool | `false` | 不使用 `current` 目录联接；shim 直接指向版本目录 |
+| `output-style` | `scoop`\|`pacman` | `scoop` | 进度与状态消息的输出样式 |
+| `private_hosts` | 数组 | *(空)* | 需要额外认证头的私有主机（仅可编辑文件） |
+| `proxy` | 字符串 | `none` | 代理：`none` \| `default` \| `currentuser` \| `[username:password@]host:port` |
+| `root_path` | 路径 | `$SCOOP` 或 `~/scoop` | Scoop 根目录 |
+| `use_isolated_path` | bool\|字符串 | *(空)* | 将应用的 PATH 条目存入专用环境变量（默认为 `SCOOP_PATH`） |
+| `use_sqlite_cache` | bool | `false` | 使用 SQLite 数据库缓存清单（兼容 Scoop 的 schema） |
+| `virustotal_api_key` | 字符串 | *(空)* | 用于上传/扫描文件的 VirusTotal API key |
+
+大多数键可通过 `hok config set` 修改；`last_update` 与 `private_hosts` 只能直接编辑配置文件。别名（alias）通过 `hok alias` 命令管理。运行 `hok config list --all` 查看你机器上的生效默认值。
+
 ### Native Shim 基准测试
 
 hok 内嵌了 **10KB** 的 `#![no_std]` 原生 exe shim，完全符合 [Scoop Shim 规范](https://github.com/ScoopInstaller/Shim)。性能对比（whoami.exe, 30 runs）：

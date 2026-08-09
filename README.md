@@ -76,6 +76,52 @@ Options:
       --detail   Show detailed operation information for debugging
 ```
 
+## Configuration
+
+hok reads its config from `~/.config/hok/config.json` (a Scoop-compatible
+`config.json`). On first run the supported keys are migrated once from
+Scoop's own config file; afterwards only hok's file is used.
+
+```sh
+hok config list           # current config as pretty JSON
+hok config list --all     # every supported key + current value + default
+hok config set <key> <value>
+hok config unset <key>    # remove a key (falls back to its default)
+hok config --help         # full settings reference with defaults
+```
+
+### Settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `aria2-enabled` | bool | `true` | Enable fragmented downloads (hok's built-in HTTP range splitter) |
+| `aria2-split` | int | `5` | Number of connections used for each fragmented download |
+| `aria2-max-connection-per-server` | int | `5` | Maximum connections to one server per download |
+| `aria2-min-split-size` | size | `5M` | Minimum file size to trigger fragmented downloads (e.g. `5M`, `10M`) |
+| `cache_path` | path | `$SCOOP_CACHE` or `<root>/cache` | Download cache directory |
+| `cat_style` | string | *(empty)* | When set, use `bat` to display manifests (requires `bat` installed) |
+| `default_architecture` | `64bit`\|`32bit`\|`arm64` | auto-detected | Preferred architecture used for installation |
+| `global_path` | path | `$SCOOP_GLOBAL` or `%ProgramData%\scoop` | Root directory for globally installed apps |
+| `gh_token` | string | *(empty)* | GitHub API token used for authenticated requests |
+| `ignore-failures` | bool | `true` | Continue multi-package operations despite individual failures |
+| `ignore_running_processes` | bool | `false` | Proceed even if the app is running (warning instead of abort) |
+| `language` | `auto`\|`en`\|`zh` | `auto` | CLI language for messages and help text |
+| `last_update` | string | *(empty)* | Timestamp of the last bucket update (managed by hok; edit the file only) |
+| `no-color` | bool | `false` | Disable colored output |
+| `no_junction` | bool | `false` | Do not use the `current` junction; shims point to version dirs instead |
+| `output-style` | `scoop`\|`pacman` | `scoop` | Output style of progress and status messages |
+| `private_hosts` | array | *(empty)* | Private hosts needing extra auth headers (edit the file only) |
+| `proxy` | string | `none` | Proxy: `none` \| `default` \| `currentuser` \| `[username:password@]host:port` |
+| `root_path` | path | `$SCOOP` or `~/scoop` | Scoop root directory |
+| `use_isolated_path` | bool\|string | *(empty)* | Store apps' PATH entries in a dedicated env var (`SCOOP_PATH` by default) |
+| `use_sqlite_cache` | bool | `false` | Use SQLite database for manifest caching (Scoop-compatible schema) |
+| `virustotal_api_key` | string | *(empty)* | VirusTotal API key used for uploading/scanning files |
+
+Most keys are settable via `hok config set`; `last_update` and
+`private_hosts` are only editable in the config file. Aliases are managed
+with the `hok alias` command. Run `hok config list --all` for the effective
+defaults on your machine.
+
 ## New Features (since original fork)
 
 Compared to the original hok, this fork adds:

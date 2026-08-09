@@ -282,9 +282,66 @@ cli_help:
     about: 生成 shell 补全脚本
   config:
     about: 配置管理
+    long_about: |-
+      配置管理
+
+      配置文件：~/.config/hok/config.json
+
+      设置项
+      ------
+
+      aria2-enabled: bool，默认 true
+            启用分片下载（hok 内置的 HTTP Range 分片下载器）。
+      aria2-split: int，默认 5
+            每次分片下载使用的连接数。
+      aria2-max-connection-per-server: int，默认 5
+            每个下载对单个服务器的最大连接数。
+      aria2-min-split-size: 大小，默认 5M
+            触发分片下载的最小文件大小（如 5M、10M）。
+      cache_path: 路径，默认 $SCOOP_CACHE 或 <root>/cache
+            下载缓存目录。
+      cat_style: 字符串，默认无
+            设置后使用 'bat' 显示清单（需安装 bat）。
+      default_architecture: 64bit|32bit|arm64，默认自动检测
+            安装时使用的首选架构。
+      global_path: 路径，默认 $SCOOP_GLOBAL 或 %ProgramData%\scoop
+            全局应用安装的根目录。
+      gh_token: 字符串，默认无
+            用于认证请求的 GitHub API token。
+      ignore-failures: bool，默认 true
+            多包操作中单个包失败时继续处理其余包。
+      ignore_running_processes: bool，默认 false
+            应用正在运行时仍继续（仅警告，不中止）。
+      language: auto|en|zh，默认 auto
+            消息与帮助文本使用的 CLI 语言。
+      last_update: 字符串，内部
+            上次 bucket 更新的时间戳（由 hok 管理）。
+      no-color: bool，默认 false
+            禁用彩色输出。
+      no_junction: bool，默认 false
+            不使用 'current' 目录联接；shim 直接指向版本目录。
+      output-style: scoop|pacman，默认 scoop
+            进度与状态消息的输出样式。
+      private_hosts: 数组，编辑文件
+            需要额外认证头的私有主机；请直接编辑配置文件。
+      proxy: 字符串，默认 none
+            代理设置：none | default | currentuser | [username:password@]host:port。
+      root_path: 路径，默认 $SCOOP 或 ~/scoop
+            Scoop 根目录。
+      use_isolated_path: bool|字符串，默认无
+            将应用的 PATH 条目存入专用环境变量（默认为 SCOOP_PATH）。
+      use_sqlite_cache: bool，默认 false
+            使用 SQLite 数据库缓存清单（兼容 Scoop 的 schema）。
+      virustotal_api_key: 字符串，默认无
+            用于上传/扫描文件的 VirusTotal API key。
+
+      大多数设置可通过 'hok config set <key> <value>' 修改（空值表示取消
+      设置）。private_hosts 和 last_update 只能直接编辑配置文件。运行
+      'hok config list --all' 查看当前值与生效默认值。
     args:
       edit: "编辑配置文件 [默认: 系统默认编辑器]"
-      list: 以键值对形式列出所有设置
+      list: "以键值对形式列出所有设置（--all 同时显示默认值）"
+      list.all: 同时显示每个设置生效的默认值
       set: 向配置文件添加新设置
       unset: 从配置文件删除设置
   create:
