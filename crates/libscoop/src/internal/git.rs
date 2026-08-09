@@ -62,10 +62,15 @@ where
         .map(|_| {})
 }
 
-// Update a bucket repo via fetch + fast-forward.
-// Preserves local changes — fails with an error if the working tree has
-// uncommitted modifications (Scoop-compatible behavior).
-pub fn reset_head<P, S>(path: P, proxy: Option<S>) -> Fallible<()>
+// Update a bucket repo with `git pull` semantics (Scoop-compatible):
+// - already up to date           -> Ok
+// - fast-forwardable             -> fast-forward the local branch
+// - diverged but mergeable       -> 3-way merge, auto-commit the merge
+// - merge conflict               -> leave conflict markers, return an error
+// - unrelated histories          -> error
+// Local modifications that would be overwritten by the update abort it
+// (matching `git pull`); otherwise they are preserved.
+pub fn pull<P, S>(path: P, proxy: Option<S>) -> Fallible<()>
 where
     P: AsRef<Path>,
     S: AsRef<str>,
@@ -85,7 +90,7 @@ where
         .unwrap_or_else(|| "refs/heads/master".to_owned());
 
     // Fetch to remote-tracking ref so the local branch is NOT updated
-    // until we verify fast-forward safety.
+    // until we decide how to integrate (fast-forward or merge).
     let branch = ref_name.strip_prefix("refs/heads/").unwrap_or(&ref_name);
     origin.fetch(
         &[format!("+{ref_name}:refs/remotes/origin/{branch}").as_str()],
@@ -93,31 +98,97 @@ where
         None,
     )?;
 
-    let fetch_commit = repo
-        .find_reference("FETCH_HEAD")?
-        .peel(git2::ObjectType::Commit)?;
+    let fetch_commit = repo.find_reference("FETCH_HEAD")?.peel_to_commit()?;
 
     if fetch_commit.id() == head_id {
         return Ok(()); // already up to date
     }
 
-    // Fast-forward safety: the fetched commit must be a descendant of old HEAD.
-    // If not (e.g. force-push on remote), reject.
-    let merge_base = repo.merge_base(head_id, fetch_commit.id())?;
-    if merge_base != head_id {
-        return Err(Error::BucketUpdateNotFastForward(ref_name));
+    let fetch_annotated = repo.find_annotated_commit(fetch_commit.id())?;
+    let (analysis, _preference) = repo.merge_analysis(&[&fetch_annotated])?;
+
+    // `git pull` refuses to overwrite local changes: fail before touching the
+    // working tree if any file the update would change is locally modified.
+    ensure_updateable(&repo, head_id, &fetch_commit)?;
+
+    if analysis.is_fast_forward() {
+        // Fast-forward: hard-reset the branch to the fetched commit (updates
+        // the ref, index and working tree in one step). Safe because
+        // ensure_updateable() above guarantees no local modification would
+        // be overwritten.
+        let reset_target: git2::Object =
+            repo.find_object(fetch_commit.id(), Some(git2::ObjectType::Commit))?;
+        repo.reset(&reset_target, git2::ResetType::Hard, None)?;
+
+        Ok(())
+    } else if analysis.is_normal() {
+        // Diverged: perform a 3-way merge like `git pull` (merge mode).
+        // SAFE checkout aborts if the merge would overwrite local changes.
+        let mut merge_opts = git2::MergeOptions::new();
+        let mut co = git2::build::CheckoutBuilder::new();
+        repo.merge(&[&fetch_annotated], Some(&mut merge_opts), Some(&mut co))?;
+
+        let mut index = repo.index()?;
+        if index.has_conflicts() {
+            // Leave conflict markers in the working tree (like git), then fail.
+            // Default conflict style is the standard merge style
+            // (<<<<<<< / ======= / >>>>>>>), matching `git merge`.
+            let mut conflict_co = git2::build::CheckoutBuilder::new();
+            conflict_co.allow_conflicts(true);
+            repo.checkout_index(None, Some(&mut conflict_co))?;
+            repo.cleanup_state()?;
+            return Err(Error::BucketUpdateMergeConflict(ref_name));
+        }
+
+        // No conflicts: write the merged tree and create the merge commit.
+        // `signature` reads user.name / user.email from git config and fails
+        // like `git commit` when they are unset.
+        let head_commit = repo.head()?.peel_to_commit()?;
+        let remote_commit = repo.find_commit(fetch_commit.id())?;
+        let sig = repo.signature()?;
+        let tree_id = index.write_tree_to(&repo)?;
+        let tree = repo.find_tree(tree_id)?;
+        let message = format!("Merge remote-tracking branch 'origin/{branch}' into {branch}");
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            &message,
+            &tree,
+            &[&head_commit, &remote_commit],
+        )?;
+        repo.cleanup_state()?;
+
+        Ok(())
+    } else {
+        // NONE / UNBORN: cannot integrate (e.g. unrelated histories).
+        Err(Error::BucketUpdateNotFastForward(ref_name))
+    }
+}
+
+/// Fail (like `git pull`) if the update would overwrite local changes:
+/// every file whose content differs between `head_id` and `target` must be
+/// clean in both the index and the working tree.
+fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commit) -> Fallible<()> {
+    let old_tree = repo.find_commit(head_id)?.tree()?;
+    let new_tree = target.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+
+    let mut local = Vec::new();
+    for delta in diff.deltas() {
+        let path = delta.old_file().path().or(delta.new_file().path());
+        if let Some(path) = path {
+            if !repo.status_file(path)?.is_empty() {
+                local.push(path.display().to_string());
+            }
+        }
     }
 
-    let mut head_ref = repo.find_reference(&ref_name)?;
-    head_ref.set_target(fetch_commit.id(), "fast-forward: update bucket")?;
-    repo.set_head(&ref_name)?;
-
-    // Checkout without force — fails if working tree has local changes
-    let mut co = git2::build::CheckoutBuilder::new();
-    co.allow_conflicts(false);
-    repo.checkout_head(Some(&mut co))?;
-
-    Ok(())
+    if local.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::BucketUpdateLocalChanges(local.join(", ")))
+    }
 }
 
 pub fn remote_url_of<S>(repo_path: &Path, remote: S) -> Fallible<Option<String>>
@@ -137,4 +208,169 @@ pub fn head_commit_time<P: AsRef<Path>>(path: P) -> Option<i64> {
     let head = repo.head().ok()?;
     let commit = head.peel_to_commit().ok()?;
     Some(commit.time().seconds())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{Signature, Time};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    /// Create a unique scratch directory for one test.
+    fn temp_dir(name: &str) -> PathBuf {
+        let seq = DIR_SEQ.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "hok-git-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            seq
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cleanup(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn sig() -> Signature<'static> {
+        Signature::new("hok tester", "tester@example.com", &Time::new(0, 0)).unwrap()
+    }
+
+    /// Write a file in the working tree and commit it on HEAD.
+    fn commit_file(repo: &Repository, rel: &str, content: &str, msg: &str) {
+        let full = repo.workdir().unwrap().join(rel);
+        std::fs::write(&full, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree_to(repo).unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+
+        let parent = repo.head().ok().map(|h| h.peel_to_commit().unwrap());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig(), &sig(), msg, &tree, &parents)
+            .unwrap();
+    }
+
+    /// Create an origin repo with one commit and clone it, returning
+    /// `(origin_dir, origin, clone_dir, clone)`.
+    fn setup() -> (PathBuf, Repository, PathBuf, Repository) {
+        let origin_dir = temp_dir("origin");
+        let clone_dir = temp_dir("clone");
+
+        let origin = Repository::init(&origin_dir).unwrap();
+        commit_file(&origin, "a.txt", "base\n", "initial");
+
+        clone_repo(origin_dir.to_str().unwrap(), &clone_dir, None).unwrap();
+
+        let clone = Repository::open(&clone_dir).unwrap();
+        // `pull` needs user.name / user.email to create a merge commit,
+        // exactly like `git commit`.
+        let mut cfg = clone.config().unwrap();
+        cfg.set_str("user.name", "hok tester").unwrap();
+        cfg.set_str("user.email", "tester@example.com").unwrap();
+
+        (origin_dir, origin, clone_dir, clone)
+    }
+
+    #[test]
+    fn pull_fast_forward() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+
+        pull(&clone_dir, None::<&str>).unwrap();
+
+        let repo = Repository::open(&clone_dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let origin_head = origin.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.id(), origin_head.id());
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("a.txt")).unwrap(),
+            "base\nremote\n"
+        );
+        // fast-forward must NOT create a merge commit
+        assert_eq!(head.parent_count(), 1);
+        // worktree and index are clean after the fast-forward
+        assert!(repo
+            .statuses(None)
+            .unwrap()
+            .iter()
+            .all(|e| e.status().is_empty()));
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    #[test]
+    fn pull_fast_forward_dirty() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+
+        // local modification on a file the update would change
+        std::fs::write(clone_dir.join("a.txt"), "base\nlocal\n").unwrap();
+
+        let err = pull(&clone_dir, None::<&str>).unwrap_err();
+        assert!(matches!(err, Error::BucketUpdateLocalChanges(_)));
+
+        // the update must NOT have overwritten the local change
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("a.txt")).unwrap(),
+            "base\nlocal\n"
+        );
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    #[test]
+    fn pull_merge_commit() {
+        let (origin_dir, origin, clone_dir, clone) = setup();
+        // local commit on a new file
+        commit_file(&clone, "b.txt", "local\n", "local work");
+        // remote commit on a different file
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote work");
+
+        pull(&clone_dir, None::<&str>).unwrap();
+
+        let repo = Repository::open(&clone_dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        // diverged histories produce a merge commit with two parents
+        assert_eq!(head.parent_count(), 2);
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("a.txt")).unwrap(),
+            "base\nremote\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("b.txt")).unwrap(),
+            "local\n"
+        );
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    #[test]
+    fn pull_merge_conflict() {
+        let (origin_dir, origin, clone_dir, clone) = setup();
+        // both sides edit the same file in conflicting ways
+        commit_file(&clone, "a.txt", "local\n", "local edit");
+        commit_file(&origin, "a.txt", "remote\n", "remote edit");
+
+        let err = pull(&clone_dir, None::<&str>).unwrap_err();
+        assert!(matches!(err, Error::BucketUpdateMergeConflict(_)));
+
+        // conflict markers are left in the working tree, like `git merge`
+        let content = std::fs::read_to_string(clone_dir.join("a.txt")).unwrap();
+        assert!(content.contains("<<<<<<<"));
+        assert!(content.contains(">>>>>>>"));
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
 }

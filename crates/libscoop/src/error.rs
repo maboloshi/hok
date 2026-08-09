@@ -42,10 +42,22 @@ pub enum Error {
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
 
-    /// Thrown when a bucket update is rejected because the update is not
-    /// a fast-forward (e.g. the remote branch was force-pushed).
+    /// Thrown when a bucket update is rejected because the update cannot be
+    /// integrated: the histories have diverged and cannot be merged, or the
+    /// branches are unrelated (e.g. the remote branch was rewritten).
     #[error("bucket ref update for '{0}' was rejected: not a fast-forward")]
     BucketUpdateNotFastForward(String),
+
+    /// Thrown when a bucket update fails because the 3-way merge between the
+    /// local branch and the fetched remote produced conflicts. Conflict
+    /// markers are left in the working tree for the user to resolve.
+    #[error("merge conflict while updating bucket '{0}'; resolve the conflicts and retry")]
+    BucketUpdateMergeConflict(String),
+
+    /// Thrown when a bucket update is rejected because it would overwrite
+    /// local changes in the listed files (matching `git pull`).
+    #[error("local changes would be overwritten by the bucket update: {0}")]
+    BucketUpdateLocalChanges(String),
 
     /// Thrown when trying to mutate config while it is in use.
     #[error("Could not alter config because it is in use.")]
@@ -166,6 +178,8 @@ impl Error {
             Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
             Error::BucketNotFound(_) => "error.bucket_not_found",
             Error::BucketUpdateNotFastForward(_) => "error.bucket_update_not_fast_forward",
+            Error::BucketUpdateMergeConflict(_) => "error.bucket_update_merge_conflict",
+            Error::BucketUpdateLocalChanges(_) => "error.bucket_update_local_changes",
             Error::ConfigInUse => "error.config_in_use",
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
@@ -216,6 +230,14 @@ mod tests {
         assert_eq!(
             Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(),
             "error.bucket_update_not_fast_forward"
+        );
+        assert_eq!(
+            Error::BucketUpdateMergeConflict("refs/heads/main".into()).error_key(),
+            "error.bucket_update_merge_conflict"
+        );
+        assert_eq!(
+            Error::BucketUpdateLocalChanges("a.txt".into()).error_key(),
+            "error.bucket_update_local_changes"
         );
     }
 

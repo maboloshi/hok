@@ -485,7 +485,7 @@ pub fn update(session: &Session) -> Fallible<()> {
                     let _ = tx.send(crate::Event::BucketUpdateProgress(ctx.clone()));
                 }
 
-                match internal::git::reset_head(repo, proxy) {
+                match internal::git::pull(repo, proxy) {
                     Ok(_) => {
                         if let Ok(mut guard) = flag.lock() {
                             *guard = true;
