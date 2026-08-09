@@ -33,6 +33,13 @@ const FMT_NAIVE_UTC_NO_FRAC: &[time::format_description::FormatItem<'_>] =
 const FMT_NAIVE_UTC_FRAC: &[time::format_description::FormatItem<'_>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:1+]");
 
+/// Short local-time output shape: `2026/7/25 10:48:34` (no leading zeros on
+/// month/day/hour, matching PowerShell's default zh-CN `DateTime` display
+/// used by `scoop bucket list`).
+const FMT_SHORT_LOCAL: &[time::format_description::FormatItem<'_>] = format_description!(
+    "[year]/[month padding:none]/[day padding:none] [hour padding:none]:[minute]:[second]"
+);
+
 /// Format `now` as Scoop's `last_update` config value.
 ///
 /// Matches PowerShell's `[System.DateTime]::Now.ToString('o')`:
@@ -62,6 +69,15 @@ pub fn parse_last_update(s: &str) -> Option<OffsetDateTime> {
     PrimitiveDateTime::parse(s, FMT_NAIVE_UTC_FRAC)
         .ok()
         .map(|dt| dt.assume_utc())
+}
+
+/// Format Unix seconds as a short local-time string (`2026/7/25 10:48:34`),
+/// e.g. a bucket's HEAD commit time. Returns `None` when the seconds are out
+/// of range or formatting fails. Change [`FMT_SHORT_LOCAL`] to restyle.
+pub fn format_short_local(secs: i64) -> Option<String> {
+    let ts = OffsetDateTime::from_unix_timestamp(secs).ok()?;
+    let local = UtcOffset::local_offset_at(ts).unwrap_or(UtcOffset::UTC);
+    ts.to_offset(local).format(FMT_SHORT_LOCAL).ok()
 }
 
 #[cfg(test)]
@@ -137,6 +153,45 @@ mod tests {
     #[test]
     fn parse_rejects_garbage() {
         assert!(parse_last_update("not-a-time").is_none());
+    }
+
+    // ── format_short_local ───────────────────────────────────────────────────
+
+    #[test]
+    fn short_local_shape_has_no_leading_zeros() {
+        // 2026-07-25T02:48:34Z renders as local wall time; shape is
+        // YYYY/M/D H:MM:SS (month/day/hour unpadded, minute/second padded).
+        let s = format_short_local(1_784_133_714).expect("in-range seconds should format");
+        let parts: Vec<&str> = s.split(['/', ' ', ':']).collect();
+        assert_eq!(parts.len(), 6, "unexpected shape: {s}");
+        assert_eq!(parts[0].len(), 4, "year should be 4 digits: {s}");
+        let month: u32 = parts[1].parse().unwrap();
+        let day: u32 = parts[2].parse().unwrap();
+        let hour: u32 = parts[3].parse().unwrap();
+        let minute: u32 = parts[4].parse().unwrap();
+        let second: u32 = parts[5].parse().unwrap();
+        assert!((1..=12).contains(&month), "month out of range: {s}");
+        assert!((1..=31).contains(&day), "day out of range: {s}");
+        assert!(hour <= 23, "hour out of range: {s}");
+        assert!(
+            minute <= 59 && second <= 59,
+            "minute/second out of range: {s}"
+        );
+        // No leading zeros on month/day/hour; minute/second always 2 digits.
+        assert!(!parts[1].starts_with('0'), "month padded: {s}");
+        assert!(!parts[2].starts_with('0'), "day padded: {s}");
+        // Hour 0 renders as "0" (single digit) — the only unpadded zero value.
+        assert!(
+            parts[3] == "0" || !parts[3].starts_with('0'),
+            "hour padded: {s}"
+        );
+        assert_eq!(parts[4].len(), 2, "minute unpadded: {s}");
+        assert_eq!(parts[5].len(), 2, "second unpadded: {s}");
+    }
+
+    #[test]
+    fn short_local_rejects_out_of_range_seconds() {
+        assert!(format_short_local(i64::MAX).is_none());
     }
 
     // ── format ⇄ parse ───────────────────────────────────────────────────────

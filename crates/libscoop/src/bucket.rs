@@ -138,15 +138,7 @@ impl Bucket {
         self.updated_at
             .get_or_init(|| {
                 let secs = internal::git::head_commit_time(self.path())?;
-                let ts = time::OffsetDateTime::from_unix_timestamp(secs).ok()?;
-                let local = time::UtcOffset::local_offset_at(ts).unwrap_or(time::UtcOffset::UTC);
-                let formatted = ts
-                    .to_offset(local)
-                    .format(time::macros::format_description!(
-                        "[year]/[month padding:none]/[day padding:none] [hour padding:none]:[minute]:[second]"
-                    ))
-                    .ok()?;
-                Some(formatted)
+                internal::time::format_short_local(secs)
             })
             .as_deref()
     }
