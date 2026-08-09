@@ -31,7 +31,7 @@ sys-locale = "0.3"
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
 [build-dependencies]
-jiff = "0.2"
+time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
 
 [dependencies.libscoop]
 version = "0.2.0-beta.3"

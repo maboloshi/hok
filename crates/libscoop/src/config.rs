@@ -443,20 +443,10 @@ impl Config {
     /// The default cooldown is 15 minutes (900 seconds).
     pub fn update_cooldown_remaining(&self) -> Option<i64> {
         const COOLDOWN_SECS: i64 = 900; // 15 minutes
-        let last = self.inner.last_update.as_ref()?;
-        // Scoop stores local time with offset: 2026-07-19T10:48:34.0100861+08:00
-        let last_ts = if let Ok(z) = last.parse::<jiff::Zoned>() {
-            z.timestamp()
-        } else {
-            last.parse::<jiff::Timestamp>().ok()?
-        };
-        let elapsed = jiff::Timestamp::now().as_second() - last_ts.as_second();
+        let last_ts = internal::time::parse_last_update(self.inner.last_update.as_ref()?)?;
+        let elapsed = time::OffsetDateTime::now_utc().unix_timestamp() - last_ts.unix_timestamp();
         let remaining = COOLDOWN_SECS - elapsed;
-        if remaining > 0 {
-            Some(remaining)
-        } else {
-            None
-        }
+        (remaining > 0).then_some(remaining)
     }
 
     /// Get the `use_isoloated_path` config.

@@ -138,9 +138,15 @@ impl Bucket {
         self.updated_at
             .get_or_init(|| {
                 let secs = internal::git::head_commit_time(self.path())?;
-                let ts = jiff::Timestamp::from_second(secs).ok()?;
-                let zoned = ts.to_zoned(jiff::tz::TimeZone::system());
-                Some(zoned.strftime("%Y/%-m/%-d %-H:%M:%S").to_string())
+                let ts = time::OffsetDateTime::from_unix_timestamp(secs).ok()?;
+                let local = time::UtcOffset::local_offset_at(ts).unwrap_or(time::UtcOffset::UTC);
+                let formatted = ts
+                    .to_offset(local)
+                    .format(time::macros::format_description!(
+                        "[year]/[month padding:none]/[day padding:none] [hour padding:none]:[minute]:[second]"
+                    ))
+                    .ok()?;
+                Some(formatted)
             })
             .as_deref()
     }
@@ -517,15 +523,7 @@ pub fn update(session: &Session) -> Fallible<()> {
         if *guard {
             // Scoop format: [DateTime]::Now.ToString('o')
             // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
-            let now = jiff::Timestamp::now();
-            let zoned = now.to_zoned(jiff::tz::TimeZone::system());
-            let nsec = now.subsec_nanosecond() / 100; // 100-nanosecond ticks → 7 digits
-            let time = format!(
-                "{}.{:07}{}",
-                zoned.strftime("%Y-%m-%dT%H:%M:%S"),
-                nsec,
-                zoned.strftime("%:z"),
-            );
+            let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
             config.set("last_update", time.as_str())?;
         }
     }

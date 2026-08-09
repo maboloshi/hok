@@ -13,6 +13,7 @@
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
 //! - [`string`] — String utilities (encoding, glob matching)
+//! - [`time`] — Scoop-compatible `last_update` timestamp codec
 //! - [`version`] — Semantic version comparison
 //!
 //! It also exports [`compare_versions()`], a Scoop-compatible semantic
@@ -36,6 +37,7 @@ pub mod network;
 pub mod os;
 pub mod path;
 pub mod string;
+pub mod time;
 pub mod url;
 pub mod version;
 

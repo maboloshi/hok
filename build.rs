@@ -1,6 +1,13 @@
 fn main() {
-    let now = jiff::Zoned::now();
-    let date = now.strftime("%Y-%m-%d %H:%M:%S %z").to_string();
+    use time::macros::format_description;
+    use time::OffsetDateTime;
+
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    let date = now
+        .format(&format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]"
+        ))
+        .expect("static format description cannot fail");
     println!("cargo:rustc-env=BUILD_DATE={}", date);
 
     // Command registration: scan src/cmd/ for command module files

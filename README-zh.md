@@ -55,9 +55,9 @@
 | **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |
 | **CLI 框架** | `clap`, `clap_complete`, `clap-verbosity-flag` | — |
 | **终端渲染** | `crossterm`, `indicatif` | 终端颜色 + 进度条 |
-| **其他** | `anyhow`, `thiserror`, `regex`, `jiff`, `dirs`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
+| **其他** | `anyhow`, `thiserror`, `regex`, `time`, `dirs`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
 
-**已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`
+**已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`, `jiff`
 
 **重复版本已消除：** `sevenz-rust2`、`zip`、`thiserror`、`md-5`/`sha1`/`sha2` 在依赖树中各只保留一个版本。
 
