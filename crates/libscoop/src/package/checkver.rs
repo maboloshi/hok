@@ -612,27 +612,66 @@ fn match_regex(
     let re = Regex::new(regex_str).ok()?;
 
     // If reverse is enabled, take the last match
-    if reverse {
-        // Capture all matches and take the last one
-        let all_captures: Vec<regex::Captures> = re.captures_iter(content).collect();
-        let caps = all_captures.last()?;
-        let captures: Vec<String> = caps
-            .iter()
-            .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
-            .collect();
-        let named = extract_named_captures(&re, caps);
-        let ver = apply_replace(&captures, replace);
-        return Some((ver, captures, named));
-    }
-
-    let caps = re.captures(content)?;
+    let caps = if reverse {
+        re.captures_iter(content).last()?
+    } else {
+        re.captures(content)?
+    };
     let captures: Vec<String> = caps
         .iter()
         .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
         .collect();
     let named = extract_named_captures(&re, &caps);
-    let ver = apply_replace(&captures, replace);
+
+    // Scoop group selection (checkver.ps1 L362-369): group name "1" (the
+    // first unnamed group) -> named group `version` -> failure. An empty
+    // replace result falls back to `version` the same way (official `if (!$ver)`).
+    let ver = match replace {
+        Some(_) => {
+            let v = apply_replace(&captures, replace);
+            if v.is_empty() {
+                official_capture_version(&re, &caps)?
+            } else {
+                v
+            }
+        }
+        None => official_capture_version(&re, &caps)?,
+    };
     Some((ver, captures, named))
+}
+
+/// Select the version from a regex match following Scoop's group-name
+/// semantics (checkver.ps1 lines 362-369).
+///
+/// Scoop reads `$matchesHashtable['1']` — the first *unnamed* capture group:
+/// in .NET, named groups occupy negative numbers while unnamed groups are
+/// numbered 1, 2, ... (a `(?<hash>...)` group is therefore NOT group "1").
+/// If that is empty it falls back to the named group `version`; if both are
+/// empty Scoop reports failure (and so do we — no further fallback).
+fn official_capture_version(re: &Regex, caps: &regex::Captures<'_>) -> Option<String> {
+    // First unnamed capture group (Scoop's group name "1")
+    if let Some(i) = re
+        .capture_names()
+        .enumerate()
+        .skip(1) // skip group 0 (full match)
+        .find(|(_, name)| name.is_none())
+        .map(|(i, _)| i)
+    {
+        if let Some(v) = caps.get(i) {
+            let s = v.as_str();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    // Named group `version`
+    if let Some(v) = caps.name("version") {
+        let s = v.as_str();
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
 }
 
 /// Apply the `replace` transformation to extracted captures.
@@ -1091,6 +1130,53 @@ mod tests {
         let result = extract_version("1.9.9 release", &cv, None, Some(r"(\d+\.\d+\.\d+)"));
         assert!(result.is_some());
         assert_eq!(result.unwrap().0, "1.9.9");
+    }
+
+    // ── extract_version (Scoop group-name semantics) ─────────────────────────
+
+    #[test]
+    fn extract_version_unnamed_group_beats_named_hash() {
+        // we-meet: `(?<hash>...)` precedes the unnamed version group. Scoop
+        // reads group name "1" = the first *unnamed* group (in .NET named
+        // groups get negative numbers), so the version is extracted, not the
+        // md5. The named hash group stays available for autoupdate.
+        let cv = Checkver {
+            regex: Some(r#""md5":"(?<hash>[a-f0-9]+)".+"version":"([\d\.]+)""#.to_string()),
+            ..checkver_default()
+        };
+        let json = r#"{"md5":"a2bf9c01f76b1df44383ab2f529bec13","version":"3.44.10.457"}"#;
+        let result = extract_version(json, &cv, None, None);
+        let (ver, _, named) = result.expect("extraction");
+        assert_eq!(ver, "3.44.10.457");
+        assert_eq!(
+            named.get("hash").map(String::as_str),
+            Some("a2bf9c01f76b1df44383ab2f529bec13")
+        );
+    }
+
+    #[test]
+    fn extract_version_named_version_fallback() {
+        // Only a named `version` group: Scoop falls back to it (group "1"
+        // does not exist)
+        let cv = Checkver {
+            regex: Some(r"v(?<version>[\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        let result = extract_version("latest v1.2.3", &cv, None, None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "1.2.3");
+    }
+
+    #[test]
+    fn extract_version_named_only_without_version_returns_none() {
+        // Only a named group that is not `version`: both Scoop fallbacks fail,
+        // so extraction reports failure (no further fallback)
+        let cv = Checkver {
+            regex: Some(r"(?<hash>[a-f0-9]{32})".to_string()),
+            ..checkver_default()
+        };
+        let result = extract_version("a2bf9c01f76b1df44383ab2f529bec13", &cv, None, None);
+        assert!(result.is_none());
     }
 
     // ── extract_version (jsonpath) ────────────────────────────────────────────
