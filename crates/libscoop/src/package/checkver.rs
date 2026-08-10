@@ -297,7 +297,11 @@ pub fn execute(
             }
         }
 
-        // Automatically add `$.tag_name` JSONPath for GitHub API responses
+        // Automatically add `$.tag_name` JSONPath for GitHub API responses.
+        // This substitutes for the *default* github regex `/releases/tag/...`
+        // (which cannot match API JSON); when a custom regex is present, the
+        // jsonpath result is chained into it inside extract_version (Scoop
+        // checkver.ps1 lines 342-345).
         let mut effective_jsonpath = cv.jsonpath.clone();
         if effective_jsonpath.is_none() && url::is_github_api_url(&url) {
             effective_jsonpath = Some("$.tag_name".to_string());
@@ -555,6 +559,17 @@ fn extract_version(
         let found = value.query(&jp).ok()?;
         let ver = found.first()?.as_str()?;
         if !ver.is_empty() {
+            // Chaining: when a custom regex is in play, the jsonpath result
+            // becomes the page for the regex (Scoop checkver.ps1 lines
+            // 342-345: `$page = $ver; $ver = ''`). The github default regex
+            // `/releases/tag/...` is excluded — it only makes sense against
+            // HTML pages and cannot match a bare tag value.
+            if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
+                if !regex_str.contains("/releases/tag/") {
+                    let rev = cv.reverse.unwrap_or(false);
+                    return match_regex(ver, regex_str, rev, cv.replace.as_deref());
+                }
+            }
             let caps = vec![ver.to_string()];
             let v = apply_replace(&caps, cv.replace.as_deref());
             return Some((v, caps, HashMap::new()));
@@ -572,31 +587,8 @@ fn extract_version(
 
     // Regex: use override first (sourceforge default), then cv.regex
     if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
-        let re = Regex::new(regex_str).ok()?;
-
-        // If reverse is enabled, take the last match
         let rev = cv.reverse.unwrap_or(false);
-        if rev {
-            // Capture all matches and take the last one
-            let all_captures: Vec<regex::Captures> = re.captures_iter(content).collect();
-            let caps = all_captures.last()?;
-            let captures: Vec<String> = caps
-                .iter()
-                .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
-                .collect();
-            let named = extract_named_captures(&re, caps);
-            let ver = apply_replace(&captures, cv.replace.as_deref());
-            return Some((ver, captures, named));
-        }
-
-        let caps = re.captures(content)?;
-        let captures: Vec<String> = caps
-            .iter()
-            .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
-            .collect();
-        let named = extract_named_captures(&re, &caps);
-        let ver = apply_replace(&captures, cv.replace.as_deref());
-        return Some((ver, captures, named));
+        return match_regex(content, regex_str, rev, cv.replace.as_deref());
     }
 
     let trimmed = content.trim();
@@ -606,6 +598,41 @@ fn extract_version(
     } else {
         None
     }
+}
+
+/// Match `regex_str` against `content` (honoring `reverse`), returning
+/// `(version, numbered_captures, named_captures)`. Shared by the regex branch
+/// and the jsonpath→regex chaining.
+fn match_regex(
+    content: &str,
+    regex_str: &str,
+    reverse: bool,
+    replace: Option<&str>,
+) -> Option<(String, Vec<String>, HashMap<String, String>)> {
+    let re = Regex::new(regex_str).ok()?;
+
+    // If reverse is enabled, take the last match
+    if reverse {
+        // Capture all matches and take the last one
+        let all_captures: Vec<regex::Captures> = re.captures_iter(content).collect();
+        let caps = all_captures.last()?;
+        let captures: Vec<String> = caps
+            .iter()
+            .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
+            .collect();
+        let named = extract_named_captures(&re, caps);
+        let ver = apply_replace(&captures, replace);
+        return Some((ver, captures, named));
+    }
+
+    let caps = re.captures(content)?;
+    let captures: Vec<String> = caps
+        .iter()
+        .map(|m| m.map(|s| s.as_str().to_string()).unwrap_or_default())
+        .collect();
+    let named = extract_named_captures(&re, &caps);
+    let ver = apply_replace(&captures, replace);
+    Some((ver, captures, named))
 }
 
 /// Apply the `replace` transformation to extracted captures.
@@ -1083,6 +1110,55 @@ mod tests {
         let json = r#"{"other_key": "value"}"#;
         let result = extract_version(json, &cv, Some("$.tag_name"), None);
         assert!(result.is_none());
+    }
+
+    // ── extract_version (jsonpath + custom regex chaining) ───────────────────
+
+    #[test]
+    fn extract_version_jsonpath_chains_custom_regex() {
+        // monitorian: auto `$.tag_name` yields "4.15.2-Installer", then the
+        // custom regex chains onto that value (Scoop checkver.ps1 L342-345)
+        let cv = Checkver {
+            regex: Some(r"([\d.]+)-Installer".to_string()),
+            ..checkver_default()
+        };
+        let json = r#"{"tag_name": "4.15.2-Installer", "name": "4.15.2-Installer"}"#;
+        let result = extract_version(json, &cv, Some("$.tag_name"), None);
+        let (ver, caps, _) = result.expect("chained extraction");
+        assert_eq!(ver, "4.15.2");
+        assert_eq!(caps, vec!["4.15.2-Installer", "4.15.2"]);
+    }
+
+    #[test]
+    fn extract_version_jsonpath_skips_github_default_regex() {
+        // `checkver: "github"` default regex cannot match a bare tag value,
+        // so the jsonpath value is returned as-is (no chaining). Note the
+        // leading `v` is kept: v/V prefix stripping happens in `execute`
+        // (github_mode && cv.jsonpath.is_none()), not inside extract_version.
+        let cv = Checkver {
+            regex: Some(r"/releases/tag/(?:v|V)?([\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        let json = r#"{"tag_name": "v1.5.0", "name": "Release 1.5.0"}"#;
+        let result = extract_version(json, &cv, Some("$.tag_name"), None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "v1.5.0");
+    }
+
+    // ── extract_version (github + custom regex) ──────────────────────────────
+
+    #[test]
+    fn extract_version_github_custom_regex_applies_to_content() {
+        // Without a jsonpath (e.g. a plain regex checkver), the custom regex
+        // runs against the raw content and captures the version.
+        let cv = Checkver {
+            regex: Some(r"([\d.]+)-Installer".to_string()),
+            ..checkver_default()
+        };
+        let json = r#"{"tag_name": "4.15.2-Installer", "name": "4.15.2-Installer"}"#;
+        let result = extract_version(json, &cv, None, None);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "4.15.2");
     }
 
     // ── extract_version (fallback trim) ──────────────────────────────────────
