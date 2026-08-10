@@ -41,6 +41,16 @@ fn shortcut_dir(global: bool) -> PathBuf {
     internal::path::normalize_path(dir)
 }
 
+/// Build the `.lnk` path for a shortcut display name.
+///
+/// Upstream Scoop appends `.lnk` to the display name verbatim
+/// (`startmenu_shortcut`: `"$folder\$shortcutName.lnk"`), so a name like
+/// `paint.net` yields `paint.net.lnk` — never `paint.lnk`. This must not go
+/// through `Path::set_extension`, which would replace a dotted suffix.
+fn shortcut_link_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}.lnk"))
+}
+
 /// Add shortcut(s) for a given package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     if let Some(shortcuts) = package.manifest().shortcuts() {
@@ -84,8 +94,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                     .into_owned()
             });
 
-            let mut link_path = shortcut_dir.join(shortcut[1]);
-            link_path.set_extension("lnk");
+            let link_path = shortcut_link_path(&shortcut_dir, shortcut[1]);
 
             // Overwrite existing .lnk. Warn only when it belongs to a
             // different package; same-package shortcuts (e.g. on update) and
@@ -238,8 +247,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             let length = shortcut.len();
             assert!(length > 1);
 
-            let mut path = shortcut_dir(session.is_global()).join(shortcut[1]);
-            path.set_extension("lnk");
+            let path = shortcut_link_path(&shortcut_dir(session.is_global()), shortcut[1]);
 
             if let Some(tx) = session.emitter() {
                 let shortcut_name = path.file_name().unwrap().to_str().unwrap().to_owned();
@@ -267,7 +275,40 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package::manifest::Manifest;
     use std::path::Path;
+
+    #[test]
+    fn shortcut_link_path_keeps_dots_in_name() {
+        let dir = Path::new("C:\\Start Menu\\Programs\\Scoop Apps");
+        // dotted name must keep its dot: `paint.net` -> `paint.net.lnk`,
+        // never `paint.lnk` (upstream Scoop appends `.lnk` verbatim)
+        assert_eq!(
+            shortcut_link_path(dir, "paint.net"),
+            Path::new("C:\\Start Menu\\Programs\\Scoop Apps\\paint.net.lnk")
+        );
+        // names with spaces are unaffected
+        assert_eq!(
+            shortcut_link_path(dir, "Git Bash"),
+            Path::new("C:\\Start Menu\\Programs\\Scoop Apps\\Git Bash.lnk")
+        );
+    }
+
+    #[test]
+    fn shortcut_name_survives_manifest_parse_to_link_path() {
+        // Full chain: manifest `shortcuts` parsing -> `shortcuts()` -> link
+        // path construction must keep `paint.net` intact.
+        let json = r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT", "shortcuts": [["PaintDotNet.exe", "paint.net"]]}"#;
+        let manifest = Manifest::from_json("paint.net", json).unwrap();
+        let shortcuts = manifest.shortcuts().expect("shortcuts");
+        assert_eq!(shortcuts[0][1], "paint.net");
+
+        let dir = Path::new("C:\\Start Menu\\Programs\\Scoop Apps");
+        assert_eq!(
+            shortcut_link_path(dir, shortcuts[0][1]),
+            Path::new("C:\\Start Menu\\Programs\\Scoop Apps\\paint.net.lnk")
+        );
+    }
 
     #[test]
     fn test_create_shortcut_to_exe() {

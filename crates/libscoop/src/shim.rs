@@ -423,11 +423,15 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             };
 
             for ext in exts.into_iter() {
-                // Build the main file path: {name}.{ext}
-                let mut shim_path = shims_dir.join(shim.name);
-                if !ext.is_empty() {
-                    shim_path.set_extension(ext);
-                }
+                // Build the main file path: {name}.{ext}. The extension is
+                // appended verbatim (matching `generate_shim_batches`), so a
+                // dotted name like `foo.bar` yields `foo.bar.cmd`, never
+                // `foo.cmd` — removal must find what `add` created.
+                let shim_path = if ext.is_empty() {
+                    shims_dir.join(shim.name)
+                } else {
+                    shims_dir.join(format!("{}.{}", shim.name, ext))
+                };
 
                 // Alt file path (created by another package's conflict): {name}.{ext}.{pkg}
                 let alt_path = alt_filename(&shim_path, pkg_name);
@@ -765,5 +769,44 @@ mod tests {
             "bgit's shim must stay: {meta}"
         );
         assert!(shims.join("git.exe").exists(), "stub stays");
+    }
+
+    #[test]
+    fn test_add_remove_dotted_shim_names() {
+        // `bin` entries support two forms: a plain string or an array. A
+        // dotted name must survive parsing (`leaf_base` strips only the
+        // final `.exe`; the explicit array form keeps `def[1]` verbatim)
+        // and stay consistent between add and remove — the `.shim` metadata
+        // must be found and removed as `foo.bar.shim`, never `foo.shim`.
+        for (bin_json, expect) in [
+            (r#"[["main.exe", "foo.bar"]]"#, "foo.bar"), // array form
+            (r#"["foo.bar.exe"]"#, "foo.bar"),           // string form
+        ] {
+            let root = test_utils::tmpdir("shim_remove_dotted");
+            let session = test_utils::test_session(&root);
+            let pkg = make_package("foo", bin_json);
+
+            add(&session, &pkg).unwrap();
+            let shims = root.join("shims");
+            assert!(
+                shims.join(format!("{expect}.exe")).exists(),
+                "add must create {expect}.exe stub for {bin_json}"
+            );
+            assert!(
+                shims.join(format!("{expect}.shim")).exists(),
+                "add must create {expect}.shim for {bin_json}"
+            );
+
+            mark_installed(&pkg);
+            remove(&session, &pkg).unwrap();
+            assert!(
+                !shims.join(format!("{expect}.shim")).exists(),
+                "remove must delete {expect}.shim for {bin_json}"
+            );
+            assert!(
+                !shims.join(format!("{expect}.exe")).exists(),
+                "remove must delete the orphaned {expect}.exe stub for {bin_json}"
+            );
+        }
     }
 }
