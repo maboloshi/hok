@@ -544,6 +544,27 @@ macro_rules! arch_accessor {
 /// Empty placeholder for manifests that omit the `license` field.
 static EMPTY_LICENSE: std::sync::LazyLock<License> = std::sync::LazyLock::new(License::default);
 
+/// Parse manifest JSON tolerantly, mirroring the tolerance of upstream
+/// Scoop's PowerShell 7 `ConvertFrom-Json` (and `hok formatjson`):
+///
+/// - a leading UTF-8 BOM (`\u{FEFF}`) is stripped (notepad "UTF-8 with
+///   BOM" manifests; upstream reads with `Get-Content -Encoding UTF8`)
+/// - strict `serde_json` is tried first — the fast path for well-formed
+///   bucket manifests, keeping the parse bottleneck fast — and JSON5
+///   (comments, trailing commas, single-quoted strings) is used only as
+///   a fallback for the rare hand-edited file
+///
+/// When both fail the strict error is returned: it points at the real
+/// problem (e.g. a type mismatch), unlike a JSON5 parse error.
+fn parse_manifest_spec(json: &str) -> Fallible<ManifestSpec> {
+    let cleaned = json.trim_start_matches('\u{FEFF}');
+    match serde_json::from_str::<ManifestSpec>(cleaned) {
+        Ok(inner) => Ok(inner),
+        Err(strict_err) => json5::from_str::<ManifestSpec>(cleaned)
+            .map_err(|_| crate::Error::Custom(strict_err.to_string())),
+    }
+}
+
 impl Manifest {
     /// Create a [`Manifest`] representation of a manfest JSON file with the
     /// given path.
@@ -570,7 +591,13 @@ impl Manifest {
         // to integrate. But I believe there should be an alternative to
         // `serde_json` which can parse JSON files much *faster*. Perhaps
         // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
-        let inner: ManifestSpec = serde_json::from_slice(&bytes).inspect_err(|e| {
+        let text = std::str::from_utf8(&bytes).map_err(|e| {
+            crate::Error::Custom(format!(
+                "failed to parse manifest {}: not valid UTF-8: {e}",
+                path.display()
+            ))
+        })?;
+        let inner: ManifestSpec = parse_manifest_spec(text).inspect_err(|e| {
             warn!("failed to parse manifest {} (err: {})", path.display(), e);
         })?;
         let path = internal::path::normalize_path(path);
@@ -596,7 +623,7 @@ impl Manifest {
     /// This is used when loading manifests from the SQLite cache, where no
     /// file path is available.
     pub fn from_json(name: &str, json: &str) -> Fallible<Manifest> {
-        let inner: ManifestSpec = serde_json::from_str(json)?;
+        let inner: ManifestSpec = parse_manifest_spec(json)?;
         let path = PathBuf::from(name);
 
         // SHA256 of the manifest JSON, consistent with `parse()`.
@@ -1404,5 +1431,33 @@ mod tests {
         let bins = m.bin().unwrap();
         assert_eq!(bins.len(), 1);
         assert_eq!(bins[0], vec!["good.exe"]);
+    }
+
+    #[test]
+    fn bom_prefixed_manifest_parses() {
+        // Notepad-style "UTF-8 with BOM" manifests (upstream reads with
+        // `Get-Content -Encoding UTF8`, stripping the BOM).
+        let m = manifest_from(&format!(
+            "\u{FEFF}{}",
+            r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#
+        ));
+        assert_eq!(m.version(), "1.0.0");
+    }
+
+    #[test]
+    fn json5_manifest_parses_as_fallback() {
+        // Comments and trailing commas (hand-edited manifests) parse via
+        // the JSON5 fallback, like PowerShell 7's ConvertFrom-Json.
+        let m = manifest_from(
+            r#"{
+                // a hand-edited comment
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": ["https://example.com/a.zip", "https://example.com/b.zip",],
+            }"#,
+        );
+        assert_eq!(m.version(), "1.0.0");
+        assert_eq!(m.url().len(), 2);
     }
 }
