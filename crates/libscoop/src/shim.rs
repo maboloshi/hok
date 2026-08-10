@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 use crate::{error::Fallible, internal, package::Package, Event, Session};
 
@@ -263,7 +264,27 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 handle_existing_shim(session, &shim_meta, pkg_name)?;
 
                 // Write the embedded shim
-                std::fs::write(&shim_exe, HOK_SHIM_BYTES)?;
+                if let Err(e) = std::fs::write(&shim_exe, HOK_SHIM_BYTES) {
+                    // The stub cannot be overwritten while it is running
+                    // (e.g. `hok update hok` — the running hok was launched
+                    // through shims\hok.exe). The stub is version-independent
+                    // (it points at the `current` junction), so when the
+                    // target is the binary currently running, silently keep
+                    // the existing stub — it resolves to the new version
+                    // after `link_current`. Any other failure still aborts.
+                    let is_running_self = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+                        .is_some_and(|stem| stem.eq_ignore_ascii_case(shim.name));
+                    if is_running_self && shim_exe.exists() {
+                        debug!(
+                            "shim stub '{}' is in use by the running process; keeping it",
+                            shim_exe.display()
+                        );
+                    } else {
+                        return Err(e.into());
+                    }
+                }
 
                 // Write .shim metadata file
                 let target_rel = format!(

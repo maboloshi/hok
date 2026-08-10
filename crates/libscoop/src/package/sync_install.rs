@@ -404,7 +404,16 @@ pub enum RunningCheck {
 /// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
 pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
-    let running = internal::os::running_processes_under(&app_dir).unwrap_or_default();
+    let mut running = internal::os::running_processes_under(&app_dir).unwrap_or_default();
+
+    // Exclude the current process: `hok update hok` runs from inside the
+    // very app it is about to replace. Upstream Scoop never checks the
+    // running scoop process (scoop-update.ps1 removes 'scoop' from the app
+    // list before test_running_process); the running binary is replaced by
+    // version-dir switching, so proceeding is safe.
+    let self_pid = std::process::id();
+    running.retain(|p| p.pid != self_pid);
+
     if running.is_empty() {
         return Ok(RunningCheck::NotRunning);
     }
