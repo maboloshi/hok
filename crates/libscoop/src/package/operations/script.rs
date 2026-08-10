@@ -82,7 +82,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
 "#,
         core = CORE_PS1,
         decompress = DECOMPRESS_PS1,
-        arch = crate::internal::os::scoop_arch(),
+        arch = crate::internal::arch::Arch::current().name(),
         is_global = session.is_global()
     );
     let full_script = format!("{preamble}\r\n{script}");
@@ -99,7 +99,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     let pkg_dir = working_dir.to_path_buf(); // $dir = version dir (not current)
     let original_dir = original_dir.unwrap_or(working_dir);
 
-    let version = package.version();
+    let version = package.effective_version();
 
     // Create marker file for P2 extraction routing
     let marker_path = working_dir.join("hok_extract_markers.txt");
@@ -116,10 +116,10 @@ $cmd = $env:SCOOP_PACKAGE_CMD
         .env("SCOOP_APP_DIR", pkg_dir.as_os_str())
         .env("SCOOP_APP_ORIGINAL_DIR", original_dir.as_os_str())
         .env("SCOOP_PACKAGE_NAME", package.name())
-        .env("SCOOP_PACKAGE_VERSION", version)
+        .env("SCOOP_PACKAGE_VERSION", &version)
         .env("SCOOP_PACKAGE_BUCKET", package.bucket())
         .env("SCOOP_PACKAGE_CMD", cmd)
-        .env("version", version)
+        .env("version", &version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str());
 
     let status = ps.status().map_err(|e| {
@@ -192,7 +192,10 @@ pub fn expand_scoop_str(
     s = s.replace("$persist_dir", &persist_dir_str);
     s = s.replace("$bucketsdir", &buckets_dir_str);
     s = s.replace("$scoopdir", &root_path_str);
-    s = s.replace("$architecture", crate::internal::os::scoop_arch());
+    s = s.replace(
+        "$architecture",
+        crate::internal::arch::Arch::current().name(),
+    );
     s = s.replace("$version", version);
     s = s.replace("$app", app);
     s = s.replace("$bucket", bucket);

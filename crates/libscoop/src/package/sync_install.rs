@@ -456,7 +456,12 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     let config = session.config();
     let apps_dir = session.apps_dir();
 
-    let working_dir = session.versioned_dir(pkg.name(), pkg.version());
+    // The install layout version: upstream rewrites `nightly` to
+    // `nightly-YYYYMMDD` (lib/install.ps1:21-25), giving each daily build
+    // its own versioned directory.
+    let version = pkg.effective_version();
+
+    let working_dir = session.versioned_dir(pkg.name(), &version);
     internal::fs::ensure_dir(&working_dir)?;
 
     debug!("commit: {} v{} - starting", pkg.name(), pkg.version());
@@ -621,7 +626,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         let runtime_dir = session
             .app_dir(pkg.name())
-            .join(session.current_dir_name(pkg.version()));
+            .join(session.current_dir_name(&version));
         operations::run_script(
             session,
             pkg,
@@ -665,7 +670,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // under `NO_JUNCTION`.
     let meta_dir = session
         .app_dir(pkg.name())
-        .join(session.current_dir_name(pkg.version()));
+        .join(session.current_dir_name(&version));
 
     // 1. Copy manifest from bucket to <meta_dir>/manifest.json
     // Use bucket path (manifest.path() may be virtual when loaded from cache)
@@ -694,8 +699,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 2. Write <meta_dir>/install.json
     // (upstream `save_install_info` stores architecture, url, bucket —
-    //  lib/install.ps1:73)
-    let arch = crate::internal::os::scoop_arch();
+    //  lib/install.ps1:73; the architecture is the *selected* one, i.e.
+    //  after the `default_architecture` config and `-a/--arch` overrides)
+    let arch = crate::internal::arch::Arch::current().name();
     let install_url = pkg.download_urls().first().copied();
     let install_info = serde_json::json!({
         "architecture": arch,
