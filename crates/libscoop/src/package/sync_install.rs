@@ -303,6 +303,17 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
                     let path = cache_root.join(filename);
 
+                    // No hash in the manifest (missing or `""`): upstream
+                    // `check_hash` (lib/download.ps1) warns and continues
+                    // without verification instead of failing hard.
+                    if matches!(hash, crate::package::manifest::HashString::Empty) {
+                        session.output().warn(format!(
+                            "no hash in manifest for '{}', skipping verification",
+                            pkg.name()
+                        ));
+                        continue;
+                    }
+
                     let mut hasher = ChecksumBuilder::new().algo(hash.algorithm())?.build();
 
                     if let Some(tx) = session.emitter() {
