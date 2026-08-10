@@ -908,6 +908,149 @@ fn apply_autoupdate(
         root["extract_dir"] = manifest::json_str_array(&substituted);
     }
 
+    // ── Generic property substitution (Scoop autoupdate.ps1 L392-417) ──────
+    // Every other autoupdate property is variable-substituted and written back
+    // to the matching manifest property — but only when the manifest already
+    // declares it (official `if ($Manifest.$p -and $Manifest.autoupdate.$p)`).
+    // Recurse into nested JSON so arrays of strings / objects (bin, env_set,
+    // installer) are substituted too.
+    fn sub_json_value(v: &serde_json::Value, sub: &dyn Fn(&str) -> String) -> serde_json::Value {
+        match v {
+            serde_json::Value::String(s) => serde_json::Value::String(sub(s)),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(|i| sub_json_value(i, sub)).collect())
+            }
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .map(|(k, vv)| (k.clone(), sub_json_value(vv, sub)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    let mut set_prop = |prop: &str, value: Option<serde_json::Value>| {
+        if let Some(v) = value {
+            if root.get(prop).is_some() {
+                root[prop] = sub_json_value(&v, &sub);
+            }
+        }
+    };
+    set_prop(
+        "bin",
+        au.bin.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "env_add_path",
+        au.env_add_path
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "env_set",
+        au.env_set
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "installer",
+        au.installer
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "license",
+        au.license
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "notes",
+        au.notes.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "persist",
+        au.persist
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "psmodule",
+        au.psmodule
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+    set_prop(
+        "shortcuts",
+        au.shortcuts
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok()),
+    );
+
+    // ── Per-architecture generic properties ─────────────────────────────────
+    if let Some(arch) = &au.architecture {
+        for (arch_name, spec_opt) in [
+            ("32bit", arch.ia32.as_ref()),
+            ("64bit", arch.amd64.as_ref()),
+            ("arm64", arch.aarch64.as_ref()),
+        ] {
+            let Some(spec) = spec_opt else { continue };
+            let ptr = format!("/architecture/{}", arch_name);
+            // Official autoupdate.ps1 L406: arch-level property is taken from
+            // `autoupdate.architecture.$arch.$prop`, falling back to the
+            // top-level `autoupdate.$prop`.
+            for prop in [
+                "bin",
+                "env_add_path",
+                "env_set",
+                "extract_dir",
+                "installer",
+                "shortcuts",
+            ] {
+                let value = match prop {
+                    "bin" => spec
+                        .bin
+                        .as_ref()
+                        .or(au.bin.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    "env_add_path" => spec
+                        .env_add_path
+                        .as_ref()
+                        .or(au.env_add_path.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    "env_set" => spec
+                        .env_set
+                        .as_ref()
+                        .or(au.env_set.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    "extract_dir" => spec
+                        .extract_dir
+                        .as_ref()
+                        .or(au.extract_dir.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    "installer" => spec
+                        .installer
+                        .as_ref()
+                        .or(au.installer.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    "shortcuts" => spec
+                        .shortcuts
+                        .as_ref()
+                        .or(au.shortcuts.as_ref())
+                        .and_then(|v| serde_json::to_value(v).ok()),
+                    _ => None,
+                };
+                if let Some(v) = value {
+                    if let Some(obj) = root.pointer_mut(&ptr) {
+                        if obj.get(prop).is_some() {
+                            obj[prop] = sub_json_value(&v, &sub);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Write the complete updated JSON (preserving order, 4-space indentation)

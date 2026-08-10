@@ -309,14 +309,53 @@ pub struct Autoupdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub architecture: Option<AutoupdateArchitecture>,
 
+    /// Same as `ManifestSpec::bin`
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_bin"
+    )]
+    pub bin: Option<Vectorized<Vectorized<String>>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_add_path: Option<Vectorized<String>>,
+
+    /// Same as `ManifestSpec::env_set`
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_string_map"
+    )]
+    pub env_set: Option<HashMap<String, String>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extract_dir: Option<Vectorized<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<Vectorized<HashExtraction>>,
 
+    /// Same as `ManifestSpec::installer` (official schema allows only `file`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer: Option<Installer>,
+
+    /// Same as `ManifestSpec::license`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<License>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<Vectorized<String>>,
+
+    /// Same as `ManifestSpec::persist`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persist: Option<Vectorized<Vectorized<String>>>,
+
+    /// Same as `ManifestSpec::psmodule`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psmodule: Option<Psmodule>,
+
+    /// Same as `ManifestSpec::shortcuts`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<Vec<Vec<String>>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<Vectorized<String>>,
@@ -448,11 +487,38 @@ pub struct HashExtraction {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AutoupdateArchSpec {
+    /// Same as `ManifestSpec::bin`
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_bin"
+    )]
+    pub bin: Option<Vectorized<Vectorized<String>>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_add_path: Option<Vectorized<String>>,
+
+    /// Same as `ManifestSpec::env_set`
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_string_map"
+    )]
+    pub env_set: Option<HashMap<String, String>>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extract_dir: Option<Vectorized<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<Vectorized<HashExtraction>>,
+
+    /// Same as `ManifestSpec::installer` (official schema allows only `file`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installer: Option<Installer>,
+
+    /// Same as `ManifestSpec::shortcuts`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<Vec<Vec<String>>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<Vectorized<String>>,
@@ -1354,6 +1420,67 @@ mod tests {
         );
         assert_eq!(m.post_install(), Some(vec!["echo done"]));
     }
+    #[test]
+    fn test_autoupdate_generic_fields_parse() {
+        // Official autoupdate carries bin/env_add_path/env_set/installer/
+        // license/persist/psmodule/shortcuts at the top level and in the
+        // per-arch spec; hok must parse them (not drop them silently).
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "autoupdate": {
+                    "bin": [["a.exe", "a"]],
+                    "env_add_path": "tools",
+                    "env_set": { "X": 1 },
+                    "installer": { "file": "setup.exe" },
+                    "license": "MIT",
+                    "persist": "data",
+                    "psmodule": { "name": "mod" },
+                    "shortcuts": [["a.exe", "A"]],
+                    "architecture": {
+                        "64bit": {
+                            "bin": "b.exe",
+                            "env_add_path": ["bin64"],
+                            "env_set": { "ARCH": 64 },
+                            "installer": { "file": "s64.exe" },
+                            "shortcuts": [["b.exe", "B"]]
+                        }
+                    }
+                }
+            }"#,
+        );
+        let au = m.autoupdate().expect("autoupdate");
+        assert!(au.bin.is_some());
+        assert_eq!(
+            au.env_add_path.as_ref().map(|v| v.devectorize()),
+            Some(vec!["tools"])
+        );
+        assert_eq!(
+            au.env_set
+                .as_ref()
+                .and_then(|m| m.get("X"))
+                .map(String::as_str),
+            Some("1")
+        );
+        assert!(au.installer.is_some());
+        assert!(au.license.is_some());
+        assert!(au.persist.is_some());
+        assert!(au.psmodule.is_some());
+        assert!(au.shortcuts.is_some());
+        let arch = au.architecture.as_ref().expect("architecture");
+        let spec = arch.amd64.as_ref().expect("64bit");
+        assert!(spec.bin.is_some());
+        assert_eq!(
+            spec.env_add_path.as_ref().map(|v| v.devectorize()),
+            Some(vec!["bin64"])
+        );
+        assert!(spec.installer.is_some());
+        assert!(spec.shortcuts.is_some());
+    }
+
 
     #[test]
     fn test_hook_script_array_form_parses() {
