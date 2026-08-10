@@ -19,7 +19,7 @@ pub struct Args {
     package: Vec<String>,
 
     /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue)]
     ignore_failure: bool,
 
     /// Leverage cache and suppress network access
@@ -38,8 +38,9 @@ pub struct Args {
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     no_hash_check: bool,
 
-    /// Force update even within cooldown period
-    #[arg(long, action = ArgAction::SetTrue)]
+    /// Force update: bypass the cooldown and reinstall apps that are already
+    /// at the requested version (Scoop's `-f/--force`)
+    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
 
     /// Do not install dependencies (may break packages)

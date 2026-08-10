@@ -456,7 +456,7 @@ cli_help:
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
-      force: Force update even within cooldown period
+      force: "Force update: bypass the cooldown and reinstall apps already at the requested version"
       ignore_cache: Ignore cache and force download
       ignore_failure: Ignore failures to ensure a complete transaction
       independent: Do not install dependencies (may break packages)
@@ -465,6 +465,8 @@ cli_help:
       no_upgrade: Do not upgrade package(s)
       offline: Leverage cache and suppress network access
       package: The package(s) to be upgraded (omit to only update buckets)
+      global: Install globally (to $SCOOP_GLOBAL)
+      all: Update all installed packages (alternative to '*')
   upgrade:
     about: Upgrade installed package(s)
     args:

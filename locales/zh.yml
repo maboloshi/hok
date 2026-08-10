@@ -455,7 +455,7 @@ cli_help:
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
-      force: 即使在冷却期内也强制更新
+      force: "强制更新：绕过冷却期并重装已达请求版本的软件"
       ignore_cache: 忽略缓存并强制下载
       ignore_failure: 忽略错误以确保事务完成
       independent: 不安装依赖（可能破坏包）
@@ -464,6 +464,8 @@ cli_help:
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
       package: 要升级的包（省略则仅更新仓库）
+      global: 全局安装（到 $SCOOP_GLOBAL）
+      all: 升级所有已安装的包（相当于 '*'）
   upgrade:
     about: 升级已安装的包
     args:
