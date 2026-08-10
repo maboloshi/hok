@@ -449,8 +449,6 @@ pub fn list_known() -> Vec<(&'static str, &'static str)> {
 ///
 /// [1]: crate::Error::ConfigInUse
 pub fn update(session: &Session) -> Fallible<()> {
-    use std::sync::{Arc, Mutex};
-
     let buckets = bucket_added(session)?;
 
     if buckets.is_empty() {
@@ -464,7 +462,6 @@ pub fn update(session: &Session) -> Fallible<()> {
     // Doing bucket update will update the last_update timestamp in the config.
     // A mutable reference to the config is borrowed here.
     let mut config = session.config_mut()?;
-    let any_bucket_updated = Arc::new(Mutex::new(false));
     let proxy = config.proxy().map(|s| s.to_owned());
     let emitter = session.emitter();
 
@@ -474,7 +471,6 @@ pub fn update(session: &Session) -> Fallible<()> {
         .map(|bucket| {
             let repo = bucket.path().to_owned();
             let name = bucket.name().to_owned();
-            let flag = Arc::clone(&any_bucket_updated);
             let proxy = proxy.clone();
             let emitter = emitter.clone();
 
@@ -487,10 +483,6 @@ pub fn update(session: &Session) -> Fallible<()> {
 
                 match internal::git::pull(repo, proxy) {
                     Ok(_) => {
-                        if let Ok(mut guard) = flag.lock() {
-                            *guard = true;
-                        }
-
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
                             let _ = tx.send(crate::Event::BucketUpdateProgress(ctx));
@@ -511,14 +503,11 @@ pub fn update(session: &Session) -> Fallible<()> {
         let _ = handle.join();
     }
 
-    if let Ok(guard) = any_bucket_updated.lock() {
-        if *guard {
-            // Scoop format: [DateTime]::Now.ToString('o')
-            // -> 2026-07-19T10:48:34.0100861+08:00 (local time + offset, 7 fractional digits)
-            let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
-            config.set("last_update", time.as_str())?;
-        }
-    }
+    // Scoop writes LAST_UPDATE unconditionally after the no-arg update
+    // branch (scoop-update.ps1:399) — even when every bucket was skipped
+    // — so the cooldown/outdated checks see that an update ran.
+    let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
+    config.set("last_update", time.as_str())?;
 
     // Drop the mutable config borrow before calling open(), which needs
     // an immutable borrow on config via session.config().
