@@ -251,10 +251,14 @@ pub fn execute(
                     if cv.regex.is_none() && cv.jsonpath.is_none() {
                         effective_regex = Some(r"/([\d.]+)/".to_string());
                     }
-                    format!(
-                        "https://sourceforge.net/projects/{}/rss?path=/{}",
-                        proj, sf.path
-                    )
+                    // Official checkver.ps1: `?path=/...` only when a path is present
+                    let mut rss = format!("https://sourceforge.net/projects/{}/rss", proj);
+                    if let Some(p) = &sf.path {
+                        if !p.is_empty() {
+                            rss = format!("{rss}?path=/{}", p.trim_start_matches('/'));
+                        }
+                    }
+                    rss
                 }
                 None => {
                     let mut report = CheckverReport::new(stem, current);

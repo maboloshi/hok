@@ -260,7 +260,8 @@ pub struct Sourceforge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 
-    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1372,6 +1373,59 @@ mod tests {
             }"#,
         );
         assert_eq!(m.post_install(), Some(vec!["a", "b"]));
+    }
+
+    #[test]
+    fn test_checkver_sourceforge_object_without_path_parses() {
+        // Official schema allows `checkver.sourceforge: {"project": ...}`
+        // without `path` (both optional); hok must not require `path`.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "checkver": { "sourceforge": { "project": "foo" } }
+            }"#,
+        );
+        let cv = m.checkver().expect("checkver");
+        let sf = cv.sourceforge.as_ref().expect("sourceforge");
+        assert_eq!(sf.project.as_deref(), Some("foo"));
+        assert_eq!(sf.path, None);
+    }
+
+    #[test]
+    fn test_checkver_sourceforge_string_form_parses() {
+        // Official checkver.ps1 regex `(?<project>[\w-]*)(/(?<path>.*))?`:
+        // "foo/bar" → project=foo, path=bar; "fooproj" (no '/') → project
+        // only, path absent.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "checkver": { "sourceforge": "foo/bar" }
+            }"#,
+        );
+        let cv = m.checkver().expect("checkver");
+        let sf = cv.sourceforge.as_ref().expect("sourceforge");
+        assert_eq!(sf.project.as_deref(), Some("foo"));
+        assert_eq!(sf.path.as_deref(), Some("bar"));
+
+        let m2 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "checkver": { "sourceforge": "fooproj" }
+            }"#,
+        );
+        let cv2 = m2.checkver().expect("checkver");
+        let sf2 = cv2.sourceforge.as_ref().expect("sourceforge");
+        assert_eq!(sf2.project.as_deref(), Some("fooproj"));
+        assert_eq!(sf2.path, None);
     }
 
     #[test]

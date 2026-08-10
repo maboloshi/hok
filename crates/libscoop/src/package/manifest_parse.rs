@@ -228,9 +228,11 @@ impl<'de> Deserialize<'de> for Sourceforge {
             where
                 E: de::Error,
             {
+                // Official checkver.ps1 regex `(?<project>[\w-]*)(/(?<path>.*))?`:
+                // a string without '/' is the project, not the path.
                 let (project, path) = match s.split_once('/') {
-                    Some((a, b)) => (Some(a.to_owned()), b.to_owned()),
-                    None => (None, s.to_owned()),
+                    Some((a, b)) => (Some(a.to_owned()), Some(b.to_owned())),
+                    None => (Some(s.to_owned()), None),
                 };
                 Ok(Sourceforge { project, path })
             }
@@ -240,12 +242,12 @@ impl<'de> Deserialize<'de> for Sourceforge {
                 A: de::MapAccess<'de>,
             {
                 let mut project = None;
-                let mut path: Result<String, A::Error> = Err(de::Error::missing_field("path"));
+                let mut path = None;
 
                 while let Some((key, value)) = map.next_entry::<String, String>()? {
                     match key.as_str() {
                         "project" => project = Some(value),
-                        "path" => path = Ok(value),
+                        "path" => path = Some(value),
                         _ => {
                             // skip invalid fields
                             map.next_value::<serde_json::Value>()?;
@@ -254,10 +256,7 @@ impl<'de> Deserialize<'de> for Sourceforge {
                     }
                 }
 
-                Ok(Sourceforge {
-                    project,
-                    path: path?,
-                })
+                Ok(Sourceforge { project, path })
             }
         }
 
