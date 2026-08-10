@@ -321,7 +321,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                         let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
                     }
 
-                    let mut file = std::fs::File::open(path)?;
+                    let mut file = std::fs::File::open(&path)?;
                     loop {
                         let len = file.read(&mut buf)?;
                         if len == 0 {
@@ -333,6 +333,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                     let actual = hasher.finalize();
                     let expected = hash.value();
                     if actual != expected {
+                        // Upstream removes the corrupt cache file on a hash
+                        // mismatch (lib/download.ps1:122-125) so the next
+                        // attempt re-downloads instead of failing forever.
+                        let _ = std::fs::remove_file(&path);
                         let name = pkg.name().to_owned();
                         let url = pkg.download_urls()[idx].to_owned();
                         let ctx = crate::package::HashMismatchContext::new(
