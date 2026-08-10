@@ -203,6 +203,12 @@ pub enum Event {
     /// Package persist removal has finished.
     PackagePersistPurgeDone,
 
+    /// Package PowerShell module installation has started.
+    PackagePsModuleAddStart(String),
+
+    /// Package PowerShell module installation has finished.
+    PackagePsModuleAddDone,
+
     /// Package PowerShell module removal has started.
     PackagePsModuleRemoveStart(String),
 

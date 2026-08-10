@@ -12,7 +12,8 @@ use tracing::{debug, info};
 
 use crate::package::{download, identity, operations, query, resolve, Package};
 use crate::{
-    env, error::Fallible, internal, persist, shim, shortcut, Error, Event, QueryOption, Session,
+    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
+    Session,
 };
 
 use super::{confirm_transaction, SyncOption, Transaction};
@@ -539,6 +540,10 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     );
     shim::add(session, pkg)?;
     shortcut::add(session, pkg)?;
+
+    // 5.25 psmodule (Scoop order: after shims/shortcuts, before env)
+    debug!("commit: {} v{} - psmodule", pkg.name(), pkg.version());
+    psmodule::add(session, pkg)?;
 
     // 5.5 env (Scoop order: after shims/shortcuts, before persist)
     debug!("commit: {} v{} - env", pkg.name(), pkg.version());
