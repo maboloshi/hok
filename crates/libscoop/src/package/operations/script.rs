@@ -226,7 +226,7 @@ pub fn run_installer_file(
     let exe_path = working_dir.join(file);
     let expanded = expand_scoop_vars(raw_args, session, package, working_dir, cmd);
     let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-    internal::os::run_gui(&exe_path, &args, Some(working_dir)).map_err(|e| {
+    let exit_code = internal::os::run_gui(&exe_path, &args, Some(working_dir)).map_err(|e| {
         Error::Custom(format!(
             "failed to run {} '{}' for '{}': {}",
             stage,
@@ -235,6 +235,17 @@ pub fn run_installer_file(
             e
         ))
     })?;
+    // Upstream `Invoke-ExternalCommand` treats a non-zero exit as failure
+    // and aborts ("Installation aborted." / "Uninstallation aborted.").
+    if exit_code != 0 {
+        return Err(Error::Custom(format!(
+            "{} '{}' for '{}' exited with code {}",
+            stage,
+            file,
+            package.name(),
+            exit_code
+        )));
+    }
     Ok(())
 }
 
