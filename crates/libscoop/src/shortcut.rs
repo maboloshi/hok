@@ -63,7 +63,8 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         // Runtime entry dir: `current` junction, or the version dir under
         // `NO_JUNCTION` (upstream `create_startmenu_shortcuts` receives the
         // `link_current` result).
-        let version_dir = session.current_dir_name(package.version());
+        let version = package.effective_version();
+        let version_dir = session.current_dir_name(&version);
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageShortcutAddStart);

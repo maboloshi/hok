@@ -57,7 +57,7 @@ fn link_module(session: &Session, package: &Package) -> Fallible<()> {
 
     let target = session
         .app_dir(package.name())
-        .join(session.current_dir_name(package.version()));
+        .join(session.current_dir_name(&package.effective_version()));
     let link = session.modules_dir().join(psmodule.name());
 
     debug!(

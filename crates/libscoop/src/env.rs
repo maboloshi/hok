@@ -54,7 +54,8 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     };
     let config = session.config();
     let app_path = session.app_dir(package.name());
-    let version = session.current_dir_name(package.version());
+    let version = package.effective_version();
+    let version = session.current_dir_name(&version);
     let working_dir = app_path.join(version);
 
     // Add environment path (Scoop order: env_add_path first, then env_set)

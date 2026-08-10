@@ -348,6 +348,24 @@ impl Package {
         self.version() == "nightly"
     }
 
+    /// The version used for the install layout (versioned dir, `$version`
+    /// in scripts). Upstream rewrites `nightly` to `nightly-YYYYMMDD`
+    /// (lib/install.ps1:21-25, `nightly_version`), giving each daily build
+    /// its own versioned directory — hok mirrors that here.
+    pub fn effective_version(&self) -> String {
+        if self.is_nightly() {
+            let now = time::OffsetDateTime::now_utc();
+            format!(
+                "nightly-{:04}{:02}{:02}",
+                now.year(),
+                u8::from(now.month()),
+                now.day()
+            )
+        } else {
+            self.version().to_owned()
+        }
+    }
+
     /// Check if the package is strictly installed, which means the package is
     /// installed from the bucket it belongs to rather than from other buckets.
     pub fn is_strictly_installed(&self) -> bool {
@@ -525,5 +543,39 @@ impl HashMismatchContext {
     /// Actual hash.
     pub fn actual(&self) -> &str {
         self.actual.as_str()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::manifest::Manifest;
+
+    fn pkg(name: &str, version: &str) -> Package {
+        let json = format!(
+            r#"{{"version": "{}", "homepage": "https://example.com", "license": "MIT"}}"#,
+            version
+        );
+        Package::from(name, "test", Manifest::from_json(name, &json).unwrap())
+    }
+
+    #[test]
+    fn effective_version_rewrites_nightly_with_date() {
+        // Upstream nightly_version(): nightly-YYYYMMDD
+        // (lib/install.ps1:1-6) — each daily build gets its own dir.
+        let pkg = pkg("nightly-app", "nightly");
+        assert!(pkg.is_nightly());
+        let v = pkg.effective_version();
+        assert!(v.starts_with("nightly-"), "got {v}");
+        let digits = &v["nightly-".len()..];
+        assert_eq!(digits.len(), 8, "nightly-YYYYMMDD: {v}");
+        assert!(digits.chars().all(|c| c.is_ascii_digit()), "{v}");
+    }
+
+    #[test]
+    fn effective_version_passthrough_normal() {
+        let pkg = pkg("app", "1.0.0");
+        assert!(!pkg.is_nightly());
+        assert_eq!(pkg.effective_version(), "1.0.0");
     }
 }

@@ -36,7 +36,7 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
 
     let version_dir = session
         .app_dir(package.name())
-        .join(session.current_dir_name(package.version()));
+        .join(session.current_dir_name(&package.effective_version()));
     let persist_root = session.persist_dir(package.name());
 
     for entry in &persists {
