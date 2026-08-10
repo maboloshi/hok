@@ -85,7 +85,11 @@ pub struct ManifestSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub innosetup: Option<bool>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_string_map"
+    )]
     pub cookie: Option<HashMap<String, String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,7 +160,11 @@ pub struct ManifestSpec {
 
     /// The `env_set` field is used to define environment variables that should
     /// be set during installation.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_string_map"
+    )]
     pub env_set: Option<HashMap<String, String>>,
 
     /// The `shortcuts` field is used to define shortcuts that need to be created
@@ -332,7 +340,11 @@ pub struct ArchitectureSpec {
     pub env_add_path: Option<Vectorized<String>>,
 
     /// Same as `ManifestSpec::env_set`
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_string_map"
+    )]
     pub env_set: Option<HashMap<String, String>>,
 
     /// Same as `ManifestSpec::extract_dir`
@@ -1624,5 +1636,24 @@ mod tests {
         );
         assert_eq!(m.version(), "1.0.0");
         assert_eq!(m.url().len(), 2);
+    }
+
+    #[test]
+    fn test_env_set_coerces_non_string_values() {
+        // Official schema types `env_set` as a plain object (any value type);
+        // hok stringifies non-string values instead of rejecting the manifest.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "env_set": { "COUNT": 3, "FLAG": true, "NAME": "x" }
+            }"#,
+        );
+        let es = m.env_set().expect("env_set");
+        assert_eq!(es.get("COUNT").map(String::as_str), Some("3"));
+        assert_eq!(es.get("FLAG").map(String::as_str), Some("true"));
+        assert_eq!(es.get("NAME").map(String::as_str), Some("x"));
     }
 }

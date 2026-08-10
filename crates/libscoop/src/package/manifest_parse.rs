@@ -7,6 +7,7 @@
 
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -493,4 +494,30 @@ where
         )),
     };
     Ok(Some(Vectorized(scripts)))
+}
+
+/// Deserialize an object map whose values are coerced to strings.
+///
+/// The official schema types `env_set` / `cookie` as plain objects with no
+/// value-type restriction; hok stores them as `HashMap<String, String>`.
+/// Non-string values (numbers, booleans) are stringified instead of
+/// rejecting the whole manifest.
+pub fn deserialize_string_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let map = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let out = map
+        .into_iter()
+        .map(|(k, v)| {
+            let s = match v {
+                serde_json::Value::String(s) => s,
+                other => other.to_string(),
+            };
+            (k, s)
+        })
+        .collect();
+    Ok(Some(out))
 }
