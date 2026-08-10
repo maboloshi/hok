@@ -693,9 +693,13 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 2. Write <meta_dir>/install.json
+    // (upstream `save_install_info` stores architecture, url, bucket —
+    //  lib/install.ps1:73)
     let arch = crate::internal::os::scoop_arch();
+    let install_url = pkg.download_urls().first().copied();
     let install_info = serde_json::json!({
         "architecture": arch,
+        "url": install_url,
         "bucket": pkg.bucket(),
     });
     if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
