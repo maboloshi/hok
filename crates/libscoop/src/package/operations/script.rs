@@ -14,7 +14,10 @@ use crate::{error::Fallible, internal, Error, Session};
 ///
 /// Environment variables set for the script:
 /// - `SCOOP` — the Scoop root directory
-/// - `SCOOP_APP_DIR` — the package's installation directory
+/// - `SCOOP_APP_DIR` — the package's installation directory (`$dir`)
+/// - `SCOOP_APP_ORIGINAL_DIR` — the real (versioned) install directory
+///   (`$original_dir`), set when it differs from `$dir` (post_install runs
+///   with `$dir` = the `current` junction, mirroring upstream `link_current`)
 /// - `SCOOP_PACKAGE_NAME` — the package name
 /// - `SCOOP_PACKAGE_VERSION` — the installed version
 /// - `version` — same as SCOOP_PACKAGE_VERSION (Scoop convention)
@@ -22,6 +25,7 @@ pub fn run_script(
     session: &Session,
     package: &Package,
     working_dir: &Path,
+    original_dir: Option<&Path>,
     stage: &str,
     cmd: &str,
     script_lines: Option<Vec<&str>>,
@@ -65,7 +69,7 @@ trap {{
 
 # Scoop-compatible variables for package scripts
 $dir = $env:SCOOP_APP_DIR
-$original_dir = $dir
+$original_dir = if ($env:SCOOP_APP_ORIGINAL_DIR) {{ $env:SCOOP_APP_ORIGINAL_DIR }} else {{ $dir }}
 $scoopdir = $env:SCOOP
 $bucketsdir = Join-Path $scoopdir "buckets"
 $persist_dir = Join-Path $scoopdir "persist" $env:SCOOP_PACKAGE_NAME
@@ -73,12 +77,13 @@ $version = $env:SCOOP_PACKAGE_VERSION
 $app = $env:SCOOP_PACKAGE_NAME
 $bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "{arch}"
-$global = $false
+$global = {is_global}
 $cmd = $env:SCOOP_PACKAGE_CMD
 "#,
         core = CORE_PS1,
         decompress = DECOMPRESS_PS1,
-        arch = crate::internal::os::scoop_arch()
+        arch = crate::internal::os::scoop_arch(),
+        is_global = session.is_global()
     );
     let full_script = format!("{preamble}\r\n{script}");
 
@@ -92,6 +97,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     // Build environment variables
     let root_path = session.effective_root_path();
     let pkg_dir = working_dir.to_path_buf(); // $dir = version dir (not current)
+    let original_dir = original_dir.unwrap_or(working_dir);
 
     let version = package.version();
 
@@ -108,6 +114,7 @@ $cmd = $env:SCOOP_PACKAGE_CMD
         .arg(&script_path)
         .env("SCOOP", root_path.as_os_str())
         .env("SCOOP_APP_DIR", pkg_dir.as_os_str())
+        .env("SCOOP_APP_ORIGINAL_DIR", original_dir.as_os_str())
         .env("SCOOP_PACKAGE_NAME", package.name())
         .env("SCOOP_PACKAGE_VERSION", version)
         .env("SCOOP_PACKAGE_BUCKET", package.bucket())
@@ -189,7 +196,10 @@ pub fn expand_scoop_str(
     s = s.replace("$version", version);
     s = s.replace("$app", app);
     s = s.replace("$bucket", bucket);
-    s = s.replace("$global", "false");
+    s = s.replace(
+        "$global",
+        if session.is_global() { "true" } else { "false" },
+    );
     s = s.replace("$cmd", cmd);
     s = s.replace("$dir", &working_dir_str);
     s

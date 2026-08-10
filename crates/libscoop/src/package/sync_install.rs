@@ -459,6 +459,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             session,
             pkg,
             &working_dir,
+            None,
             "pre_install",
             "install",
             pkg.manifest().pre_install(),
@@ -477,6 +478,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 session,
                 pkg,
                 &working_dir,
+                None,
                 "installer",
                 "install",
                 Some(script),
@@ -566,13 +568,19 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
     persist::link(session, pkg)?;
 
-    // 7. post_install (Scoop order: last hook)
+    // 7. post_install (Scoop order: last hook). Runs with `$dir` = the
+    // `current` junction (upstream `link_current` reassigns $dir), while
+    // `$original_dir` stays the real version dir.
     if pkg.manifest().post_install().is_some() {
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
+        let runtime_dir = session
+            .app_dir(pkg.name())
+            .join(session.current_dir_name(pkg.version()));
         operations::run_script(
             session,
             pkg,
-            &working_dir,
+            &runtime_dir,
+            Some(&working_dir),
             "post_install",
             "install",
             pkg.manifest().post_install(),
