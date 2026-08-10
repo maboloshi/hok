@@ -230,6 +230,7 @@ cli_help:
       add: Add a bucket
       list: List buckets
       list.known: List known buckets
+      known: "List known buckets (Scoop: scoop bucket known)"
       remove: Remove bucket(s)
       remove.name: The bucket name(s)
   cache:

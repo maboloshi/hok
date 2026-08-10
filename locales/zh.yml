@@ -230,6 +230,7 @@ cli_help:
       add: 添加仓库
       list: 列出仓库
       list.known: 列出已知仓库
+      known: "列出已知仓库（Scoop: scoop bucket known）"
       remove: 删除仓库
       remove.name: 仓库名称
   cache:

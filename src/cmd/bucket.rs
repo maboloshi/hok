@@ -30,6 +30,8 @@ pub enum Command {
         #[arg(short = 'k', long, action = ArgAction::SetTrue)]
         known: bool,
     },
+    /// List known buckets (Scoop: `scoop bucket known`)
+    Known,
     /// Remove bucket(s)
     #[clap(alias = "rm")]
     #[clap(arg_required_else_help = true)]
@@ -79,6 +81,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                 }
             }
+        }
+        Command::Known => {
+            let known_buckets = bucket::list_known();
+            let max_name = known_buckets.iter().map(|&(n, _)| n.len()).max().unwrap_or(4);
+            output::header(rust_i18n::t!("cmd.header_buckets_list"));
+            for (name, repo) in &known_buckets {
+                println!("  {}  {}", format!("{:<1$}", name, max_name).dark_cyan(), repo);
+            }
+            Ok(())
         }
         Command::Remove { name } => {
             for name in name {
