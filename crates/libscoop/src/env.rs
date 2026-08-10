@@ -257,3 +257,61 @@ fn require_env_privileges(session: &Session, package: &Package) -> Fallible<()> 
     }
     Ok(())
 }
+
+/// Remove installer-added PATH entries pointing at the install directory,
+/// mirroring upstream Scoop's `ensure_install_dir_not_in_path`
+/// (lib/install.ps1). Runs right after the installer, undoing installers
+/// that add the app directory (or a subdirectory of it) to `PATH`.
+///
+/// - Entries removed from the user (or global, for `-g`) PATH are written
+///   back with a notice.
+/// - For non-global installs, a machine-scope (system) PATH match is only
+///   warned about — removing it would require administrator privileges.
+pub fn ensure_install_dir_not_in_path(
+    session: &Session,
+    install_dir: &std::path::Path,
+) -> Fallible<()> {
+    let scope = if session.is_global() {
+        EnvScope::Global
+    } else {
+        EnvScope::User
+    };
+
+    let dir = internal::path::normalize_path(install_dir);
+    let dir_lower = dir.to_string_lossy().to_lowercase();
+    let is_in_or_sub = |p: &std::path::Path| -> bool {
+        let ps = internal::path::normalize_path(p)
+            .to_string_lossy()
+            .to_lowercase();
+        ps == dir_lower || ps.starts_with(&format!("{dir_lower}\\"))
+    };
+
+    let mut paths = internal::env::get_path_like_env("PATH", scope)?;
+    let removed: Vec<std::path::PathBuf> =
+        paths.iter().filter(|p| is_in_or_sub(p)).cloned().collect();
+    if !removed.is_empty() {
+        for p in &removed {
+            session.output().info(format!(
+                "Installer added '{}' to path. Removing.",
+                p.display()
+            ));
+        }
+        paths.retain(|p| !is_in_or_sub(p));
+        let updated = std::env::join_paths(&paths).map_err(|e| Error::Custom(e.to_string()))?;
+        internal::env::set("PATH", Some(&updated), scope)?;
+    }
+
+    if !session.is_global() {
+        if let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global) {
+            if let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p)) {
+                session.output().warn(format!(
+                    "Installer added '{}' to system path. You might want to remove this manually \
+                     (requires admin permission).",
+                    p.display()
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}

@@ -492,8 +492,21 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 file,
                 &raw_args,
             )?;
+            // Don't remove the installer file when `keep` is set (Scoop
+            // order: `!$installer.keep` -> Remove-Item, lib/install.ps1).
+            if !installer.keep() {
+                let installer_path = working_dir.join(file);
+                if installer_path.exists() {
+                    std::fs::remove_file(&installer_path)?;
+                }
+            }
         }
     }
+
+    // 3.25 Undo installers that added the app directory to PATH
+    // (Scoop order: `ensure_install_dir_not_in_path` right after the
+    // installer, before `link_current`).
+    env::ensure_install_dir_not_in_path(session, &working_dir)?;
 
     // 3.5 Upgrade: clean up the old version's env before relinking
     // (mirrors scoop-update.ps1, which runs env_rm_path/env_rm against
