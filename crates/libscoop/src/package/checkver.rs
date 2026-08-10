@@ -571,7 +571,7 @@ fn extract_version(
                 }
             }
             let caps = vec![ver.to_string()];
-            let v = apply_replace(&caps, cv.replace.as_deref());
+            let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
             return Some((v, caps, HashMap::new()));
         }
     }
@@ -580,7 +580,7 @@ fn extract_version(
     if let Some(xp) = &cv.xpath {
         if let Some(ver) = extract_xpath(content, xp) {
             let caps = vec![ver.clone()];
-            let v = apply_replace(&caps, cv.replace.as_deref());
+            let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
             return Some((v, caps, HashMap::new()));
         }
     }
@@ -593,7 +593,11 @@ fn extract_version(
 
     let trimmed = content.trim();
     if !trimmed.is_empty() {
-        let ver = apply_replace(&[trimmed.to_string()], cv.replace.as_deref());
+        let ver = apply_replace(
+            &[trimmed.to_string()],
+            &HashMap::new(),
+            cv.replace.as_deref(),
+        );
         Some((ver, vec![trimmed.to_string()], HashMap::new()))
     } else {
         None
@@ -628,7 +632,7 @@ fn match_regex(
     // replace result falls back to `version` the same way (official `if (!$ver)`).
     let ver = match replace {
         Some(_) => {
-            let v = apply_replace(&captures, replace);
+            let v = apply_replace(&captures, &named, replace);
             if v.is_empty() {
                 official_capture_version(&re, &caps)?
             } else {
@@ -677,14 +681,23 @@ fn official_capture_version(re: &Regex, caps: &regex::Captures<'_>) -> Option<St
 /// Apply the `replace` transformation to extracted captures.
 ///
 /// When `replace` is set, `$1`, `$2`, etc. are replaced with the corresponding
-/// capture group values. `$0` is the full match. If `replace` is not set,
-/// returns `captures[1]` (first capture group) or `captures[0]` (full match).
-fn apply_replace(captures: &[String], replace: Option<&str>) -> String {
+/// capture group values, and `${name}` (the .NET `Regex.Replace` named-group
+/// syntax) with the matching named capture. `$0` is the full match. If
+/// `replace` is not set, returns `captures[1]` (first capture group) or
+/// `captures[0]` (full match).
+fn apply_replace(
+    captures: &[String],
+    named: &HashMap<String, String>,
+    replace: Option<&str>,
+) -> String {
     match replace {
         Some(pattern) => {
             let mut result = pattern.to_string();
             for (i, cap) in captures.iter().enumerate() {
                 result = result.replace(&format!("${}", i), cap);
+            }
+            for (name, cap) in named {
+                result = result.replace(&format!("${{{name}}}"), cap);
             }
             result
         }
@@ -1035,31 +1048,48 @@ mod tests {
     #[test]
     fn apply_replace_no_pattern_returns_first_capture() {
         let caps = vec!["full_match".to_string(), "1.2.3".to_string()];
-        assert_eq!(apply_replace(&caps, None), "1.2.3");
+        assert_eq!(apply_replace(&caps, &HashMap::new(), None), "1.2.3");
     }
 
     #[test]
     fn apply_replace_no_pattern_falls_back_to_zeroth_when_no_groups() {
         let caps = vec!["1.2.3".to_string()];
-        assert_eq!(apply_replace(&caps, None), "1.2.3");
+        assert_eq!(apply_replace(&caps, &HashMap::new(), None), "1.2.3");
     }
 
     #[test]
     fn apply_replace_empty_captures_returns_empty() {
         let caps: Vec<String> = vec![];
-        assert_eq!(apply_replace(&caps, None), "");
+        assert_eq!(apply_replace(&caps, &HashMap::new(), None), "");
     }
 
     #[test]
     fn apply_replace_pattern_substitutes_dollar_index() {
         let caps = vec!["full".to_string(), "1".to_string(), "2".to_string()];
-        assert_eq!(apply_replace(&caps, Some("$1.$2")), "1.2");
+        assert_eq!(apply_replace(&caps, &HashMap::new(), Some("$1.$2")), "1.2");
     }
 
     #[test]
     fn apply_replace_pattern_substitutes_zero() {
         let caps = vec!["fullmatch".to_string()];
-        assert_eq!(apply_replace(&caps, Some("v$0")), "vfullmatch");
+        assert_eq!(
+            apply_replace(&caps, &HashMap::new(), Some("v$0")),
+            "vfullmatch"
+        );
+    }
+
+    #[test]
+    fn apply_replace_pattern_substitutes_named_groups() {
+        // tim: .NET named-group syntax `${main}.${patch}`
+        let caps = vec![String::new(); 0];
+        let named = HashMap::from([
+            ("main".to_string(), "3.5.0".to_string()),
+            ("patch".to_string(), "22143".to_string()),
+        ]);
+        assert_eq!(
+            apply_replace(&caps, &named, Some("${main}.${patch}")),
+            "3.5.0.22143"
+        );
     }
 
     // ── is_github_checkver ───────────────────────────────────────────────────

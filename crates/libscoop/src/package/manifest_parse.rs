@@ -443,3 +443,55 @@ where
         )),
     }
 }
+
+/// Deserialize a hook script field (`pre_install` / `post_install` /
+/// `pre_uninstall` / `post_uninstall`) tolerantly.
+///
+/// Scoop's schema defines these as a string or an array of strings, but
+/// some third-party manifests use an object form `{"script": [...]}`. The
+/// official checkver parses manifests with `ConvertFrom-Json` and never
+/// validates the schema, so such manifests still work there; hok
+/// normalizes the object form to its `script` value instead of rejecting
+/// the whole manifest at parse time (matching the `deserialize_bin`
+/// tolerance for `bin` object entries).
+pub fn deserialize_hook_script<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vectorized<String>>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let scripts: Vec<String> = match value {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::String(s) => vec![s],
+        serde_json::Value::Array(items) => items
+            .into_iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| de::Error::custom("hook script array items must be strings"))
+            })
+            .collect::<Result<_, _>>()?,
+        serde_json::Value::Object(map) => match map.get("script") {
+            Some(serde_json::Value::String(s)) => vec![s.clone()],
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+            Some(_) => {
+                return Err(de::Error::custom(
+                    "hook script object's `script` must be a string or an array of strings",
+                ))
+            }
+            None => {
+                return Err(de::Error::custom(
+                    "hook script object must contain a `script` field",
+                ))
+            }
+        },
+        _ => return Err(de::Error::custom(
+            "hook script must be a string, an array of strings, or an object with a `script` field",
+        )),
+    };
+    Ok(Some(Vectorized(scripts)))
+}

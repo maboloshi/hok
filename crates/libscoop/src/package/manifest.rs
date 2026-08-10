@@ -106,22 +106,38 @@ pub struct ManifestSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extract_to: Option<Vectorized<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub pre_install: Option<Vectorized<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installer: Option<Installer>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub post_install: Option<Vectorized<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub pre_uninstall: Option<Vectorized<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uninstaller: Option<Uninstaller>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub post_uninstall: Option<Vectorized<String>>,
 
     /// The `bin` field is used to define binaries that need to be shimmed/added
@@ -328,16 +344,32 @@ pub struct ArchitectureSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub installer: Option<Installer>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub post_install: Option<Vectorized<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub post_uninstall: Option<Vectorized<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub pre_install: Option<Vectorized<String>>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_hook_script"
+    )]
     pub pre_uninstall: Option<Vectorized<String>>,
 
     /// Same as `ManifestSpec::shortcuts`
@@ -1261,6 +1293,54 @@ mod tests {
         );
         assert_eq!(m.hash().len(), 1);
         assert!(m.hash()[0].value().is_empty());
+    }
+
+    // ── hook script fields (deserialize_hook_script) ────────────────────────
+
+    #[test]
+    fn test_hook_script_string_form_parses() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "post_install": "echo done"
+            }"#,
+        );
+        assert_eq!(m.post_install(), Some(vec!["echo done"]));
+    }
+
+    #[test]
+    fn test_hook_script_array_form_parses() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "pre_install": ["a", "b"]
+            }"#,
+        );
+        assert_eq!(m.pre_install(), Some(vec!["a", "b"]));
+    }
+
+    #[test]
+    fn test_hook_script_object_form_parses() {
+        // tim: `"post_install": {"script": [...]}` — a non-schema object form
+        // that official checkver (ConvertFrom-Json, no schema validation)
+        // tolerates; hok must normalize it instead of rejecting the whole
+        // manifest at parse time.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "post_install": { "script": ["a", "b"] }
+            }"#,
+        );
+        assert_eq!(m.post_install(), Some(vec!["a", "b"]));
     }
 
     #[test]
