@@ -382,6 +382,7 @@ cli_help:
   install:
     about: Install package(s)
     args:
+      arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
       assume_yes: Assume yes to all prompts and run non-interactively
       download_only: Download package(s) without performing installation
       escape_hold: Escape hold to allow changes on held package(s)

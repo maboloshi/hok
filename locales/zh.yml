@@ -381,6 +381,7 @@ cli_help:
   install:
     about: 安装包
     args:
+      arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       download_only: 仅下载包而不执行安装
       escape_hold: 绕过锁定以允许更改被锁定的包

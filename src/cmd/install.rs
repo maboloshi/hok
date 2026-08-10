@@ -66,6 +66,11 @@ pub struct Args {
     /// Skip package integrity check
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     no_hash_check: bool,
+
+    /// Use the specified architecture (32bit/64bit/arm64), overriding the
+    /// runtime-detected and configured default (Scoop's `-a/--arch`)
+    #[arg(short = 'a', long = "arch")]
+    arch: Option<String>,
 }
 
 impl SyncFlags for Args {
@@ -87,6 +92,15 @@ impl SyncFlags for Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    // `-a/--arch` overrides the effective architecture (Scoop's
+    // `Format-ArchitectureString` + `Get-DefaultArchitecture` override).
+    // Parsed after the session was created, so it beats the
+    // `default_architecture` config.
+    if let Some(arch) = args.arch.as_deref() {
+        let arch = libscoop::internal::arch::Arch::parse(arch)?;
+        libscoop::internal::arch::Arch::set_default_architecture(arch);
+    }
+
     ensure_global(session, args.global, "install")?;
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();

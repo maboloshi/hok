@@ -23,12 +23,16 @@
 //!   `arm64` field, Windows 11 (build ≥ 22000) falls back to `64bit`,
 //!   Windows 10 to `32bit`.
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use crate::error::Fallible;
 
-/// Process-wide override from the `default_architecture` config, if any.
-static DEFAULT_ARCHITECTURE: OnceLock<Option<Arch>> = OnceLock::new();
+/// Process-wide architecture override, from the `default_architecture`
+/// config and/or the CLI `--arch` flag. Later calls win: the config is
+/// applied when the session is created, then a CLI `-a/--arch` value
+/// (parsed after the session) overrides it — matching Scoop's
+/// `-a` beating the config.
+static DEFAULT_ARCHITECTURE: Mutex<Option<Arch>> = Mutex::new(None);
 
 /// A Scoop manifest architecture, named after the fields used in manifests
 /// (`32bit`, `64bit`, `arm64`).
@@ -43,8 +47,8 @@ impl Arch {
     /// Return the current architecture: the `default_architecture` config
     /// override if set, otherwise the runtime-detected host architecture.
     pub fn current() -> Arch {
-        if let Some(Some(arch)) = DEFAULT_ARCHITECTURE.get() {
-            return *arch;
+        if let Some(arch) = *DEFAULT_ARCHITECTURE.lock().expect("arch mutex poisoned") {
+            return arch;
         }
 
         #[cfg(target_os = "windows")]
@@ -68,10 +72,11 @@ impl Arch {
     }
 
     /// Set the process-wide architecture override (from the
-    /// `default_architecture` config). The first call wins; later calls are
-    /// ignored, matching the single-session nature of the CLI.
+    /// `default_architecture` config or the CLI `--arch` flag). Later calls
+    /// override earlier ones, so a CLI flag parsed after session creation
+    /// wins over the config.
     pub fn set_default_architecture(arch: Arch) {
-        let _ = DEFAULT_ARCHITECTURE.set(Some(arch));
+        *DEFAULT_ARCHITECTURE.lock().expect("arch mutex poisoned") = Some(arch);
     }
 
     /// Parse an architecture string as accepted by Scoop's
