@@ -245,7 +245,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let _ = tx.send(Event::PackageShimAddStart(pkg_name.to_owned()));
         }
 
-        for def in bins.into_iter() {
+        for def in bins.into_iter().filter(|d| !d.is_empty()) {
             let shim = Shim::new(def);
 
             if shim.ty == ShimType::Exe {
@@ -433,7 +433,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             let _ = tx.send(Event::PackageShimRemoveStart);
         }
 
-        for shim in bins.into_iter().map(Shim::new) {
+        for shim in bins.into_iter().filter(|d| !d.is_empty()).map(Shim::new) {
             let exts = match shim.ty {
                 // Upstream rm_shim never removes the .exe stub directly: the
                 // .shim metadata is the ownership carrier, and the stub is
@@ -629,6 +629,24 @@ mod tests {
         assert!(
             meta.contains(r"apps\foo\current\main.exe"),
             "unexpected meta: {meta}"
+        );
+    }
+
+    #[test]
+    fn test_empty_bin_def_does_not_panic() {
+        // `bin: [[]]` — an empty shim definition must never panic
+        // (deserialize_bin drops the empty tuple; add() also filters
+        // defensively). No shim is created for it.
+        let root = test_utils::tmpdir("shim_empty_def");
+        let session = test_utils::test_session(&root);
+        let pkg = make_package("foo", r#"[[]]"#);
+
+        add(&session, &pkg).unwrap();
+
+        let shims = root.join("shims");
+        assert!(
+            !shims.join("foo.exe").exists(),
+            "no shim should be created for an empty bin def"
         );
     }
 
