@@ -34,8 +34,8 @@ pub struct Args {
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
 
-    /// Skip package integrity check
-    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    /// Skip package integrity check (Scoop: --skip-hash-check)
+    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
     no_hash_check: bool,
 
     /// Force update: bypass the cooldown and reinstall apps that are already
@@ -55,8 +55,8 @@ pub struct Args {
     #[arg(short = 'R', long, action = ArgAction::SetTrue)]
     no_replace: bool,
 
-    /// Ignore cache and force download
-    #[arg(short = 'D', long, action = ArgAction::SetTrue)]
+    /// Ignore cache and force download (Scoop: -k, --no-cache)
+    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
     ignore_cache: bool,
 
     /// Install globally (to $SCOOP_GLOBAL)

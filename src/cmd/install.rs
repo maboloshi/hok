@@ -43,8 +43,8 @@ pub struct Args {
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
     assume_yes: bool,
 
-    /// Ignore cache and force download
-    #[arg(short = 'D', long, action = ArgAction::SetTrue)]
+    /// Ignore cache and force download (Scoop: -k, --no-cache)
+    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
     ignore_cache: bool,
 
     /// Do not install dependencies (may break packages)
@@ -63,8 +63,8 @@ pub struct Args {
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
     no_upgrade: bool,
 
-    /// Skip package integrity check
-    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    /// Skip package integrity check (Scoop: --skip-hash-check)
+    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
     no_hash_check: bool,
 
     /// Use the specified architecture (32bit/64bit/arm64), overriding the

@@ -17,8 +17,8 @@ pub struct Args {
     /// Escape hold to allow changes on held package(s)
     #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
     escape_hold: bool,
-    /// Skip package integrity check
-    #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
+    /// Skip package integrity check (Scoop: --skip-hash-check)
+    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = clap::ArgAction::SetTrue)]
     no_hash_check: bool,
     /// Uninstall a globally installed app (from $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]

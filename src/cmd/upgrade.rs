@@ -24,8 +24,8 @@ pub struct Args {
     /// Escape hold to allow to upgrade held package(s)
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
-    /// Skip package integrity check
-    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    /// Skip package integrity check (Scoop: --skip-hash-check)
+    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
     no_hash_check: bool,
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]

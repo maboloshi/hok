@@ -17,12 +17,12 @@ pub struct Args {
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
     offline: bool,
 
-    /// Ignore cache and force download
-    #[arg(short = 'D', long, action = ArgAction::SetTrue)]
+    /// Ignore cache and force download (Scoop: -k, --no-cache)
+    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
     ignore_cache: bool,
 
-    /// Skip package integrity check
-    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    /// Skip package integrity check (Scoop: --skip-hash-check)
+    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
     no_hash_check: bool,
 
     /// Ignore failures to ensure a complete transaction
