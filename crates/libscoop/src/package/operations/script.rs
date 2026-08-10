@@ -226,15 +226,30 @@ pub fn run_installer_file(
     let exe_path = working_dir.join(file);
     let expanded = expand_scoop_vars(raw_args, session, package, working_dir, cmd);
     let args: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
-    let exit_code = internal::os::run_gui(&exe_path, &args, Some(working_dir)).map_err(|e| {
-        Error::Custom(format!(
-            "failed to run {} '{}' for '{}': {}",
-            stage,
-            file,
-            package.name(),
-            e
-        ))
-    })?;
+    let exit_code = if file.to_ascii_lowercase().ends_with(".ps1") {
+        // Upstream runs .ps1 installer/uninstaller files in-process
+        // (`& $progName @fnArgs`, lib/install.ps1:127-128) — ShellExecute
+        // would just open the script in an editor. Run via PowerShell.
+        run_ps1_file(&exe_path, &args, session, package, working_dir, cmd).map_err(|e| {
+            Error::Custom(format!(
+                "failed to run {} '{}' for '{}': {}",
+                stage,
+                file,
+                package.name(),
+                e
+            ))
+        })?
+    } else {
+        internal::os::run_gui(&exe_path, &args, Some(working_dir)).map_err(|e| {
+            Error::Custom(format!(
+                "failed to run {} '{}' for '{}': {}",
+                stage,
+                file,
+                package.name(),
+                e
+            ))
+        })?
+    };
     // Upstream `Invoke-ExternalCommand` treats a non-zero exit as failure
     // and aborts ("Installation aborted." / "Uninstallation aborted.").
     if exit_code != 0 {
@@ -247,6 +262,33 @@ pub fn run_installer_file(
         )));
     }
     Ok(())
+}
+
+/// Run a `.ps1` installer/uninstaller file via PowerShell, mirroring
+/// upstream's in-process `& $progName @fnArgs` (lib/install.ps1:127-128).
+/// The same `SCOOP_*` environment as [`run_script`] is provided so `$dir`
+/// and friends resolve inside the script. Returns the process exit code.
+fn run_ps1_file(
+    exe_path: &Path,
+    args: &[&str],
+    session: &Session,
+    package: &Package,
+    working_dir: &Path,
+    cmd: &str,
+) -> std::io::Result<i32> {
+    let root_path = session.effective_root_path();
+    let mut ps = crate::internal::os::ps_command();
+    ps.arg("-File")
+        .arg(exe_path)
+        .env("SCOOP", root_path.as_os_str())
+        .env("SCOOP_APP_DIR", working_dir.as_os_str())
+        .env("SCOOP_PACKAGE_NAME", package.name())
+        .env("SCOOP_PACKAGE_VERSION", package.version())
+        .env("SCOOP_PACKAGE_BUCKET", package.bucket())
+        .env("SCOOP_PACKAGE_CMD", cmd);
+    ps.args(args);
+    let status = ps.status()?;
+    Ok(status.code().unwrap_or(-1))
 }
 
 /// Removes the given file paths when dropped. Ensures cleanup even when

@@ -46,6 +46,22 @@ pub fn basename(url: &str) -> String {
     }
 }
 
+/// Extract the local filename a URL would download to, mirroring upstream
+/// `url_filename` (lib/download.ps1:682): the last path segment — a
+/// `#/name` fragment's slash participates in splitting, exactly like
+/// PowerShell's `Split-Path -Leaf` — minus any `?query`. Unlike
+/// [`basename`] the extension is kept and percent-encoding is not decoded.
+///
+/// Used for the `installer.args`-only fallback (upstream
+/// `Invoke-Installer` uses `url_filename @(url $manifest)`).
+pub fn url_filename(url: &str) -> &str {
+    let leaf = url
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(url);
+    leaf.split('?').next().unwrap_or(leaf)
+}
+
 /// Decode URL percent-encoding, replacing `%XX` with the corresponding byte character.
 ///
 /// For invalid `%XX` sequences (non-hexadecimal characters), the input character is preserved as-is.
@@ -192,6 +208,35 @@ pub fn parse_sourceforge_url(url: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_filename_plain_url() {
+        assert_eq!(
+            url_filename("https://example.com/dopus_patcher.exe"),
+            "dopus_patcher.exe"
+        );
+    }
+
+    #[test]
+    fn url_filename_strips_query() {
+        // Upstream: `(Split-Path $url -Leaf).split('?') | Select -First 1`.
+        assert_eq!(
+            url_filename("https://example.com/foo.zip?download=1"),
+            "foo.zip"
+        );
+    }
+
+    #[test]
+    fn url_filename_fragment_slash_participates() {
+        // A `#/dl.7z` fragment's slash splits the leaf exactly like
+        // PowerShell's Split-Path -Leaf → "dl.7z".
+        assert_eq!(url_filename("https://example.com/foo.exe#/dl.7z"), "dl.7z");
+    }
+
+    #[test]
+    fn url_filename_empty_returns_input() {
+        assert_eq!(url_filename(""), "");
+    }
 
     #[test]
     fn remote_filename_decodes_percent() {

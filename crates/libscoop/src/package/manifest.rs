@@ -228,6 +228,8 @@ pub struct Uninstaller {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<Vectorized<String>>,
 }
 
@@ -1088,6 +1090,11 @@ impl Uninstaller {
     #[inline]
     pub fn file(&self) -> Option<&str> {
         self.file.as_deref()
+    }
+
+    #[inline]
+    pub fn keep(&self) -> bool {
+        self.keep.unwrap_or(false)
     }
 
     #[inline]

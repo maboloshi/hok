@@ -479,6 +479,47 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 3. installer, $dir = version dir)
     if let Some(installer) = pkg.manifest().installer() {
+        // 1. Installer file. Runs when `installer.file` is set *or* when
+        //    only `installer.args` is given — upstream falls back to the
+        //    first download URL's filename (Invoke-Installer,
+        //    lib/install.ps1:110-115). `installer.script` is executed
+        //    afterwards regardless (see step 2).
+        let raw_args: Vec<&str> = installer.args().unwrap_or_default();
+        if installer.file().is_some() || !raw_args.is_empty() {
+            let file = match installer.file() {
+                Some(f) => f.to_owned(),
+                None => {
+                    let first_url = pkg.manifest().url().first().copied().unwrap_or("");
+                    internal::url::url_filename(first_url).to_owned()
+                }
+            };
+            debug!(
+                "commit: {} v{} - installer.file ({file})",
+                pkg.name(),
+                pkg.version()
+            );
+            operations::run_installer_file(
+                session,
+                pkg,
+                &working_dir,
+                "installer",
+                "install",
+                &file,
+                &raw_args,
+            )?;
+            // Don't remove the installer file when `keep` is set (Scoop
+            // order: `!$installer.keep` -> Remove-Item, lib/install.ps1).
+            if !installer.keep() {
+                let installer_path = working_dir.join(&file);
+                if installer_path.exists() {
+                    std::fs::remove_file(&installer_path)?;
+                }
+            }
+        }
+
+        // 2. installer.script runs regardless of the file step (upstream
+        //    Invoke-HookScript is called after Invoke-Installer,
+        //    lib/install.ps1:144,163-166).
         if let Some(script) = installer.script() {
             debug!(
                 "commit: {} v{} - installer.script",
@@ -494,25 +535,6 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 "install",
                 Some(script),
             )?;
-        } else if let Some(file) = installer.file() {
-            let raw_args: Vec<&str> = installer.args().unwrap_or_default();
-            operations::run_installer_file(
-                session,
-                pkg,
-                &working_dir,
-                "installer",
-                "install",
-                file,
-                &raw_args,
-            )?;
-            // Don't remove the installer file when `keep` is set (Scoop
-            // order: `!$installer.keep` -> Remove-Item, lib/install.ps1).
-            if !installer.keep() {
-                let installer_path = working_dir.join(file);
-                if installer_path.exists() {
-                    std::fs::remove_file(&installer_path)?;
-                }
-            }
         }
     }
 
