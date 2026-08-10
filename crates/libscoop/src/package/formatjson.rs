@@ -102,16 +102,24 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
             Ok(false) => report.unchanged += 1,
             Err(e) => report.errors.push(e.to_string()),
         }
-        report.warnings.extend(missing_fields(&path));
+        report.warnings.extend(schema_warnings(&path));
     }
     Ok(report)
 }
 
-/// Check a manifest for missing required fields (`version` / `homepage` /
-/// `license`). The manifest parser tolerates their absence, but a manifest
-/// without them cannot be installed meaningfully, so they are surfaced as
-/// warnings during `formatjson`.
-fn missing_fields(path: &Path) -> Vec<String> {
+/// Check a manifest against the high-frequency structural rules of the
+/// official `schema.json` (the `Scoop-Bucket`/`Import-Bucket-Tests.ps1`
+/// Pester gate validates every manifest against it with `Scoop.Validator`).
+/// The manifest parser tolerates these problems, but the bucket would fail
+/// the official gate — so they are surfaced as warnings during
+/// `formatjson`:
+///
+/// - top-level `version` / `homepage` / `license` are required
+/// - a `license` object must include `identifier`
+/// - `uninstaller` must include at least one of `file` / `script` (oneOf)
+/// - `version` matches `^[\w\.\-+_]+$`
+/// - each `shortcuts` entry has 2-4 elements
+fn schema_warnings(path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return vec![];
     };
@@ -119,11 +127,65 @@ fn missing_fields(path: &Path) -> Vec<String> {
     else {
         return vec![];
     };
-    ["version", "homepage", "license"]
-        .iter()
-        .filter(|k| value.get(**k).is_none())
-        .map(|k| format!("{}: missing '{}' field", path.display(), k))
-        .collect()
+    let name = path.display().to_string();
+    let mut warnings = vec![];
+
+    // top-level required fields (schema.json required:677-681)
+    for key in ["version", "homepage", "license"] {
+        if value.get(key).is_none() {
+            warnings.push(format!("{name}: missing '{key}' field"));
+        }
+    }
+
+    // license: string, or an object with `identifier` (schema.json:499-521)
+    if let Some(license) = value.get("license") {
+        match license {
+            serde_json::Value::Object(map) if map.get("identifier").is_none() => {
+                warnings.push(format!("{name}: license object must include 'identifier'"));
+            }
+            serde_json::Value::String(_) => {}
+            _ => {
+                warnings.push(format!(
+                    "{name}: license must be a string or an object with 'identifier'"
+                ));
+            }
+        }
+    }
+
+    // uninstaller: at least one of `file` / `script` (oneOf, schema.json:419-430)
+    if let Some(serde_json::Value::Object(map)) = value.get("uninstaller") {
+        if map.get("file").is_none() && map.get("script").is_none() {
+            warnings.push(format!(
+                "{name}: uninstaller must include 'file' or 'script'"
+            ));
+        }
+    }
+
+    // version pattern ^[\w\.\-+_]+$ (schema.json:644-647)
+    if let Some(ver) = value.get("version").and_then(|v| v.as_str()) {
+        if !ver
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+        {
+            warnings.push(format!(
+                "{name}: version contains invalid characters: {ver}"
+            ));
+        }
+    }
+
+    // shortcuts: each entry has 2-4 elements (schema.json:165-176)
+    if let Some(shortcuts) = value.get("shortcuts").and_then(|v| v.as_array()) {
+        for (i, entry) in shortcuts.iter().enumerate() {
+            let len = entry.as_array().map(|a| a.len()).unwrap_or(0);
+            if !(2..=4).contains(&len) {
+                warnings.push(format!(
+                    "{name}: shortcuts[{i}] must have 2-4 elements (got {len})"
+                ));
+            }
+        }
+    }
+
+    warnings
 }
 
 /// Serialise a JSON value to a string with 4-space indentation and CRLF endings.
@@ -493,6 +555,44 @@ mod tests {
         assert!(joined.contains("homepage"), "{joined}");
         assert!(joined.contains("license"), "{joined}");
         assert!(!joined.contains("app2"), "{joined}");
+    }
+
+    #[test]
+    fn schema_structure_rules_reported_as_warnings() {
+        let dir = crate::test_utils::tmpdir("formatjson_schema_rules");
+        // Every high-frequency schema.json rule violated at once.
+        std::fs::write(
+            dir.join("bad.json"),
+            r#"{
+                "version": "1.0.0!invalid",
+                "homepage": "https://example.com",
+                "license": {"url": "https://example.com/license"},
+                "uninstaller": {"args": ["/x"]},
+                "shortcuts": [["app.exe"]],
+                "url": "https://example.com/app.exe",
+                "hash": "a"
+            }"#,
+        )
+        .unwrap();
+
+        let report = format_manifests(&dir, &["*".to_string()]).unwrap();
+        let joined = report.warnings.join("\n");
+        assert!(
+            joined.contains("license object must include 'identifier'"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("uninstaller must include 'file' or 'script'"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("version contains invalid characters"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("shortcuts[0] must have 2-4 elements"),
+            "{joined}"
+        );
     }
 
     #[test]
