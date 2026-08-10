@@ -31,6 +31,10 @@ pub fn execute(args: Args) -> Result<()> {
         output::err(msg);
     }
 
+    for msg in &report.warnings {
+        output::warn(msg);
+    }
+
     if report.formatted == 0 && report.errors.is_empty() {
         output::info(rust_i18n::t!("cmd.formatjson_none"));
     } else {

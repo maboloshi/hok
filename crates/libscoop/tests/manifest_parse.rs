@@ -138,9 +138,15 @@ fn test_scoop_broken_wget() {
 
 #[test]
 fn test_scoop_invalid_wget() {
-    // JSON is valid but schema is wrong (missing required fields)
+    // JSON is valid but the schema is missing required fields (version).
+    // Upstream Scoop never validates these, so hok now tolerates the
+    // absence — missing fields surface as `formatjson` warnings instead
+    // of failing the whole manifest parse.
     let result = Manifest::parse(scoop_fixture("manifest/invalid_wget.json"));
-    assert!(result.is_err(), "invalid schema should fail to parse");
+    assert!(
+        result.is_ok(),
+        "missing required fields should be tolerated (formatjson warns)"
+    );
 }
 
 #[test]

@@ -24,7 +24,6 @@ impl License {
     pub fn new(identifier: String, url: Option<String>) -> License {
         Self { identifier, url }
     }
-
     /// Return the identifier of this license.
     #[inline]
     pub fn identifier(&self) -> &str {
@@ -41,6 +40,13 @@ impl License {
     #[inline]
     pub fn url(&self) -> Option<&str> {
         self.url.as_deref()
+    }
+}
+
+impl Default for License {
+    /// An empty placeholder license, used when a manifest omits `license`.
+    fn default() -> Self {
+        License::new(String::new(), None)
     }
 }
 

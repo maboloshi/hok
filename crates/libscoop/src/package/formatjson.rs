@@ -76,6 +76,11 @@ pub struct FormatReport {
     pub unchanged: u32,
     /// Error messages from manifests that could not be formatted.
     pub errors: Vec<String>,
+    /// Warnings about manifests missing required fields
+    /// (`version` / `homepage` / `license`). The parser tolerates their
+    /// absence (upstream never validates them), but such manifests cannot
+    /// be installed meaningfully, so `formatjson` calls them out.
+    pub warnings: Vec<String>,
 }
 
 /// Format every manifest under `dir`, filtered by `app` patterns.
@@ -97,8 +102,28 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
             Ok(false) => report.unchanged += 1,
             Err(e) => report.errors.push(e.to_string()),
         }
+        report.warnings.extend(missing_fields(&path));
     }
     Ok(report)
+}
+
+/// Check a manifest for missing required fields (`version` / `homepage` /
+/// `license`). The manifest parser tolerates their absence, but a manifest
+/// without them cannot be installed meaningfully, so they are surfaced as
+/// warnings during `formatjson`.
+fn missing_fields(path: &Path) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    let Ok(value) = json5::from_str::<serde_json::Value>(content.trim_start_matches('\u{FEFF}'))
+    else {
+        return vec![];
+    };
+    ["version", "homepage", "license"]
+        .iter()
+        .filter(|k| value.get(**k).is_none())
+        .map(|k| format!("{}: missing '{}' field", path.display(), k))
+        .collect()
 }
 
 /// Serialise a JSON value to a string with 4-space indentation and CRLF endings.
@@ -442,6 +467,32 @@ mod tests {
         let report = format_manifests(&dir, &["app1".to_string()]).unwrap();
         assert_eq!(report.formatted, 1);
         assert_eq!(report.unchanged, 0);
+    }
+
+    #[test]
+    fn missing_required_fields_reported_as_warnings() {
+        let dir = crate::test_utils::tmpdir("formatjson_missing_fields");
+        // No version/homepage/license at all.
+        std::fs::write(
+            dir.join("app1.json"),
+            "{\"url\":\"https://example.com/x.zip\",\"hash\":\"a\"}",
+        )
+        .unwrap();
+        // Complete manifest → no warnings.
+        std::fs::write(
+            dir.join("app2.json"),
+            "{\"version\":\"1.0\",\"homepage\":\"https://example.com\",\"license\":\"MIT\",\"url\":\"https://example.com/x.zip\",\"hash\":\"a\"}",
+        )
+        .unwrap();
+
+        let report = format_manifests(&dir, &["*".to_string()]).unwrap();
+        // app1 is missing all three required fields → one warning each.
+        assert_eq!(report.warnings.len(), 3, "one warning per missing field");
+        let joined = report.warnings.join("\n");
+        assert!(joined.contains("version"), "{joined}");
+        assert!(joined.contains("homepage"), "{joined}");
+        assert!(joined.contains("license"), "{joined}");
+        assert!(!joined.contains("app2"), "{joined}");
     }
 
     #[test]

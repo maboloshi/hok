@@ -67,14 +67,17 @@ pub struct Manifest {
 /// [`ManifestSpec`] represents the actual data structure of a Scoop manifest.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ManifestSpec {
-    pub version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    pub homepage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
 
-    pub license: License,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license: Option<License>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depends: Option<Vectorized<String>>,
@@ -528,6 +531,9 @@ macro_rules! arch_accessor {
     };
 }
 
+/// Empty placeholder for manifests that omit the `license` field.
+static EMPTY_LICENSE: std::sync::LazyLock<License> = std::sync::LazyLock::new(License::default);
+
 impl Manifest {
     /// Create a [`Manifest`] representation of a manfest JSON file with the
     /// given path.
@@ -596,7 +602,10 @@ impl Manifest {
     /// Return the `version` of this manifest.
     #[inline]
     pub fn version(&self) -> &str {
-        self.inner.version.as_str()
+        // A manifest without `version` parses fine (upstream never
+        // validates it); callers get an empty string and `formatjson`
+        // warns about the missing field.
+        self.inner.version.as_deref().unwrap_or("")
     }
 
     /// Return the `description` of this manifest.
@@ -608,13 +617,13 @@ impl Manifest {
     /// Return the `homepage` of this manifest.
     #[inline]
     pub fn homepage(&self) -> &str {
-        &self.inner.homepage
+        self.inner.homepage.as_deref().unwrap_or("")
     }
 
     /// Return the `license` of this manifest.
     #[inline]
     pub fn license(&self) -> &License {
-        &self.inner.license
+        self.inner.license.as_ref().unwrap_or(&EMPTY_LICENSE)
     }
 
     // #[inline]
@@ -1311,5 +1320,74 @@ mod tests {
             }"#,
         );
         assert!(m.dependencies().is_empty());
+    }
+
+    #[test]
+    fn missing_required_fields_are_tolerated() {
+        // Upstream never validates version/homepage/license; a manifest
+        // missing them must parse instead of failing the whole manifest.
+        let m = manifest_from(
+            r#"{
+                "url": "https://example.com/pkg.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a"
+            }"#,
+        );
+        assert_eq!(m.version(), "");
+        assert_eq!(m.homepage(), "");
+        assert_eq!(m.license().identifier(), "");
+        assert_eq!(m.license().url(), None);
+    }
+
+    #[test]
+    fn autoupdate_hash_string_form_parses() {
+        // `autoupdate.hash` may be a plain string (e.g. "mode:json") —
+        // upstream's HashHelper accepts objects, strings and arrays.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "autoupdate": {
+                    "url": "https://example.com/$version.zip",
+                    "hash": "mode:json"
+                }
+            }"#,
+        );
+        // Parsing succeeded is the assertion.
+        assert_eq!(m.version(), "1.0.0");
+    }
+
+    #[test]
+    fn bin_object_form_normalizes_to_tuple() {
+        // Third-party object form `{"file", "name", "args"}` normalizes to
+        // the (file, name, args...) tuple the shim layer understands.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "bin": [{"file": "foo.exe", "name": "bar", "args": ["-x", "--y"]}]
+            }"#,
+        );
+        let bins = m.bin().unwrap();
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0], vec!["foo.exe", "bar", "-x", "--y"]);
+    }
+
+    #[test]
+    fn bin_invalid_object_dropped_not_fatal() {
+        // A `bin` item that cannot be understood (object without `file`)
+        // is dropped instead of invalidating the whole manifest.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "bin": [{"bogus": 1}, "good.exe"]
+            }"#,
+        );
+        let bins = m.bin().unwrap();
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0], vec!["good.exe"]);
     }
 }
