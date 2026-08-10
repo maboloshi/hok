@@ -10,7 +10,9 @@ use serde::{Deserialize, Deserializer};
 use std::fmt;
 use std::marker::PhantomData;
 
-use super::{Checkver, HashString, License, Sourceforge, Vectorized};
+use super::{
+    Checkver, HashExtraction, HashExtractionMode, HashString, License, Sourceforge, Vectorized,
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 //  Custom (De)serializers
@@ -70,6 +72,83 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Vectorized<T> {
         Ok(Vectorized(
             deserializer.deserialize_any(VectorizedVisitor(PhantomData))?,
         ))
+    }
+}
+
+impl<'de> Deserialize<'de> for HashExtraction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // `autoupdate.hash` may be a hash-extraction object, a plain string
+        // (e.g. `"mode:json"` or an algorithm name like `"sha256"`), or an
+        // array mixing both. Upstream's `HashHelper` accepts all three.
+        // String forms carry no extraction fields here — the actual hash
+        // computation runs on the raw JSON value in `checkver_hash`.
+        struct HashExtractionVisitor;
+        impl<'de> Visitor<'de> for HashExtractionVisitor {
+            type Value = HashExtraction;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a hash extraction object or a string")
+            }
+
+            #[inline]
+            fn visit_str<E>(self, _s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(HashExtraction {
+                    find: None,
+                    regex: None,
+                    jsonpath: None,
+                    xpath: None,
+                    mode: None,
+                    url: None,
+                })
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut find = None;
+                let mut regex = None;
+                let mut jsonpath = None;
+                let mut xpath = None;
+                let mut mode = None;
+                let mut url = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    let value: serde_json::Value = map.next_value()?;
+                    match key.as_str() {
+                        "find" => find = Some(value.as_str().unwrap_or_default().to_owned()),
+                        "regex" => regex = Some(value.as_str().unwrap_or_default().to_owned()),
+                        "jp" | "jsonpath" => {
+                            jsonpath = Some(value.as_str().unwrap_or_default().to_owned())
+                        }
+                        "xpath" => xpath = Some(value.as_str().unwrap_or_default().to_owned()),
+                        "mode" => {
+                            mode = Some(
+                                HashExtractionMode::deserialize(value)
+                                    .map_err(de::Error::custom)?,
+                            );
+                        }
+                        "url" => url = Some(value.as_str().unwrap_or_default().to_owned()),
+                        _ => {}
+                    }
+                }
+                Ok(HashExtraction {
+                    find,
+                    regex,
+                    jsonpath,
+                    xpath,
+                    mode,
+                    url,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(HashExtractionVisitor)
     }
 }
 

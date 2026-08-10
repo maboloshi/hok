@@ -369,7 +369,7 @@ pub enum HashString {
     Sha512(String),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct HashExtraction {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub find: Option<String>,
