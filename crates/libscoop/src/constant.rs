@@ -60,12 +60,13 @@ pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Currently, it could be one of the following formats:
 ///
-/// - **md5**: `^md5:[a-fA-F0-9]{32}$`
-/// - **sha1**: `^sha1:[a-fA-F0-9]{40}$`
-/// - **sha256**: `^(sha256:)?[a-fA-F0-9]{64}$`
-/// - **sha512**: `^sha512:[a-fA-F0-9]{128}$`
+/// - a bare 64-hex SHA256: `^[a-fA-F0-9]{64}$`
+/// - any algorithm prefix (md5/sha1/sha256/sha512) followed by a hex digest
+///   of 32/40/64/128 chars in any combination — mirroring the official
+///   schema's `hashPattern` (Scoop's `schema.json`), which does not bind the
+///   prefix to a specific length.
 pub static REGEX_HASH: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"^(?:md5:[a-fA-F0-9]{32}|sha1:[a-fA-F0-9]{40}|(?:sha256:)?[a-fA-F0-9]{64}|sha512:[a-fA-F0-9]{128})$";
+    let pattern = r"^(?:[a-fA-F0-9]{64}|(?:md5|sha1|sha256|sha512):(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128}))$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 

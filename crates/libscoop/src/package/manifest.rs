@@ -1295,6 +1295,37 @@ mod tests {
         assert!(m.hash()[0].value().is_empty());
     }
 
+    #[test]
+    fn test_hashstring_accepts_official_combination_lengths() {
+        // Official schema `hashPattern` allows any algorithm prefix with any
+        // digest length (32/40/64/128) — not bound per algorithm.
+        let md5_long = format!("md5:{}", "a".repeat(64));
+        assert!(matches!(
+            HashString::new(&md5_long).unwrap(),
+            HashString::Md5(_)
+        ));
+        let sha1_short = format!("sha1:{}", "b".repeat(32));
+        assert!(matches!(
+            HashString::new(&sha1_short).unwrap(),
+            HashString::Sha1(_)
+        ));
+        let sha512_40 = format!("sha512:{}", "c".repeat(40));
+        assert!(matches!(
+            HashString::new(&sha512_40).unwrap(),
+            HashString::Sha512(_)
+        ));
+        // Bare 64-hex stays sha256
+        let bare = "d".repeat(64);
+        assert!(matches!(
+            HashString::new(&bare).unwrap(),
+            HashString::Sha256(_)
+        ));
+        // Invalid digests are still rejected
+        assert!(HashString::new("md5:xyz").is_err());
+        assert!(HashString::new("sha1:").is_err());
+    }
+
+
     // ── hook script fields (deserialize_hook_script) ────────────────────────
 
     #[test]
