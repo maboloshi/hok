@@ -381,3 +381,65 @@ impl<'de> Deserialize<'de> for Checkver {
         deserializer.deserialize_any(CheckverVisitor)
     }
 }
+
+/// Deserialize the `bin` field tolerantly.
+///
+/// Accepts Scoop's standard forms — `"foo.exe"`, `["foo.exe"]`,
+/// `[["foo.exe", "name", "arg"]]` — plus the object form
+/// `{"file": "...", "name": "...", "args": [...]}` that some third-party
+/// manifests use. Object entries are normalized to the `(file, name,
+/// args...)` tuple the shim layer already understands; entries that cannot
+/// be understood are dropped so a single bad `bin` item never invalidates
+/// the whole manifest (upstream Scoop aborts at install time, hok
+/// tolerates at parse time).
+pub fn deserialize_bin<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vectorized<Vectorized<String>>>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(s) => Ok(Some(Vectorized(vec![Vectorized(vec![s])]))),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    serde_json::Value::String(s) => out.push(Vectorized(vec![s])),
+                    serde_json::Value::Array(arr) => {
+                        let def: Vec<String> = arr
+                            .into_iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        if !def.is_empty() {
+                            out.push(Vectorized(def));
+                        }
+                    }
+                    serde_json::Value::Object(map) => {
+                        // Object form `{"file", "name", "args"}` — normalize
+                        // to the (file, name, args...) tuple.
+                        if let Some(file) = map.get("file").and_then(|v| v.as_str()) {
+                            let mut def = vec![file.to_owned()];
+                            if let Some(name) = map.get("name").and_then(|v| v.as_str()) {
+                                def.push(name.to_owned());
+                            }
+                            if let Some(args) = map.get("args").and_then(|v| v.as_array()) {
+                                def.extend(
+                                    args.iter().filter_map(|v| v.as_str().map(String::from)),
+                                );
+                            }
+                            out.push(Vectorized(def));
+                        }
+                        // No `file`: unparseable, drop the entry.
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Vectorized(out)))
+        }
+        _ => Err(de::Error::custom(
+            "bin must be a string, an array of strings, or an array of arrays",
+        )),
+    }
+}

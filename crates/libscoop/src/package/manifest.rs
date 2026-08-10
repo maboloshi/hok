@@ -126,7 +126,11 @@ pub struct ManifestSpec {
 
     /// The `bin` field is used to define binaries that need to be shimmed/added
     /// to the `shimes` directory.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_bin"
+    )]
     pub bin: Option<Vectorized<Vectorized<String>>>,
 
     /// The `env_add_path` field is used to define path(s) that need to be added
@@ -294,7 +298,11 @@ pub struct Autoupdate {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ArchitectureSpec {
     /// Same as `ManifestSpec::bin`
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::package::manifest::manifest_parse::deserialize_bin"
+    )]
     pub bin: Option<Vectorized<Vectorized<String>>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
