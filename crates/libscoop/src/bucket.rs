@@ -537,3 +537,53 @@ pub fn remove(session: &Session, name: &str) -> Fallible<()> {
 
     Ok(std::fs::remove_dir_all(path.as_path())?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_buckets_match_official_list() {
+        // The compile-time generated list must contain all 10 official
+        // ScoopInstaller buckets (assets/buckets.json), including the three
+        // hok previously missed.
+        let known = crate::constant::BUILTIN_BUCKET_LIST.to_vec();
+        assert_eq!(known.len(), 10, "known buckets: {known:?}");
+        for name in [
+            "main",
+            "extras",
+            "versions",
+            "nirsoft",
+            "sysinternals",
+            "php",
+            "nerd-fonts",
+            "nonportable",
+            "java",
+            "games",
+        ] {
+            assert!(
+                known.iter().any(|(n, _)| *n == name),
+                "missing known bucket {name}"
+            );
+        }
+        // every known bucket has a repo url
+        for (name, repo) in &known {
+            assert!(
+                repo.starts_with("https://"),
+                "invalid repo for {name}: {repo}"
+            );
+        }
+    }
+
+    #[test]
+    fn bucket_priority_matches_known_keys() {
+        // BUCKET_PRIORITY is generated from the same buckets.json key order,
+        // so the two lists must agree on the key set.
+        let known: Vec<&str> = crate::constant::BUILTIN_BUCKET_LIST
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        let priority = crate::constant::BUCKET_PRIORITY.to_vec();
+        assert_eq!(known, priority, "priority must match known key order");
+    }
+}

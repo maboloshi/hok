@@ -33,33 +33,19 @@ pub static DEFAULT_USER_AGENT: &str = "Scoop/1.0 (+http://scoop.sh/)";
 /// synced bucket.
 pub static ISOLATED_PACKAGE_BUCKET: &str = "__isolated__";
 
-/// Built-in list of known buckets.
-pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::new(|| {
-    vec![
-        ("main", "https://github.com/ScoopInstaller/Main"),
-        ("extras", "https://github.com/ScoopInstaller/Extras"),
-        ("games", "https://github.com/calinou/scoop-games"),
-        ("java", "https://github.com/ScoopInstaller/Java"),
-        ("php", "https://github.com/ScoopInstaller/PHP"),
-        ("versions", "https://github.com/ScoopInstaller/Versions"),
-        (
-            "nonportable",
-            "https://github.com/ScoopInstaller/Nonportable",
-        ),
-    ]
-});
+// Built-in list of known buckets, generated at compile time from
+// `assets/buckets.json` (the official ScoopInstaller list) by `build.rs`
+// — regenerate the JSON and the next build updates the constants.
+include!(concat!(env!("OUT_DIR"), "/known_buckets.rs"));
 
-pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    vec![
-        "main",
-        "extras",
-        "versions",
-        "java",
-        "php",
-        "games",
-        "nonportable",
-    ]
-});
+/// Built-in list of known buckets: `(name, repo url)` pairs in the order
+/// of `assets/buckets.json`.
+pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> =
+    LazyLock::new(|| KNOWN_BUCKETS.to_vec());
+
+/// Bucket lookup priority (same key order as `assets/buckets.json`).
+pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> =
+    LazyLock::new(|| BUCKET_PRIORITY_ORDER.to_vec());
 
 /// regex to match valid Scoop cache filename:
 /// "app#version#filenamified_url"
