@@ -62,6 +62,13 @@ pub struct Manifest {
 
     /// The hash of the manifest.
     hash: String,
+
+    /// The raw manifest JSON text, kept only when the manifest was loaded
+    /// from a string (URL download, local path, or generated user manifest).
+    /// Used to persist the exact content into `<app>/<version>/manifest.json`
+    /// for isolated (URL/path) installs.
+    #[serde(skip)]
+    raw: Option<String>,
 }
 
 /// [`ManifestSpec`] represents the actual data structure of a Scoop manifest.
@@ -720,7 +727,12 @@ impl Manifest {
         checksum.consume(&bytes);
         let hash = checksum.finalize();
 
-        Ok(Manifest { path, inner, hash })
+        Ok(Manifest {
+            path,
+            inner,
+            hash,
+            raw: None,
+        })
     }
 
     /// Return the file path of this manifest.
@@ -744,10 +756,45 @@ impl Manifest {
         checksum.consume(json.as_bytes());
         let hash = checksum.finalize();
 
-        Ok(Manifest { path, inner, hash })
+        Ok(Manifest {
+            path,
+            inner,
+            hash,
+            raw: None,
+        })
     }
 
-    /// Return the `version` of this manifest.
+    /// Create a [`Manifest`] from a JSON string, keeping the raw text for
+    /// later persistence.
+    ///
+    /// This is used for isolated installs — manifests fetched from a URL,
+    /// read from a local path, or generated for a specific version — where
+    /// the source is not a bucket file. The `name` is used as the virtual
+    /// path (e.g. the source URL), mirroring [`Manifest::from_json`].
+    pub fn parse_str(name: &str, json: &str) -> Fallible<Manifest> {
+        let inner: ManifestSpec = parse_manifest_spec(json)?;
+        let path = PathBuf::from(name);
+
+        // SHA256 of the manifest JSON, consistent with `parse()`.
+        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
+            .sha256()
+            .build();
+        checksum.consume(json.as_bytes());
+        let hash = checksum.finalize();
+
+        Ok(Manifest {
+            path,
+            inner,
+            hash,
+            raw: Some(json.to_owned()),
+        })
+    }
+
+    /// Return the raw JSON text this manifest was loaded from, if any.
+    #[inline]
+    pub fn raw(&self) -> Option<&str> {
+        self.raw.as_deref()
+    }
     #[inline]
     pub fn version(&self) -> &str {
         // A manifest without `version` parses fine (upstream never

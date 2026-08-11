@@ -732,7 +732,12 @@ fn extract_named_captures(re: &Regex, caps: &regex::Captures<'_>) -> HashMap<Str
 
 /// Apply autoupdate: substitute variables, download files, compute/extract
 /// hashes, write updated manifest.
-fn apply_autoupdate(
+///
+/// `captures`/`named_captures` are the version-extraction groups from a
+/// checkver run; pass empty slices for a plain `version` substitution, which
+/// matches upstream `generate_user_manifest` calling `Invoke-AutoUpdate`
+/// with an empty `$CustomMatches`.
+pub(crate) fn apply_autoupdate(
     session: &Session,
     path: &PathBuf,
     manifest: &Manifest,

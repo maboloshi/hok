@@ -51,6 +51,7 @@ pub mod import;
 pub mod list;
 pub(crate) mod manifest;
 pub mod manifest_cache;
+pub(crate) mod manifest_source;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
 pub(crate) mod operations;

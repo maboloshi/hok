@@ -337,6 +337,16 @@ impl Session {
         self.config().root_path().join("buckets").join(name)
     }
 
+    /// Get the `workspace` directory: `<root>/workspace`.
+    ///
+    /// Mirrors upstream `usermanifestsdir` (lib/core.ps1) — generated
+    /// user manifests (e.g. `app@version` installs) are written here.
+    /// User-level root, same as [`Session::buckets_dir`].
+    #[inline]
+    pub fn workspace_dir(&self) -> std::path::PathBuf {
+        self.config().root_path().join("workspace")
+    }
+
     /// Get a mutable reference to the config held by the session.
     ///
     /// This method is only directly accessible from within the crate itself.
