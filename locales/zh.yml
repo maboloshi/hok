@@ -381,11 +381,31 @@ cli_help:
     about: 显示包的基本信息
   install:
     about: 安装包
+    long_about: |-
+      从本地 bucket、manifest URL 或本地 manifest 文件安装包。
+
+      通常的安装方式（使用本地 'buckets'）：
+           hok install git
+
+      安装指定版本的包
+      （注意：将基于当前版本自动生成 manifest）：
+           hok install gh@2.7.0
+
+      从 URL 的 manifest 安装包：
+           hok install https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/runat.json
+
+      从 URL 安装指定版本的包：
+           hok install https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/neovim.json@0.9.0
+
+      从本机 manifest 文件安装包：
+           hok install \path\to\app.json
+           hok install \path\to\app.json@version
     args:
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       download_only: 仅下载包而不执行安装
       escape_hold: 绕过锁定以允许更改被锁定的包
+      global: 全局安装（到 $SCOOP_GLOBAL）
       ignore_cache: 忽略缓存并强制下载
       ignore_failure: 忽略错误以确保事务完成
       independent: 不安装依赖（可能破坏包）
@@ -393,7 +413,7 @@ cli_help:
       no_replace: 不替换包
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
-      package: 要安装的包
+      package: "要安装的包（名称、bucket/名称、名称@版本，或 manifest URL/路径）"
   list:
     about: 列出已安装的包
     args:
