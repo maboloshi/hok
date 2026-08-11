@@ -41,6 +41,7 @@ use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
 use libscoop::Session;
 use rust_i18n::t;
+use std::ffi::OsString;
 use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
@@ -135,6 +136,50 @@ pub enum Command {
     Which(which::Args),
 }
 
+/// Normalise the subcommand token in raw CLI args to lowercase so subcommand
+/// matching is case-insensitive, matching Scoop/PowerShell semantics.
+///
+/// The subcommand is the first non-option argument (hok commands are all
+/// single-level). Only that token is rewritten, and only when it matches a
+/// known subcommand name or alias (ASCII case-insensitively) — so positional
+/// values like `hok search Foo` are never touched.
+fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsString> {
+    let names: Vec<String> = cmd
+        .get_subcommands()
+        .flat_map(|s| {
+            let mut all = vec![s.get_name().to_string()];
+            all.extend(s.get_aliases().map(|a| a.to_string()));
+            all
+        })
+        .collect();
+
+    let sub_pos = raw
+        .iter()
+        .enumerate()
+        .skip(1) // argv[0] is the program name
+        .find(|(_, a)| {
+            let s = a.to_string_lossy();
+            !s.is_empty() && !s.starts_with('-')
+        })
+        .map(|(i, _)| i);
+
+    raw.iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if Some(i) == sub_pos {
+                let s = a.to_string_lossy();
+                if names.iter().any(|n| n.eq_ignore_ascii_case(&s)) {
+                    OsString::from(s.to_lowercase())
+                } else {
+                    a.clone()
+                }
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
 /// CLI entry point
 pub fn start() -> Result<()> {
     // Detect language before Cli::parse() so help text is rendered in the right language
@@ -143,7 +188,14 @@ pub fn start() -> Result<()> {
 
     let args = {
         let cmd = Cli::patch_i18n(Cli::command());
-        Cli::from_arg_matches(&cmd.get_matches())
+        // Scoop (PowerShell) semantics: subcommand names are case-insensitive
+        // (`hok INSTALL` == `hok install`). clap 4 dropped subcommand-level
+        // `ignore_case`, so normalise the subcommand token (the first
+        // non-option argument; hok commands are all single-level) to
+        // lowercase before parsing — see [`normalize_subcommand_case`].
+        let raw: Vec<OsString> = std::env::args_os().collect();
+        let normalized = normalize_subcommand_case(&cmd, raw);
+        Cli::from_arg_matches(&cmd.get_matches_from(normalized))
     }?;
 
     // If user explicitly set --lang in Cli args (not auto), re-init with explicit choice
