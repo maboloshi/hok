@@ -10,6 +10,27 @@ pub fn tmpdir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Write a minimal-but-parseable PE image with the given subsystem into
+/// `path` (creating parent dirs). Used to exercise the shim-variant
+/// selection against GUI (2) vs console (3) targets.
+pub fn write_fake_pe(path: &std::path::Path, subsystem: u16) {
+    use std::io::Write;
+    let mut data = vec![0u8; 0x100];
+    data[0] = b'M';
+    data[1] = b'Z';
+    // e_lfanew = 0x80
+    data[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    // PE signature
+    data[0x80..0x84].copy_from_slice(b"PE\0\0");
+    // Subsystem at PE + 0x5C = 0x80 + 0x5C = 0xDC
+    data[0xDC..0xDE].copy_from_slice(&subsystem.to_le_bytes());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(&data).unwrap();
+}
+
 /// Create a [`Session`][1] rooted at `root`: writes a minimal `hok.json`
 /// (with `root_path` and `cache_path` pointing at `root`) and loads it via
 /// `Session::new_with`.

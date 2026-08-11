@@ -46,48 +46,64 @@ fn embed_known_buckets() {
 
 fn embed_hok_shim() {
     let out_dir = env::var("OUT_DIR").unwrap();
-    let shim_name = if cfg!(windows) {
-        "hok-shim.exe"
-    } else {
-        "hok-shim"
-    };
-
-    // CARGO_MANIFEST_DIR = crates/libscoop/ → workspace root = crates/libscoop/../../
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_dir = Path::new(&manifest_dir)
         .parent()
         .and_then(|p| p.parent())
         .expect("workspace root");
 
-    let debug_path = workspace_dir.join("target/debug").join(shim_name);
-    let release_path = workspace_dir.join("target/release").join(shim_name);
+    // Two shim variants, selected at shim-creation time by the target's PE
+    // subsystem:
+    // - hok-shim (console)     — console targets; the shell waits for the
+    //   shim so interactive children keep working
+    // - hok-shim-gui (GUI)     — GUI targets; no console window on
+    //   double-click and the shell does not wait
+    let shims = [
+        ("hok-shim", "HOK_SHIM_BYTES"),
+        ("hok-shim-gui", "HOK_SHIM_GUI_BYTES"),
+    ];
+    let mut embedded = String::new();
+    for (stem, const_name) in shims {
+        // CARGO_CFG_TARGET_OS (not cfg!(windows), which is host-based) so a
+        // cross-compile from a non-Windows host embeds the right name.
+        let is_windows_target = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+        let shim_name = if is_windows_target {
+            format!("{stem}.exe")
+        } else {
+            stem.to_string()
+        };
 
-    // Prefer release binary, fall back to debug
-    let shim_src = if release_path.exists() {
-        release_path
-    } else if debug_path.exists() {
-        debug_path
-    } else {
-        panic!(
-            "hok-shim binary not found at {}\n  Run `cargo build -p hok-shim` first.",
-            release_path.display()
-        );
-    };
+        // Prefer release binary, fall back to debug
+        let debug_path = workspace_dir.join("target/debug").join(&shim_name);
+        let release_path = workspace_dir.join("target/release").join(&shim_name);
 
-    let shim_dest = Path::new(&out_dir).join(shim_name);
-    fs::copy(&shim_src, &shim_dest).expect("copy hok-shim to OUT_DIR");
+        let shim_src = if release_path.exists() {
+            release_path.clone()
+        } else if debug_path.exists() {
+            debug_path.clone()
+        } else {
+            panic!(
+                "hok-shim binary not found at {}\n  Run `cargo build -p hok-shim` first.",
+                release_path.display()
+            );
+        };
 
-    let embedded = Path::new(&out_dir).join("embedded_shim.rs");
-    // Use include_bytes! on the copy in OUT_DIR (stable at compile time)
-    fs::write(
-        &embedded,
-        format!(
-            "pub const HOK_SHIM_BYTES: &[u8] = include_bytes!({:?});\n",
+        let shim_dest = Path::new(&out_dir).join(&shim_name);
+        fs::copy(&shim_src, &shim_dest).expect("copy hok-shim to OUT_DIR");
+
+        // Use include_bytes! on the copy in OUT_DIR (stable at compile time)
+        embedded.push_str(&format!(
+            "pub const {const_name}: &[u8] = include_bytes!({:?});\n",
             shim_dest.display()
-        ),
-    )
-    .unwrap();
+        ));
 
-    println!("cargo:rerun-if-changed={}", shim_src.display());
+        // Re-embed whenever either candidate changes (the picked one this
+        // run may differ on the next).
+        println!("cargo:rerun-if-changed={}", debug_path.display());
+        println!("cargo:rerun-if-changed={}", release_path.display());
+    }
     println!("cargo:rerun-if-changed=build.rs");
+
+    let embedded_file = Path::new(&out_dir).join("embedded_shim.rs");
+    fs::write(&embedded_file, embedded).expect("write embedded_shim.rs");
 }

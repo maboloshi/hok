@@ -12,6 +12,7 @@
 //! - [`network`] — HTTP networking via `ureq`
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
+//! - [`pe`] — PE executable introspection (subsystem detection)
 //! - [`string`] — String utilities (encoding, glob matching)
 //! - [`time`] — Scoop-compatible `last_update` timestamp codec
 //! - [`version`] — Semantic version comparison
@@ -36,6 +37,7 @@ pub mod hash;
 pub mod network;
 pub mod os;
 pub mod path;
+pub mod pe;
 pub mod string;
 pub mod time;
 pub mod url;

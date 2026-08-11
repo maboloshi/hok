@@ -7,21 +7,25 @@
 //!
 //! # Design
 //!
-//! - **Embedded shim binary**: The actual shim launcher is compiled as a
-//!   separate crate (`hok-shim`) and embedded into the library at build time
-//!   via `include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"))`.
+//! - **Embedded shim binaries**: The shim launcher is compiled as a
+//!   separate crate (`hok-shim`) in two variants — `hok-shim` (console
+//!   subsystem) and `hok-shim-gui` (GUI subsystem) — and embedded into the
+//!   library at build time via
+//!   `include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"))`.
+//!   The variant is picked per target from its PE subsystem (see
+//!   [`internal::pe`]): GUI targets get the GUI shim (no console window on
+//!   double-click), everything else the console shim (the shell waits, so
+//!   interactive children keep working).
 //! - **Shim info file (`.shim`)**: Alongside each shim, a metadata file is
 //!   written containing the *absolute* target path (upstream's
 //!   `path = "$resolved_path"`), arguments, and shim type. This is
-//!   read by `hok-shim` / `hok-shim-ref` at runtime.
+//!   read by `hok-shim` at runtime.
 //! - **Conflict resolution**: Mirrors upstream Scoop's `warn_on_overwrite`:
 //!   an existing shim is preserved by renaming it to `{name}.{ext}.{owner}`
 //!   (e.g. `foo.ps1.scoop`) and a warning is emitted only when it belongs to
 //!   a *different* package; same-package updates overwrite silently. Every
 //!   generated file is treated as an ownership carrier, as upstream calls
 //!   `warn_on_overwrite` per file (`$shim.ps1`, `$shim.cmd`, `$shim`).
-//! - **Known gaps vs Scoop**: GUI `.exe` detection (PE subsystem) is not
-//!   implemented.
 
 #![allow(dead_code)]
 
@@ -267,11 +271,20 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
             let target_abs = target_abs.to_string_lossy();
 
             if shim.ty == ShimType::Exe {
-                // TODO: GUI detection — read PE subsystem of target; if GUI, skip hok-shim.exe
-                // and use ShellExecuteExW path, or mark shim.exe as GUI subsystem.
-                // Currently all .exe shims launch with a console window.
+                // Pick the shim variant matching the target's PE subsystem:
+                // GUI targets get the GUI-subsystem shim (no console window
+                // on double-click; the invoking shell does not wait, like
+                // running the GUI program directly); everything else —
+                // console, unknown, or unreadable — gets the console shim
+                // (the shell waits for it, so interactive children keep
+                // working with stdin).
+                let shim_bytes = if internal::pe::is_gui(Path::new(&*target_abs)) {
+                    HOK_SHIM_GUI_BYTES
+                } else {
+                    HOK_SHIM_BYTES
+                };
 
-                // Use the embedded hok-shim.exe as the native .exe shim
+                // Use the embedded hok-shim binary as the native .exe shim
                 let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
                 let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
 
@@ -281,8 +294,8 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 // `warn_on_overwrite` treatment.
                 handle_existing_shim(session, &shim_meta, pkg_name)?;
 
-                // Write the embedded shim
-                if let Err(e) = std::fs::write(&shim_exe, HOK_SHIM_BYTES) {
+                // Write the embedded shim (selected variant)
+                if let Err(e) = std::fs::write(&shim_exe, shim_bytes) {
                     // The stub cannot be overwritten while it is running
                     // (e.g. `hok update hok` — the running hok was launched
                     // through shims\hok.exe). The stub is version-independent
@@ -697,6 +710,48 @@ mod tests {
         assert!(
             meta.starts_with(&format!("path = \"{root_abs}\\")),
             "meta must embed an absolute path: {meta}"
+        );
+    }
+
+    #[test]
+    fn test_add_exe_shim_picks_variant_by_subsystem() {
+        // GUI target (PE subsystem 2) → GUI-subsystem shim variant: no
+        // console window on double-click, shell does not wait.
+        let root = test_utils::tmpdir("shim_variant_gui");
+        let session = test_utils::test_session(&root);
+        test_utils::write_fake_pe(
+            &root.join("apps/foo/current/main.exe"),
+            2, // IMAGE_SUBSYSTEM_WINDOWS_GUI
+        );
+        add(&session, &make_package("foo", r#"[["main.exe", "foo"]]"#)).unwrap();
+        let stub = std::fs::read(root.join("shims/foo.exe")).unwrap();
+        assert_eq!(stub, HOK_SHIM_GUI_BYTES, "GUI target must get the GUI shim");
+
+        // Console target (PE subsystem 3) → console shim variant: the shell
+        // waits, so interactive children keep working.
+        let root = test_utils::tmpdir("shim_variant_console");
+        let session = test_utils::test_session(&root);
+        test_utils::write_fake_pe(
+            &root.join("apps/foo/current/main.exe"),
+            3, // IMAGE_SUBSYSTEM_WINDOWS_CUI
+        );
+        add(&session, &make_package("foo", r#"[["main.exe", "foo"]]"#)).unwrap();
+        let stub = std::fs::read(root.join("shims/foo.exe")).unwrap();
+        assert_eq!(
+            stub, HOK_SHIM_BYTES,
+            "console target must get the console shim"
+        );
+
+        // Missing target (unreadable) → console fallback (conservative:
+        // interactive children keep working at the cost of a flash when
+        // double-clicked).
+        let root = test_utils::tmpdir("shim_variant_missing");
+        let session = test_utils::test_session(&root);
+        add(&session, &make_package("foo", r#"[["main.exe", "foo"]]"#)).unwrap();
+        let stub = std::fs::read(root.join("shims/foo.exe")).unwrap();
+        assert_eq!(
+            stub, HOK_SHIM_BYTES,
+            "unreadable target must default to console shim"
         );
     }
 
