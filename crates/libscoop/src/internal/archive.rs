@@ -150,6 +150,27 @@ enum Compression {
 
 // ─── 7z extraction via sevenz-rust2 ──────────────────────────────────
 
+/// Installer signatures that embed standard 7z payloads. Both markers live
+/// in the PE stub (the file head), so a bounded search is sufficient.
+const NSIS_MARKER: &[u8] = b"Nullsoft Install System";
+const INNO_MARKER: &[u8] = b"Inno Setup";
+const INSTALLER_SIGNATURE_SCAN_LIMIT: usize = 1024 * 1024; // 1 MiB
+
+/// True when `data` is an NSIS or Inno Setup installer — formats that embed
+/// 7z archives as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder,
+/// `{tmp}` blobs in Inno), so a raw magic match would not denote a 7z SFX.
+fn is_installer_pe(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
+    head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
+        || head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
+}
+
+/// True when a PE file may be a 7z SFX whose archive data starts after the
+/// stub — i.e. it is not a recognised NSIS / Inno Setup installer.
+fn pe_embedded_sfx_searchable(data: &[u8]) -> bool {
+    data.starts_with(b"MZ") && !is_installer_pe(data)
+}
+
 fn extract_7z(
     src: &Path,
     dest: &Path,
@@ -170,7 +191,13 @@ fn extract_7z(
     let file_data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
-    if file_data.starts_with(b"MZ") {
+    // Skip the embedded-7z search for NSIS / Inno Setup installers: those
+    // formats legitimately embed standard 7z payloads (`$PLUGINSDIR\app-64.7z`
+    // in electron-builder installers, `{tmp}` blobs in Inno). Blindly matching
+    // the 7z magic would extract that inner archive directly and skip the
+    // installer's directory structure — 7-Zip preserves it instead, so we
+    // defer to 7z.exe below.
+    if pe_embedded_sfx_searchable(&file_data) {
         const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
         if let Some(pos) = file_data
             .windows(MAGIC_7Z.len())
@@ -609,6 +636,50 @@ mod tests {
         assert_eq!(detect_format("foo.zst"), Some("zst"));
         assert_eq!(detect_format("foo.exe"), None);
         assert_eq!(detect_format(""), None);
+    }
+
+    #[test]
+    fn test_is_installer_pe() {
+        // NSIS (electron-builder etc.) — marker in the stub
+        let nsis = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
+Nullsoft Install System v3.08\x00\x00\x00\x00uninstall.exe";
+        assert!(is_installer_pe(nsis));
+
+        // Inno Setup — marker in the stub
+        let inno = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
+Inno Setup Setup Data (5.8.3)";
+        assert!(is_installer_pe(inno));
+
+        // Plain PE (e.g. a real 7z SFX stub) — no installer marker
+        let sfx = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
+\x37\x7a\xbc\xaf\x27\x1c\x00\x04";
+        assert!(!is_installer_pe(sfx));
+
+        // Non-PE data
+        assert!(!is_installer_pe(b"7z\xbc\xaf\x27\x1c random data"));
+
+        // Marker beyond the 1 MiB scan limit is ignored (payload area)
+        let mut deep = Vec::from(b"MZ\x90\x00\x03".as_slice());
+        deep.resize(INSTALLER_SIGNATURE_SCAN_LIMIT + 64, 0);
+        deep[INSTALLER_SIGNATURE_SCAN_LIMIT + 10..][..NSIS_MARKER.len()]
+            .copy_from_slice(NSIS_MARKER);
+        assert!(!is_installer_pe(&deep));
+    }
+
+    #[test]
+    fn test_pe_embedded_sfx_searchable() {
+        // NSIS/Inno installers never take the embedded-7z search path
+        let nsis = b"MZ\x90\x00\x03Nullsoft Install System v3.08";
+        assert!(!pe_embedded_sfx_searchable(nsis));
+        let inno = b"MZ\x90\x00\x03Inno Setup Setup Data (5.8.3)";
+        assert!(!pe_embedded_sfx_searchable(inno));
+
+        // A plain PE without installer markers may be a 7z SFX
+        let sfx = b"MZ\x90\x00\x03\x00\x00\x00\x00\x00";
+        assert!(pe_embedded_sfx_searchable(sfx));
+
+        // Non-PE never searches
+        assert!(!pe_embedded_sfx_searchable(b"not a PE"));
     }
 
     #[test]
