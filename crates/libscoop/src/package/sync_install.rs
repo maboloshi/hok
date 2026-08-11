@@ -8,12 +8,13 @@
 use crate::internal::hash::ChecksumBuilder;
 use std::collections::HashSet;
 use std::io::Read;
+use std::path::Path;
 use tracing::{debug, info};
 
-use crate::package::{download, identity, operations, query, resolve, Package};
+use crate::package::{download, identity, manifest_source, operations, query, resolve, Package};
 use crate::{
-    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
-    Session,
+    constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible, internal, persist, psmodule, shim,
+    shortcut, Error, Event, QueryOption, Session,
 };
 
 use super::{confirm_transaction, SyncOption, Transaction};
@@ -71,9 +72,89 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             })
             .collect::<Vec<_>>();
     } else {
-        let synced = query::query_synced(session, queries, &[])?;
+        // Split queries into isolated installs (URL / local path / `@version`)
+        // and regular bucket queries. Isolated installs resolve their manifest
+        // directly (upstream `Get-Manifest` + `generate_user_manifest`) and are
+        // installed under the `__isolated__` bucket; regular queries keep the
+        // bucket-scan matching below.
+        let mut isolated: Vec<Package> = Vec::new();
+        let mut regular: Vec<&str> = Vec::new();
 
         for &query in queries {
+            let aq = identity::parse_app(query);
+
+            // `app@version` — generate (or reuse) a manifest for the version.
+            if let Some(aq) = aq.as_ref().filter(|aq| aq.version.is_some()) {
+                let version = aq.version.as_deref().unwrap_or_default();
+                match manifest_source::generate_user_manifest(
+                    session,
+                    &aq.app,
+                    aq.bucket.as_deref(),
+                    version,
+                ) {
+                    Ok(resolved) => {
+                        let p = Package::from(
+                            &resolved.name,
+                            ISOLATED_PACKAGE_BUCKET,
+                            resolved.manifest,
+                        );
+                        if !isolated.contains(&p) {
+                            isolated.push(p);
+                        }
+                    }
+                    Err(e) => {
+                        if ignore_failure {
+                            session
+                                .output()
+                                .error(format!("failed to resolve '{}': {}", query, e));
+                            continue;
+                        }
+                        return Err(e);
+                    }
+                }
+                continue;
+            }
+
+            // URL / local-path manifest — resolve and install in isolation.
+            if let Some(aq) = aq.as_ref() {
+                let is_local = Path::new(&aq.app).exists();
+                if identity::is_manifest_url(&aq.app) || is_local {
+                    match manifest_source::resolve_manifest(session, &aq.app, None) {
+                        Ok(resolved) => {
+                            let p = Package::from(
+                                &resolved.name,
+                                ISOLATED_PACKAGE_BUCKET,
+                                resolved.manifest,
+                            );
+                            if !isolated.contains(&p) {
+                                isolated.push(p);
+                            }
+                        }
+                        Err(e) => {
+                            if ignore_failure {
+                                session
+                                    .output()
+                                    .error(format!("failed to resolve '{}': {}", query, e));
+                                continue;
+                            }
+                            return Err(e);
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            regular.push(query);
+        }
+
+        // Regular bucket queries: exact-match against the synced scan.
+        let synced = if regular.is_empty() {
+            vec![]
+        } else {
+            query::query_synced(session, &regular, &[])?
+        };
+
+        for &query in &regular {
             let mut matched = synced
                 .iter()
                 .filter(|&p| {
@@ -140,6 +221,8 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 }
             }
         }
+
+        packages.extend(isolated);
     };
 
     if packages.is_empty() {
@@ -673,27 +756,54 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         .join(session.current_dir_name(&version));
 
     // 1. Copy manifest from bucket to <meta_dir>/manifest.json
-    // Use bucket path (manifest.path() may be virtual when loaded from cache)
-    let bucket_path = session.bucket_dir(pkg.bucket());
-    let manifest_src = {
-        let primary = bucket_path
-            .join("bucket")
-            .join(format!("{}.json", pkg.name()));
-        let fallback = bucket_path.join(format!("{}.json", pkg.name()));
-        if primary.exists() {
-            primary
-        } else {
-            fallback
-        }
-    };
     let manifest_dst = meta_dir.join("manifest.json");
-    match std::fs::copy(&manifest_src, manifest_dst) {
-        Ok(_) => {}
-        Err(e) => {
-            return Err(Error::Custom(format!(
-                "could not copy manifest from {:?}: {}",
-                manifest_src, e
-            )))
+    if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+        // Isolated installs (URL / local path / generated version): persist
+        // the raw manifest text captured at resolve time; fall back to
+        // copying the source file.
+        match pkg.manifest().raw() {
+            Some(raw) => match std::fs::write(&manifest_dst, raw) {
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(Error::Custom(format!(
+                        "could not write manifest to {:?}: {}",
+                        manifest_dst, e
+                    )))
+                }
+            },
+            None => match std::fs::copy(pkg.manifest().path(), &manifest_dst) {
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(Error::Custom(format!(
+                        "could not copy manifest from {:?}: {}",
+                        pkg.manifest().path(),
+                        e
+                    )))
+                }
+            },
+        }
+    } else {
+        // Use bucket path (manifest.path() may be virtual when loaded from cache)
+        let bucket_path = session.bucket_dir(pkg.bucket());
+        let manifest_src = {
+            let primary = bucket_path
+                .join("bucket")
+                .join(format!("{}.json", pkg.name()));
+            let fallback = bucket_path.join(format!("{}.json", pkg.name()));
+            if primary.exists() {
+                primary
+            } else {
+                fallback
+            }
+        };
+        match std::fs::copy(&manifest_src, manifest_dst) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::Custom(format!(
+                    "could not copy manifest from {:?}: {}",
+                    manifest_src, e
+                )))
+            }
         }
     }
 
@@ -702,11 +812,24 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     //  lib/install.ps1:73; the architecture is the *selected* one, i.e.
     //  after the `default_architecture` config and `-a/--arch` overrides)
     let arch = crate::internal::arch::Arch::current().name();
-    let install_url = pkg.download_urls().first().copied();
+    // Isolated installs record the manifest source (URL / local path /
+    // generated workspace file) as `url`, mirroring upstream
+    // `save_install_info`; bucket installs keep the download URL.
+    let install_url = if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+        Some(pkg.manifest().path().display().to_string())
+    } else {
+        pkg.download_urls().first().map(|s| s.to_string())
+    };
     let install_info = serde_json::json!({
         "architecture": arch,
         "url": install_url,
-        "bucket": pkg.bucket(),
+        // Isolated installs carry no bucket (upstream `save_install_info`
+        // drops null values; readers fall back to `ISOLATED_PACKAGE_BUCKET`).
+        "bucket": if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!(pkg.bucket())
+        },
     });
     if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
         return Err(Error::Custom(format!("install.json write: {}", e)));
@@ -837,6 +960,106 @@ mod tests {
             &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailure],
         )
         .unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── isolated installs (URL / local path / @version) ────────────────────
+
+    const NO_DOWNLOAD_MANIFEST: &str = r#"{
+        "version": "1.0.0",
+        "homepage": "https://example.com",
+        "license": "MIT"
+    }"#;
+
+    /// A local-path manifest installs as an isolated package: `manifest.json`
+    /// persists the raw source text and `install.json` records the source
+    /// path with no bucket.
+    #[test]
+    fn install_local_path_manifest_is_isolated() {
+        let root = crate::test_utils::tmpdir("install_local_path");
+        let session = crate::test_utils::test_session(&root);
+
+        let manifest_path = root.join("myapp.json");
+        std::fs::write(&manifest_path, NO_DOWNLOAD_MANIFEST).unwrap();
+
+        install(&session, &[manifest_path.to_str().unwrap()], &[]).unwrap();
+
+        let app_dir = root.join("apps").join("myapp");
+        let meta_dir = app_dir.join("current");
+        assert!(meta_dir.is_dir(), "app should be installed under current");
+
+        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        assert_eq!(saved, NO_DOWNLOAD_MANIFEST, "raw manifest text persisted");
+
+        let install_info: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(meta_dir.join("install.json")).unwrap())
+                .unwrap();
+        assert!(
+            install_info["bucket"].is_null(),
+            "isolated installs carry no bucket: {}",
+            install_info
+        );
+        let url = install_info["url"].as_str().unwrap();
+        assert!(
+            url.ends_with("myapp.json"),
+            "install.json url records the manifest source: {}",
+            url
+        );
+        assert!(
+            url.contains("apps") == false,
+            "url is the source, not an app path"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An `app@version` query where the version matches the resolved
+    /// manifest installs that manifest as an isolated package.
+    #[test]
+    fn install_version_matching_manifest_is_isolated() {
+        let root = crate::test_utils::tmpdir("install_version_match");
+        let session = crate::test_utils::test_session(&root);
+
+        let manifest_path = root.join("myapp.json");
+        std::fs::write(&manifest_path, NO_DOWNLOAD_MANIFEST).unwrap();
+
+        install(
+            &session,
+            &[&format!("{}@1.0.0", manifest_path.display())],
+            &[],
+        )
+        .unwrap();
+
+        let meta_dir = root.join("apps").join("myapp").join("current");
+        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        assert_eq!(saved, NO_DOWNLOAD_MANIFEST);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `name@version` query without autoupdate capability fails with the
+    /// upstream error instead of installing the wrong version.
+    #[test]
+    fn install_version_without_autoupdate_errors() {
+        let root = crate::test_utils::tmpdir("install_version_no_au");
+        let session = crate::test_utils::test_session(&root);
+
+        let manifest_path = root.join("myapp.json");
+        std::fs::write(&manifest_path, NO_DOWNLOAD_MANIFEST).unwrap();
+
+        let err = install(
+            &session,
+            &[&format!("{}@2.0.0", manifest_path.display())],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not have autoupdate capability"),
+            "{}",
+            err
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

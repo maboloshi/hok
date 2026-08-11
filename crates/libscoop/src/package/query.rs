@@ -804,16 +804,27 @@ pub fn prune_installed<'s>(
     session: &Session,
     queries: &[&'s str],
 ) -> Fallible<(Vec<&'s str>, Vec<String>)> {
-    let installed = query(session, queries.to_vec(), vec![QueryOption::Explicit], true)?;
+    // Normalize queries to bare app names before matching installed
+    // packages, mirroring upstream `parse_app`: `app@version`, manifest
+    // URLs and local paths are matched by their install name
+    // (`appname_from_url` for URL/path installs).
+    let bare_names: Vec<String> = queries.iter().map(|q| bare_query_name(q)).collect();
+
+    let installed = query(
+        session,
+        bare_names.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec![QueryOption::Explicit],
+        true,
+    )?;
 
     let mut already_installed = Vec::new();
     let mut to_install = Vec::new();
 
-    for q in queries {
+    for (q, bare) in queries.iter().zip(&bare_names) {
         let installed_names: Vec<&str> = installed
             .iter()
             .filter(|p| {
-                let q_normalized = q.to_lowercase();
+                let q_normalized = bare.to_lowercase();
                 let p_name = p.name().to_lowercase();
                 let p_ident = p.ident().to_lowercase();
                 q_normalized == p_name || q_normalized == p_ident
@@ -829,6 +840,22 @@ pub fn prune_installed<'s>(
     }
 
     Ok((to_install, already_installed))
+}
+
+/// Reduce an install query to the bare app name used for installed-package
+/// matching: strip a `@version` suffix and map URL / local-path manifests
+/// to their last path segment without `.json`.
+fn bare_query_name(q: &str) -> String {
+    match super::identity::parse_app(q) {
+        Some(aq) => {
+            if super::identity::is_manifest_url(&aq.app) || Path::new(&aq.app).exists() {
+                super::identity::appname_from_url(&aq.app)
+            } else {
+                aq.app
+            }
+        }
+        None => q.to_owned(),
+    }
 }
 
 /// A single unsatisfied `suggest` entry: the package that suggests it and
@@ -851,9 +878,15 @@ pub struct SuggestEntry {
 ///
 /// Returns an error if querying the installed packages fails.
 pub fn suggest(session: &Session, packages: &[&str]) -> Fallible<Vec<SuggestEntry>> {
+    // Normalize URL / path / `@version` queries to bare app names, same as
+    // `prune_installed`, so suggestions are looked up for the installed name.
+    let bare = packages
+        .iter()
+        .map(|p| bare_query_name(p))
+        .collect::<Vec<_>>();
     let installed = query(
         session,
-        packages.to_vec(),
+        bare.iter().map(String::as_str).collect::<Vec<_>>(),
         vec![QueryOption::Explicit],
         true,
     )?;
