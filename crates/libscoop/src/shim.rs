@@ -206,7 +206,11 @@ impl Shim<'_> {
             def[1]
         };
 
-        let args = if length < 2 {
+        // A two-element bin (`[path, name]`) carries no args — upstream
+        // `shim_def` yields an empty `$arg` and `if ($arg)` skips the
+        // `args = ...` line in the `.shim` metadata. Map that to `None` so
+        // callers never emit an empty `args = ""` line.
+        let args = if def.len() <= 2 {
             None
         } else {
             Some(def[2..].to_vec())
@@ -693,6 +697,33 @@ mod tests {
         assert!(
             meta.starts_with(&format!("path = \"{root_abs}\\")),
             "meta must embed an absolute path: {meta}"
+        );
+    }
+
+    #[test]
+    fn test_add_exe_shim_args_line_only_when_args_present() {
+        // A two-element bin (`[path, name]`) must not emit an empty
+        // `args = ""` line (upstream: `if ($arg) { ... }` skips it); a bin
+        // with args writes `args = "<args>"`.
+        let root = test_utils::tmpdir("shim_args_line");
+        let session = test_utils::test_session(&root);
+
+        add(&session, &make_package("foo", r#"[["main.exe", "foo"]]"#)).unwrap();
+        let meta = std::fs::read_to_string(root.join("shims/foo.shim")).unwrap();
+        assert!(
+            !meta.lines().any(|l| l.starts_with("args")),
+            "no args line expected: {meta}"
+        );
+
+        add(
+            &session,
+            &make_package("bar", r#"[["main.exe", "bar", "--version"]]"#),
+        )
+        .unwrap();
+        let meta2 = std::fs::read_to_string(root.join("shims/bar.shim")).unwrap();
+        assert!(
+            meta2.contains("args = \"--version\""),
+            "args line expected: {meta2}"
         );
     }
 
