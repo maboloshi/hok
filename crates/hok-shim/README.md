@@ -2,14 +2,33 @@
 
 A zero-dependency Windows executable that reads Scoop `.shim` metadata files and launches the target program.
 
+hok ships **two variants** of this binary, differing only by PE subsystem and
+selected from the target program's own subsystem — see [Shim Variants](#shim-variants).
+
 ## What it does
 
 When hok installs a package with executables (`.exe`), it:
 
-1. Writes `shims/{name}.exe` with this shim binary
+1. Writes `shims/{name}.exe` with the shim variant matching the target
+   (GUI-subsystem shim for GUI targets, console shim otherwise)
 2. Writes `shims/{name}.shim` with target info
 
 When the user runs `{name}` from the command line, the shim reads the `.shim` file, resolves the path, and launches the real executable.
+
+## Shim Variants
+
+Two build variants share the same core (`src/lib.rs`, `#![no_std]`) and differ
+only by their PE subsystem:
+
+| Variant | Subsystem | Used for | Behavior |
+|---------|-----------|----------|----------|
+| `hok-shim` | console | console apps (`git`, `python`, `reasonix`, …) | The invoking shell **waits** for the shim, so interactive children keep working (stdin is not pre-empted by the shell prompt) |
+| `hok-shim-gui` | GUI | GUI apps (`vscode`, `notepad`, …) | **No console window** on double-click; the shell does **not** wait — same UX as running the GUI program directly |
+
+hok picks the variant at shim-creation time by reading the target's PE
+`Subsystem` field (`2` = GUI, `3` = console). Unknown or unreadable targets
+default to the console variant — conservative, since a console flash on
+double-click is a lesser evil than breaking interactive console programs.
 
 ## Shim File Format
 
@@ -66,15 +85,24 @@ The shim waits for the child process to finish and forwards its exit code. If th
 
 ## Features
 
+- **Two variants** — console shim for console targets (shell waits, interactive
+  stdin works), GUI shim for GUI targets (no console window, shell does not wait)
 - **GUI detection** — Hides console for GUI apps (`FreeConsole`)
-- **Console attach** — Attaches to parent console for console apps (`AttachConsole`), avoiding costly console allocation (+416ms → +29ms overhead)
-  - **Elevation** — Auto-relaunch via ``ShellExecuteExW`` ``runas`` when UAC is required; waits for the child and forwards its exit code
+- **Console attach** — Attaches to parent console for console apps
+  (`AttachConsole`), avoiding costly console allocation (+416ms → +29ms
+  overhead) when the GUI shim launches a console child
+- **Elevation** — Auto-relaunch via ``ShellExecuteExW`` ``runas`` when UAC is required; waits for the child and forwards its exit code
 - **Job object** — `KILL_ON_JOB_CLOSE` ensures child process is cleaned up
 - **Ctrl+C forwarding** — Ignores Ctrl+C in the shim so the child receives it
 - **`.shim` parsing** — Parses `path`, `args`, `cwd`, `elevate`, and environment variable overrides
 - **`~\\..\\` resolution** — Resolves relative paths against the shim's location
 
 ## Performance
+
+> Benchmark measured on the **GUI variant** (`hok-shim-gui`, the former single
+> `hok-shim` binary). The console variant (`hok-shim`) is expected to match —
+> the bottleneck is `CreateProcessW`, not shim logic — but numbers should be
+> re-measured when convenient.
 
 Benchmarked with `C:\Windows\System32\whoami.exe` (console) via Python `subprocess.run` — 10 warmup + 30 measured runs. Architecture: x64. All shims use the same `.shim` file (`path = C:\Windows\System32\whoami.exe`).
 
@@ -143,8 +171,12 @@ python scripts/benchmark_shims.py
 cargo build -p hok-shim --release
 ```
 
-The binary is at `target/release/hok-shim.exe`.
+The binaries are at `target/release/hok-shim.exe` (console) and
+`target/release/hok-shim-gui.exe` (GUI).
 
 ## Embedding
 
-Since hok 0.2.0, `hok-shim` is automatically built and **embedded into `hok.exe`** at compile time via `libscoop/build.rs`. No separate build step needed for normal usage.
+Since hok 0.2.0, both `hok-shim` variants are automatically built and
+**embedded into `hok.exe`** at compile time via `libscoop/build.rs`
+(`HOK_SHIM_BYTES` / `HOK_SHIM_GUI_BYTES`). No separate build step needed for
+normal usage.
