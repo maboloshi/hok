@@ -11,14 +11,17 @@
 //!   separate crate (`hok-shim`) and embedded into the library at build time
 //!   via `include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"))`.
 //! - **Shim info file (`.shim`)**: Alongside each shim, a metadata file is
-//!   written containing the target path, arguments, and shim type. This is
-//!   read by `hok-shim-ref` at runtime.
+//!   written containing the *absolute* target path (upstream's
+//!   `path = "$resolved_path"`), arguments, and shim type. This is
+//!   read by `hok-shim` / `hok-shim-ref` at runtime.
 //! - **Conflict resolution**: Mirrors upstream Scoop's `warn_on_overwrite`:
 //!   an existing shim is preserved by renaming it to `{name}.{ext}.{owner}`
 //!   (e.g. `foo.ps1.scoop`) and a warning is emitted only when it belongs to
-//!   a *different* package; same-package updates overwrite silently.
-//! - **Known gaps vs Scoop**: JAR shims are simpler (no `pushd`/`popd`);
-//!   GUI `.exe` detection (PE subsystem) is not implemented.
+//!   a *different* package; same-package updates overwrite silently. Every
+//!   generated file is treated as an ownership carrier, as upstream calls
+//!   `warn_on_overwrite` per file (`$shim.ps1`, `$shim.cmd`, `$shim`).
+//! - **Known gaps vs Scoop**: GUI `.exe` detection (PE subsystem) is not
+//!   implemented.
 
 #![allow(dead_code)]
 
@@ -44,10 +47,12 @@ fn alt_filename(path: &Path, pkg: &str) -> PathBuf {
 /// Determine the package an existing shim file belongs to by parsing the
 /// target path it points at (upstream Scoop's `get_app_name_from_shim`).
 ///
-/// Both shim styles are recognized:
-/// - hok metadata / relative: `path = "~\\..\\apps\\<pkg>\\current\\..."` (.shim)
-/// - upstream absolute: `path = "C:\\...\\apps\\<pkg>\\current\\..."` (.shim)
-///   and `@rem C:\\...\\apps\\<pkg>\\...` comment lines (.cmd/.ps1 shims)
+/// Both path styles are recognized:
+/// - absolute (upstream and current hok): `path = "C:\\...\\apps\\<pkg>\\current\\..."`
+///   (.shim) and `@rem C:\\...\\apps\\<pkg>\\...` comment lines
+///   (.cmd/.ps1/extension-less shims)
+/// - legacy hok relative: `path = "~\\..\\apps\\<pkg>\\current\\..."` (.shim),
+///   kept for shims written before hok switched to absolute paths
 ///
 /// Returns `None` when the owner cannot be determined (unreadable file, or no
 /// `apps\\<pkg>\\` segment) — upstream returns an empty string in that case
@@ -232,6 +237,7 @@ impl Shim<'_> {
 /// Add shims for a package.
 pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let shims_dir = session.shims_dir();
+    let apps_dir = session.apps_dir();
     internal::fs::ensure_dir(&shims_dir)?;
 
     if let Some(bins) = package.manifest().bin() {
@@ -248,6 +254,13 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
         for def in bins.into_iter().filter(|d| !d.is_empty()) {
             let shim = Shim::new(def);
+            // Absolute target path (upstream passes the `Convert-Path`
+            // result around; every generated shim embeds it).
+            let target_abs = apps_dir
+                .join(pkg_name)
+                .join(version_dir)
+                .join(shim.real_name);
+            let target_abs = target_abs.to_string_lossy();
 
             if shim.ty == ShimType::Exe {
                 // TODO: GUI detection — read PE subsystem of target; if GUI, skip hok-shim.exe
@@ -287,18 +300,17 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                     }
                 }
 
-                // Write .shim metadata file
-                let target_rel = format!(
-                    r#"~\..\apps\{}\{}\{}"#,
-                    pkg_name, version_dir, shim.real_name
-                );
+                // Write .shim metadata file. Upstream writes an *absolute*
+                // path (`path = "$resolved_path"`, where `$resolved_path` is
+                // the `Convert-Path` result); hok previously wrote a
+                // `~\..\apps\...` relative form.
                 let meta_content = if let Some(args) = &shim.args {
                     format!(
-                        "path = \"{target_rel}\"\r\nargs = \"{}\"\r\n",
+                        "path = \"{target_abs}\"\r\nargs = \"{}\"\r\n",
                         args.join(" ")
                     )
                 } else {
-                    format!("path = \"{target_rel}\"\r\n")
+                    format!("path = \"{target_abs}\"\r\n")
                 };
                 std::fs::write(&shim_meta, meta_content.as_bytes())?;
 
@@ -309,20 +321,17 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 }
             } else {
                 // Use script-based shim (.cmd, .ps1, etc.)
-                let batches = generate_shim_batches(&shim, pkg_name, version_dir);
+                let batches = generate_shim_batches(&shim, &target_abs, &shims_dir);
 
                 for (path, content) in batches {
                     let full_path = shims_dir.join(&path);
-                    // Only the ownership-carrier file gets the
-                    // `warn_on_overwrite` treatment (upstream checks the
-                    // `.ps1` shim itself, not the `.cmd` wrapper, which is
-                    // overwritten unconditionally); same-package updates of
-                    // the carrier are overwritten silently.
-                    let is_carrier = shim.ty != ShimType::PowerShell
-                        || path.extension().and_then(|e| e.to_str()) != Some("cmd");
-                    if is_carrier {
-                        handle_existing_shim(session, &full_path, pkg_name)?;
-                    }
+                    // Every generated file gets the `warn_on_overwrite`
+                    // treatment, mirroring upstream's per-file calls
+                    // (`warn_on_overwrite "$shim.ps1"`, `"$shim.cmd"`,
+                    // `$shim`); same-package updates are overwritten
+                    // silently. (Upstream's `.exe` stub is the exception —
+                    // `Copy-Item -Force`, handled separately above.)
+                    handle_existing_shim(session, &full_path, pkg_name)?;
 
                     std::fs::write(&full_path, content.as_bytes())?;
 
@@ -345,72 +354,120 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 /// Generate shim files content for a given shim definition.
 ///
 /// Returns a list of `(target_path, content)` pairs.
-fn generate_shim_batches(shim: &Shim, pkg_name: &str, version_dir: &str) -> Vec<(PathBuf, String)> {
+///
+/// `target` is the *absolute* target path. Upstream Scoop embeds the
+/// `Convert-Path` result (absolute) in every generated shim — `.cmd` wrappers
+/// quote it directly and the `.ps1` shim keeps a `# <path>` comment — so hok
+/// mirrors that instead of the previous `%~dp0`/`$PSScriptRoot` relative
+/// forms. `shims_dir` is only needed for the `.ps1` shim's `Join-Path
+/// $PSScriptRoot` resolution (same-drive) decision.
+fn generate_shim_batches(shim: &Shim, target: &str, shims_dir: &Path) -> Vec<(PathBuf, String)> {
     let mut result = Vec::new();
-
-    // The target path relative to the shims dir: ..\apps\pkgname\<version_dir>\real_name
-    let target_rel = format!(r#"..\apps\{}\{}\{}"#, pkg_name, version_dir, shim.real_name);
 
     let arg_suffix = shim
         .args
         .as_ref()
         .map(|a| format!(" {}", a.join(" ")))
         .unwrap_or_default();
+    let arg_str = shim.args.as_ref().map(|a| a.join(" ")).unwrap_or_default();
 
     match shim.ty {
         ShimType::Exe => {
             // .cmd file: batch redirect to the target executable
             // (hok doesn't include Scoop's pre-built shim.exe stub,
             //  so .cmd wrapper is used for CLI access)
-            let content = format!("@echo off\r\n\"%~dp0{}\"{} %*\r\n", target_rel, arg_suffix);
+            let content = format!("@rem {target}\r\n@\"{target}\"{arg_suffix} %*\r\n");
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
 
             // .shim metadata file (Scoop-compatible format)
-            let shim_meta = format!(
-                "path = \"~\\..\\apps\\{}\\{}\\{}\"\r\n",
-                pkg_name, version_dir, shim.real_name
-            );
+            let shim_meta = format!("path = \"{target}\"\r\n");
             result.push((PathBuf::from(format!("{}.shim", shim.name)), shim_meta));
         }
-        ShimType::Batch | ShimType::Bash => {
-            // .cmd file: direct batch redirect
-            let content = format!("@echo off\r\n\"%~dp0{}\"{} %*\r\n", target_rel, arg_suffix);
+        ShimType::Batch => {
+            // .cmd file: direct batch redirect (upstream bat/cmd branch)
+            let content = format!("@rem {target}\r\n@\"{target}\"{arg_suffix} %*\r\n");
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
+
+            // extension-less shim for Git Bash (upstream: `#!/bin/sh` +
+            // MSYS2_ARG_CONV_EXCL redirect; LF only, no trailing newline)
+            let sh_content = format!(
+                "#!/bin/sh\n# {target}\nMSYS2_ARG_CONV_EXCL=/C cmd.exe /C \"{target}\"{arg_suffix} \"$@\""
+            );
+            result.push((PathBuf::from(shim.name.to_string()), sh_content));
+        }
+        ShimType::Bash => {
+            // Upstream `else` branch (extension-less targets): the .cmd
+            // wrapper routes the target through bash via wslpath/cygpath.
+            let quoted_arg = if shim.args.is_none() {
+                String::new()
+            } else {
+                format!("\"{arg_str}\"")
+            };
+            let cmd_content = format!(
+                "@rem {target}\r\n@echo off\r\nbash -c \"command -v wslpath >/dev/null\"\r\nif %errorlevel% equ 0 (\r\n  bash \"$(wslpath -u '{target}')\" {quoted_arg} %*\r\n) else (\r\n  set args={quoted_arg} %*\r\n  setlocal enabledelayedexpansion\r\n  if not \"!args!\"==\"\" set args=!args:\"=\"\"!\r\n  bash -c \"$(cygpath -u '{target}') !args!\"\r\n)\r\n"
+            );
+            result.push((PathBuf::from(format!("{}.cmd", shim.name)), cmd_content));
+
+            let sh_content = format!(
+                "#!/bin/sh\n# {target}\nif [ $WSL_INTEROP ]\nthen\n  \"$(wslpath -u '{target}')\"{arg_suffix} \"$@\"\nelse\n  \"$(cygpath -u '{target}')\"{arg_suffix} \"$@\"\nfi"
+            );
+            result.push((PathBuf::from(shim.name.to_string()), sh_content));
         }
         ShimType::PowerShell => {
-            // .ps1 shim: PowerShell script
-            let target_backslash = target_rel.replace('/', "\\");
-            let arg_str = shim.args.as_ref().map(|a| a.join(" ")).unwrap_or_default();
+            // .ps1 shim: upstream writes `# <abs>` plus either
+            // `$path = Join-Path $PSScriptRoot "<rel>"` (target on the same
+            // drive as the shims dir) or an absolute `$path = "<abs>"`
+            // assignment (across drives — `Resolve-Path -Relative` returns
+            // a drive-qualified path there, matched by
+            // `^(\\.\\)?\w:.*$`).
+            let path_line = match internal::path::relative_to(shims_dir, Path::new(target)) {
+                Some(rel) => format!(
+                    "$path = Join-Path $PSScriptRoot \"{}\"",
+                    rel.to_string_lossy()
+                ),
+                None => format!("$path = \"{target}\""),
+            };
             let ps_content = format!(
-                "if ($MyInvocation.ExpectingInput) {{ $input | & \"$PSScriptRoot\\{0}\" {1} @args }} else {{ & \"$PSScriptRoot\\{0}\" {1} @args }}\r\nexit $LASTEXITCODE\r\n",
-                target_backslash,
-                arg_str,
+                "# {target}\r\n{path_line}\r\nif ($MyInvocation.ExpectingInput) {{ $input | & $path {arg_str} @args }} else {{ & $path {arg_str} @args }}\r\nexit $LASTEXITCODE\r\n",
             );
             result.push((PathBuf::from(format!("{}.ps1", shim.name)), ps_content));
 
-            // .cmd wrapper: batch that calls PowerShell with pwsh fallback
+            // .cmd wrapper: batch that calls PowerShell with pwsh fallback,
+            // pointing directly at the real target (upstream ps1 branch)
             let cmd_content = format!(
-                "@echo off\r\nwhere /q pwsh.exe\r\nif %errorlevel% equ 0 (\r\n    pwsh -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{0}.ps1\" %*\r\n) else (\r\n    powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{0}.ps1\" %*\r\n)\r\n",
-                shim.name,
+                "@rem {target}\r\n@echo off\r\nwhere /q pwsh.exe\r\nif %errorlevel% equ 0 (\r\n    pwsh -NoProfile -ExecutionPolicy Bypass -File \"{target}\"{arg_suffix} %*\r\n) else (\r\n    powershell -NoProfile -ExecutionPolicy Bypass -File \"{target}\"{arg_suffix} %*\r\n)\r\n",
             );
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), cmd_content));
+
+            // extension-less shim for Git Bash (upstream ps1 branch)
+            let sh_content = format!(
+                "#!/bin/sh\n# {target}\nif command -v pwsh.exe > /dev/null 2>&1; then\n    pwsh.exe -NoProfile -ExecutionPolicy Bypass -File \"{target}\"{arg_suffix} \"$@\"\nelse\n    powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{target}\"{arg_suffix} \"$@\"\nfi"
+            );
+            result.push((PathBuf::from(shim.name.to_string()), sh_content));
         }
         ShimType::Java => {
-            // .cmd file: calls java -jar
-            // TODO: add @pushd %~dp0 before java and @popd after (some jars depend on CWD)
+            // .cmd file: calls java -jar from the jar's directory
+            // (upstream jar branch: pushd/popd so jars resolving relative
+            // paths see their own directory as CWD)
+            let parent = Path::new(target).parent().unwrap().to_string_lossy();
             let content = format!(
-                "@echo off\r\njava -jar \"%~dp0{}\"{} %*\r\n",
-                target_rel, arg_suffix
+                "@rem {target}\r\n@pushd {parent}\r\n@java -jar \"{target}\"{arg_suffix} %*\r\n@popd\r\n"
             );
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
+
+            let sh_content = format!(
+                "#!/bin/sh\n# {target}\nif [ $WSL_INTEROP ]\nthen\n  cd $(wslpath -u '{parent}')\nelse\n  cd $(cygpath -u '{parent}')\nfi\njava.exe -jar \"{target}\"{arg_suffix} \"$@\""
+            );
+            result.push((PathBuf::from(shim.name.to_string()), sh_content));
         }
         ShimType::Python => {
-            // .cmd file: calls python
-            let content = format!(
-                "@echo off\r\npython \"%~dp0{}\"{} %*\r\n",
-                target_rel, arg_suffix
-            );
+            // .cmd file: calls python (upstream py branch)
+            let content = format!("@rem {target}\r\n@python \"{target}\"{arg_suffix} %*\r\n");
             result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
+
+            let sh_content =
+                format!("#!/bin/sh\n# {target}\npython.exe \"{target}\"{arg_suffix} \"$@\"");
+            result.push((PathBuf::from(shim.name.to_string()), sh_content));
         }
     }
 
@@ -631,6 +688,54 @@ mod tests {
             meta.contains(r"apps\foo\current\main.exe"),
             "unexpected meta: {meta}"
         );
+        // upstream writes an *absolute* path (`path = \"$resolved_path\"`)
+        let root_abs = root.to_string_lossy().to_string();
+        assert!(
+            meta.starts_with(&format!("path = \"{root_abs}\\")),
+            "meta must embed an absolute path: {meta}"
+        );
+    }
+
+    #[test]
+    fn test_add_script_shim_embeds_absolute_paths() {
+        // Script shims (.ps1 target) must follow upstream exactly: `.cmd`
+        // wrappers quote the absolute target, `.ps1` shims keep a `# <abs>`
+        // comment plus a `Join-Path $PSScriptRoot` line (same drive), and an
+        // extension-less Git Bash shim is emitted.
+        let root = test_utils::tmpdir("shim_abs_paths");
+        let session = test_utils::test_session(&root);
+        let pkg = make_package("foo", r#"[["tool.ps1", "tool"]]"#);
+
+        add(&session, &pkg).unwrap();
+
+        let shims = root.join("shims");
+        let target = format!("{}\\apps\\foo\\current\\tool.ps1", root.to_string_lossy());
+
+        // .cmd wrapper carries the absolute path in `@rem` and `-File`
+        let cmd = std::fs::read_to_string(shims.join("tool.cmd")).unwrap();
+        assert!(
+            cmd.starts_with(&format!("@rem {target}")),
+            "cmd must carry the absolute path: {cmd}"
+        );
+        assert!(
+            cmd.contains(&format!("-File \"{target}\"")),
+            "cmd must call the absolute target: {cmd}"
+        );
+
+        // .ps1 shim uses Join-Path $PSScriptRoot (same drive) + `# <abs>`
+        let ps1 = std::fs::read_to_string(shims.join("tool.ps1")).unwrap();
+        assert!(
+            ps1.contains(r#"$path = Join-Path $PSScriptRoot "..\apps\foo\current\tool.ps1""#),
+            "ps1 must use Join-Path on the same drive: {ps1}"
+        );
+        assert!(
+            ps1.starts_with(&format!("# {target}")),
+            "ps1 must keep the absolute comment: {ps1}"
+        );
+
+        // extension-less shim for Git Bash
+        let sh = std::fs::read_to_string(shims.join("tool")).unwrap();
+        assert!(sh.starts_with("#!/bin/sh"), "sh shim missing: {sh}");
     }
 
     #[test]
@@ -711,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_script_shim_conflict_renames_carrier_only() {
+    fn test_add_script_shim_conflict_renames_all_files() {
         let root = test_utils::tmpdir("shim_add_ps_conflict");
         let session = test_utils::test_session(&root);
         let rx = session.event_bus().receiver();
@@ -727,12 +832,14 @@ mod tests {
         .unwrap();
 
         let shims = root.join("shims");
-        // the .ps1 carrier is backed up under the old owner...
+        // upstream warns per file (`$shim.ps1`, `$shim.cmd`, `$shim`), so
+        // every generated shim is backed up under the *old* owner...
         assert!(shims.join("tool.ps1.alpha").exists(), "ps1 backup missing");
-        // ...but the .cmd wrapper is overwritten unconditionally (upstream)
-        assert!(!shims.join("tool.cmd.alpha").exists());
+        assert!(shims.join("tool.cmd.alpha").exists(), "cmd backup missing");
+        assert!(shims.join("tool.alpha").exists(), "sh backup missing");
+        // ...and the new files point at the overwriting package
         assert!(shims.join("tool.cmd").exists());
-        assert_eq!(conflict_count(&rx), 1);
+        assert_eq!(conflict_count(&rx), 3);
     }
 
     #[test]
@@ -759,6 +866,13 @@ mod tests {
         assert!(
             meta.contains(r"apps\foo\1.0.0\main.exe"),
             "no_junction shim should point at the version dir: {meta}"
+        );
+        // still an absolute path (upstream `$resolved_path`), just under the
+        // version dir instead of the `current` junction
+        let root_abs = root.to_string_lossy().to_string();
+        assert!(
+            meta.starts_with(&format!("path = \"{root_abs}\\")),
+            "no_junction shim must embed an absolute path: {meta}"
         );
     }
 
