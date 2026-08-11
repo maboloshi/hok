@@ -341,14 +341,10 @@ impl Session {
     ///
     /// Mirrors upstream `usermanifestsdir` (lib/core.ps1) — generated
     /// user manifests (e.g. `app@version` installs) are written here.
-    /// Follows the effective root, so global installs write to
-    /// `$SCOOP_GLOBAL\workspace`; this deliberately deviates from
-    /// upstream, whose `usermanifestsdir` always resolves to the
-    /// user-level `$SCOOP\workspace` (it calls `basedir` without
-    /// passing `$global`).
+    /// User-level root, same as [`Session::buckets_dir`].
     #[inline]
     pub fn workspace_dir(&self) -> std::path::PathBuf {
-        self.effective_root_path().join("workspace")
+        self.config().root_path().join("workspace")
     }
 
     /// Get a mutable reference to the config held by the session.
@@ -478,31 +474,5 @@ mod tests {
         .unwrap();
         let session = Session::new_with(&config_path).unwrap();
         assert_eq!(session.current_dir_name("1.2.3"), "1.2.3");
-    }
-
-    #[test]
-    fn workspace_dir_follows_effective_root() {
-        let root = test_utils::tmpdir("session_workspace_dir");
-        let config_path = root.join("hok.json");
-        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
-        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
-        let global_escaped = root.join("global").to_string_lossy().replace('\\', "\\\\");
-        std::fs::write(
-            &config_path,
-            format!(
-                r#"{{"root_path": "{}", "cache_path": "{}", "global_path": "{}"}}"#,
-                root_escaped, cache_escaped, global_escaped
-            ),
-        )
-        .unwrap();
-        let session = Session::new_with(&config_path).unwrap();
-
-        // User-level session: <root>/workspace.
-        assert_eq!(session.workspace_dir(), root.join("workspace"));
-
-        // Global session: $SCOOP_GLOBAL/workspace.
-        session.set_global(true);
-        assert_eq!(session.workspace_dir(), root.join("global/workspace"));
-        session.set_global(false);
     }
 }
