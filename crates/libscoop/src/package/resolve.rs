@@ -82,9 +82,10 @@ pub(crate) fn resolve_dependencies(
                         .filter(|p| {
                             let (query_bucket, query_name) =
                                 super::identity::split_bucket_query(query);
-                            let bucket_matched =
-                                query_bucket.as_deref().map_or(true, |b| p.bucket() == b);
-                            let name_matched = p.name() == query_name;
+                            let bucket_matched = query_bucket
+                                .as_deref()
+                                .is_none_or(|b| p.bucket().eq_ignore_ascii_case(b));
+                            let name_matched = p.name().eq_ignore_ascii_case(query_name);
                             bucket_matched && name_matched
                         })
                         .cloned()
@@ -301,7 +302,7 @@ pub(crate) fn resolve_cascade(
             for dep_name in dep_names {
                 let mut result = installed
                     .iter()
-                    .filter(|p| p.name() == dep_name)
+                    .filter(|p| p.name().eq_ignore_ascii_case(&dep_name))
                     .collect::<Vec<_>>();
 
                 // The package dependency system of Scoop is not mandatory,

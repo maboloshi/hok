@@ -149,7 +149,9 @@ fn manifest_matches(
     let prefixed_name_matched = matchers
         .iter()
         .filter(|(_, matcher)| matcher.is_match(name))
-        .any(|(prefix, _)| prefix.is_none() || prefix.as_deref().unwrap() == bucket);
+        .any(|(prefix, _)| {
+            prefix.is_none() || prefix.as_deref().unwrap().eq_ignore_ascii_case(bucket)
+        });
 
     if prefixed_name_matched {
         return true;

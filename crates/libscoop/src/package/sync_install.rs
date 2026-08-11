@@ -159,8 +159,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 .iter()
                 .filter(|&p| {
                     let (query_bucket, query_name) = identity::split_bucket_query(query);
-                    let bucket_matched = query_bucket.as_deref().map_or(true, |b| p.bucket() == b);
-                    let name_matched = p.name() == query_name;
+                    let bucket_matched = query_bucket
+                        .as_deref()
+                        .is_none_or(|b| p.bucket().eq_ignore_ascii_case(b));
+                    // Exact name match, case-insensitive — Scoop is
+                    // case-insensitive here (Windows FS lookup).
+                    let name_matched = p.name().eq_ignore_ascii_case(query_name);
                     bucket_matched && name_matched
                 })
                 .cloned()
@@ -1060,6 +1064,44 @@ mod tests {
             "{}",
             err
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── case-insensitive package queries ──────────────────────────────────
+
+    /// `hok install Obsidian` must resolve the lowercase `obsidian` manifest,
+    /// mirroring Scoop's case-insensitive package lookup (Windows FS).
+    #[test]
+    fn install_query_is_case_insensitive() {
+        let root = crate::test_utils::tmpdir("install_case_insensitive");
+        let session = crate::test_utils::test_session(&root);
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        install(&session, &["Obsidian"], &[]).unwrap();
+
+        let app_dir = root.join("apps").join("obsidian");
+        assert!(app_dir.join("current").is_dir(), "app should be installed");
+        assert!(
+            app_dir.join("current").join("manifest.json").exists(),
+            "manifest persisted"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Bucket prefix matching is case-insensitive too: `Main/Obsidian` finds
+    /// the `main` bucket's `obsidian` manifest.
+    #[test]
+    fn install_query_bucket_prefix_is_case_insensitive() {
+        let root = crate::test_utils::tmpdir("install_bucket_case");
+        let session = crate::test_utils::test_session(&root);
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        install(&session, &["Main/Obsidian"], &[]).unwrap();
+
+        let app_dir = root.join("apps").join("obsidian");
+        assert!(app_dir.join("current").is_dir(), "app should be installed");
 
         let _ = std::fs::remove_dir_all(&root);
     }
