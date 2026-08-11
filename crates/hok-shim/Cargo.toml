@@ -4,4 +4,16 @@ version = "0.2.0-beta.3"
 edition = "2021"
 description = "Shim launcher for hok"
 
+# The shared core lives in src/lib.rs; the two variants only differ by the
+# PE subsystem:
+# - hok-shim (console)  — console targets, shell waits, interactive works
+# - hok-shim-gui (GUI)  — GUI targets, no console window, shell does not wait
+[[bin]]
+name = "hok-shim"
+path = "src/bin/hok-shim.rs"
+
+[[bin]]
+name = "hok-shim-gui"
+path = "src/bin/hok-shim-gui.rs"
+
 [dependencies]
