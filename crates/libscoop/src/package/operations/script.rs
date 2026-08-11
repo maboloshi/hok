@@ -44,6 +44,12 @@ pub fn run_script(
 
     let script = lines.join("\r\n");
 
+    // `$global` keeps its boolean type (is_global is a real bool); the
+    // preamble converts it via [bool]::Parse. A bare `false` would be parsed
+    // as a command name by PowerShell, tripping the `[[HOK_MISSING_HELPER]]`
+    // trap on every script run. Upstream sets `$global` the same way.
+    let is_global = session.is_global();
+
     // Embed PS helper scripts so package scripts can use functions
     // like Expand-InnoArchive, Expand-7zipArchive, Get-HelperPath, etc.
     const CORE_PS1: &str = include_str!("../../../../../asset_scripts/core.ps1");
@@ -77,13 +83,13 @@ $version = $env:SCOOP_PACKAGE_VERSION
 $app = $env:SCOOP_PACKAGE_NAME
 $bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "{arch}"
-$global = {is_global}
+$global = [bool]::Parse('{is_global}')
 $cmd = $env:SCOOP_PACKAGE_CMD
 "#,
         core = CORE_PS1,
         decompress = DECOMPRESS_PS1,
         arch = crate::internal::arch::Arch::current().name(),
-        is_global = session.is_global()
+        is_global = is_global
     );
     let full_script = format!("{preamble}\r\n{script}");
 
