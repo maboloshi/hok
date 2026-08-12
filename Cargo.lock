@@ -1139,6 +1139,7 @@ dependencies = [
  "junction",
  "lzma-rs",
  "md-5",
+ "nsis",
  "rayon",
  "regex",
  "rusqlite",
@@ -1321,6 +1322,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9985ef7269fa99f3b12437bb698381da2428743ab90f20393f399fa14cab21a"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nsis"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7418c2ed184f0893a1b777d39116124b96defdf8742787aeb7ce378e161010e8"
+dependencies = [
+ "flate2",
+ "goblin",
+ "lzma-rs",
 ]
 
 [[package]]

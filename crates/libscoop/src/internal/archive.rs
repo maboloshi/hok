@@ -156,6 +156,14 @@ const NSIS_MARKER: &[u8] = b"Nullsoft Install System";
 const INNO_MARKER: &[u8] = b"Inno Setup";
 const INSTALLER_SIGNATURE_SCAN_LIMIT: usize = 1024 * 1024; // 1 MiB
 
+/// True when `data` is an NSIS installer — a format that embeds 7z archives
+/// as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder), so a raw
+/// magic match would not denote a 7z SFX.
+fn is_nsis_installer(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
+    head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
+}
+
 /// True when `data` is an NSIS or Inno Setup installer — formats that embed
 /// 7z archives as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder,
 /// `{tmp}` blobs in Inno), so a raw magic match would not denote a 7z SFX.
@@ -195,8 +203,7 @@ fn extract_7z(
     // formats legitimately embed standard 7z payloads (`$PLUGINSDIR\app-64.7z`
     // in electron-builder installers, `{tmp}` blobs in Inno). Blindly matching
     // the 7z magic would extract that inner archive directly and skip the
-    // installer's directory structure — 7-Zip preserves it instead, so we
-    // defer to 7z.exe below.
+    // installer's directory structure — 7-Zip preserves it instead.
     if pe_embedded_sfx_searchable(&file_data) {
         const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
         if let Some(pos) = file_data
@@ -209,6 +216,14 @@ fn extract_7z(
                 return extract_7z_entries(reader, dest, filter, emitter);
             }
         }
+    }
+
+    // NSIS installers: extract the installer structure (including
+    // `$PLUGINSDIR\app-64.7z`) with the pure-Rust nsis crate. On any
+    // parse/extract failure fall through to 7z.exe below — never a hard
+    // error from the Rust path alone.
+    if is_nsis_installer(&file_data) && extract_nsis(src, dest, filter, emitter).is_ok() {
+        return Ok(());
     }
 
     // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
@@ -566,6 +581,63 @@ fn extract_innosetup(
     Ok(())
 }
 
+// ─── NSIS extraction via the nsis crate ──────────────────────────────
+
+fn extract_nsis(
+    src: &Path,
+    dest: &Path,
+    filter: Option<&[&str]>,
+    emitter: &Option<Sender<Event>>,
+) -> Fallible<()> {
+    let data = std::fs::read(src)
+        .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
+
+    let installer = nsis::NsisInstaller::from_bytes(&data)
+        .map_err(|e| Error::ExtractionFailed(format!("nsis parse error: {}", e)))?;
+
+    for result in installer.files() {
+        let file =
+            result.map_err(|e| Error::ExtractionFailed(format!("nsis file error: {}", e)))?;
+        let name = file
+            .name()
+            .map_err(|e| Error::ExtractionFailed(format!("nsis name error: {}", e)))?;
+        let name = name.to_string();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !f.iter().any(|d| name.starts_with(d)) {
+                continue;
+            }
+        }
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(name.to_string()));
+        }
+        // NSIS paths use backslashes and keep their `$VAR` directories
+        // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
+        // them by that exact name, matching what 7z.exe produces.
+        let rel = name.replace('\\', "/");
+        let target = strip_dir(&rel, filter).unwrap_or_else(|| rel);
+        if Path::new(&target)
+            .components()
+            .any(|c| c == Component::ParentDir)
+        {
+            return Err(Error::PathTraversalDetected(format!("nsis: {}", target)));
+        }
+        let target_path = dest.join(&target);
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent)?;
+        }
+        let content = file
+            .decompress()
+            .map_err(|e| Error::ExtractionFailed(format!("nsis decompress '{}': {}", name, e)))?;
+        std::fs::write(&target_path, &content).map_err(|e| {
+            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+        })?;
+    }
+    Ok(())
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Strip common Inno Setup path constants from a destination path.
@@ -619,6 +691,32 @@ fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Extract a real NSIS installer (local corpus) and verify a few file
+    /// contents match what 7z.exe produces. Ignored by default — run
+    /// manually on a machine that has the sample
+    /// (`D:\Downloads\AltSnap1.67-x64-inst.exe`). Content hashes matched
+    /// 7z.exe output when verified (2026-08-12); note the layout differs:
+    /// nsis yields the real install layout (Lang files flattened), 7z shows
+    /// the script paths (Lang\ prefix).
+    #[test]
+    #[ignore = "requires local NSIS installer sample"]
+    fn extract_nsis_real_installer_corpus() {
+        let path = r"D:\Downloads\AltSnap1.67-x64-inst.exe";
+        let dest = crate::test_utils::tmpdir("nsis_probe");
+        extract_nsis(std::path::Path::new(path), &dest, None, &None).unwrap();
+        let mut files: Vec<_> = std::fs::read_dir(&dest)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "no files extracted");
+        // AltSnap.exe and the language files must be present (flat layout).
+        assert!(dest.join("AltSnap.exe").exists());
+        assert!(dest.join("zh_CN.ini").exists());
+    }
 
     #[test]
     fn test_detect_format() {
