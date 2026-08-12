@@ -3,9 +3,9 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use libscoop::package::formatjson;
-use libscoop::Session;
+use crate::cmd::shared_args::validate_dir;
 use crate::{output, Result};
+use libscoop::package::formatjson;
 
 /// Format manifest JSON files in a bucket directory
 #[derive(Debug, Parser)]
@@ -38,19 +38,11 @@ pub fn execute(args: Args) -> Result<()> {
     if report.formatted == 0 && report.errors.is_empty() {
         output::info(rust_i18n::t!("cmd.formatjson_none"));
     } else {
-        output::info(rust_i18n::t!("cmd.formatjson_count", count = report.formatted));
+        output::info(rust_i18n::t!(
+            "cmd.formatjson_count",
+            count = report.formatted
+        ));
     }
 
     Ok(())
-}
-
-use crate::cmd::shared_args::{validate_dir, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, _session: &Session) -> Result<()> {
-        execute(args)
-    }
 }

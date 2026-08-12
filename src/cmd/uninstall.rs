@@ -3,6 +3,7 @@
 use clap::Parser;
 use libscoop::{package, Session, SyncOption};
 
+use crate::cmd::shared_args::ensure_global;
 use crate::Result;
 
 /// Uninstall package(s)
@@ -56,15 +57,4 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     handle.join().unwrap();
 
     Ok(())
-}
-
-use crate::cmd::shared_args::{ensure_global, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
 }

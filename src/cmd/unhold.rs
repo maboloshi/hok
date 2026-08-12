@@ -7,6 +7,7 @@ use clap::{ArgAction, Parser};
 use libscoop::Session;
 
 use crate::cmd::hold::hold_packages;
+use crate::cmd::shared_args::ensure_global;
 use crate::Result;
 
 /// Unhold package(s) to enable changes
@@ -24,15 +25,4 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "unhold")?;
     hold_packages(session, &args.package, false, rust_i18n::t!("cmd.unholding"))
-}
-
-use crate::cmd::shared_args::{ensure_global, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
 }

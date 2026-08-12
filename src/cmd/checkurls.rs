@@ -4,6 +4,7 @@ use clap::Parser;
 use libscoop::{package::checkurls, Session};
 use std::path::PathBuf;
 
+use crate::cmd::shared_args::validate_dir;
 use crate::{output, Result};
 
 /// Check manifest URLs for validity
@@ -86,15 +87,4 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     Ok(())
-}
-
-use crate::cmd::shared_args::{validate_dir, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
 }

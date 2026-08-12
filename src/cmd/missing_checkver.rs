@@ -2,9 +2,9 @@
 
 use clap::Parser;
 use libscoop::package::missing_checkver;
-use libscoop::Session;
 use std::path::PathBuf;
 
+use crate::cmd::shared_args::validate_dir;
 use crate::{output, Result};
 
 /// Check bucket manifests missing checkver and autoupdate
@@ -48,15 +48,4 @@ pub fn execute(args: Args) -> Result<()> {
     }
 
     Ok(())
-}
-
-use crate::cmd::shared_args::{validate_dir, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, _session: &Session) -> Result<()> {
-        execute(args)
-    }
 }

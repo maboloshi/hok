@@ -8,6 +8,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{package, Error, Session};
 
+use crate::cmd::shared_args::ensure_global;
 use crate::{output, Result};
 
 /// Hold package(s) to disable changes
@@ -80,15 +81,4 @@ pub(super) fn hold_packages(
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "hold")?;
     hold_packages(session, &args.package, true, rust_i18n::t!("cmd.holding"))
-}
-
-use crate::cmd::shared_args::{ensure_global, Cmd};
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
 }

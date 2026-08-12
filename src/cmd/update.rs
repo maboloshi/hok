@@ -106,16 +106,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     update_buckets(session, args.force)
 }
 
-use crate::cmd::shared_args::Cmd;
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
-}
 
 /// Update all buckets with simple inline status.
 fn update_buckets(session: &Session, force: bool) -> Result<()> {

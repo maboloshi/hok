@@ -195,21 +195,3 @@ impl QueryArgs {
         options
     }
 }
-
-/// Standard interface for all hok commands.
-///
-/// Each command module defines its own `Args` struct
-/// (via `#[derive(clap::Parser)]`) and implements this trait.
-/// The trait enables uniform dispatch and future auto-registration.
-///
-/// Note: dispatch currently calls each module's `execute()` function
-/// directly (see `cmd/mod.rs`); the trait is reserved for a future
-/// uniform dispatch / auto-registration, hence the allow.
-#[allow(dead_code)]
-pub trait Cmd {
-    /// The clap argument type for this command.
-    type Args: clap::Args;
-
-    /// Execute the command with parsed arguments and session.
-    fn execute(args: Self::Args, session: &libscoop::Session) -> crate::Result<()>;
-}

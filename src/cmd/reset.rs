@@ -20,14 +20,3 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     package::sync::reset(session, &name, version)?;
     Ok(())
 }
-
-use crate::cmd::shared_args::Cmd;
-
-impl Cmd for Args {
-    type Args = Self;
-
-    #[inline]
-    fn execute(args: Self::Args, session: &Session) -> Result<()> {
-        execute(args, session)
-    }
-}
