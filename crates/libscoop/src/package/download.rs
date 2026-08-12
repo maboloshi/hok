@@ -5,7 +5,7 @@
 
 use std::cell::OnceCell;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
@@ -14,11 +14,13 @@ use std::{
         Arc, Mutex,
     },
 };
-use tracing::debug;
+use tracing::{debug, info};
 
-use crate::constant::DEFAULT_USER_AGENT;
-use crate::{error::Fallible, internal, Event, Session};
+use crate::constant::{DEFAULT_USER_AGENT, ISOLATED_PACKAGE_BUCKET};
+use crate::{error::Fallible, internal, Error, Event, Session};
 
+use super::identity;
+use super::manifest_source;
 use super::Package;
 
 /// Download size information.
@@ -873,6 +875,236 @@ pub struct PackageDownloadProgressContext {
     pub dlnow: u64,
 }
 
+// ─── Download verification & standalone download API ───────────────────────
+
+/// Verify downloaded files against the manifest hashes (upstream
+/// `check_hash` in lib/download.ps1).
+///
+/// Nightly packages skip verification; a missing or empty hash in the
+/// manifest warns and continues; a mismatch removes the corrupt cache
+/// file so the next attempt re-downloads, and either fails hard or — in
+/// IgnoreFailure mode — records the package ident in the returned set.
+///
+/// Shared by the install pipeline and the standalone `download` command so
+/// the verification semantics cannot drift between them.
+pub(crate) fn verify_downloads(
+    session: &Session,
+    packages: &[&Package],
+    no_hash_check: bool,
+    ignore_failure: bool,
+) -> Fallible<HashSet<String>> {
+    let mut failed = HashSet::new();
+    if no_hash_check {
+        return Ok(failed);
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageIntegrityCheckStart);
+    }
+
+    let config = session.config();
+    let cache_root = config.cache_path();
+
+    let mut buf = [0; 1024 * 64];
+
+    for &pkg in packages.iter() {
+        if pkg.version() == "nightly" {
+            info!("skip hash check for nightly package '{}'", pkg.name());
+            continue;
+        }
+
+        let files = pkg.download_filenames();
+        let hashes = pkg.download_hashes();
+        let files_cnt = files.len();
+
+        let result = (|| -> Fallible<()> {
+            for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
+                let path = cache_root.join(filename);
+
+                // No hash in the manifest (missing or `""`): upstream
+                // `check_hash` (lib/download.ps1) warns and continues
+                // without verification instead of failing hard.
+                if matches!(hash, crate::package::manifest::HashString::Empty) {
+                    session.output().warn(format!(
+                        "no hash in manifest for '{}', skipping verification",
+                        pkg.name()
+                    ));
+                    continue;
+                }
+
+                let mut hasher = internal::hash::ChecksumBuilder::new()
+                    .algo(hash.algorithm())?
+                    .build();
+
+                if let Some(tx) = session.emitter() {
+                    let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
+                    let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
+                }
+
+                let mut file = std::fs::File::open(&path)?;
+                loop {
+                    let len = file.read(&mut buf)?;
+                    if len == 0 {
+                        break;
+                    }
+                    hasher.consume(&buf[..len]);
+                }
+
+                let actual = hasher.finalize();
+                let expected = hash.value();
+                if actual != expected {
+                    // Upstream removes the corrupt cache file on a hash
+                    // mismatch (lib/download.ps1:122-125) so the next
+                    // attempt re-downloads instead of failing forever.
+                    let _ = std::fs::remove_file(&path);
+                    let name = pkg.name().to_owned();
+                    let url = pkg.download_urls()[idx].to_owned();
+                    let ctx =
+                        super::HashMismatchContext::new(name, url, expected.to_owned(), actual);
+                    return Err(Error::HashMismatch(ctx));
+                }
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            if ignore_failure {
+                failed.insert(pkg.ident());
+                session
+                    .output()
+                    .error(format!("failed to verify '{}': {}", pkg.name(), e));
+            } else {
+                return Err(e);
+            }
+        }
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageIntegrityCheckDone);
+    }
+
+    Ok(failed)
+}
+
+/// Options for [`download_apps`].
+pub struct DownloadOptions {
+    /// Ignore the cache and download again (`-f/--force`).
+    pub force: bool,
+    /// Verify downloaded files against the manifest hashes.
+    pub check_hash: bool,
+}
+
+/// Download the files of the given packages into the cache directory
+/// without installing them, mirroring upstream `scoop download`
+/// (libexec/scoop-download.ps1).
+///
+/// Each query is resolved independently — bare name, `bucket/name`,
+/// `name@version`, a manifest URL, or a local manifest path — and a
+/// failure on one app does not abort the rest. No dependencies are
+/// downloaded and no installation state is touched.
+pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions) -> Fallible<()> {
+    let mut packages: Vec<Package> = Vec::new();
+
+    for &query in queries {
+        match resolve_download_query(session, query) {
+            Ok(pkg) => {
+                let version = pkg.version();
+                if version.is_empty() {
+                    session.output().error(format!(
+                        "Manifest for '{}' doesn't specify a version.",
+                        query
+                    ));
+                    continue;
+                }
+                if !version
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+                {
+                    session.output().error(format!(
+                        "Manifest version for '{}' has an unsupported character.",
+                        query
+                    ));
+                    continue;
+                }
+                // Architecture support: no download URLs for the effective
+                // architecture (upstream `Get-SupportedArchitecture`).
+                if pkg.download_urls().is_empty() {
+                    session.output().error(format!(
+                        "'{}' doesn't support the current architecture!",
+                        pkg.name()
+                    ));
+                    continue;
+                }
+                packages.push(pkg);
+            }
+            Err(e) => {
+                session
+                    .output()
+                    .error(format!("failed to resolve '{}': {}", query, e));
+            }
+        }
+    }
+
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    let refs: Vec<&Package> = packages.iter().collect();
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageDownloadStart);
+    }
+
+    let mut set = PackageSet::new(session, &refs, !opts.force)?;
+    set.set_ignore_failure(true);
+    let failed = set.download()?;
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageDownloadDone);
+    }
+
+    let ok_pkgs: Vec<&Package> = refs
+        .iter()
+        .filter(|p| !failed.contains(&p.ident()))
+        .copied()
+        .collect();
+
+    let verify_failed = verify_downloads(session, &ok_pkgs, !opts.check_hash, true)?;
+
+    for pkg in &ok_pkgs {
+        if !verify_failed.contains(&pkg.ident()) {
+            session.output().info(format!(
+                "'{}' ({}) was downloaded successfully!",
+                pkg.name(),
+                pkg.version()
+            ));
+        }
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageSyncDone);
+    }
+
+    Ok(())
+}
+
+/// Resolve one download query to a [`Package`], mirroring the install
+/// pipeline's dispatch: `name@version` → `generate_user_manifest`, anything
+/// else → `resolve_manifest` (URL / local path / bucket lookup).
+fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
+    let aq = identity::parse_app(query).ok_or_else(|| Error::PackageNotFound(query.to_owned()))?;
+    let resolved = if let Some(version) = aq.version.as_deref() {
+        manifest_source::generate_user_manifest(session, &aq.app, aq.bucket.as_deref(), version)?
+    } else {
+        manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref())?
+    };
+    Ok(Package::from(
+        &resolved.name,
+        ISOLATED_PACKAGE_BUCKET,
+        resolved.manifest,
+    ))
+}
+
 // ─── Old curl implementation (kept for reference) ──────────────────────────
 // (see git history for the full curl-based download.rs)
 
@@ -1481,5 +1713,209 @@ mod tests {
         assert_eq!(parts.len(), 4);
         // Concurrent chunk deltas aggregate to the full file size.
         assert_eq!(total.load(Ordering::Relaxed), 1000);
+    }
+
+    // ─── download_apps (standalone download command) ──────────────────────────
+
+    /// SHA-256 hex of `data`, as used in manifest `hash` fields.
+    fn sha256_hex(data: &[u8]) -> String {
+        let mut hasher = internal::hash::ChecksumBuilder::new().sha256().build();
+        hasher.consume(data);
+        hasher.finalize()
+    }
+
+    /// Write a standalone manifest file for `name` pointing at `url`.
+    fn write_manifest(
+        dir: &std::path::Path,
+        name: &str,
+        version: &str,
+        url: &str,
+        hash: &str,
+    ) -> std::path::PathBuf {
+        let path = dir.join(format!("{}.json", name));
+        let json = format!(
+            r#"{{"version": "{}", "url": "{}", "hash": "{}"}}"#,
+            version, url, hash
+        );
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    /// Files in the session cache dir, sorted by name.
+    fn cache_files(session: &Session) -> Vec<std::path::PathBuf> {
+        let config = session.config();
+        let dir = config.cache_path();
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_file())
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn test_download_apps_local_manifest() {
+        let data = b"download-apps-test-data".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_basic");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "testapp", "1.0", &url, &sha256_hex(&data));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        server.shutdown();
+
+        let files = cache_files(&session);
+        assert_eq!(files.len(), 1, "cache files: {:?}", files);
+        assert!(files[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("testapp#1.0#"));
+        assert_eq!(std::fs::read(&files[0]).unwrap(), data);
+    }
+
+    #[test]
+    fn test_download_apps_hash_mismatch_removes_file() {
+        let data = b"download-apps-mismatch".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_mismatch");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        // Wrong hash: the downloaded file must be removed after verification.
+        let manifest = write_manifest(&root, "badapp", "1.0", &url, &"0".repeat(64));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        server.shutdown();
+
+        assert!(
+            cache_files(&session).is_empty(),
+            "corrupt cache file must be removed"
+        );
+    }
+
+    #[test]
+    fn test_download_apps_no_hash_check_keeps_file() {
+        let data = b"download-apps-no-hash".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_no_hash");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "nohashapp", "1.0", &url, &"0".repeat(64));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: false,
+        };
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        server.shutdown();
+
+        assert_eq!(cache_files(&session).len(), 1);
+    }
+
+    #[test]
+    fn test_download_apps_rejects_bad_version() {
+        let root = crate::test_utils::tmpdir("download_apps_bad_version");
+        let session = crate::test_utils::test_session(&root);
+
+        // Missing version.
+        let no_version = root.join("noversion.json");
+        std::fs::write(&no_version, r#"{"url": "http://127.0.0.1:1/x.bin"}"#).unwrap();
+        // Unsupported character in version.
+        let bad_char = root.join("badchar.json");
+        std::fs::write(
+            &bad_char,
+            r#"{"version": "1.0!", "url": "http://127.0.0.1:1/x.bin"}"#,
+        )
+        .unwrap();
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(
+            &session,
+            &[no_version.to_str().unwrap(), bad_char.to_str().unwrap()],
+            &opts,
+        )
+        .unwrap();
+
+        assert!(cache_files(&session).is_empty());
+    }
+
+    #[test]
+    fn test_download_apps_one_bad_query_does_not_abort_others() {
+        let data = b"download-apps-mixed".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_mixed");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "goodapp", "1.0", &url, &sha256_hex(&data));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(
+            &session,
+            &[manifest.to_str().unwrap(), r"D:\nonexistent\app.json"],
+            &opts,
+        )
+        .unwrap();
+        server.shutdown();
+
+        assert_eq!(cache_files(&session).len(), 1);
+    }
+
+    #[test]
+    fn test_download_apps_force_redownloads() {
+        let data = b"download-apps-force".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_force");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "forceapp", "1.0", &url, &sha256_hex(&data));
+        let manifest_str = manifest.to_str().unwrap().to_owned();
+
+        let cache_hit = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[&manifest_str], &cache_hit).unwrap();
+        let requests_after_first = server.ranges.lock().unwrap().len();
+
+        // Cache hit: no new request is sent.
+        download_apps(&session, &[&manifest_str], &cache_hit).unwrap();
+        assert_eq!(
+            server.ranges.lock().unwrap().len(),
+            requests_after_first,
+            "cache hit must not re-download"
+        );
+
+        // Force: the file is downloaded again.
+        let force = DownloadOptions {
+            force: true,
+            check_hash: true,
+        };
+        download_apps(&session, &[&manifest_str], &force).unwrap();
+        server.shutdown();
+
+        assert!(
+            server.ranges.lock().unwrap().len() > requests_after_first,
+            "force must re-download"
+        );
+        assert_eq!(cache_files(&session).len(), 1);
     }
 }

@@ -5,11 +5,9 @@
 //! execution — split out of [`super`] (`sync.rs`). It is a private
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
-use crate::internal::hash::ChecksumBuilder;
 use std::collections::HashSet;
-use std::io::Read;
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::package::{download, identity, manifest_source, operations, query, resolve, Package};
 use crate::{
@@ -366,94 +364,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     };
 
     let no_hash_check = options.contains(&SyncOption::NoHashCheck);
-    if !no_hash_check {
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageIntegrityCheckStart);
-        }
-
-        let config = session.config();
-        let cache_root = config.cache_path();
-
-        let mut buf = [0; 1024 * 64];
-
-        for &pkg in packages.iter() {
-            if pkg.version() == "nightly" {
-                info!("skip hash check for nightly package '{}'", pkg.name());
-                continue;
-            }
-
-            let files = pkg.download_filenames();
-            let hashes = pkg.download_hashes();
-            let files_cnt = files.len();
-
-            let result = (|| -> Fallible<()> {
-                for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
-                    let path = cache_root.join(filename);
-
-                    // No hash in the manifest (missing or `""`): upstream
-                    // `check_hash` (lib/download.ps1) warns and continues
-                    // without verification instead of failing hard.
-                    if matches!(hash, crate::package::manifest::HashString::Empty) {
-                        session.output().warn(format!(
-                            "no hash in manifest for '{}', skipping verification",
-                            pkg.name()
-                        ));
-                        continue;
-                    }
-
-                    let mut hasher = ChecksumBuilder::new().algo(hash.algorithm())?.build();
-
-                    if let Some(tx) = session.emitter() {
-                        let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
-                        let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
-                    }
-
-                    let mut file = std::fs::File::open(&path)?;
-                    loop {
-                        let len = file.read(&mut buf)?;
-                        if len == 0 {
-                            break;
-                        }
-                        hasher.consume(&buf[..len]);
-                    }
-
-                    let actual = hasher.finalize();
-                    let expected = hash.value();
-                    if actual != expected {
-                        // Upstream removes the corrupt cache file on a hash
-                        // mismatch (lib/download.ps1:122-125) so the next
-                        // attempt re-downloads instead of failing forever.
-                        let _ = std::fs::remove_file(&path);
-                        let name = pkg.name().to_owned();
-                        let url = pkg.download_urls()[idx].to_owned();
-                        let ctx = crate::package::HashMismatchContext::new(
-                            name,
-                            url,
-                            expected.to_owned(),
-                            actual,
-                        );
-                        return Err(Error::HashMismatch(ctx));
-                    }
-                }
-                Ok(())
-            })();
-
-            if let Err(e) = result {
-                if ignore_failure {
-                    failed.insert(pkg.ident());
-                    session
-                        .output()
-                        .error(format!("failed to verify '{}': {}", pkg.name(), e));
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageIntegrityCheckDone);
-        }
-    }
+    failed.extend(download::verify_downloads(
+        session,
+        &packages,
+        no_hash_check,
+        ignore_failure,
+    )?);
 
     // Drop packages that failed to download or verify (IgnoreFailure mode).
     let packages = if failed.is_empty() {

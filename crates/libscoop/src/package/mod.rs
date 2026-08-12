@@ -42,7 +42,7 @@ pub mod checkver;
 pub mod cleanup;
 pub mod create;
 pub mod depends;
-pub(crate) mod download;
+pub mod download;
 pub mod export;
 pub mod formatjson;
 pub mod hold;
