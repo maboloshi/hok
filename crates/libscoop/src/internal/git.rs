@@ -5,7 +5,7 @@
 //! large (aws-lc-rs, quinn-proto, h2, icu — causing 20+ min first build).
 
 use git2::{CredentialType, FetchOptions, Repository};
-use std::{path::Path, result::Result};
+use std::{collections::HashMap, path::Path, result::Result};
 
 use crate::error::{Error, Fallible};
 
@@ -174,12 +174,27 @@ fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commi
     let new_tree = target.tree()?;
     let diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
 
+    let mut status_by_path: HashMap<String, git2::Status> = HashMap::new();
+    for entry in repo.statuses(None)?.iter() {
+        if let Some(path) = entry.path() {
+            status_by_path.insert(path.to_owned(), entry.status());
+        }
+    }
+
     let mut local = Vec::new();
     for delta in diff.deltas() {
         let path = delta.old_file().path().or(delta.new_file().path());
         if let Some(path) = path {
-            if !repo.status_file(path)?.is_empty() {
-                local.push(path.display().to_string());
+            // A path absent from the status list has no local modification —
+            // this includes files newly added on the remote, which do not
+            // exist locally at all and are simply created by the update
+            // (`git pull` semantics). `git_status_file` would instead reject
+            // those with GIT_ENOTFOUND, so we use one full status pass here.
+            let key = path.to_string_lossy().into_owned();
+            if let Some(status) = status_by_path.get(&key) {
+                if !status.is_empty() {
+                    local.push(key);
+                }
             }
         }
     }
@@ -302,6 +317,27 @@ mod tests {
             .unwrap()
             .iter()
             .all(|e| e.status().is_empty()));
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    #[test]
+    fn pull_fast_forward_new_files() {
+        // Remote-only additions: the files do not exist locally at all.
+        // `git_status_file` reports GIT_ENOTFOUND for them, which must be
+        // treated as "no local modification", not as a pull failure.
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+        commit_file(&origin, "new.json", "{\"new\": true}\n", "add new file");
+
+        pull(&clone_dir, None::<&str>).unwrap();
+
+        let repo = Repository::open(&clone_dir).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let origin_head = origin.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.id(), origin_head.id());
+        assert!(clone_dir.join("new.json").exists());
 
         cleanup(&origin_dir);
         cleanup(&clone_dir);
