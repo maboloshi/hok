@@ -172,6 +172,20 @@ impl Package {
         self.name.as_str()
     }
 
+    /// Whether this package matches a `bucket/name` query.
+    ///
+    /// Both parts are matched case-insensitively (Scoop is case-insensitive
+    /// here — Windows FS lookup); a missing bucket prefix matches any bucket.
+    /// Shared by the install query loop, dependency resolution and bucket
+    /// scanning so the matching semantics cannot drift.
+    pub fn matches_bucket_query(&self, query: &str) -> bool {
+        let (query_bucket, query_name) = identity::split_bucket_query(query);
+        let bucket_matched = query_bucket
+            .as_deref()
+            .is_none_or(|b| self.bucket().eq_ignore_ascii_case(b));
+        self.name().eq_ignore_ascii_case(query_name) && bucket_matched
+    }
+
     /// Get the bucket name of this package.
     ///
     /// # Note

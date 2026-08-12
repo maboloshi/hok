@@ -79,15 +79,7 @@ pub(crate) fn resolve_dependencies(
                 for query in queries {
                     let mut matched = synced
                         .iter()
-                        .filter(|p| {
-                            let (query_bucket, query_name) =
-                                super::identity::split_bucket_query(query);
-                            let bucket_matched = query_bucket
-                                .as_deref()
-                                .is_none_or(|b| p.bucket().eq_ignore_ascii_case(b));
-                            let name_matched = p.name().eq_ignore_ascii_case(query_name);
-                            bucket_matched && name_matched
-                        })
+                        .filter(|p| p.matches_bucket_query(query))
                         .cloned()
                         .collect::<Vec<_>>();
 

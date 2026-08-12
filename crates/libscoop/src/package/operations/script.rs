@@ -273,6 +273,66 @@ pub fn run_installer_file(
     Ok(())
 }
 
+/// Run a manifest `installer`/`uninstaller` hook: the `*.file` executable
+/// (or the first download URL's filename when only `*.args` is given),
+/// followed by the `*.script` hook — mirroring upstream `Invoke-Installer`
+/// / `Invoke-Uninstaller` (lib/install.ps1:110-115, 144, 163-166).
+///
+/// Shared by the install and remove pipelines so the hook semantics
+/// cannot drift. `hook` (`"installer"` / `"uninstaller"`) and `cmd`
+/// (`"install"` / `"uninstall"`) are passed through to
+/// [`run_installer_file`] / [`run_script`] and used in debug/error
+/// messages and `$cmd` expansion.
+pub fn run_hook(
+    session: &Session,
+    package: &Package,
+    dir: &Path,
+    hook: &str,
+    cmd: &str,
+    file: Option<&str>,
+    args: Option<Vec<&str>>,
+    keep: bool,
+    script: Option<Vec<&str>>,
+) -> Fallible<()> {
+    // 1. Hook file. Runs when `*.file` is set *or* when only `*.args` is
+    //    given — upstream falls back to the first download URL's filename.
+    let raw_args = args.unwrap_or_default();
+    if file.is_some() || !raw_args.is_empty() {
+        let resolved = match file {
+            Some(f) => f.to_owned(),
+            None => {
+                let first_url = package.manifest().url().first().copied().unwrap_or("");
+                internal::url::url_filename(first_url).to_owned()
+            }
+        };
+        debug!(
+            "run_hook: {} - {}.file ({})",
+            package.name(),
+            hook,
+            resolved
+        );
+        run_installer_file(session, package, dir, hook, cmd, &resolved, &raw_args)?;
+        // Don't remove the hook file when `keep` is set (Scoop order:
+        // `!$installer.keep` -> Remove-Item, lib/install.ps1).
+        if !keep {
+            let hook_path = dir.join(&resolved);
+            if hook_path.exists() {
+                std::fs::remove_file(&hook_path)?;
+            }
+        }
+    }
+
+    // 2. `*.script` runs regardless of the file step (upstream
+    //    Invoke-HookScript is called after Invoke-Installer,
+    //    lib/install.ps1:144,163-166).
+    if let Some(script) = script {
+        debug!("run_hook: {} - {}.script", package.name(), hook);
+        run_script(session, package, dir, None, hook, cmd, Some(script))?;
+    }
+
+    Ok(())
+}
+
 /// Run a `.ps1` installer/uninstaller file via PowerShell, mirroring
 /// upstream's in-process `& $progName @fnArgs` (lib/install.ps1:127-128).
 /// The same `SCOOP_*` environment as [`run_script`] is provided so `$dir`

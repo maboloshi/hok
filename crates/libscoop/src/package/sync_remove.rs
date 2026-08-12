@@ -199,50 +199,17 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     check_not_running(session, package.name(), "uninstalling")?;
 
     if let Some(uninstaller) = package.manifest().uninstaller() {
-        // 1. Uninstaller file (explicit `uninstaller.file`, or the first
-        //    download URL's filename when only `args` is given), mirroring
-        //    `Invoke-Uninstaller`. `uninstaller.script` runs afterwards
-        //    regardless (see step 2).
-        let raw_args: Vec<&str> = uninstaller.args().unwrap_or_default();
-        if uninstaller.file().is_some() || !raw_args.is_empty() {
-            let file = match uninstaller.file() {
-                Some(f) => f.to_owned(),
-                None => {
-                    let first_url = package.manifest().url().first().copied().unwrap_or("");
-                    internal::url::url_filename(first_url).to_owned()
-                }
-            };
-            operations::run_installer_file(
-                session,
-                package,
-                script_dir,
-                "uninstaller",
-                "uninstall",
-                &file,
-                &raw_args,
-            )?;
-            // Don't remove the uninstaller file when `keep` is set
-            // (upstream `!$installer.keep` -> Remove-Item).
-            if !uninstaller.keep() {
-                let uninstaller_path = script_dir.join(&file);
-                if uninstaller_path.exists() {
-                    std::fs::remove_file(&uninstaller_path)?;
-                }
-            }
-        }
-
-        // 2. uninstaller.script runs regardless of the file step.
-        if let Some(script) = uninstaller.script() {
-            run_script(
-                session,
-                package,
-                script_dir,
-                None,
-                "uninstaller",
-                "uninstall",
-                Some(script),
-            )?;
-        }
+        operations::run_hook(
+            session,
+            package,
+            script_dir,
+            "uninstaller",
+            "uninstall",
+            uninstaller.file(),
+            uninstaller.args(),
+            uninstaller.keep(),
+            uninstaller.script(),
+        )?;
     }
 
     debug!(
