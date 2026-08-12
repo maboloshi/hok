@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::package::{manifest, manifest_walker};
-use crate::{error::Fallible, network, Manifest, Session};
+use crate::{error::Fallible, internal::url::url_remote_filename, network, Manifest, Session};
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -103,7 +103,7 @@ pub fn execute(
             }
 
             let url = url_str.split('#').next().unwrap_or(url_str);
-            let filename = url.rsplit('/').next().unwrap_or("download");
+            let filename = url_remote_filename(url_str);
             let cache_filename = format!(
                 "{}-{}-{}",
                 name,

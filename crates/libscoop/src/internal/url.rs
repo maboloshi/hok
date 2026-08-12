@@ -62,6 +62,18 @@ pub fn url_filename(url: &str) -> &str {
     leaf.split('?').next().unwrap_or(leaf)
 }
 
+/// Extract the original filename from the URL, ignoring any Scoop rename
+/// fragment (`#/dl.7z`), mirroring upstream `url_remote_filename`
+/// (lib/download.ps1): "Unlike url_filename which can be tricked by
+/// appending a URL fragment (e.g. #/dl.7z, useful for coercing a local
+/// filename), this function extracts the original filename from the URL."
+///
+/// Used where the on-disk name must match the actual download target (e.g.
+/// checkhashes cache naming) rather than the rename hint.
+pub fn url_remote_filename(url: &str) -> &str {
+    url_filename(strip_url_fragment(url))
+}
+
 /// Decode URL percent-encoding, replacing `%XX` with the corresponding byte character.
 ///
 /// For invalid `%XX` sequences (non-hexadecimal characters), the input character is preserved as-is.
@@ -236,6 +248,23 @@ mod tests {
     #[test]
     fn url_filename_empty_returns_input() {
         assert_eq!(url_filename(""), "");
+    }
+
+    #[test]
+    fn url_remote_filename_ignores_rename_fragment() {
+        // The rename fragment (#/dl.7z) must not leak into the original name.
+        assert_eq!(
+            url_remote_filename("https://example.com/foo.exe#/dl.7z"),
+            "foo.exe"
+        );
+        assert_eq!(
+            url_remote_filename("https://example.com/foo.zip"),
+            "foo.zip"
+        );
+        assert_eq!(
+            url_remote_filename("https://example.com/foo.zip?download=1"),
+            "foo.zip"
+        );
     }
 
     #[test]
