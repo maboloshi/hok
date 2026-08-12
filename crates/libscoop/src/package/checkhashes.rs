@@ -201,7 +201,9 @@ pub fn execute(
                     "mismatch expected={} actual={} url={}",
                     &expected_str[..std::cmp::min(12, expected_str.len())],
                     &actual[..std::cmp::min(12, actual.len())],
-                    urls.get(*i).cloned().unwrap_or_default()
+                    urls.get(*i)
+                        .cloned()
+                        .unwrap_or_else(|| "<unknown url>".to_owned())
                 ));
             }
             item.status = CheckHashesStatus::Failed;
