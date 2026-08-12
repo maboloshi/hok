@@ -14,10 +14,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::bucket::Bucket;
+use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::error::Fallible;
 use crate::internal;
 use crate::package::manifest::Manifest;
-use crate::package::{checkver, identity};
+use crate::package::{checkver, identity, Package};
 use crate::{Error, Session};
 
 /// The result of resolving an install query to a concrete manifest.
@@ -72,6 +73,39 @@ pub(crate) fn resolve_manifest(
         name: app.to_owned(),
         manifest,
     })
+}
+
+/// Resolve an isolated install query (`name@version`, a manifest URL, or a
+/// local manifest path) to a [`Package`] under the isolated bucket.
+///
+/// Returns `Ok(None)` when the query is a plain bucket reference that must
+/// go through bucket scanning — mirroring the install pipeline's
+/// isolated/regular split. Shared by the install and download pipelines so
+/// the dispatch cannot drift.
+pub(crate) fn resolve_isolated_query(session: &Session, query: &str) -> Fallible<Option<Package>> {
+    let Some(aq) = identity::parse_app(query) else {
+        return Ok(None);
+    };
+
+    // `name@version` — generate (or reuse) a manifest for the version.
+    if let Some(version) = aq.version.as_deref() {
+        let resolved = generate_user_manifest(session, &aq.app, aq.bucket.as_deref(), version)?;
+        return Ok(Some(isolated_package(resolved)));
+    }
+
+    // URL / local-path manifest — resolve in isolation.
+    let is_local = Path::new(&aq.app).exists();
+    if identity::is_manifest_url(&aq.app) || is_local {
+        let resolved = resolve_manifest(session, &aq.app, None)?;
+        return Ok(Some(isolated_package(resolved)));
+    }
+
+    Ok(None)
+}
+
+/// Wrap a resolved manifest as a package under the isolated bucket.
+fn isolated_package(resolved: ResolvedManifest) -> Package {
+    Package::from(&resolved.name, ISOLATED_PACKAGE_BUCKET, resolved.manifest)
 }
 
 /// Generate (or reuse) a manifest for the given `app@version`, mirroring

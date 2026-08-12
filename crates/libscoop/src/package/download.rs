@@ -986,6 +986,52 @@ pub(crate) fn verify_downloads(
     Ok(failed)
 }
 
+/// Download the given packages and verify their hashes, returning the
+/// idents that failed either step.
+///
+/// Wraps the shared sequence `PackageSet::new → download() → failed filter
+/// → verify_downloads` used by both the install pipeline and the standalone
+/// download command, emitting the download events around it. With `offline`
+/// no request is made and only the cache is verified.
+pub(crate) fn download_and_verify(
+    session: &Session,
+    packages: &[&Package],
+    reuse_cache: bool,
+    no_hash_check: bool,
+    ignore_failure: bool,
+    offline: bool,
+) -> Fallible<HashSet<String>> {
+    let mut failed = HashSet::new();
+
+    if !offline {
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageDownloadStart);
+        }
+
+        let mut set = PackageSet::new(session, packages, reuse_cache)?;
+        set.set_ignore_failure(ignore_failure);
+        failed = set.download()?.into_iter().collect();
+
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageDownloadDone);
+        }
+    }
+
+    let ok_pkgs: Vec<&Package> = packages
+        .iter()
+        .filter(|p| !failed.contains(&p.ident()))
+        .copied()
+        .collect();
+
+    failed.extend(verify_downloads(
+        session,
+        &ok_pkgs,
+        no_hash_check,
+        ignore_failure,
+    )?);
+    Ok(failed)
+}
+
 /// Options for [`download_apps`].
 pub struct DownloadOptions {
     /// Ignore the cache and download again (`-f/--force`).
@@ -1051,28 +1097,10 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 
     let refs: Vec<&Package> = packages.iter().collect();
 
-    if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageDownloadStart);
-    }
+    let failed = download_and_verify(session, &refs, !opts.force, !opts.check_hash, true, false)?;
 
-    let mut set = PackageSet::new(session, &refs, !opts.force)?;
-    set.set_ignore_failure(true);
-    let failed = set.download()?;
-
-    if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageDownloadDone);
-    }
-
-    let ok_pkgs: Vec<&Package> = refs
-        .iter()
-        .filter(|p| !failed.contains(&p.ident()))
-        .copied()
-        .collect();
-
-    let verify_failed = verify_downloads(session, &ok_pkgs, !opts.check_hash, true)?;
-
-    for pkg in &ok_pkgs {
-        if !verify_failed.contains(&pkg.ident()) {
+    for pkg in &refs {
+        if !failed.contains(&pkg.ident()) {
             session.output().info(format!(
                 "'{}' ({}) was downloaded successfully!",
                 pkg.name(),
@@ -1092,12 +1120,13 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 /// pipeline's dispatch: `name@version` → `generate_user_manifest`, anything
 /// else → `resolve_manifest` (URL / local path / bucket lookup).
 fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
+    if let Some(pkg) = manifest_source::resolve_isolated_query(session, query)? {
+        return Ok(pkg);
+    }
+    // Plain bucket reference: resolve directly — download has no
+    // installed-package semantics, so no bucket scanning is needed.
     let aq = identity::parse_app(query).ok_or_else(|| Error::PackageNotFound(query.to_owned()))?;
-    let resolved = if let Some(version) = aq.version.as_deref() {
-        manifest_source::generate_user_manifest(session, &aq.app, aq.bucket.as_deref(), version)?
-    } else {
-        manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref())?
-    };
+    let resolved = manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref())?;
     Ok(Package::from(
         &resolved.name,
         ISOLATED_PACKAGE_BUCKET,
@@ -1231,10 +1260,16 @@ mod tests {
             while !stop_h.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        // Guard against spurious connections with no request
-                        // data (observed on Windows under parallel test load):
-                        // close them without counting or responding.
-                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        // accept() inherits the listener's non-blocking mode,
+                        // so the first read can return WouldBlock before the
+                        // client's request bytes arrive (parallel test load
+                        // delays loopback delivery) — that would make every
+                        // connection look empty and fail the test. Restore
+                        // blocking mode; the read timeout below still guards
+                        // against spurious connections with no request data
+                        // (observed on Windows under parallel test load).
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
                         let head = read_request_head(&mut stream);
                         if head.is_empty() {
                             continue;

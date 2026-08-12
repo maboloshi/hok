@@ -5,11 +5,9 @@
 //! execution — split out of [`super`] (`sync.rs`). It is a private
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
-use std::collections::HashSet;
-use std::path::Path;
 use tracing::debug;
 
-use crate::package::{download, identity, manifest_source, operations, query, resolve, Package};
+use crate::package::{download, manifest_source, operations, query, resolve, Package};
 use crate::{
     constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible, internal, persist, psmodule, shim,
     shortcut, Error, Event, QueryOption, Session,
@@ -79,70 +77,23 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         let mut regular: Vec<&str> = Vec::new();
 
         for &query in queries {
-            let aq = identity::parse_app(query);
-
-            // `app@version` — generate (or reuse) a manifest for the version.
-            if let Some(aq) = aq.as_ref().filter(|aq| aq.version.is_some()) {
-                let version = aq.version.as_deref().unwrap_or_default();
-                match manifest_source::generate_user_manifest(
-                    session,
-                    &aq.app,
-                    aq.bucket.as_deref(),
-                    version,
-                ) {
-                    Ok(resolved) => {
-                        let p = Package::from(
-                            &resolved.name,
-                            ISOLATED_PACKAGE_BUCKET,
-                            resolved.manifest,
-                        );
-                        if !isolated.contains(&p) {
-                            isolated.push(p);
-                        }
-                    }
-                    Err(e) => {
-                        if ignore_failure {
-                            session
-                                .output()
-                                .error(format!("failed to resolve '{}': {}", query, e));
-                            continue;
-                        }
-                        return Err(e);
+            match manifest_source::resolve_isolated_query(session, query) {
+                Ok(Some(p)) => {
+                    if !isolated.contains(&p) {
+                        isolated.push(p);
                     }
                 }
-                continue;
-            }
-
-            // URL / local-path manifest — resolve and install in isolation.
-            if let Some(aq) = aq.as_ref() {
-                let is_local = Path::new(&aq.app).exists();
-                if identity::is_manifest_url(&aq.app) || is_local {
-                    match manifest_source::resolve_manifest(session, &aq.app, None) {
-                        Ok(resolved) => {
-                            let p = Package::from(
-                                &resolved.name,
-                                ISOLATED_PACKAGE_BUCKET,
-                                resolved.manifest,
-                            );
-                            if !isolated.contains(&p) {
-                                isolated.push(p);
-                            }
-                        }
-                        Err(e) => {
-                            if ignore_failure {
-                                session
-                                    .output()
-                                    .error(format!("failed to resolve '{}': {}", query, e));
-                                continue;
-                            }
-                            return Err(e);
-                        }
+                Ok(None) => regular.push(query),
+                Err(e) => {
+                    if ignore_failure {
+                        session
+                            .output()
+                            .error(format!("failed to resolve '{}': {}", query, e));
+                        continue;
                     }
-                    continue;
+                    return Err(e);
                 }
             }
-
-            regular.push(query);
         }
 
         // Regular bucket queries: exact-match against the synced scan.
@@ -328,39 +279,17 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         kept
     };
 
-    // Idents of packages that failed to download / verify and must be skipped.
-    // Only populated when IgnoreFailure is enabled.
-    let mut failed: HashSet<String> = HashSet::new();
-
-    if !should_offline {
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadStart);
-        }
-
-        failed = set.download()?.into_iter().collect();
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadDone);
-        }
-    }
-
-    // Drop packages that failed to download (IgnoreFailure mode).
-    let packages = if failed.is_empty() {
-        packages
-    } else {
-        packages
-            .into_iter()
-            .filter(|p| !failed.contains(&p.ident()))
-            .collect::<Vec<_>>()
-    };
-
+    // Idents of packages that failed to download / verify and must be
+    // skipped. Only populated when IgnoreFailure is enabled.
     let no_hash_check = options.contains(&SyncOption::NoHashCheck);
-    failed.extend(download::verify_downloads(
+    let failed = download::download_and_verify(
         session,
         &packages,
+        reuse_cache,
         no_hash_check,
         ignore_failure,
-    )?);
+        should_offline,
+    )?;
 
     // Drop packages that failed to download or verify (IgnoreFailure mode).
     let packages = if failed.is_empty() {
