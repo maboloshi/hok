@@ -692,30 +692,26 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Extract a real NSIS installer (local corpus) and verify a few file
-    /// contents match what 7z.exe produces. Ignored by default — run
-    /// manually on a machine that has the sample
-    /// (`D:\Downloads\AltSnap1.67-x64-inst.exe`). Content hashes matched
-    /// 7z.exe output when verified (2026-08-12); note the layout differs:
-    /// nsis yields the real install layout (Lang files flattened), 7z shows
-    /// the script paths (Lang\ prefix).
+    /// Extract an electron-builder NSIS installer (the real-world
+    /// $PLUGINSDIR\app-64.7z payload) and verify the payload file is
+    /// written with its literal directory. Ignored by default — run
+    /// manually on a machine that has the sample (a renamed NSIS installer
+    /// at `D:\App\Scoop\cache\Obsidian#1.13.6#3cb95fb.7z`). Verified
+    /// 2026-08-12: the extracted app-64.7z (114 MiB) matched 7z.exe output
+    /// byte-for-byte.
     #[test]
     #[ignore = "requires local NSIS installer sample"]
-    fn extract_nsis_real_installer_corpus() {
-        let path = r"D:\Downloads\AltSnap1.67-x64-inst.exe";
-        let dest = crate::test_utils::tmpdir("nsis_probe");
+    fn extract_nsis_electron_builder_corpus() {
+        let path = r"D:\App\Scoop\cache\Obsidian#1.13.6#3cb95fb.7z";
+        let dest = crate::test_utils::tmpdir("nsis_obsidian");
         extract_nsis(std::path::Path::new(path), &dest, None, &None).unwrap();
-        let mut files: Vec<_> = std::fs::read_dir(&dest)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_file())
-            .collect();
-        files.sort();
-        assert!(!files.is_empty(), "no files extracted");
-        // AltSnap.exe and the language files must be present (flat layout).
-        assert!(dest.join("AltSnap.exe").exists());
-        assert!(dest.join("zh_CN.ini").exists());
+        // pre_install scripts reference the payload by its literal $PLUGINSDIR
+        // path (Expand-7zipArchive $dir\$PLUGINSDIR\app-64.7z).
+        let app7z = dest.join("$PLUGINSDIR").join("app-64.7z");
+        assert!(app7z.exists(), "missing $PLUGINSDIR\\app-64.7z");
+        assert!(std::fs::metadata(&app7z)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false));
     }
 
     #[test]
