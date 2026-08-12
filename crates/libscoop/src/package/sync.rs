@@ -1,9 +1,11 @@
-//! Package synchronisation — install, upgrade, and uninstall.
+//! Transaction engine for install / upgrade / uninstall / reset.
 //!
-//! This is the largest and most complex module in `libscoop`. It
-//! orchestrates the full package lifecycle: download, integrity check,
-//! extraction, shim/shortcut creation, persist-linking, and script
-//! execution — all driven by events emitted to the frontend.
+//! This module owns the transaction model ([`Transaction`], [`SyncOption`]),
+//! the size pre-check and confirmation prompt, and the public entry points
+//! ([`install`], [`remove`], [`reset`]). The actual install and remove
+//! pipelines live in the private sub-modules [`sync_install`] and
+//! [`sync_remove`]; `sync.rs` itself is the orchestration shell, not the
+//! pipeline.
 //!
 //! # Design
 //!

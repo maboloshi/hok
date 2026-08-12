@@ -484,9 +484,12 @@ pub(crate) fn query_synced(
     Ok(packages)
 }
 
-/// Fast version of `query_synced` using SQLite manifest cache.
+/// `query_synced` backed by the SQLite manifest cache.
 ///
-/// Avoids reading and parsing thousands of JSON files on every command.
+/// The cache supplies the package/bucket index (avoiding a full directory
+/// walk), but manifest contents are always re-read from disk
+/// ([`load_bucket_manifest`]) to avoid stale data after the user edits a
+/// manifest; the cached JSON is only a fallback when the file is gone.
 /// Falls back silently if the cache is unavailable.
 fn query_synced_cached(
     session: &Session,
