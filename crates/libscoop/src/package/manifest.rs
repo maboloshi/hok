@@ -60,9 +60,6 @@ pub struct Manifest {
     /// The actual manifest specification.
     inner: ManifestSpec,
 
-    /// The hash of the manifest.
-    hash: String,
-
     /// The raw manifest JSON text, kept only when the manifest was loaded
     /// from a string (URL download, local path, or generated user manifest).
     /// Used to persist the exact content into `<app>/<version>/manifest.json`
@@ -720,17 +717,9 @@ impl Manifest {
         })?;
         let path = internal::path::normalize_path(path);
 
-        // SHA256 of the manifest file itself (kept for cache validation).
-        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
-            .sha256()
-            .build();
-        checksum.consume(&bytes);
-        let hash = checksum.finalize();
-
         Ok(Manifest {
             path,
             inner,
-            hash,
             raw: None,
         })
     }
@@ -749,17 +738,9 @@ impl Manifest {
         let inner: ManifestSpec = parse_manifest_spec(json)?;
         let path = PathBuf::from(name);
 
-        // SHA256 of the manifest JSON, consistent with `parse()`.
-        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
-            .sha256()
-            .build();
-        checksum.consume(json.as_bytes());
-        let hash = checksum.finalize();
-
         Ok(Manifest {
             path,
             inner,
-            hash,
             raw: None,
         })
     }
@@ -775,17 +756,9 @@ impl Manifest {
         let inner: ManifestSpec = parse_manifest_spec(json)?;
         let path = PathBuf::from(name);
 
-        // SHA256 of the manifest JSON, consistent with `parse()`.
-        let mut checksum = crate::internal::hash::ChecksumBuilder::new()
-            .sha256()
-            .build();
-        checksum.consume(json.as_bytes());
-        let hash = checksum.finalize();
-
         Ok(Manifest {
             path,
             inner,
-            hash,
             raw: Some(json.to_owned()),
         })
     }
@@ -820,11 +793,6 @@ impl Manifest {
     pub fn license(&self) -> &License {
         self.inner.license.as_ref().unwrap_or(&EMPTY_LICENSE)
     }
-
-    // #[inline]
-    // pub fn manifest_hash(&self) -> &str {
-    //     &self.hash
-    // }
 
     /// Return the `depends` of this manifest.
     ///
