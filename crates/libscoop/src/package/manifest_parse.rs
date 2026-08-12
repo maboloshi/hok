@@ -121,20 +121,28 @@ impl<'de> Deserialize<'de> for HashExtraction {
                 let mut url = None;
                 while let Some(key) = map.next_key::<String>()? {
                     let value: serde_json::Value = map.next_value()?;
+                    // Non-string values (e.g. a number) must not be silently
+                    // turned into empty strings — that would hide a malformed
+                    // manifest. Fail the parse instead.
+                    let expect_str = |field: &str| {
+                        value.as_str().map(|s| s.to_owned()).ok_or_else(|| {
+                            de::Error::custom(format!(
+                                "checkver hash extraction '{field}' must be a string"
+                            ))
+                        })
+                    };
                     match key.as_str() {
-                        "find" => find = Some(value.as_str().unwrap_or_default().to_owned()),
-                        "regex" => regex = Some(value.as_str().unwrap_or_default().to_owned()),
-                        "jp" | "jsonpath" => {
-                            jsonpath = Some(value.as_str().unwrap_or_default().to_owned())
-                        }
-                        "xpath" => xpath = Some(value.as_str().unwrap_or_default().to_owned()),
+                        "find" => find = Some(expect_str("find")?),
+                        "regex" => regex = Some(expect_str("regex")?),
+                        "jp" | "jsonpath" => jsonpath = Some(expect_str("jsonpath")?),
+                        "xpath" => xpath = Some(expect_str("xpath")?),
                         "mode" => {
                             mode = Some(
                                 HashExtractionMode::deserialize(value)
                                     .map_err(de::Error::custom)?,
                             );
                         }
-                        "url" => url = Some(value.as_str().unwrap_or_default().to_owned()),
+                        "url" => url = Some(expect_str("url")?),
                         _ => {}
                     }
                 }
