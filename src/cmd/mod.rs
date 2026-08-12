@@ -110,6 +110,8 @@ pub enum Command {
     Config(config::Args),
     Create(create::Args),
     Depends(depends::Args),
+    /// Download package(s) into the cache folder without installing
+    Download(download::Args),
     Export(export::Args),
     FormatJson(formatjson::Args),
     Hold(hold::Args),
@@ -268,6 +270,7 @@ pub fn start() -> Result<()> {
         Command::Config(args) => config::execute(args, &session),
         Command::Create(args) => create::execute(args, &session),
         Command::Depends(args) => depends::execute(args, &session),
+        Command::Download(args) => download::execute(args, &session),
         Command::Export(args) => export::execute(args, &session),
         Command::FormatJson(args) => formatjson::execute(args),
         Command::Hold(args) => hold::execute(args, &session),

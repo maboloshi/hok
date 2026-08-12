@@ -354,6 +354,26 @@ cli_help:
     args:
       package: 包名称
     about: 显示包的依赖关系
+  download:
+    about: 将包下载到缓存文件夹而不安装
+    long_about: |-
+      将包文件下载到缓存目录而不安装（使用本地 'buckets'）：
+           hok download git
+
+      下载指定版本的包
+      （注意：将基于当前版本自动生成 manifest）：
+           hok download gh@2.7.0
+
+      从 URL 的 manifest 下载包：
+           hok download https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/runat.json
+
+      从本机 manifest 文件下载包：
+           hok download \path\to\app.json
+    args:
+      package: 要下载的包（名称、bucket/名称、名称@版本，或 manifest URL/路径）
+      force: 强制下载（覆盖缓存）
+      no_hash_check: 跳过包完整性检查
+      arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
   export:
     about: 导出已安装包列表
     args:

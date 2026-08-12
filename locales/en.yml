@@ -355,6 +355,27 @@ cli_help:
     args:
       package: Name of the package
     about: Show dependencies of a package
+  download:
+    about: Download apps in the cache folder and verify hashes
+    long_about: |-
+      Download app files into the cache directory without installing them
+      (uses your local 'buckets'):
+           hok download git
+
+      To download a different version of the app
+      (note that this will auto-generate the manifest using the current version):
+           hok download gh@2.7.0
+
+      To download an app from a manifest at a URL:
+           hok download https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/runat.json
+
+      To download an app from a manifest on your computer:
+           hok download \path\to\app.json
+    args:
+      package: The package(s) to download (name, bucket/name, name@version, or manifest URL/path)
+      force: Force download (overwrite cache)
+      no_hash_check: Skip package integrity check (use with caution!)
+      arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
   export:
     about: Export installed packages list
     args:
