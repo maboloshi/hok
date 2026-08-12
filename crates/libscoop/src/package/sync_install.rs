@@ -331,7 +331,10 @@ pub enum RunningCheck {
 /// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
 pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
-    let mut running = internal::os::running_processes_under(&app_dir).unwrap_or_default();
+    // Process enumeration failure must not be silently treated as "nothing
+    // is running" — that could overwrite an app which is in use. Fail
+    // closed instead (the caller aborts or skips the package).
+    let mut running = internal::os::running_processes_under(&app_dir)?;
 
     // Exclude the current process: `hok update hok` runs from inside the
     // very app it is about to replace. Upstream Scoop never checks the
