@@ -86,7 +86,7 @@ pub use session::Session;
 
 /// Public filesystem helpers (thin facade over [`internal::fs`]).
 pub mod fs {
-    pub use crate::internal::fs::{read_to_string, walkdir_files, write, write_json};
+    pub use crate::internal::fs::{read_to_string, write, write_json};
 }
 
 /// Public OS / process helpers (thin facade over [`internal::os`]).

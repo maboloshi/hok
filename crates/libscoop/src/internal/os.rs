@@ -1,9 +1,7 @@
 //! OS utilities — process enumeration and system checks.
 //!
 //! Uses raw Win32 FFI on Windows to avoid heavy dependencies like `sysinfo`.
-//! The old `sysinfo`-based implementation is commented out below.
 
-#![allow(dead_code)]
 use std::ffi::c_void;
 use std::path::Path;
 
@@ -37,7 +35,6 @@ extern "system" {
 
 const TH32CS_SNAPPROCESS: u32 = 0x00000002;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-const PROCESS_TERMINATE: u32 = 0x0001;
 
 /// Process entry structure for Toolhelp32 snapshot.
 #[allow(non_snake_case)]
@@ -80,14 +77,6 @@ pub fn is_admin() -> bool {
     #[cfg(not(target_os = "windows"))]
     {
         false
-    }
-}
-
-pub fn os_is_arch64() -> bool {
-    match std::mem::size_of::<&char>() {
-        4 => false,
-        8 => true,
-        _ => panic!("unexpected os arch"),
     }
 }
 
@@ -137,17 +126,6 @@ pub fn ps_command() -> std::process::Command {
     let mut cmd = std::process::Command::new(ps_exe);
     cmd.arg("-NoProfile").arg("-ExecutionPolicy").arg("Bypass");
     cmd
-}
-
-/// Current target architecture in Scoop naming ("64bit" / "32bit" / "arm64").
-pub fn scoop_arch() -> &'static str {
-    if cfg!(target_arch = "x86_64") {
-        "64bit"
-    } else if cfg!(target_arch = "x86") {
-        "32bit"
-    } else {
-        "arm64"
-    }
 }
 
 /// Run a program with the given arguments and wait for it to complete.
@@ -259,36 +237,6 @@ pub fn running_processes_under(dir: &Path) -> Fallible<Vec<RunningProcess>> {
     processes.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(processes)
 }
-
-// ─── Old sysinfo implementation (kept for reference) ───────────────────────
-// use once_cell::sync::Lazy;
-// use std::sync::Mutex;
-// use sysinfo::ProcessExt;
-// use sysinfo::ProcessRefreshKind;
-// use sysinfo::System;
-// use sysinfo::SystemExt;
-//
-// static SYSINFO: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::default()));
-//
-// pub fn running_apps(path: &Path) -> Fallible<Vec<String>> {
-//     let mut sys = SYSINFO.lock().map_err(|e| Error::Custom(e.to_string()))?;
-//     sys.refresh_processes_specifics(ProcessRefreshKind::new());
-//     let mut proc_names = sys
-//         .processes()
-//         .values()
-//         .filter_map(|p| {
-//             let exe_path = p.exe();
-//             if exe_path.starts_with(path) {
-//                 Some(p.name().to_owned())
-//             } else {
-//                 None
-//             }
-//         })
-//         .collect::<Vec<_>>();
-//     proc_names.sort();
-//     proc_names.dedup();
-//     Ok(proc_names)
-// }
 
 // ─── process execution (ShellExecuteExW) ──────────────────────────────
 

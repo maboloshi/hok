@@ -12,7 +12,6 @@
 //!   [`leaf_base()`] strips the extension; `without_leaf()` returns
 //!   the parent path.
 
-#![allow(dead_code)]
 use std::path::{Component, Path, PathBuf};
 
 /// A directory that looks like a package version dir: `current`, or
@@ -47,12 +46,6 @@ pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 // `buckets` are pinned to the *user-level* root even for global installs
 // (upstream `$scoopdir\buckets`, buckets.ps1:1) — callers MUST pass
 // `config.root_path()` here, never the effective root.
-
-/// `<root>/buckets`. NOTE: user-level root, see module docs.
-#[inline]
-pub fn buckets_dir(root: &Path) -> PathBuf {
-    root.join("buckets")
-}
 
 /// `<root>/buckets/<name>`. NOTE: user-level root, see module docs.
 #[inline]

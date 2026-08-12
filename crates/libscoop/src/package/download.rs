@@ -1134,9 +1134,6 @@ fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
     ))
 }
 
-// ─── Old curl implementation (kept for reference) ──────────────────────────
-// (see git history for the full curl-based download.rs)
-
 #[cfg(test)]
 mod tests {
     use super::*;
