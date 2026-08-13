@@ -989,18 +989,21 @@ pub(crate) fn verify_downloads(
 /// Download the given packages and verify their hashes, returning the
 /// idents that failed either step.
 ///
-/// Wraps the shared sequence `PackageSet::new → download() → failed filter
-/// → verify_downloads` used by both the install pipeline and the standalone
-/// download command, emitting the download events around it. With `offline`
-/// no request is made and only the cache is verified.
+/// Wraps the shared sequence `download() → failed filter → verify_downloads`
+/// used by both the install pipeline and the standalone download command,
+/// emitting the download events around it. With `offline` no request is made
+/// and only the cache is verified.
+///
+/// The caller must have run [`PackageSet::calculate_download_size`] on the
+/// set first: the HEAD requests it makes fill in `remote_size`, which both
+/// fragmented download (splitting) and the progress bar's total depend on.
 pub(crate) fn download_and_verify(
-    session: &Session,
-    packages: &[&Package],
-    reuse_cache: bool,
+    set: &mut PackageSet<'_>,
     no_hash_check: bool,
     ignore_failure: bool,
     offline: bool,
 ) -> Fallible<HashSet<String>> {
+    let session = set.session;
     let mut failed = HashSet::new();
 
     if !offline {
@@ -1008,7 +1011,6 @@ pub(crate) fn download_and_verify(
             let _ = tx.send(Event::PackageDownloadStart);
         }
 
-        let mut set = PackageSet::new(session, packages, reuse_cache)?;
         set.set_ignore_failure(ignore_failure);
         failed = set.download()?.into_iter().collect();
 
@@ -1017,10 +1019,11 @@ pub(crate) fn download_and_verify(
         }
     }
 
-    let ok_pkgs: Vec<&Package> = packages
+    let ok_pkgs: Vec<&Package> = set
+        .packages
         .iter()
+        .map(|p| *p)
         .filter(|p| !failed.contains(&p.ident()))
-        .copied()
         .collect();
 
     failed.extend(verify_downloads(
@@ -1097,7 +1100,11 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 
     let refs: Vec<&Package> = packages.iter().collect();
 
-    let failed = download_and_verify(session, &refs, !opts.force, !opts.check_hash, true, false)?;
+    // HEAD requests fill in remote_size: fragmented download and the
+    // progress bar both depend on it (same as the install pipeline).
+    let mut set = PackageSet::new(session, &refs, !opts.force)?;
+    set.calculate_download_size()?;
+    let failed = download_and_verify(&mut set, !opts.check_hash, true, false)?;
 
     for pkg in &refs {
         if !failed.contains(&pkg.ident()) {
@@ -1271,6 +1278,19 @@ mod tests {
                         if head.is_empty() {
                             continue;
                         }
+                        // HEAD (size probing): answer 200 with Content-Length
+                        // and no body, like a real server. Not counted in
+                        // `ranges` (a cache-hit must not look like a request).
+                        if head.starts_with("HEAD") {
+                            responses_h.lock().unwrap().push(200);
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                data.len()
+                            );
+                            continue;
+                        }
+
                         let n = count_h.fetch_add(1, Ordering::SeqCst) + 1;
                         let range = extract_range(&head);
                         ranges_h.lock().unwrap().push(range.clone());

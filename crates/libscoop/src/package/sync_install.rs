@@ -282,14 +282,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     // Idents of packages that failed to download / verify and must be
     // skipped. Only populated when IgnoreFailure is enabled.
     let no_hash_check = options.contains(&SyncOption::NoHashCheck);
-    let failed = download::download_and_verify(
-        session,
-        &packages,
-        reuse_cache,
-        no_hash_check,
-        ignore_failure,
-        should_offline,
-    )?;
+    // `set` already has remote_size filled by calculate_download_size above
+    // (used for the confirm prompt) — fragmented download and the progress
+    // bar depend on it, so the same set must be handed to the downloader.
+    let failed =
+        download::download_and_verify(&mut set, no_hash_check, ignore_failure, should_offline)?;
 
     // Drop packages that failed to download or verify (IgnoreFailure mode).
     let packages = if failed.is_empty() {
