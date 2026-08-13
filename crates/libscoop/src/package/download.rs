@@ -1095,6 +1095,11 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
     }
 
     if packages.is_empty() {
+        // Nothing resolved — still end the event loop, or the CLI's
+        // handle.join() would hang forever waiting for DownloadDone.
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::DownloadDone);
+        }
         return Ok(());
     }
 
