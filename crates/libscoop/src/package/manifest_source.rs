@@ -214,12 +214,22 @@ fn find_bucket_manifest(
         crate::bucket::bucket_added(session)?
             .into_iter()
             .flat_map(|b| {
-                b.manifests()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|de| match_manifest(de))
-                    .map(move |de| (b.name().to_owned(), de.path()))
-                    .collect::<Vec<_>>()
+                let name = b.name().to_owned();
+                match b.manifests() {
+                    Ok(ms) => ms
+                        .into_iter()
+                        .filter(|de| match_manifest(de))
+                        .map(move |de| (name.clone(), de.path()))
+                        .collect::<Vec<_>>(),
+                    Err(e) => {
+                        // A broken bucket must not silently read as "no
+                        // manifest" (that would misreport PackageNotFound).
+                        session
+                            .output()
+                            .warn(format!("failed to scan bucket '{}': {}", name, e));
+                        vec![]
+                    }
+                }
             })
             .collect()
     };
