@@ -125,6 +125,11 @@ pub enum Error {
     #[error("'{0}' is still running! Close the app(s) before proceeding.")]
     AppRunning(String),
 
+    /// Thrown when the user aborts an interactive confirmation prompt.
+    /// Not a failure: callers exit 0 but skip success messages.
+    #[error("operation aborted by user")]
+    UserAborted,
+
     /// A custom error.
     #[error("{0}")]
     Custom(String),
@@ -195,6 +200,7 @@ impl Error {
             Error::PackageHoldNotInstalled(_) => "error.package_hold_not_installed",
             Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
             Error::AppRunning(_) => "error.app_running",
+            Error::UserAborted => "error.user_aborted",
             Error::Custom(_) => "error.custom",
             Error::ExtractionFailed(_) => "error.extraction_failed",
             Error::PathTraversalDetected(_) => "error.path_traversal_detected",

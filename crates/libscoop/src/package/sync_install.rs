@@ -20,6 +20,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     let mut packages = vec![];
 
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
+    let force = options.contains(&SyncOption::Force);
     let escape_hold = options.contains(&SyncOption::EscapeHold);
     let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
 
@@ -50,13 +51,23 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             }
         }
 
-        packages = query::query_installed(session, queries, &[QueryOption::Upgradable])?;
+        // Without Force, only packages with an upgradable reference are
+        // taken; with Force every installed package is reinstalled at its
+        // current version (matching `scoop update --force`).
+        packages = if force {
+            query::query_installed(session, queries, &[])?
+        } else {
+            query::query_installed(session, queries, &[QueryOption::Upgradable])?
+        };
 
         // Replace the packages with their upgradable references.
         // Packages without an upgradable version are skipped (filter_map).
         packages = packages
             .into_iter()
             .filter_map(|p| {
+                if force {
+                    return Some(p);
+                }
                 let upgradable = p.upgradable().cloned();
                 if upgradable.is_none() {
                     debug!(
@@ -298,7 +309,9 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     }
 
     if !assume_yes && !confirm_transaction(session, &transaction)? {
-        return Ok(());
+        // User declined: not an error, but not a success either — callers
+        // exit 0 without the "Everything is ok!" message.
+        return Err(Error::UserAborted);
     }
 
     // Idents of packages that failed to download / verify and must be

@@ -98,7 +98,6 @@ pub fn run_event_loop(
                         dp.update(
                             ctx.ident.to_owned(),
                             ctx.url.to_owned(),
-                            ctx.filename.to_owned(),
                             ctx.dltotal,
                             ctx.dlnow,
                         );
@@ -121,7 +120,12 @@ pub fn run_event_loop(
                         output::prompt(rust_i18n::t!("output.select_prompt"));
                         std::io::stdout().flush().unwrap();
                         let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).unwrap();
+                        // EOF/read error (piped/no input): fall back to the
+                        // first candidate instead of spinning forever.
+                        match std::io::stdin().read_line(&mut input) {
+                            Ok(0) | Err(_) => break 0,
+                            Ok(_) => {}
+                        }
                         if let Ok(num) = input.trim().parse::<usize>() {
                             if num < pkgs.len() {
                                 break num;

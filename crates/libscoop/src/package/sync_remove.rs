@@ -108,7 +108,8 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
 
     let assume_yes = options.contains(&SyncOption::AssumeYes);
     if !assume_yes && !confirm_transaction(session, &transaction)? {
-        return Ok(());
+        // User declined: exit 0 but no success message (see sync_install).
+        return Err(Error::UserAborted);
     }
 
     if let Some(packages) = transaction.remove_view() {

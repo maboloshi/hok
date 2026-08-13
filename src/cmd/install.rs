@@ -118,8 +118,14 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    package::sync::sync(session, to_install.clone(), options)?;
+    let sync_result = package::sync::sync(session, to_install.clone(), options);
     handle.join().unwrap();
+    // A declined confirmation is not a failure: exit 0 without the
+    // "Everything is ok!" message.
+    if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
+        return Ok(());
+    }
+    sync_result?;
 
     // Show unsatisfied suggestions from manifests of installed packages
     let suggestions = package::query::suggest(session, &to_install)?;

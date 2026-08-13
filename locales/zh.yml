@@ -192,6 +192,7 @@ error:
   package_hold_not_installed: "软件包 '%{name}' 未安装"
   package_hold_broken_install: "软件包 '%{name}' 损坏"
   app_running: "'%{name}' 仍在运行！请在继续之前关闭该应用。"
+  user_aborted: "操作已取消。"
   custom: "%{msg}"
   extraction_failed: "解压归档失败: %{reason}"
   path_traversal_detected: "检测到路径穿越: %{detail}"

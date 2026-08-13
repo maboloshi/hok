@@ -174,6 +174,14 @@ pub enum SyncOption {
     /// [1]: SyncOption::NoUpgrade
     OnlyUpgrade,
 
+    /// Force reinstall of already-installed packages (used with
+    /// [`OnlyUpgrade`][1]): the update is restricted to installed packages
+    /// but skips the up-to-date filter, so even packages at their current
+    /// version are reinstalled — matching `scoop update --force`.
+    ///
+    /// [1]: SyncOption::OnlyUpgrade
+    Force,
+
     /// Uninstall packages.
     ///
     /// Use this option to specify a sync operation of only uninstalling packages.
@@ -456,18 +464,21 @@ pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> 
     }
 
     let is_op_remove = options.contains(&SyncOption::Remove);
-    if is_op_remove {
-        remove(session, &queries, &options)?;
+    let result = if is_op_remove {
+        remove(session, &queries, &options)
     } else {
-        install(session, &queries, &options)?;
-    }
+        install(session, &queries, &options)
+    };
 
+    // Always close the resolve/sync phases — including error paths (e.g.
+    // a declined confirmation) — so the event loop breaks and the CLI's
+    // handle.join() cannot hang.
     if let Some(tx) = session.emitter() {
-        // Close the resolve phase for both install and remove (upstream's
-        // "Resolving done." would otherwise never show for install).
         let _ = tx.send(Event::PackageResolveDone);
         let _ = tx.send(Event::PackageSyncDone);
     }
+
+    result?;
 
     Ok(())
 }

@@ -166,32 +166,49 @@ pub fn execute_upgrade(
 
     ensure_global(session, sync.global, "upgrade")?;
 
-    // When --force is set, skip OnlyUpgrade so that packages already at the
-    // latest version are still reinstalled (matching PS1's "force update").
     let mut options = sync.to_sync_options(session);
+    // Always restrict the update to installed packages (OnlyUpgrade keeps
+    // the existence check and the installed-only query). --force adds
+    // SyncOption::Force so packages at their current version are
+    // reinstalled too, instead of falling into the plain install path
+    // (which would expand `*` to every bucket package).
+    options.push(SyncOption::OnlyUpgrade);
     if !force {
-        options.push(SyncOption::OnlyUpgrade);
-
         // "All apps are up to date" is upgrade semantics: the update command
         // decides it, not the event loop. Nothing upgradable and at least
         // one of the targets installed means there is nothing to do.
-        // Non-installed targets fall through to sync, which reports them.
-        let upgradable = libscoop::package::query::query_installed(
+        // A named target that isn't installed must NOT be reported as
+        // up-to-date — fall through to sync so it reports PackageNotFound.
+        let mut missing_target = false;
+        for &q in &queries {
+            if q != "*" && package::query::query_installed(session, &[q], &[])?.is_empty() {
+                missing_target = true;
+                break;
+            }
+        }
+        let upgradable = package::query::query_installed(
             session,
             &queries,
             &[libscoop::QueryOption::Upgradable],
         )?;
-        let installed = libscoop::package::query::query_installed(session, &queries, &[])?;
-        if upgradable.is_empty() && !installed.is_empty() {
+        let installed = package::query::query_installed(session, &queries, &[])?;
+        if !missing_target && upgradable.is_empty() && !installed.is_empty() {
             output::info(rust_i18n::t!("cmd.outdated"));
             return Ok(());
         }
+    } else {
+        options.push(SyncOption::Force);
     }
 
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    package::sync::sync(session, queries, options)?;
+    let sync_result = package::sync::sync(session, queries, options);
     handle.join().unwrap();
+    // A declined confirmation is not a failure: exit 0 without ok_all.
+    if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
+        return Ok(());
+    }
+    sync_result?;
 
     output::done(rust_i18n::t!("output.ok_all"));
 
