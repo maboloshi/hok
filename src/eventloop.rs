@@ -230,6 +230,9 @@ pub fn run_event_loop(
                     break;
                 }
 
+                // Standalone download done — no install/update semantics.
+                Event::DownloadDone => break,
+
                 // Commit tracking
                 Event::PackageCommitDone(_) => {
                     committed += 1;

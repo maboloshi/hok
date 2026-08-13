@@ -248,6 +248,9 @@ pub enum Event {
     /// Package sync operation has finished.
     PackageSyncDone,
 
+    /// A standalone download operation (`download_apps`) has finished.
+    DownloadDone,
+
     /// PowerShell script emitted output (stdout line).
     ScriptOutput(String),
 

@@ -1117,7 +1117,7 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageSyncDone);
+        let _ = tx.send(Event::DownloadDone);
     }
 
     Ok(())
