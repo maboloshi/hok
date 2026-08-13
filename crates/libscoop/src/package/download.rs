@@ -1107,34 +1107,42 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 
     // HEAD requests fill in remote_size: fragmented download and the
     // progress bar both depend on it (same as the install pipeline).
-    let mut set = PackageSet::new(session, &refs, !opts.force)?;
-    set.calculate_download_size()?;
-    let failed = download_and_verify(&mut set, !opts.check_hash, true, false)?;
+    let result = (|| -> Fallible<()> {
+        let mut set = PackageSet::new(session, &refs, !opts.force)?;
+        set.calculate_download_size()?;
+        let failed = download_and_verify(&mut set, !opts.check_hash, true, false)?;
 
-    for pkg in &refs {
-        if !failed.contains(&pkg.ident()) {
-            session.output().info(format!(
-                "'{}' ({}) was downloaded successfully!",
-                pkg.name(),
-                pkg.version()
-            ));
+        for pkg in &refs {
+            if !failed.contains(&pkg.ident()) {
+                session.output().info(format!(
+                    "'{}' ({}) was downloaded successfully!",
+                    pkg.name(),
+                    pkg.version()
+                ));
+            }
         }
-    }
 
+        if !failed.is_empty() {
+            // Individual failures already printed per-package; surface an
+            // aggregate error so the CLI exits non-zero (scripts/CI can tell).
+            let mut failed: Vec<_> = failed.into_iter().collect();
+            failed.sort();
+            return Err(Error::Custom(format!(
+                "download failed for: {}",
+                failed.join(", ")
+            )));
+        }
+
+        Ok(())
+    })();
+
+    // Always end the event loop — including error paths (set creation,
+    // sizing, verify) — or the CLI's handle.join() hangs forever.
     if let Some(tx) = session.emitter() {
         let _ = tx.send(Event::DownloadDone);
     }
 
-    if !failed.is_empty() {
-        // Individual failures already printed per-package; surface an
-        // aggregate error so the CLI exits non-zero (scripts/CI can tell).
-        let mut failed: Vec<_> = failed.into_iter().collect();
-        failed.sort();
-        return Err(Error::Custom(format!(
-            "download failed for: {}",
-            failed.join(", ")
-        )));
-    }
+    result?;
 
     Ok(())
 }

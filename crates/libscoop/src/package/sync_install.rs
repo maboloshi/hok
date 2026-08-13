@@ -213,7 +213,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let upgradable = upgradable
         .into_iter()
-        .filter(|p| p.upgradable_version().is_some())
+        // Without Force only packages with an upgradable reference are
+        // taken; with Force every strictly-installed package is reinstalled
+        // at its current version, so the filter must not drop them.
+        .filter(|p| force || p.upgradable_version().is_some())
         .collect::<Vec<_>>();
 
     let no_upgrade = options.contains(&SyncOption::NoUpgrade);
@@ -769,6 +772,34 @@ mod tests {
 
         // No bucket manifest → nothing upgradable → Ok, no error raised.
         install(&session, &["curl"], &[SyncOption::OnlyUpgrade]).unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With Force, an installed package with no newer version is still
+    /// reinstalled at its current version — the transaction must not be
+    /// empty (a regression: the upgradable_version filter used to drop all
+    /// Force packages, making `update --force` a silent no-op).
+    #[test]
+    fn only_upgrade_force_reinstalls_current_version() {
+        let root = crate::test_utils::tmpdir("only_upgrade_force");
+        let session = crate::test_utils::test_session(&root);
+
+        crate::test_utils::write_bucket_manifest(&root, "main", "curl", NO_DOWNLOAD_MANIFEST);
+        crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
+
+        install(
+            &session,
+            &["curl"],
+            &[SyncOption::OnlyUpgrade, SyncOption::Force],
+        )
+        .unwrap();
+
+        // The reinstall committed: a version dir was created under apps/curl.
+        assert!(
+            root.join("apps").join("curl").join("1.0.0").is_dir(),
+            "force reinstall must commit, not no-op"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
