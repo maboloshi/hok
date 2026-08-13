@@ -4,7 +4,7 @@ use clap::Parser;
 use libscoop::{package, Session, SyncOption};
 
 use crate::cmd::shared_args::ensure_global;
-use crate::Result;
+use crate::{output, Result};
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -62,6 +62,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     package::sync::sync(session, queries, options)?;
     handle.join().unwrap();
+
+    output::done(rust_i18n::t!("output.ok_all"));
 
     Ok(())
 }

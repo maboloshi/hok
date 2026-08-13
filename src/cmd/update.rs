@@ -193,5 +193,7 @@ pub fn execute_upgrade(
     package::sync::sync(session, queries, options)?;
     handle.join().unwrap();
 
+    output::done(rust_i18n::t!("output.ok_all"));
+
     Ok(())
 }
