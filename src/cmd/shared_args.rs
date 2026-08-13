@@ -132,12 +132,14 @@ pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crat
 /// `if (-not (Test-Path $dir -PathType Container))` guard and returns
 /// normally after printing the error. Returns `true` when the directory is
 /// valid; callers should `return Ok(())` on `false`.
-pub(crate) fn validate_dir(dir: &Path) -> bool {
+pub(crate) fn validate_dir(dir: &Path) -> crate::Result<()> {
     if dir.is_dir() {
-        true
+        Ok(())
     } else {
-        crate::output::err(rust_i18n::t!("cmd.dir_not_found", path = dir.display()));
-        false
+        Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.dir_not_found",
+            path = dir.display()
+        )))
     }
 }
 

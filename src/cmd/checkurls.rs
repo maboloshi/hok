@@ -28,9 +28,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
-    if !validate_dir(&args.dir) {
-        return Ok(());
-    }
+    validate_dir(&args.dir)?;
     let dir = &args.dir;
 
     // Scoop-style header: [U]RLs [O]kay [F]ailed

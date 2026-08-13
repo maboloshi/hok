@@ -104,7 +104,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         let name = q.rsplit('/').next().unwrap_or(q.as_str());
         match package::sync::check_not_running(session, name, "reinstalling") {
             Ok(_) => keep.push(q.clone()),
-            Err(libscoop::Error::AppRunning(name)) if all_opts.contains(&SyncOption::IgnoreFailure) => {
+            Err(libscoop::Error::AppRunning(name))
+                if all_opts.contains(&SyncOption::IgnoreFailure) =>
+            {
                 eprintln!("Running process detected, skip reinstalling '{name}'.");
                 hold_set.remove(&name);
             }
@@ -145,9 +147,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         output::done(rust_i18n::t!("reinstall.reheld"));
     }
 
+    output::done(rust_i18n::t!("output.ok_all"));
+
     Ok(())
 }
-
 
 /// Uninstall phase.
 fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {

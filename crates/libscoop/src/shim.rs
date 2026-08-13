@@ -592,7 +592,13 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
                     // when there are multiple alter shims for the same shim
                     if alt_shims.len() > 1 {
                         alt_shims.sort_by_key(|de| {
-                            std::cmp::Reverse(de.metadata().unwrap().modified().unwrap())
+                            // Unreadable metadata must not panic a production
+                            // path; treat as the oldest.
+                            std::cmp::Reverse(
+                                de.metadata()
+                                    .and_then(|m| m.modified())
+                                    .unwrap_or(std::time::UNIX_EPOCH),
+                            )
                         });
                     }
 

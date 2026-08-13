@@ -42,7 +42,7 @@ impl MultiProgressUI {
     }
 
     /// Update progress bar with the given context.
-    pub fn update(&mut self, ident: String, url: String, _: String, dltotal: u64, dlnow: u64) {
+    pub fn update(&mut self, ident: String, url: String, dltotal: u64, dlnow: u64) {
         if dltotal == 0 {
             return;
         }

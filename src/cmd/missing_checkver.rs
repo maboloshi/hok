@@ -20,9 +20,7 @@ pub struct Args {
 }
 
 pub fn execute(args: Args) -> Result<()> {
-    if !validate_dir(&args.dir) {
-        return Ok(());
-    }
+    validate_dir(&args.dir)?;
     let dir = &args.dir;
 
     let report = missing_checkver::scan(dir, args.supported)?;
