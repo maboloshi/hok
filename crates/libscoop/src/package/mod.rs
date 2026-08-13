@@ -466,20 +466,6 @@ impl Package {
         ret
     }
 
-    /// manifest.
-    pub(crate) fn has_uninstall_script(&self) -> bool {
-        [
-            self.manifest
-                .uninstaller()
-                .map(|u| u.script())
-                .unwrap_or_default(),
-            self.manifest.pre_uninstall(),
-            self.manifest.post_uninstall(),
-        ]
-        .into_iter()
-        .any(|h| h.is_some())
-    }
-
     pub(crate) fn fill_install_state(&self, state: InstallState) {
         let origin = match &state {
             InstallState::NotInstalled => OriginateFrom::Bucket(self.bucket.clone()),

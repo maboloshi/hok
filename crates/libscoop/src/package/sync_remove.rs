@@ -96,14 +96,13 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
         resolve::resolve_cascade(session, &mut packages, escape_hold)?;
     }
 
-    if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveDone);
-    }
-
     let transaction = Transaction::default();
 
-    let (_packages_with_script, _packages): (Vec<_>, Vec<_>) =
-        packages.iter().partition(|p| p.has_uninstall_script());
+    // Nothing to remove (all held, or all failed under IgnoreFailure) —
+    // no confirmation needed for an empty transaction.
+    if packages.is_empty() {
+        return Ok(());
+    }
 
     transaction.set_remove(packages);
 

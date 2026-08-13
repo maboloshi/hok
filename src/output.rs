@@ -171,13 +171,23 @@ pub fn prompt_yes_no() -> bool {
         print!("\n{} ", rust_i18n::t!("output.confirm_continue"));
         std::io::stdout().flush().unwrap();
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
+        // EOF (piped/no input) or a read error must not spin forever — a
+        // non-interactive confirmation is conservatively "no".
+        match std::io::stdin().read_line(&mut input) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
         let c = input.trim_end();
         if c.chars().count() == 1 {
             let ch: char = c.chars().next().unwrap();
             if ['y', 'Y', 'n', 'N'].contains(&ch) {
                 return ch == 'y' || ch == 'Y';
             }
+        }
+        if c.is_empty() {
+            // An empty line is a "no".
+            return false;
         }
     }
 }

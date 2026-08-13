@@ -149,7 +149,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                         continue;
                     }
 
-                    if let Err(e) = resolve::select_candidate(session, &mut matched) {
+                    if let Err(e) = resolve::select_candidate(
+                        session,
+                        &mut matched,
+                        options.contains(&SyncOption::AssumeYes),
+                    ) {
                         if ignore_failure {
                             session
                                 .output()
@@ -177,7 +181,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let no_dependencies = options.contains(&SyncOption::NoDependencies);
     if !no_dependencies {
-        resolve::resolve_dependencies(session, &mut packages, ignore_failure)?;
+        resolve::resolve_dependencies(
+            session,
+            &mut packages,
+            ignore_failure,
+            options.contains(&SyncOption::AssumeYes),
+        )?;
     }
 
     let (installed, installable): (Vec<_>, Vec<_>) =
@@ -232,6 +241,37 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         return Ok(());
     }
 
+    // Detect apps that are still running before sizing/downloading anything
+    // (mirrors scoop-update.ps1: test_running_process runs before
+    // downloading the new version). A running app aborts the whole batch
+    // unless `ignore_failures` is enabled — the app's failure (including
+    // process-in-use) is then skipped while the rest of the batch
+    // continues. Newly installed apps have no apps/<name> directory yet, so
+    // they never match. The set is built from the kept packages below, so
+    // skipped ones are never downloaded.
+    let packages = {
+        let mut kept = Vec::new();
+        for &pkg in packages.iter() {
+            match check_not_running(session, pkg.name(), "updating") {
+                // Not running, or running but ignored (warning printed):
+                // update proceeds either way (matches Scoop's
+                // IGNORE_RUNNING_PROCESSES branch, which continues).
+                Ok(_) => kept.push(pkg),
+                Err(Error::AppRunning(name)) if ignore_failure => {
+                    session
+                        .output()
+                        .warn(format!("Running process detected, skip updating '{name}'."));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        kept
+    };
+
+    if packages.is_empty() {
+        return Ok(());
+    }
+
     let mut set = download::PackageSet::new(session, &packages, reuse_cache)?;
     set.set_ignore_failure(ignore_failure);
 
@@ -251,37 +291,15 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         // verify error instead of attempting (and failing) the download.
         should_offline = download_size.total == 0 && !download_size.estimated;
         transaction.set_download_size(download_size);
+
+        if let Some(tx) = session.emitter() {
+            let _ = tx.send(Event::PackageDownloadSizingDone);
+        }
     }
 
     if !assume_yes && !confirm_transaction(session, &transaction)? {
         return Ok(());
     }
-
-    // Detect apps that are still running before downloading anything
-    // (mirrors scoop-update.ps1: test_running_process runs before
-    // downloading the new version). A running app aborts the whole batch
-    // unless `ignore_failures` is enabled — the app's failure (including
-    // process-in-use) is then skipped while the rest of the batch
-    // continues. Newly installed apps have no apps/<name> directory yet, so
-    // they never match.
-    let packages = {
-        let mut kept = Vec::new();
-        for &pkg in packages.iter() {
-            match check_not_running(session, pkg.name(), "updating") {
-                // Not running, or running but ignored (warning printed):
-                // update proceeds either way (matches Scoop's
-                // IGNORE_RUNNING_PROCESSES branch, which continues).
-                Ok(_) => kept.push(pkg),
-                Err(Error::AppRunning(name)) if ignore_failure => {
-                    session
-                        .output()
-                        .warn(format!("Running process detected, skip updating '{name}'."));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        kept
-    };
 
     // Idents of packages that failed to download / verify and must be
     // skipped. Only populated when IgnoreFailure is enabled.

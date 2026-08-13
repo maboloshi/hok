@@ -18,6 +18,9 @@ pub struct Args {
     /// Escape hold to allow changes on held package(s)
     #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
     escape_hold: bool,
+    /// Assume yes to all prompts and run non-interactively
+    #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
+    assume_yes: bool,
     /// Skip package integrity check (Scoop: --skip-hash-check)
     #[arg(short = 's', long, visible_alias = "skip-hash-check", action = clap::ArgAction::SetTrue)]
     no_hash_check: bool,
@@ -40,6 +43,10 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     if args.escape_hold {
         options.push(SyncOption::EscapeHold);
+    }
+
+    if args.assume_yes {
+        options.push(SyncOption::AssumeYes);
     }
 
     if args.ignore_failure || session.config().ignore_failures() {
