@@ -97,8 +97,6 @@ pub fn run_event_loop(
 
     std::thread::spawn(move || {
         let _guard = CursorGuard::hide();
-        let mut committed = 0;
-        let mut user_cancelled = false;
         while let Ok(event) = rx.recv() {
             match event {
                 // Download progress — update progress bars (handled here)
@@ -216,27 +214,18 @@ pub fn run_event_loop(
 
                     let _ = std::io::stdout().execute(cursor::Show);
                     let answer = output::prompt_yes_no();
-                    user_cancelled = !answer;
                     let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
                     let _ = std::io::stdout().execute(cursor::Hide);
                     continue;
                 }
 
-                // Sync done — track committed count
-                Event::PackageSyncDone => {
-                    if committed == 0 && !user_cancelled {
-                        output::info(rust_i18n::t!("cmd.outdated"));
-                    }
-                    break;
-                }
+                // Sync done — end the loop. The "all apps are up to date"
+                // message is the update command's concern (it knows whether
+                // anything was upgradable), not the event loop's.
+                Event::PackageSyncDone => break,
 
                 // Standalone download done — no install/update semantics.
                 Event::DownloadDone => break,
-
-                // Commit tracking
-                Event::PackageCommitDone(_) => {
-                    committed += 1;
-                }
 
                 // All other events — delegate to the handler for rendering
                 _ => {}

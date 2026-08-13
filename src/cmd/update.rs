@@ -106,7 +106,6 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     update_buckets(session, args.force)
 }
 
-
 /// Update all buckets with simple inline status.
 fn update_buckets(session: &Session, force: bool) -> Result<()> {
     // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
@@ -172,6 +171,21 @@ pub fn execute_upgrade(
     let mut options = sync.to_sync_options(session);
     if !force {
         options.push(SyncOption::OnlyUpgrade);
+
+        // "All apps are up to date" is upgrade semantics: the update command
+        // decides it, not the event loop. Nothing upgradable and at least
+        // one of the targets installed means there is nothing to do.
+        // Non-installed targets fall through to sync, which reports them.
+        let upgradable = libscoop::package::query::query_installed(
+            session,
+            &queries,
+            &[libscoop::QueryOption::Upgradable],
+        )?;
+        let installed = libscoop::package::query::query_installed(session, &queries, &[])?;
+        if upgradable.is_empty() && !installed.is_empty() {
+            output::info(rust_i18n::t!("cmd.outdated"));
+            return Ok(());
+        }
     }
 
     let handle = crate::eventloop::run_event_loop_default(session);

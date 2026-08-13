@@ -306,7 +306,7 @@ fn maybe_fill_upgradable(
 }
 
 /// Search installed packages.
-pub(crate) fn query_installed(
+pub fn query_installed(
     session: &Session,
     queries: &[&str],
     options: &[QueryOption],
