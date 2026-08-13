@@ -463,6 +463,9 @@ pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> 
     }
 
     if let Some(tx) = session.emitter() {
+        // Close the resolve phase for both install and remove (upstream's
+        // "Resolving done." would otherwise never show for install).
+        let _ = tx.send(Event::PackageResolveDone);
         let _ = tx.send(Event::PackageSyncDone);
     }
 
