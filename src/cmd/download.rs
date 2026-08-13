@@ -45,8 +45,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     };
 
     let handle = crate::eventloop::run_event_loop_default(session);
-    package::download::download_apps(session, &queries, &opts)?;
+    let result = package::download::download_apps(session, &queries, &opts);
     handle.join().unwrap();
+    result?;
 
     Ok(())
 }

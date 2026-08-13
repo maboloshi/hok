@@ -1120,6 +1120,17 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
         let _ = tx.send(Event::DownloadDone);
     }
 
+    if !failed.is_empty() {
+        // Individual failures already printed per-package; surface an
+        // aggregate error so the CLI exits non-zero (scripts/CI can tell).
+        let mut failed: Vec<_> = failed.into_iter().collect();
+        failed.sort();
+        return Err(Error::Custom(format!(
+            "download failed for: {}",
+            failed.join(", ")
+        )));
+    }
+
     Ok(())
 }
 
@@ -1842,14 +1853,21 @@ mod tests {
         let root = crate::test_utils::tmpdir("download_apps_mismatch");
         let session = crate::test_utils::test_session(&root);
         let url = format!("http://{}/app.bin", server.addr);
-        // Wrong hash: the downloaded file must be removed after verification.
+        // Wrong hash: the downloaded file must be removed after verification,
+        // and download_apps reports the failure (non-zero exit for callers).
         let manifest = write_manifest(&root, "badapp", "1.0", &url, &"0".repeat(64));
 
         let opts = DownloadOptions {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        let err = download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+            .expect_err("hash mismatch must be reported");
+        assert!(
+            err.to_string().contains("download failed for"),
+            "unexpected error: {}",
+            err
+        );
         server.shutdown();
 
         assert!(
