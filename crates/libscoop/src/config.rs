@@ -375,12 +375,12 @@ impl Config {
         self.no_junction.unwrap_or_default()
     }
 
-    /// Get the `ignore_failures` config. Defaults to `true`: a package
-    /// failure (including process-in-use) skips that package and the rest
-    /// of the batch continues.
+    /// Get the `ignore_failures` config. Defaults to `false` (matching
+    /// upstream Scoop): a package failure aborts the batch unless the
+    /// config or the `-f/--ignore-failure` flag opts in to skipping.
     #[inline]
     pub fn ignore_failures(&self) -> bool {
-        self.inner.ignore_failures.unwrap_or(true)
+        self.inner.ignore_failures.unwrap_or(false)
     }
 
     /// Get the `ignore_running_processes` config. Defaults to `false`.
