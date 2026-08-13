@@ -245,7 +245,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         }
 
         let download_size = set.calculate_download_size()?;
-        should_offline = download_size.total == 0;
+        // Only a fully cache-hit set counts as offline. `estimated` means at
+        // least one HEAD failed (size unknown) — treating that as offline
+        // would silently turn a network failure into a bogus cache-miss
+        // verify error instead of attempting (and failing) the download.
+        should_offline = download_size.total == 0 && !download_size.estimated;
         transaction.set_download_size(download_size);
     }
 
