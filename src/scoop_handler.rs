@@ -29,13 +29,17 @@ impl EventHandler for ScoopHandler {
             Event::PackageDownloadSizingStart => {
                 output::status(rust_i18n::t!("status.sizing"));
             }
-            Event::PackageDownloadSizingDone => {}
+            Event::PackageDownloadSizingDone => {
+                output::done(rust_i18n::t!("status.sizing_done"));
+            }
 
             // --- Download ---
             Event::PackageDownloadStart => {
                 output::status(rust_i18n::t!("status.downloading"));
             }
-            Event::PackageDownloadDone => {}
+            Event::PackageDownloadDone => {
+                output::done(rust_i18n::t!("status.downloading_done"));
+            }
 
             // --- Integrity check ---
             Event::PackageIntegrityCheckStart => {

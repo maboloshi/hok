@@ -5,6 +5,8 @@ output:
   error: "ERROR"
   detail_prefix: "·"
   confirm_continue: "Do you want to continue? [y/N]:"
+  ok_all: "Everything is ok!"
+  downloaded_only: "Downloaded (not installed)."
   field_identity: "Identity:"
   field_name: "Name:"
   field_bucket: "Bucket:"
@@ -21,6 +23,8 @@ status:
   downloading: "Downloading packages..."
   checking_hash: "Checking hash..."
   resolving_done: "Resolving packages completed."
+  sizing_done: "Download size calculated."
+  downloading_done: "Download completed."
 detail:
   extract_done: "extract done"
   shim_done: "shim done"

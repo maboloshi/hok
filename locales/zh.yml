@@ -5,6 +5,8 @@ output:
   error: "错误"
   detail_prefix: "·"
   confirm_continue: "是否继续? [y/N]:"
+  ok_all: "一切正常。"
+  downloaded_only: "已下载（未安装）。"
   field_identity: "标识:"
   field_name: "名称:"
   field_bucket: "仓库:"
@@ -21,6 +23,8 @@ status:
   downloading: "正在下载包..."
   checking_hash: "正在检查哈希..."
   resolving_done: "包解析完成。"
+  sizing_done: "下载大小计算完成。"
+  downloading_done: "下载完成。"
 detail:
   extract_done: "解压完成"
   shim_done: "shim 完成"

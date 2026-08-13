@@ -47,8 +47,6 @@ use std::io::Write;
 
 /// Controls event loop behavior.
 pub struct EventLoopConfig {
-    /// Whether to show download progress bars (install/update).
-    pub show_progress_bars: bool,
     /// Auto-confirm transaction prompts (for reinstall).
     pub auto_confirm: bool,
 }
@@ -56,7 +54,6 @@ pub struct EventLoopConfig {
 impl Default for EventLoopConfig {
     fn default() -> Self {
         Self {
-            show_progress_bars: true,
             auto_confirm: false,
         }
     }
@@ -89,11 +86,7 @@ pub fn run_event_loop(
 ) -> std::thread::JoinHandle<()> {
     let rx = session.event_bus().receiver();
     let tx = session.event_bus().sender();
-    let mut dlprogress = if config.show_progress_bars {
-        Some(cui::MultiProgressUI::new())
-    } else {
-        None
-    };
+    let mut dlprogress = Some(cui::MultiProgressUI::new());
 
     std::thread::spawn(move || {
         let _guard = CursorGuard::hide();
@@ -115,6 +108,8 @@ pub fn run_event_loop(
 
                 // Interactive prompt: select from multiple package candidates
                 Event::PromptPackageCandidate(ref pkgs) => {
+                    // Non-empty by construction: resolve.rs only emits this
+                    // when there is more than one candidate.
                     let name = pkgs[0].split_once('/').map(|x| x.1).unwrap_or(&pkgs[0]);
                     println!("Found multiple candidates for package '{}':\n", name);
                     for (i, pkg) in pkgs.iter().enumerate() {
