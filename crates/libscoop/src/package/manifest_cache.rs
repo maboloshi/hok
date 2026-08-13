@@ -13,6 +13,17 @@ use rusqlite::{params, Connection};
 
 use crate::{error::Fallible, internal, package::Manifest, Session};
 
+/// Serialize an optional manifest field to JSON for the cache. Returns
+/// `Some(None)` for a missing field, `Some(Some(s))` on success, and `None`
+/// when serialization fails (caller skips the manifest instead of caching
+/// an empty string).
+fn json_field<T: serde::Serialize>(v: Option<T>) -> Option<Option<String>> {
+    match v {
+        None => Some(None),
+        Some(val) => serde_json::to_string(&val).ok().map(Some),
+    }
+}
+
 /// Cache entry matching the `app` table schema.
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
@@ -104,18 +115,26 @@ pub fn populate(conn: &Connection, session: &Session) -> Fallible<()> {
 
             let description = manifest.description().unwrap_or("").to_owned();
             let version = manifest.version().to_owned();
-            let bin = manifest
-                .bin()
-                .map(|v| serde_json::to_string(&v).unwrap_or_default());
-            let shortcut = manifest
-                .shortcuts()
-                .map(|v| serde_json::to_string(&v).unwrap_or_default());
-            let dependency = manifest
-                .depends()
-                .map(|v| serde_json::to_string(&v).unwrap_or_default());
-            let suggest = manifest
-                .suggest()
-                .map(|v| serde_json::to_string(&v).unwrap_or_default());
+            // A field that fails to serialize is a cache-entry problem, not a
+            // reason to corrupt the cache with an empty string — skip the
+            // whole manifest (the cache is only an accelerator; queries fall
+            // back to reading the file).
+            let bin = match json_field(manifest.bin()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let shortcut = match json_field(manifest.shortcuts()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let dependency = match json_field(manifest.depends()) {
+                Some(s) => s,
+                None => continue,
+            };
+            let suggest = match json_field(manifest.suggest()) {
+                Some(s) => s,
+                None => continue,
+            };
 
             tx.execute(
                 "INSERT OR REPLACE INTO app (name, description, version, bucket, manifest, binary, shortcut, dependency, suggest)
