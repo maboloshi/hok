@@ -22,25 +22,29 @@
 //!
 //! # Note
 //!
-//! Items in this module are `pub` (not `pub(crate)`) only because Rust's
-//! visibility rules require it for re-exporting; they are **not** part of
-//! the stable API and may change without notice.
+//! Items in this module are `pub(crate)`: they are **not** part of the stable
+//! public API and may change without notice. The facade (`lib.rs`) re-exports
+//! only the few symbols CLI consumers need (e.g. `Arch`, `compare_versions`,
+//! the `fs`/`os`/`string` helpers).
 
-pub mod arch;
-pub mod archive;
-pub mod dag;
-pub mod env;
-pub mod fs;
-pub mod git;
-pub mod github;
-pub mod hash;
-pub mod network;
-pub mod os;
-pub mod path;
-pub mod pe;
-pub mod string;
-pub mod time;
-pub mod url;
-pub mod version;
+pub(crate) mod arch;
+pub(crate) mod archive;
+pub(crate) mod dag;
+pub(crate) mod env;
+pub(crate) mod fs;
+pub(crate) mod git;
+pub(crate) mod github;
+pub(crate) mod hash;
+pub(crate) mod network;
+pub(crate) mod os;
+pub(crate) mod path;
+pub(crate) mod pe;
+pub(crate) mod string;
+pub(crate) mod time;
+pub(crate) mod url;
+pub(crate) mod version;
 
+// `pub` (not `pub(crate)`): the facade (`lib.rs`) re-exports this to the
+// public API; the `pub(crate)` module visibility already blocks direct
+// external access to `internal::`.
 pub use version::compare_versions;

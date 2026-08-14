@@ -426,6 +426,15 @@ impl Session {
     pub fn output(&self) -> OutputHandle<'_> {
         OutputHandle::new(self.output.get())
     }
+
+    /// Apply a CLI `-a/--arch` value as the process-wide architecture
+    /// override (beats the `default_architecture` config, mirroring Scoop's
+    /// `-a` flag parsed after session creation).
+    pub fn set_default_architecture(&self, value: &str) -> Fallible<()> {
+        let arch = crate::internal::arch::Arch::parse(value)?;
+        crate::internal::arch::Arch::set_default_architecture(arch);
+        Ok(())
+    }
 }
 
 /// Apply the `default_architecture` config as the process-wide architecture

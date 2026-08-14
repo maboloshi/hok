@@ -45,28 +45,6 @@ pub fn remove_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
     std::fs::remove_dir_all(path.as_ref())
 }
 
-/// Remove all files and subdirectories in given `path`.
-///
-/// This function will not remove the given `path` itself. No-op if the given
-/// `path` does not exist.
-#[inline(always)]
-pub fn empty_dir<P: AsRef<Path> + ?Sized>(path: &P) -> io::Result<()> {
-    let path = path.as_ref();
-    if !path.exists() {
-        return Ok(());
-    }
-    for entry in path.read_dir()? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        if entry_path.is_dir() {
-            std::fs::remove_dir_all(&entry_path)?;
-        } else {
-            std::fs::remove_file(&entry_path)?;
-        }
-    }
-    Ok(())
-}
-
 /// Write given serializable data to a JSON file at given path.
 ///
 /// This function will create the file if it does not exist, and truncate it.

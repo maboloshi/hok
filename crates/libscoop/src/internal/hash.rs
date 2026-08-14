@@ -94,11 +94,12 @@ impl ChecksumBuilder {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```ignore
+    /// // `internal` is pub(crate); shown here for crate-internal consumers.
     /// use libscoop::internal::hash::ChecksumBuilder;
     /// let mut md5 = ChecksumBuilder::new().md5().build();
     /// md5.consume(b"hello world");
-    /// assert!(md5.check("5eb63bbbe01eeed093cb22bb8f5acdc3"));
+    /// assert_eq!(md5.finalize(), "5eb63bbbe01eeed093cb22bb8f5acdc3");
     /// ```
     pub fn new() -> ChecksumBuilder {
         ChecksumBuilder {
@@ -171,11 +172,6 @@ impl Checksum {
     /// Note that the Checksum instance is consumed after getting the result.
     pub fn finalize(self) -> String {
         self.hasher.sum()
-    }
-
-    /// Checks if the result of the hash computation matches the input hash.
-    pub fn check(self, input: &str) -> bool {
-        input == self.finalize()
     }
 }
 

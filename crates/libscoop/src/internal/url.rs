@@ -19,8 +19,9 @@ use regex::Regex;
 ///
 /// # Example
 ///
-/// ```
-/// # use libscoop::internal::url::remote_filename;
+/// ```ignore
+/// // `internal` is pub(crate); shown here for crate-internal consumers.
+/// use libscoop::internal::url::remote_filename;
 /// assert_eq!(remote_filename("https://example.com/foo%20bar.zip"), "foo bar.zip");
 /// assert_eq!(remote_filename("https://example.com/pkg/"), "");
 /// ```
@@ -33,8 +34,9 @@ pub fn remote_filename(url: &str) -> String {
 ///
 /// # Example
 ///
-/// ```
-/// # use libscoop::internal::url::basename;
+/// ```ignore
+/// // `internal` is pub(crate); shown here for crate-internal consumers.
+/// use libscoop::internal::url::basename;
 /// assert_eq!(basename("https://example.com/archive.tar.gz"), "archive.tar");
 /// assert_eq!(basename("https://example.com/noext"), "noext");
 /// ```
@@ -80,8 +82,9 @@ pub fn url_remote_filename(url: &str) -> &str {
 ///
 /// # Example
 ///
-/// ```
-/// # use libscoop::internal::url::decoded;
+/// ```ignore
+/// // `internal` is pub(crate); shown here for crate-internal consumers.
+/// use libscoop::internal::url::decoded;
 /// assert_eq!(decoded("hello%20world"), "hello world");
 /// assert_eq!(decoded("no_encoding"), "no_encoding");
 /// ```

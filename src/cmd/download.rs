@@ -34,8 +34,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     // `-a/--arch` overrides the effective architecture (same as install).
     if let Some(arch) = args.arch.as_deref() {
-        let arch = libscoop::internal::arch::Arch::parse(arch)?;
-        libscoop::internal::arch::Arch::set_default_architecture(arch);
+        session.set_default_architecture(arch)?;
     }
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();

@@ -97,8 +97,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     // Parsed after the session was created, so it beats the
     // `default_architecture` config.
     if let Some(arch) = args.arch.as_deref() {
-        let arch = libscoop::internal::arch::Arch::parse(arch)?;
-        libscoop::internal::arch::Arch::set_default_architecture(arch);
+        session.set_default_architecture(arch)?;
     }
 
     ensure_global(session, args.global, "install")?;

@@ -30,7 +30,7 @@ pub fn encode_wide(s: &str) -> Vec<u16> {
 /// # Examples
 ///
 /// ```
-/// # use libscoop::internal::string::glob_to_regex;
+/// # use libscoop::string::glob_to_regex;
 /// assert_eq!(glob_to_regex("curl*"), "^curl.*$");
 /// assert_eq!(glob_to_regex("app?name"), "^app.name$");
 /// ```

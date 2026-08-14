@@ -4,7 +4,7 @@
 //! Runs in its own test binary so the process-wide `OnceLock` override set
 //! here cannot leak into other libscoop tests.
 
-use libscoop::internal::arch::Arch;
+use libscoop::Arch;
 use libscoop::Session;
 use std::io::Write;
 
