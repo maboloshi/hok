@@ -46,17 +46,10 @@ use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
 
 /// Controls event loop behavior.
+#[derive(Default)]
 pub struct EventLoopConfig {
     /// Auto-confirm transaction prompts (for reinstall).
     pub auto_confirm: bool,
-}
-
-impl Default for EventLoopConfig {
-    fn default() -> Self {
-        Self {
-            auto_confirm: false,
-        }
-    }
 }
 
 /// RAII guard: hides cursor on construction, restores on drop.
@@ -161,7 +154,16 @@ pub fn run_event_loop(
                         output::header(rust_i18n::t!("cmd.header_upgraded"));
                         let out = upgrade
                             .iter()
-                            .map(|p| format!("{}-{}", p.ident(), p.upgradable_version().unwrap()))
+                            // With `--force` packages at their current version
+                            // (no upgradable reference) are reinstalled too, so
+                            // fall back to the current version for display.
+                            .map(|p| {
+                                format!(
+                                    "{}-{}",
+                                    p.ident(),
+                                    p.upgradable_version().unwrap_or(p.version())
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("  ");
                         println!("  {}", out);
