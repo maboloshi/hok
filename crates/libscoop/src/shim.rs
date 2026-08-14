@@ -36,12 +36,24 @@ use crate::{error::Fallible, internal, package::Package, Event, Session};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"));
 
+// ─── Ownership detection & conflict handling ────────────────────────────────
+
 /// Generate an alternative filename for conflict resolution.
 ///
 /// If the file has a non-empty extension: `stem.ext.pkg` (e.g. `foo.ps1.scoop`)
 /// If the file has no extension:         `stem.pkg` (e.g. `foo.scoop`)
 fn alt_filename(path: &Path, pkg: &str) -> PathBuf {
-    let stem = path.file_stem().unwrap().to_str().unwrap();
+    // Path-like bin entries (e.g. "bin/") terminate in ".." or have no stem;
+    // fall back to the whole file name so conflict backups keep a base.
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) if !ext.is_empty() => path.with_file_name(format!("{}.{}.{}", stem, ext, pkg)),
         _ => path.with_file_name(format!("{}.{}", stem, pkg)),
@@ -167,7 +179,6 @@ pub enum ShimType {
     /// A shim will be treated as a Bash script if it does not have a file
     /// extension.
     Bash,
-
     /// Batch script
     ///
     /// A shim will be treated as a Batch script if it has a `.bat`/`.cmd` file
@@ -197,6 +208,8 @@ pub enum ShimType {
     /// extension.
     Python,
 }
+
+// ─── Shim model & generation ────────────────────────────────────────────────
 
 impl Shim<'_> {
     pub fn new(def: Vec<&str>) -> Shim<'_> {
@@ -490,6 +503,8 @@ fn generate_shim_batches(shim: &Shim, target: &str, shims_dir: &Path) -> Vec<(Pa
 
     result
 }
+
+// ─── Removal & backup restoration ───────────────────────────────────────────
 
 /// Remove shims for a package.
 pub fn remove(session: &Session, package: &Package) -> Fallible<()> {

@@ -17,7 +17,11 @@ pub struct CacheFile {
 
 impl CacheFile {
     pub fn from(path: PathBuf) -> Fallible<CacheFile> {
-        let text = path.file_name().unwrap().to_str().unwrap();
+        // Non-UTF-8 names cannot match the `app#version#url` cache naming
+        // convention — reject them as invalid cache files.
+        let Some(text) = path.file_name().and_then(|n| n.to_str()) else {
+            return Err(Error::InvalidCacheFile { path });
+        };
         match REGEX_CACHE_FILE.is_match(text) {
             false => Err(Error::InvalidCacheFile { path }),
             true => Ok(CacheFile { path }),

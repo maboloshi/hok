@@ -76,7 +76,7 @@ impl Bucket {
         let path = path.to_owned();
         let name = path
             .file_name()
-            .map(|n| n.to_str().unwrap().to_string())
+            .map(|n| n.to_string_lossy().to_string())
             .unwrap();
 
         if !path.exists() {
@@ -208,8 +208,14 @@ impl Bucket {
         path.push("bucket");
 
         let iter = if let Ok(entries) = par_read_dir(&path) {
-            let (dirs, files): (Vec<DirEntry>, Vec<DirEntry>) =
-                entries.partition(|de| de.file_type().unwrap().is_dir());
+            // Skip entries whose metadata cannot be read (concurrent removal,
+            // permissions, network drives) instead of panicking.
+            type Classified = (Vec<(DirEntry, bool)>, Vec<(DirEntry, bool)>);
+            let classified: Classified = entries
+                .filter_map(|de| de.file_type().ok().map(|ft| (de, ft.is_dir())))
+                .partition(|(_, is_dir)| *is_dir);
+            let dirs = classified.0.into_iter().map(|(de, _)| de);
+            let files = classified.1.into_iter().map(|(de, _)| de);
 
             // If the inner `bucket` directory contains subdirectories then it
             // is considered as a bucket with categories and we need to search
@@ -217,6 +223,8 @@ impl Bucket {
             //
             // Category support was introduced in Scoop v0.3.0:
             // https://github.com/ScoopInstaller/Scoop/pull/5119
+            let dirs = dirs.collect::<Vec<_>>();
+            let files = files.collect::<Vec<_>>();
             if dirs.is_empty() {
                 files.into_par_iter()
             } else {
@@ -256,9 +264,15 @@ fn par_read_dir(path: &Path) -> std::io::Result<impl ParallelIterator<Item = Dir
 
 /// Helper function to check if a directory entry is a manifest file.
 fn is_manifest(dir_entry: &DirEntry) -> bool {
+    // Non-UTF-8 file names and unreadable metadata are not manifests —
+    // skip them instead of panicking.
     let filename = dir_entry.file_name();
-    let name = filename.to_str().unwrap();
-    let is_file = dir_entry.file_type().unwrap().is_file();
+    let Some(name) = filename.to_str() else {
+        return false;
+    };
+    let Ok(is_file) = dir_entry.file_type().map(|ft| ft.is_file()) else {
+        return false;
+    };
     // Ignore npm package config file, that said, there will
     // be no package named `package`, it's a reserved name.
     is_file && name.ends_with(".json") && name != "package.json"
@@ -540,8 +554,6 @@ pub fn remove(session: &Session, name: &str) -> Fallible<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn known_buckets_match_official_list() {
         // The compile-time generated list must contain all 10 official

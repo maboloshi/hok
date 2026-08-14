@@ -35,7 +35,9 @@ fn shortcut_dir(global: bool) -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
     } else {
-        dirs::config_dir().unwrap()
+        // Missing APPDATA (service accounts, stripped environments): fall
+        // back to a relative path rather than panicking.
+        dirs::config_dir().unwrap_or_default()
     };
     dir.push("Microsoft/Windows/Start Menu/Programs/Scoop Apps");
     internal::path::normalize_path(dir)
