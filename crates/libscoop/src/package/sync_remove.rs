@@ -11,6 +11,7 @@ use tracing::{debug, info};
 
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::{
+    install_state,
     manifest::{InstallInfo, Manifest},
     operations::{self, run_script},
     query, resolve, InstallState, InstallStateInstalled, Package,
@@ -170,7 +171,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
     // resolves (broken install), upstream still proceeds to the old-version
     // cleanup loop below, so this is `Option` — the current-version block is
     // skipped and removal falls through to the old-version loop.
-    let version_dir = query::select_current_version(&app_dir)
+    let version_dir = install_state::select_current_version(&app_dir)
         .or_else(|| package.installed_version().map(str::to_owned))
         .map(|v| app_dir.join(&v));
 
@@ -401,7 +402,7 @@ fn resolve_reset_target(
             }
             v.to_owned()
         }
-        None => match query::select_current_version(&pkg_dir) {
+        None => match install_state::select_current_version(&pkg_dir) {
             Some(v) => v,
             None => return Err(Error::PackageNotFound(name.to_owned())),
         },
@@ -447,7 +448,7 @@ fn resolve_reset_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::query::select_current_version;
+    use crate::package::install_state::select_current_version;
     use crate::test_utils::{test_session, tmpdir};
     use std::path::Path;
     use std::time::SystemTime;

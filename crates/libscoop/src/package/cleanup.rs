@@ -54,7 +54,7 @@ pub fn cleanup(
         // Determine current version: read the "current" symlink target, or
         // under NO_JUNCTION resolve via Select-CurrentVersion fallback.
         let current_version = if session.config().no_junction() {
-            super::query::select_current_version(&pkg_dir)
+            super::install_state::select_current_version(&pkg_dir)
         } else {
             (|| -> Option<String> {
                 let current_link = pkg_dir.join("current");

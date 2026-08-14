@@ -16,294 +16,27 @@
 //!   regular buckets.
 //! - **Regex matching**: Package names are matched as regex patterns
 //!   by default; `Explicit` mode disables regex for exact matching.
+//!
+//! The matcher machinery lives in [`query_matcher`], installed-state
+//! resolution in [`install_state`]; this module holds the query walkers and
+//! the session-level operations built on them.
 
 use rayon::prelude::{ParallelBridge, ParallelIterator};
-use regex::{Regex, RegexBuilder};
 use std::path::Path;
-use std::time::SystemTime;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::{
-    bucket::Bucket,
     constant::ISOLATED_PACKAGE_BUCKET,
     error::Fallible,
-    internal::compare_versions,
     package::manifest::{InstallInfo, Manifest},
     Session,
 };
 
+use super::install_state::{
+    fill_install_state, load_bucket_manifest, maybe_fill_upgradable, select_current_version,
+};
+use super::query_matcher::{build_matchers, manifest_matches, name_prefiltered_out, QueryOption};
 use super::{manifest_cache, InstallState, InstallStateInstalled, Package};
-
-/// Options that may be used to query Scoop packages.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum QueryOption {
-    /// Enable query through package binaries.
-    Binary,
-
-    /// Enable query through package description.
-    Description,
-
-    /// Explicit mode. Regex is disabled in this mode.
-    ///
-    /// Query will be performed through the package name only. `Description`
-    /// and `Binary` options will be ignored.
-    Explicit,
-
-    /// Additionally check if the matched package is upgradable.
-    ///
-    /// This option only takes effect on querying installed packages.
-    Upgradable,
-
-    /// Check upgradable status without filtering out non-upgradable packages.
-    ///
-    /// Like `Upgradable` but does NOT exclude packages that are already
-    /// at the latest version.
-    UpgradableCheck,
-}
-
-/// A trait represents a matcher that can be used to do string matching.
-trait Matcher {
-    fn is_match(&self, s: &str) -> bool;
-}
-
-/// A matcher that does explicit match.
-///
-/// # Note
-///
-/// This matcher is case-insensitive.
-struct ExplicitMatcher<'a>(&'a str);
-
-/// A matcher that does regex match.
-struct RegexMatcher(Regex);
-
-impl Matcher for ExplicitMatcher<'_> {
-    fn is_match(&self, s: &str) -> bool {
-        self.0.eq_ignore_ascii_case(s)
-    }
-}
-
-impl Matcher for RegexMatcher {
-    fn is_match(&self, s: &str) -> bool {
-        self.0.is_match(s)
-    }
-}
-
-type QueryMatchers<'a> = Vec<(Option<String>, Box<dyn Matcher + Send + Sync + 'a>)>;
-
-fn has_extra_query(options: &[QueryOption]) -> bool {
-    options.contains(&QueryOption::Binary) || options.contains(&QueryOption::Description)
-}
-
-fn build_matchers<'a>(
-    queries: &[&'a str],
-    is_wildcard_query: bool,
-    is_explicit_mode: bool,
-) -> Fallible<QueryMatchers<'a>> {
-    if is_wildcard_query {
-        return Ok(vec![]);
-    }
-
-    let mut matchers: QueryMatchers<'a> = vec![];
-    for query in queries {
-        let (bucket_prefix, name) = super::identity::split_bucket_query(query);
-
-        if is_explicit_mode {
-            matchers.push((bucket_prefix, Box::new(ExplicitMatcher(name))));
-        } else {
-            let re = RegexBuilder::new(name)
-                .case_insensitive(true)
-                .multi_line(true)
-                .build()?;
-            matchers.push((bucket_prefix, Box::new(RegexMatcher(re))));
-        }
-    }
-
-    Ok(matchers)
-}
-
-fn name_prefiltered_out(
-    name: &str,
-    is_wildcard_query: bool,
-    matchers: &QueryMatchers<'_>,
-    options: &[QueryOption],
-) -> bool {
-    !is_wildcard_query
-        && !has_extra_query(options)
-        && !matchers.iter().any(|(_, matcher)| matcher.is_match(name))
-}
-
-fn manifest_matches(
-    name: &str,
-    bucket: &str,
-    manifest: &Manifest,
-    is_wildcard_query: bool,
-    is_explicit_mode: bool,
-    matchers: &QueryMatchers<'_>,
-    options: &[QueryOption],
-) -> bool {
-    if is_wildcard_query {
-        return true;
-    }
-
-    let prefixed_name_matched = matchers
-        .iter()
-        .filter(|(_, matcher)| matcher.is_match(name))
-        .any(|(prefix, _)| {
-            prefix.is_none() || prefix.as_deref().unwrap().eq_ignore_ascii_case(bucket)
-        });
-
-    if prefixed_name_matched {
-        return true;
-    }
-
-    if is_explicit_mode {
-        return false;
-    }
-
-    if options.contains(&QueryOption::Description)
-        && matchers.iter().any(|(_, matcher)| {
-            manifest
-                .description()
-                .map(|description| matcher.is_match(description))
-                .unwrap_or(false)
-        })
-    {
-        return true;
-    }
-
-    if options.contains(&QueryOption::Binary) {
-        let binaries = manifest.shims().unwrap_or_default();
-        if matchers
-            .iter()
-            .any(|(_, matcher)| binaries.iter().any(|binary| matcher.is_match(binary)))
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Resolve the current installed version of an app, mirroring upstream
-/// `Select-CurrentVersion` (lib/versions.ps1):
-///
-/// 1. `current\manifest.json`'s `version` — a `nightly` version resolves to
-///    the junction target's directory name;
-/// 2. otherwise, the version directory whose `install.json` was most recently
-///    modified (`Get-InstalledVersion`, excluding `current` and `_*.old*`).
-///
-/// Under `NO_JUNCTION` there is no `current` junction, so step 1 fails and
-/// the mtime fallback of step 2 (which scans the versioned dirs) applies.
-pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
-    // 1. current\manifest.json version
-    if let Ok(manifest) = Manifest::parse(pkg_dir.join("current").join("manifest.json")) {
-        let version = manifest.version().to_owned();
-        if version == "nightly" {
-            if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
-                if let Some(name) = target.file_name().and_then(|s| s.to_str()) {
-                    return Some(name.to_owned());
-                }
-            }
-        } else {
-            return Some(version);
-        }
-    }
-
-    // 2. version dirs with install.json, newest by modification time
-    let mut candidates: Vec<(SystemTime, String)> = vec![];
-    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == "current" || (name.starts_with('_') && name.contains(".old")) {
-                continue;
-            }
-            let install_json = entry.path().join("install.json");
-            if let Ok(meta) = std::fs::metadata(&install_json) {
-                let time = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                candidates.push((time, name));
-            }
-        }
-    }
-    candidates.sort_by_key(|c| c.0);
-    candidates.pop().map(|(_, v)| v)
-}
-
-fn load_install_state(apps_dir: &Path, name: &str, no_junction: bool) -> Option<InstallState> {
-    let pkg_dir = apps_dir.join(name);
-    // Under NO_JUNCTION there is no `current` junction: resolve the current
-    // version via the `Select-CurrentVersion` fallback and read the versioned
-    // dir's metadata (upstream `currentdir`, lib/core.ps1).
-    let meta_dir = if no_junction {
-        pkg_dir.join(select_current_version(&pkg_dir)?)
-    } else {
-        pkg_dir.join("current")
-    };
-    let install_info = InstallInfo::parse(meta_dir.join("install.json")).ok()?;
-    let install_manifest = Manifest::parse(meta_dir.join("manifest.json")).ok()?;
-
-    Some(InstallState::Installed(InstallStateInstalled {
-        version: install_manifest.version().to_owned(),
-        bucket: install_info.bucket().map(|s| s.to_owned()),
-        arch: install_info.arch().to_owned(),
-        held: install_info.is_held(),
-        url: install_info.url().map(|s| s.to_owned()),
-    }))
-}
-
-fn fill_install_state(package: &Package, apps_dir: &Path, name: &str, no_junction: bool) {
-    package.fill_install_state(
-        load_install_state(apps_dir, name, no_junction).unwrap_or(InstallState::NotInstalled),
-    );
-}
-
-fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -> Option<Manifest> {
-    let bucket_path = crate::internal::path::bucket_dir(root_path, bucket);
-    let bucket = Bucket::from(&bucket_path).ok()?;
-    let manifest_path = bucket.path_of_manifest(name)?;
-    Manifest::parse(manifest_path).ok()
-}
-
-fn maybe_fill_upgradable(
-    root_path: &Path,
-    package: &Package,
-    name: &str,
-    bucket: &str,
-    current_version: &str,
-    state: &InstallState,
-    options: &[QueryOption],
-) -> bool {
-    let filter_non_upgradable = options.contains(&QueryOption::Upgradable);
-    let check_upgradable = filter_non_upgradable || options.contains(&QueryOption::UpgradableCheck);
-
-    if !check_upgradable {
-        return true;
-    }
-
-    if bucket == ISOLATED_PACKAGE_BUCKET {
-        if filter_non_upgradable {
-            info!("ignored isolated package '{}'", name);
-            return false;
-        }
-        return true;
-    }
-
-    let Some(origin_manifest) = load_bucket_manifest(root_path, bucket, name) else {
-        return !filter_non_upgradable;
-    };
-
-    let is_upgradable =
-        compare_versions(origin_manifest.version(), current_version) == std::cmp::Ordering::Greater;
-
-    if !is_upgradable {
-        return !filter_non_upgradable;
-    }
-
-    let origin_pkg = Package::from(name, bucket, origin_manifest);
-    origin_pkg.fill_install_state(state.clone());
-    package.fill_upgradable(origin_pkg);
-    true
-}
 
 /// Search installed packages.
 pub fn query_installed(
@@ -330,7 +63,9 @@ pub fn query_installed(
                     if let Ok(e) = item {
                         let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or_default();
                         let filename = e.file_name();
-                        let name = filename.to_str().unwrap();
+                        // Non-UTF-8 directory names cannot be package names —
+                        // skip instead of panicking.
+                        let name = filename.to_str()?;
                         // The name `scoop` is reserved for Scoop, ignore it
                         let is_scoop = name == "scoop";
                         let pkg_dir = apps_dir.join(name);
@@ -444,7 +179,9 @@ pub(crate) fn query_synced(
                     .par_bridge()
                     .filter_map(|entry| {
                         let filename = entry.file_name();
-                        let name = filename.to_str().unwrap().strip_suffix(".json").unwrap();
+                        // Non-UTF-8 manifest names are skipped (cannot be
+                        // queried by name).
+                        let name = filename.to_str()?.strip_suffix(".json")?;
 
                         if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
                             return None;
@@ -549,206 +286,6 @@ fn query_synced_cached(
     }
 
     Ok(packages)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::package::manifest::Manifest;
-    use crate::test_utils;
-
-    #[test]
-    fn load_install_state_no_junction_reads_version_dir() {
-        let root = test_utils::tmpdir("query_no_junction_state");
-        let vdir = root.join("apps").join("app").join("1.2.3");
-        std::fs::create_dir_all(&vdir).unwrap();
-        std::fs::write(
-            vdir.join("manifest.json"),
-            r#"{"version": "1.2.3", "homepage": "https://example.com", "license": "MIT"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            vdir.join("install.json"),
-            r#"{"architecture": "64bit", "bucket": "test"}"#,
-        )
-        .unwrap();
-
-        let state = load_install_state(&root.join("apps"), "app", true).unwrap();
-        match state {
-            InstallState::Installed(s) => assert_eq!(s.version, "1.2.3"),
-            _ => panic!("expected installed state"),
-        }
-        // With junctions enabled and no `current` link, nothing resolves.
-        assert!(load_install_state(&root.join("apps"), "app", false).is_none());
-    }
-
-    // ── build_matchers ───────────────────────────────────────────────────────
-
-    #[test]
-    fn wildcard_query_yields_empty_matchers() {
-        let matchers = build_matchers(&["*"], true, false).unwrap();
-        assert!(matchers.is_empty());
-    }
-
-    #[test]
-    fn explicit_mode_builds_explicit_matcher() {
-        let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert_eq!(matchers.len(), 1);
-    }
-
-    #[test]
-    fn regex_mode_builds_regex_matcher() {
-        let matchers = build_matchers(&["curl"], false, false).unwrap();
-        assert_eq!(matchers.len(), 1);
-    }
-
-    #[test]
-    fn bucket_prefixed_query_is_parsed() {
-        let matchers = build_matchers(&["extras/curl"], false, true).unwrap();
-        assert_eq!(matchers.len(), 1);
-        let (prefix, _) = &matchers[0];
-        assert_eq!(prefix.as_deref(), Some("extras"));
-    }
-
-    #[test]
-    fn backslash_bucket_prefixed_query_is_parsed() {
-        let matchers = build_matchers(&["extras\\curl"], false, true).unwrap();
-        assert_eq!(matchers.len(), 1);
-        let (prefix, _) = &matchers[0];
-        assert_eq!(prefix.as_deref(), Some("extras"));
-    }
-
-    #[test]
-    fn leading_backslash_is_not_a_separator() {
-        // A regex escape like `\d` must not be split into a bucket prefix.
-        let matchers = build_matchers(&["\\d"], false, false).unwrap();
-        assert_eq!(matchers.len(), 1);
-        let (prefix, _) = &matchers[0];
-        assert!(prefix.is_none(), "leading backslash must not split bucket");
-    }
-
-    // ── name_prefiltered_out ─────────────────────────────────────────────────
-
-    #[test]
-    fn wildcard_never_prefilters() {
-        let matchers = build_matchers(&[], true, false).unwrap();
-        assert!(!name_prefiltered_out("anything", true, &matchers, &[]));
-    }
-
-    #[test]
-    fn explicit_match_is_not_prefiltered() {
-        let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(!name_prefiltered_out("curl", false, &matchers, &[]));
-    }
-
-    #[test]
-    fn non_match_is_prefiltered_when_no_extra_options() {
-        let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(name_prefiltered_out("wget", false, &matchers, &[]));
-    }
-
-    #[test]
-    fn description_option_prevents_prefilter() {
-        let matchers = build_matchers(&["downloader"], false, false).unwrap();
-        // With description option, name prefilter should NOT apply
-        let options = vec![QueryOption::Description];
-        assert!(!name_prefiltered_out("curl", false, &matchers, &options));
-    }
-
-    // ── manifest_matches ─────────────────────────────────────────────────────
-
-    fn make_manifest(version: &str) -> Manifest {
-        let json = format!(
-            r#"{{"version":"{version}","homepage":"https://example.com","license":"MIT"}}"#
-        );
-        Manifest::from_json("test", &json).unwrap()
-    }
-
-    #[test]
-    fn wildcard_matches_all() {
-        let m = make_manifest("1.0");
-        let matchers = build_matchers(&[], true, false).unwrap();
-        assert!(manifest_matches(
-            "any-pkg",
-            "bucket",
-            &m,
-            true,
-            false,
-            &matchers,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn explicit_exact_match() {
-        let m = make_manifest("1.0");
-        let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(manifest_matches(
-            "curl",
-            "main",
-            &m,
-            false,
-            true,
-            &matchers,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn explicit_no_match() {
-        let m = make_manifest("1.0");
-        let matchers = build_matchers(&["curl"], false, true).unwrap();
-        assert!(!manifest_matches(
-            "wget",
-            "main",
-            &m,
-            false,
-            true,
-            &matchers,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn regex_case_insensitive_match() {
-        let m = make_manifest("1.0");
-        let matchers = build_matchers(&["CURL"], false, false).unwrap();
-        assert!(manifest_matches(
-            "curl",
-            "main",
-            &m,
-            false,
-            false,
-            &matchers,
-            &[]
-        ));
-    }
-
-    #[test]
-    fn bucket_prefixed_query_only_matches_correct_bucket() {
-        let m = make_manifest("1.0");
-        let matchers = build_matchers(&["extras/curl"], false, true).unwrap();
-        // Matches when bucket is "extras"
-        assert!(manifest_matches(
-            "curl",
-            "extras",
-            &m,
-            false,
-            true,
-            &matchers,
-            &[]
-        ));
-        // Does NOT match when bucket is "main"
-        assert!(!manifest_matches(
-            "curl",
-            "main",
-            &m,
-            false,
-            true,
-            &matchers,
-            &[]
-        ));
-    }
 }
 
 // ─── Session-level query operations ─────────────────────────────────────────
