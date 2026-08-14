@@ -866,10 +866,7 @@ mod tests {
             "install.json url records the manifest source: {}",
             url
         );
-        assert!(
-            url.contains("apps") == false,
-            "url is the source, not an app path"
-        );
+        assert!(!url.contains("apps"), "url is the source, not an app path");
 
         let _ = std::fs::remove_dir_all(&root);
     }

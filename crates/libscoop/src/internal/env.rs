@@ -116,6 +116,7 @@ mod windows {
     /// - value containing `%` → `REG_EXPAND_SZ`
     /// - existing value → keep its current type
     /// - otherwise → `REG_SZ`
+    ///
     /// If `value` is `None`, the variable is deleted (missing keys are ignored).
     pub fn set(key: &str, value: Option<&OsString>, scope: EnvScope) -> Fallible<()> {
         let env = create_env_key(scope)?;

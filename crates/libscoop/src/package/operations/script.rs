@@ -283,6 +283,10 @@ pub fn run_installer_file(
 /// (`"install"` / `"uninstall"`) are passed through to
 /// [`run_installer_file`] / [`run_script`] and used in debug/error
 /// messages and `$cmd` expansion.
+// 9 args is deliberate: one shared entry point for both hook stages
+// (file + script) across the install and remove pipelines; a struct
+// would just move the same fields behind one more indirection.
+#[allow(clippy::too_many_arguments)]
 pub fn run_hook(
     session: &Session,
     package: &Package,

@@ -208,7 +208,7 @@ fn remove_impl(
                 let norm = internal::path::normalize_path(p)
                     .to_string_lossy()
                     .to_lowercase();
-                !add_path_lower.iter().any(|t| *t == norm)
+                !add_path_lower.contains(&norm)
             });
 
             if paths.is_empty() {

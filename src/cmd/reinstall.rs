@@ -162,10 +162,7 @@ fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Resul
 
 /// Install phase.
 fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
-    let config = eventloop::EventLoopConfig {
-        auto_confirm: true,
-        ..Default::default()
-    };
+    let config = eventloop::EventLoopConfig { auto_confirm: true };
     let handle = eventloop::run_event_loop(
         session,
         config,

@@ -617,7 +617,7 @@ fn extract_nsis(
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
         let rel = name.replace('\\', "/");
-        let target = strip_dir(&rel, filter).unwrap_or_else(|| rel);
+        let target = strip_dir(&rel, filter).unwrap_or(rel);
         if Path::new(&target)
             .components()
             .any(|c| c == Component::ParentDir)
