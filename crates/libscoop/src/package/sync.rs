@@ -382,6 +382,56 @@ fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible
     Err(Error::Custom("event bus closed unexpectedly".to_owned()))
 }
 
+// ─── Session-level sync operation ───────────────────────────────────────────
+
+/// Sync packages.
+///
+/// # Note
+/// The meaning of `sync` packages is to download, (un)install and/or upgrade
+/// packages.
+///
+/// # Errors
+///
+/// I/O errors will be returned if the `apps`/`buckets` directory is not readable.
+///
+/// A [`PackageNotFound`][1] error will be returned if no package is found for
+/// the given query.
+///
+/// A [`PackageMultipleCandidates`][2] error will be returned if multiple
+/// candidates are found for the given query and not able to ask for a selection.
+///
+/// [1]: crate::Error::PackageNotFound
+/// [2]: crate::Error::PackageMultipleCandidates
+pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
+    // remove possible duplicates
+    let queries = std::collections::HashSet::<&str>::from_iter(queries)
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageResolveStart);
+    }
+
+    let is_op_remove = options.contains(&SyncOption::Remove);
+    let result = if is_op_remove {
+        remove(session, &queries, &options)
+    } else {
+        install(session, &queries, &options)
+    };
+
+    // Always close the resolve/sync phases — including error paths (e.g.
+    // a declined confirmation) — so the event loop breaks and the CLI's
+    // handle.join() cannot hang.
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageResolveDone);
+        let _ = tx.send(Event::PackageSyncDone);
+    }
+
+    result?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,54 +481,4 @@ mod tests {
         let result = confirm_transaction(&session, &transaction).unwrap();
         assert!(!result, "should return false when frontend rejects");
     }
-}
-
-// ─── Session-level sync operation ───────────────────────────────────────────
-
-/// Sync packages.
-///
-/// # Note
-/// The meaning of `sync` packages is to download, (un)install and/or upgrade
-/// packages.
-///
-/// # Errors
-///
-/// I/O errors will be returned if the `apps`/`buckets` directory is not readable.
-///
-/// A [`PackageNotFound`][1] error will be returned if no package is found for
-/// the given query.
-///
-/// A [`PackageMultipleCandidates`][2] error will be returned if multiple
-/// candidates are found for the given query and not able to ask for a selection.
-///
-/// [1]: crate::Error::PackageNotFound
-/// [2]: crate::Error::PackageMultipleCandidates
-pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
-    // remove possible duplicates
-    let queries = std::collections::HashSet::<&str>::from_iter(queries)
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveStart);
-    }
-
-    let is_op_remove = options.contains(&SyncOption::Remove);
-    let result = if is_op_remove {
-        remove(session, &queries, &options)
-    } else {
-        install(session, &queries, &options)
-    };
-
-    // Always close the resolve/sync phases — including error paths (e.g.
-    // a declined confirmation) — so the event loop breaks and the CLI's
-    // handle.join() cannot hang.
-    if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveDone);
-        let _ = tx.send(Event::PackageSyncDone);
-    }
-
-    result?;
-
-    Ok(())
 }
