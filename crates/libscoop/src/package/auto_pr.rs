@@ -121,7 +121,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
     // Run checkver to update all manifests
     session.output().progress("Checking", "for updates");
-    let cv_args = crate::package::checkver::Args {
+    let cv_args = crate::package::checkver::CheckverOptions {
         dir: dir.clone(),
         app: vec!["*".to_string()],
         update: true,
@@ -136,7 +136,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
     // Force-update special manifests
     for name in &config.special {
         session.output().progress("Forcing", name);
-        let cv_args = crate::package::checkver::Args {
+        let cv_args = crate::package::checkver::CheckverOptions {
             dir: dir.clone(),
             app: vec![name.to_string()],
             update: true,

@@ -52,9 +52,14 @@ mod checkver_url;
 //   Scoop refs: bin/checkver.ps1 (lines 117-121, 246, 240-244)
 // ---------------------------------------------------------------------------
 
-/// Check manifest for a newer version
+/// Options for a checkver run, filled by the CLI layer from its clap options.
+///
+/// Deliberately *not* a clap struct: the CLI owns argument parsing, this is
+/// the plain domain options object (clap additions must be mapped here
+/// explicitly, giving compile-time protection against the two drifting
+/// apart).
 #[derive(Debug, Clone)]
-pub struct Args {
+pub struct CheckverOptions {
     /// Bucket directory to scan for manifests
     pub dir: PathBuf,
 
@@ -137,15 +142,15 @@ enum CheckverFetch {
 }
 
 pub fn execute(
-    args: Args,
+    options: CheckverOptions,
     session: &Session,
     on_report: impl FnMut(&CheckverReport),
 ) -> Result<()> {
     let mut on_report = on_report;
-    let dir = &args.dir;
+    let dir = &options.dir;
 
     // Don't use --version with wildcard app pattern
-    if args.version.is_some() && args.app[0] == "*" {
+    if options.version.is_some() && options.app[0] == "*" {
         return Err(crate::Error::Custom(
             "checkver: --version cannot be combined with wildcard app pattern".to_string(),
         ));
@@ -164,7 +169,7 @@ pub fn execute(
         .user_agent()
         .unwrap_or("Scoop/1.0 (+http://scoop.sh/)")
         .to_string();
-    let timeout = args.timeout;
+    let timeout = options.timeout;
 
     /// A manifest that needs version checking.
     struct PendingItem {
@@ -189,7 +194,7 @@ pub fn execute(
 
     let mut pending: Vec<PendingItem> = Vec::new();
 
-    for (path, stem) in manifest_walker::discover_matching(dir, &args.app)? {
+    for (path, stem) in manifest_walker::discover_matching(dir, &options.app)? {
         let manifest = match Manifest::parse(&path) {
             Ok(m) => m,
             Err(_) => continue,
@@ -203,13 +208,13 @@ pub fn execute(
         let current = manifest.version().to_string();
 
         // When --version is specified, skip all detection and use that version directly
-        if let Some(ref ver_override) = args.version {
+        if let Some(ref ver_override) = options.version {
             let mut report = CheckverReport::new(stem, current);
             report.new_version = Some(ver_override.clone());
-            if args.skip_updated && ver_override == &report.current {
+            if options.skip_updated && ver_override == &report.current {
                 continue;
             }
-            if args.update || args.force_update {
+            if options.update || options.force_update {
                 let captures = vec![ver_override.clone()];
                 match apply_autoupdate(
                     session,
@@ -480,14 +485,14 @@ pub fn execute(
                 && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
 
             // ForceUpdate implies Update (matching Scoop behavior)
-            let do_update = args.update || args.force_update;
+            let do_update = options.update || options.force_update;
 
             if ver == report.current {
                 // SkipUpdated: skip display (and update) for up-to-date manifests
-                if args.skip_updated && !args.force_update {
+                if options.skip_updated && !options.force_update {
                     continue;
                 }
-                if args.force_update {
+                if options.force_update {
                     match apply_autoupdate(
                         session,
                         path,
@@ -1233,7 +1238,7 @@ mod tests {
     #[test]
     fn apply_replace_pattern_substitutes_named_groups() {
         // tim: .NET named-group syntax `${main}.${patch}`
-        let caps = vec![String::new(); 0];
+        let caps: Vec<String> = Vec::new();
         let named = HashMap::from([
             ("main".to_string(), "3.5.0".to_string()),
             ("patch".to_string(), "22143".to_string()),

@@ -43,7 +43,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     validate_dir(&args.dir)?;
 
-    let inner = checkhashes::Args {
+    let options = checkhashes::CheckhashesOptions {
         dir: args.dir,
         app: args.app,
         update: args.update,
@@ -55,7 +55,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Stream results: each manifest is reported as soon as its hash check
     // completes, matching Scoop's per-manifest output while checking.
-    let report = checkhashes::execute(inner, session, |item| match item.status {
+    let report = checkhashes::execute(options, session, |item| match item.status {
         CheckHashesStatus::Passed => {
             if !args.skip_correct {
                 output::done(&item.name);

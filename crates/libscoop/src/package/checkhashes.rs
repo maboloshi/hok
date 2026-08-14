@@ -3,8 +3,14 @@ use std::path::PathBuf;
 use crate::package::{manifest, manifest_walker};
 use crate::{error::Fallible, internal::url::url_remote_filename, network, Manifest, Session};
 
+/// Options for a checkhashes run, filled by the CLI layer from its clap options.
+///
+/// Deliberately *not* a clap struct: the CLI owns argument parsing, this is
+/// the plain domain options object (clap additions must be mapped here
+/// explicitly, giving compile-time protection against the two drifting
+/// apart).
 #[derive(Debug, Clone)]
-pub struct Args {
+pub struct CheckhashesOptions {
     pub dir: PathBuf,
     pub app: Vec<String>,
     pub update: bool,
@@ -44,19 +50,19 @@ struct HashEntry {
 }
 
 pub fn execute(
-    args: Args,
+    options: CheckhashesOptions,
     session: &Session,
     on_item: impl FnMut(&CheckHashesItem),
 ) -> Fallible<CheckHashesReport> {
     let mut on_item = on_item;
-    let cache_dir = args
+    let cache_dir = options
         .cache
         .clone()
         .unwrap_or_else(|| std::env::temp_dir().join("hok-checkhashes"));
     std::fs::create_dir_all(&cache_dir)?;
 
     let mut report = CheckHashesReport::default();
-    let discovered = manifest_walker::discover_matching(&args.dir, &args.app)?;
+    let discovered = manifest_walker::discover_matching(&options.dir, &options.app)?;
 
     for (path, name) in &discovered {
         let manifest = match Manifest::parse(path) {
@@ -112,7 +118,7 @@ pub fn execute(
             );
             let cache_path = cache_dir.join(&cache_filename);
 
-            if !cache_path.exists() || args.force {
+            if !cache_path.exists() || options.force {
                 if let Err(e) = network::download_file(session, url, &cache_path) {
                     item.status = CheckHashesStatus::Failed;
                     item.messages.push(format!("download failed: {}", e));
@@ -150,7 +156,7 @@ pub fn execute(
             let formatted_expected =
                 crate::internal::hash::format_hash_value(expected.algorithm(), expected.value());
             let actual = &actual_hashes[i];
-            if actual != &formatted_expected || args.force {
+            if actual != &formatted_expected || options.force {
                 mismatches.push((i, entry));
             }
         }
@@ -163,7 +169,7 @@ pub fn execute(
             continue;
         }
 
-        if args.update || args.force {
+        if options.update || options.force {
             let content = std::fs::read_to_string(path)?;
             let mut root: serde_json::Value = serde_json::from_str(&content)?;
             let mut path_map: std::collections::HashMap<&str, Vec<usize>> =
@@ -213,7 +219,7 @@ pub fn execute(
         report.items.push(item);
     }
 
-    if !args.keep_cache {
+    if !options.keep_cache {
         let _ = std::fs::remove_dir_all(&cache_dir);
     }
     Ok(report)

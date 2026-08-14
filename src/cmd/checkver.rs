@@ -43,7 +43,7 @@ pub struct Args {
 pub fn execute(args: Args, session: &Session) -> Result<()> {
     validate_dir(&args.dir)?;
 
-    let inner = checkver::Args {
+    let options = checkver::CheckverOptions {
         dir: args.dir,
         app: args.app,
         update: args.update,
@@ -55,7 +55,7 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Stream results: each manifest is reported as soon as its check completes,
     // matching Scoop's event-driven output in checkver.ps1.
-    checkver::execute(inner, session, |r| {
+    checkver::execute(options, session, |r| {
         if let Some(msg) = &r.message {
             match r.severity {
                 ReportSeverity::Warn => output::warn(format!("{}: {}", r.stem, msg)),
