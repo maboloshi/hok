@@ -43,6 +43,8 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Edit => {
             let path = &session.config().path;
+            // `config::edit` launches `$EDITOR` (if set); fall back to the
+            // system default handler otherwise.
             if !config::edit(session)? {
                 libscoop::os::open_file(path)?;
             }

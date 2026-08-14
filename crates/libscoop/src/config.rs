@@ -188,6 +188,12 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     cat_style: Option<String>,
 
+    /// The text editor used by `hok config edit` (hok-specific key; Scoop
+    /// only honours the `EDITOR` environment variable). When unset,
+    /// `$EDITOR` is used, falling back to the system default handler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    editor: Option<String>,
+
     #[serde(alias = "output-style")]
     #[serde(skip_serializing_if = "Option::is_none")]
     output_style: Option<String>,
@@ -430,6 +436,12 @@ impl Config {
         self.cat_style.as_deref().unwrap_or_default()
     }
 
+    /// Get the `editor` config (the text editor used by `config edit`).
+    #[inline]
+    pub fn editor(&self) -> Option<&str> {
+        self.inner.editor.as_deref()
+    }
+
     /// Get the `output_style` config ("scoop" or "pacman").
     #[inline]
     pub fn output_style(&self) -> &str {
@@ -543,6 +555,12 @@ impl Config {
             },
             "cat_style" => {
                 self.inner.cat_style = match is_unset {
+                    true => None,
+                    false => Some(value.to_string()),
+                }
+            }
+            "editor" => {
+                self.inner.editor = match is_unset {
                     true => None,
                     false => Some(value.to_string()),
                 }
@@ -704,6 +722,7 @@ impl Default for Config {
             // default_cache_path: default::cache_path(),
             cache_path: default::cache_path(),
             cat_style: Default::default(),
+            editor: Default::default(),
             default_architecture: Default::default(),
             gh_token: Default::default(),
             virustotal_api_key: Default::default(),
@@ -808,9 +827,15 @@ mod default {
     use crate::internal::path::normalize_path;
 
     /// Join the given `path` to `$HOME` and return a new [`PathBuf`].
+    ///
+    /// Falls back to an empty path when `$HOME`/`USERPROFILE` is unset
+    /// (service accounts, stripped environments); the config load chain
+    /// then reverts to defaults instead of panicking.
     #[inline]
     fn home_join<P: AsRef<Path>>(path: P) -> PathBuf {
-        dirs::home_dir().map(|p| p.join(path.as_ref())).unwrap()
+        dirs::home_dir()
+            .map(|p| p.join(path.as_ref()))
+            .unwrap_or_default()
     }
 
     /// Get the default Scoop config path: `$HOME/.config/scoop/config.json`.
@@ -922,13 +947,12 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
     let config = session.config();
 
     let no = || "none".to_owned();
-    let mut rows: Vec<[String; 3]> = vec![];
-
-    rows.push([
+    let mut rows: Vec<[String; 3]> = vec![[
         "aria2-enabled".into(),
         fmt_bool(config.aria2_enabled()).into(),
         "true".into(),
-    ]);
+    ]];
+
     rows.push([
         "aria2-split".into(),
         config.aria2_split().to_string(),
@@ -957,6 +981,12 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
         } else {
             cat_style.to_owned()
         },
+        no(),
+    ]);
+    let editor = config.editor();
+    rows.push([
+        "editor".into(),
+        editor.map(str::to_owned).unwrap_or_else(no),
         no(),
     ]);
     rows.push([
@@ -1095,11 +1125,11 @@ fn fmt_size(bytes: u64) -> String {
     const G: u64 = 1024 * 1024 * 1024;
     const M: u64 = 1024 * 1024;
     const K: u64 = 1024;
-    if bytes >= G && bytes % G == 0 {
+    if bytes >= G && bytes.is_multiple_of(G) {
         format!("{}G", bytes / G)
-    } else if bytes >= M && bytes % M == 0 {
+    } else if bytes >= M && bytes.is_multiple_of(M) {
         format!("{}M", bytes / M)
-    } else if bytes >= K && bytes % K == 0 {
+    } else if bytes >= K && bytes.is_multiple_of(K) {
         format!("{}K", bytes / K)
     } else {
         bytes.to_string()
@@ -1113,19 +1143,44 @@ fn fmt_size(bytes: u64) -> String {
 /// environment variable is not set, so the caller can fall back to opening
 /// the file with the system default handler.
 ///
+/// `$EDITOR` is first spawned directly (passing the config path as UTF-16 on
+/// Windows, so non-ASCII paths — e.g. a CJK username — reach the editor
+/// intact). If that fails — the value is a command line such as `code --wait`
+/// or a `.cmd`/`.bat` script, which `std::process::Command` cannot start
+/// directly — it is executed through `cmd /c`, mirroring Scoop's
+/// `Invoke-Expression "$EDITOR \"$config\""` (libexec/scoop-config.ps1).
+///
 /// # Errors
 ///
 /// I/O errors from spawning or waiting on the editor process are returned.
 pub fn edit(session: &crate::Session) -> Fallible<bool> {
-    match std::env::var("EDITOR") {
-        Ok(editor) => {
-            let mut child = std::process::Command::new(editor.as_str())
-                .arg(&session.config().path)
-                .spawn()?;
-            child.wait()?;
-            Ok(true)
+    let config = session.config();
+    // The `editor` config key wins; `$EDITOR` is the fallback, and the
+    // system default handler is used when neither is set.
+    let command = config
+        .editor()
+        .map(str::to_owned)
+        .or_else(|| std::env::var("EDITOR").ok())
+        .filter(|s| !s.trim().is_empty());
+    match command {
+        Some(editor) => {
+            let path = config.path.clone();
+            match std::process::Command::new(&editor).arg(&path).spawn() {
+                Ok(mut child) => {
+                    child.wait()?;
+                    Ok(true)
+                }
+                Err(_) => {
+                    let quoted = format!("\"{}\"", path.display());
+                    let mut child = std::process::Command::new("cmd")
+                        .args(["/c", &editor, &quoted])
+                        .spawn()?;
+                    child.wait()?;
+                    Ok(true)
+                }
+            }
         }
-        Err(_) => Ok(false),
+        None => Ok(false),
     }
 }
 
@@ -1190,6 +1245,7 @@ mod tests {
             "aria2-min-split-size" => config.aria2_min_split_size.as_deref(),
             "language" => config.language.as_deref(),
             "virustotal_api_key" => config.virustotal_api_key.as_deref(),
+            "editor" => config.editor.as_deref(),
             _ => panic!("not a string key: {key}"),
         }
     }
@@ -1223,7 +1279,12 @@ mod tests {
         }
 
         // string keys
-        for key in ["aria2-min-split-size", "language", "virustotal_api_key"] {
+        for key in [
+            "aria2-min-split-size",
+            "language",
+            "virustotal_api_key",
+            "editor",
+        ] {
             crate::config::set(&session, key, "value").unwrap();
             assert_eq!(string_field(&session.config().inner, key), Some("value"));
             crate::config::set(&session, key, "").unwrap();
@@ -1295,6 +1356,7 @@ mod tests {
             "cache_path",
             "cat_style",
             "default_architecture",
+            "editor",
             "global_path",
             "gh_token",
             "ignore-failures",

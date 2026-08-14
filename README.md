@@ -101,6 +101,7 @@ hok config --help         # full settings reference with defaults
 | `cache_path` | path | `$SCOOP_CACHE` or `<root>/cache` | Download cache directory |
 | `cat_style` | string | *(empty)* | When set, use `bat` to display manifests (requires `bat` installed) |
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | auto-detected | Preferred architecture used for installation |
+| `editor` | string | *(empty)* | Text editor used by `hok config edit` (e.g. `code --wait`); falls back to `$EDITOR`, then the system default handler |
 | `global_path` | path | `$SCOOP_GLOBAL` or `%ProgramData%\scoop` | Root directory for globally installed apps |
 | `gh_token` | string | *(empty)* | GitHub API token used for authenticated requests |
 | `ignore-failures` | bool | `true` | Continue multi-package operations despite individual failures |
