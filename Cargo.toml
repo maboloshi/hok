@@ -52,6 +52,8 @@ codegen-units = 1
 incremental = false
 
 [profile.dev]
+debug = "line-tables-only"   # 少生成 DWARF/PDB 调试信息
+split-debuginfo = "off"      # Windows 上 PDB 体积大头
 panic = "abort"
 
 [profile.release-debug]
