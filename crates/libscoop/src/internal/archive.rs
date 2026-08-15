@@ -595,29 +595,46 @@ fn extract_nsis(
     let installer = nsis::NsisInstaller::from_bytes(&data)
         .map_err(|e| Error::ExtractionFailed(format!("nsis parse error: {}", e)))?;
 
+    // 7-Zip derives each file's destination from the *instruction stream*:
+    // EW_CREATEDIR (update_instdir) / EW_ASSIGNVAR($OUTDIR) track the current
+    // install directory, and every EW_EXTRACTFILE is written under it with
+    // the `$INSTDIR` prefix stripped. `files()` only exposes the bare
+    // EXTRACTFILE target name, so the directory is tracked separately:
+    // pass 1 records the directory in effect for each EXTRACTFILE (stream
+    // order), pass 2 pairs it with each file from `files()` (same order).
+    let dirs = nsis_extract_dirs(&installer)?;
+    let mut dir_idx = 0usize;
+
     for result in installer.files() {
         let file =
             result.map_err(|e| Error::ExtractionFailed(format!("nsis file error: {}", e)))?;
         let name = file
             .name()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis name error: {}", e)))?;
-        let name = name.to_string();
+            .map_err(|e| Error::ExtractionFailed(format!("nsis name error: {}", e)))?
+            .to_string();
         if name.is_empty() {
             continue;
         }
+        let dir = dirs.get(dir_idx).map(String::as_str).unwrap_or("");
+        dir_idx += 1;
+
+        let rel = nsis_dest_path(dir, &name);
+        if rel.is_empty() {
+            continue;
+        }
         if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
+            if !f.iter().any(|d| rel.starts_with(d)) {
                 continue;
             }
         }
         if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(name.to_string()));
+            let _ = tx.send(Event::PackageExtractProgress(rel.clone()));
         }
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
-        let rel = name.replace('\\', "/");
-        let target = strip_dir(&rel, filter).unwrap_or(rel);
+        let rel_slashes = rel.replace('\\', "/");
+        let target = strip_dir(&rel_slashes, filter).unwrap_or(rel_slashes);
         if Path::new(&target)
             .components()
             .any(|c| c == Component::ParentDir)
@@ -636,6 +653,70 @@ fn extract_nsis(
         })?;
     }
     Ok(())
+}
+
+/// Track the current install directory through the NSIS instruction stream,
+/// recording the directory in effect at each `EW_EXTRACTFILE` (stream order).
+///
+/// Mirrors 7-Zip's NsisIn.cpp: `EW_CREATEDIR` with `update_instdir` set and
+/// `EW_ASSIGNVAR` targeting `$OUTDIR` (variable index 22) both update the
+/// current directory; subsequent files are extracted under it. A file name
+/// that already contains a separator (`$PLUGINSDIR\app-64.7z`) is used as-is
+/// and does not need a directory from the stream.
+fn nsis_extract_dirs(installer: &nsis::NsisInstaller<'_>) -> Fallible<Vec<String>> {
+    const OUTDIR_VAR: i32 = 22; // $OUTDIR
+    let mut dirs: Vec<String> = Vec::new();
+    let mut cur_dir: Option<String> = None;
+    for result in installer.entries() {
+        let entry =
+            result.map_err(|e| Error::ExtractionFailed(format!("nsis entry error: {}", e)))?;
+        match installer.normalize_opcode(entry.which()) {
+            nsis::opcode::EW_CREATEDIR => {
+                let path = installer
+                    .read_string(entry.offset(0))
+                    .map_err(|e| Error::ExtractionFailed(format!("nsis createdir error: {}", e)))?
+                    .to_string();
+                if entry.offset(1) != 0 {
+                    cur_dir = Some(path);
+                }
+            }
+            nsis::opcode::EW_ASSIGNVAR => {
+                if entry.offset(0) == OUTDIR_VAR {
+                    let path = installer
+                        .read_string(entry.offset(1))
+                        .map_err(|e| {
+                            Error::ExtractionFailed(format!("nsis assignvar error: {}", e))
+                        })?
+                        .to_string();
+                    cur_dir = Some(path);
+                }
+            }
+            nsis::opcode::EW_EXTRACTFILE => {
+                dirs.push(cur_dir.clone().unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+    Ok(dirs)
+}
+
+/// 7-Zip-style destination for an NSIS `EW_EXTRACTFILE`: join the tracked
+/// current directory with the bare target name and strip the `$INSTDIR`
+/// install-root prefix (the extraction root). A name that already contains a
+/// directory separator is used verbatim.
+fn nsis_dest_path(dir: &str, name: &str) -> String {
+    let joined = if name.contains('\\') || name.contains('/') {
+        name.to_string()
+    } else if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}\\{name}")
+    };
+    joined
+        .strip_prefix("$INSTDIR")
+        .map(|rest| rest.trim_start_matches('\\').trim_start_matches('/'))
+        .unwrap_or(&joined)
+        .to_string()
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -792,6 +873,68 @@ Inno Setup Setup Data (5.8.3)";
 
         let filter3: Vec<&str> = vec![];
         assert_eq!(strip_dir("dir1/sub/a.txt", Some(&filter3)), None);
+    }
+
+    #[test]
+    fn test_nsis_dest_path() {
+        // Bare name under the install root ($INSTDIR is the extraction root).
+        assert_eq!(nsis_dest_path("$INSTDIR", "payload.txt"), "payload.txt");
+        // Bare name under a tracked subdirectory — the traditional-NSIS case
+        // that 7-Zip preserves (e.g. AltSnap's `Lang\de_DE.ini`).
+        assert_eq!(
+            nsis_dest_path("$INSTDIR\\docs", "payload.txt"),
+            "docs\\payload.txt"
+        );
+        // No directory tracked yet (no leading SetOutPath): bare name.
+        assert_eq!(nsis_dest_path("", "config.ini"), "config.ini");
+        // Tracked directory without an $INSTDIR prefix (relative SetOutPath).
+        assert_eq!(nsis_dest_path("Lang", "de_DE.ini"), "Lang\\de_DE.ini");
+        // electron-builder: the name already carries its literal $VAR
+        // directory, kept verbatim (pre_install scripts reference it as-is).
+        assert_eq!(
+            nsis_dest_path("$INSTDIR", "$PLUGINSDIR\\app-64.7z"),
+            "$PLUGINSDIR\\app-64.7z"
+        );
+        // Name with a plain directory is used verbatim too.
+        assert_eq!(nsis_dest_path("$INSTDIR\\a", "sub\\x.bin"), "sub\\x.bin");
+    }
+
+    /// True when `dir` contains at least one file in a nested subdirectory.
+    fn has_nested_file(dir: &std::path::Path) -> bool {
+        fn walk(dir: &std::path::Path, nested: bool) -> bool {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return false;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && walk(&p, true) {
+                    return true;
+                }
+                if nested && p.is_file() {
+                    return true;
+                }
+            }
+            false
+        }
+        walk(dir, false)
+    }
+
+    /// Extract a traditional NSIS installer (subdirectories via EW_CREATEDIR
+    /// tracking) and verify the directory structure survives — the 7-Zip
+    /// parity fix. Point `NSIS_SAMPLE` at such an installer (e.g. AltSnap's
+    /// setup exe) to run manually.
+    #[test]
+    #[ignore = "requires a traditional NSIS installer sample (NSIS_SAMPLE env)"]
+    fn extract_nsis_traditional_dir_corpus() {
+        let Ok(path) = std::env::var("NSIS_SAMPLE") else {
+            return;
+        };
+        let dest = crate::test_utils::tmpdir("nsis_traditional");
+        extract_nsis(std::path::Path::new(&path), &dest, None, &None).unwrap();
+        assert!(
+            has_nested_file(&dest),
+            "expected a nested directory in extraction of {path}"
+        );
     }
 
     // ─── Integration tests ────────────────────────────────────────
