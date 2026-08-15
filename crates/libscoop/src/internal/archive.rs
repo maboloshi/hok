@@ -601,7 +601,14 @@ fn extract_nsis(
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
-    let installer = nsis::NsisInstaller::from_bytes(&data)
+    // Parse with a generous decompression budget. The crate's default
+    // (64 MiB) silently bounds solid streams via DecodeLimit::Truncate, so
+    // large solid installers would fail with a confusing bounds error and
+    // fall back to 7z.exe. 512 MiB covers real-world installers (Obsidian's
+    // electron-builder payload alone is ~114 MiB decompressed).
+    let installer = nsis::NsisInstaller::builder(&data)
+        .max_decompressed_size(512 * 1024 * 1024)
+        .parse()
         .map_err(|e| Error::ExtractionFailed(format!("nsis parse error: {}", e)))?;
 
     // 7-Zip derives each file's destination from the *instruction stream*:
@@ -985,6 +992,45 @@ Inno Setup Setup Data (5.8.3)";
             false
         }
         walk(dir, false)
+    }
+
+    /// True when `dir` contains at least one file with a non-zero size.
+    fn has_nonempty_file(dir: &std::path::Path) -> bool {
+        fn walk(dir: &std::path::Path) -> bool {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return false;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && walk(&p) {
+                    return true;
+                }
+                if p.is_file() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
+                    return true;
+                }
+            }
+            false
+        }
+        walk(dir)
+    }
+
+    /// Extract a large solid NSIS installer with the raised decompression
+    /// budget and verify the payload survives (no silent 64 MiB truncation).
+    /// Point `NSIS_SAMPLE` at a solid installer whose decompressed size
+    /// exceeds the crate default budget (e.g. makensis `SetCompressor /SOLID`
+    /// with a >64 MiB payload) to run manually.
+    #[test]
+    #[ignore = "requires a large solid NSIS sample (NSIS_SAMPLE env)"]
+    fn extract_nsis_large_solid_corpus() {
+        let Ok(path) = std::env::var("NSIS_SAMPLE") else {
+            return;
+        };
+        let dest = crate::test_utils::tmpdir("nsis_large_solid");
+        extract_nsis(std::path::Path::new(&path), &dest, None, &None).unwrap();
+        assert!(
+            has_nonempty_file(&dest),
+            "expected a non-empty payload in extraction of {path}"
+        );
     }
 
     /// Extract a traditional NSIS installer (subdirectories via EW_CREATEDIR
