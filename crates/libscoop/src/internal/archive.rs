@@ -156,12 +156,22 @@ const NSIS_MARKER: &[u8] = b"Nullsoft Install System";
 const INNO_MARKER: &[u8] = b"Inno Setup";
 const INSTALLER_SIGNATURE_SCAN_LIMIT: usize = 1024 * 1024; // 1 MiB
 
+/// NSIS overlay FirstHeader magic (`flags + 0xDEADBEEF + "NullsoftInst"`).
+///
+/// Present in *every* NSIS installer, unlike the stub version string
+/// `Nullsoft Install System` which stripped/custom stubs (e.g. AltSnap)
+/// omit. 7-Zip identifies NSIS by this same signature.
+const NSIS_FIRST_HEADER_MAGIC: &[u8] = b"NullsoftInst";
+
 /// True when `data` is an NSIS installer — a format that embeds 7z archives
 /// as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder), so a raw
 /// magic match would not denote a 7z SFX.
 fn is_nsis_installer(data: &[u8]) -> bool {
     let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
     head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
+        || head
+            .windows(NSIS_FIRST_HEADER_MAGIC.len())
+            .any(|w| w == NSIS_FIRST_HEADER_MAGIC)
 }
 
 /// True when `data` is an NSIS or Inno Setup installer — formats that embed
@@ -169,8 +179,7 @@ fn is_nsis_installer(data: &[u8]) -> bool {
 /// `{tmp}` blobs in Inno), so a raw magic match would not denote a 7z SFX.
 fn is_installer_pe(data: &[u8]) -> bool {
     let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
-    head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
-        || head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
+    is_nsis_installer(data) || head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
 }
 
 /// True when a PE file may be a 7z SFX whose archive data starts after the
@@ -863,6 +872,12 @@ mod tests {
 Nullsoft Install System v3.08\x00\x00\x00\x00uninstall.exe";
         assert!(is_installer_pe(nsis));
 
+        // NSIS with a stripped/custom stub that only carries the overlay
+        // FirstHeader magic (`NullsoftInst`) — e.g. AltSnap 1.67.
+        let first_header_only = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
+\xef\xbe\xad\xdeNullsoftInst\x00\x00\x00\x00";
+        assert!(is_installer_pe(first_header_only));
+
         // Inno Setup — marker in the stub
         let inno = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
 Inno Setup Setup Data (5.8.3)";
@@ -882,6 +897,13 @@ Inno Setup Setup Data (5.8.3)";
         deep[INSTALLER_SIGNATURE_SCAN_LIMIT + 10..][..NSIS_MARKER.len()]
             .copy_from_slice(NSIS_MARKER);
         assert!(!is_installer_pe(&deep));
+
+        // ...and the FirstHeader magic is likewise bounded by the scan limit
+        let mut deep2 = Vec::from(b"MZ\x90\x00\x03".as_slice());
+        deep2.resize(INSTALLER_SIGNATURE_SCAN_LIMIT + 64, 0);
+        deep2[INSTALLER_SIGNATURE_SCAN_LIMIT + 10..][..NSIS_FIRST_HEADER_MAGIC.len()]
+            .copy_from_slice(NSIS_FIRST_HEADER_MAGIC);
+        assert!(!is_installer_pe(&deep2));
     }
 
     #[test]
@@ -889,6 +911,9 @@ Inno Setup Setup Data (5.8.3)";
         // NSIS/Inno installers never take the embedded-7z search path
         let nsis = b"MZ\x90\x00\x03Nullsoft Install System v3.08";
         assert!(!pe_embedded_sfx_searchable(nsis));
+        // FirstHeader-magic-only NSIS (AltSnap-style) is excluded too
+        let fh = b"MZ\x90\x00\x03\xef\xbe\xad\xdeNullsoftInst";
+        assert!(!pe_embedded_sfx_searchable(fh));
         let inno = b"MZ\x90\x00\x03Inno Setup Setup Data (5.8.3)";
         assert!(!pe_embedded_sfx_searchable(inno));
 
