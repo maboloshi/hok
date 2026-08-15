@@ -175,12 +175,19 @@ fn is_nsis_installer(data: &[u8]) -> bool {
             .any(|w| w == NSIS_FIRST_HEADER_MAGIC)
 }
 
+/// True when `data` is an Inno Setup installer — a format that embeds 7z
+/// archives as payloads (`{tmp}` blobs), so a raw magic match would not
+/// denote a 7z SFX.
+fn is_innosetup_installer(data: &[u8]) -> bool {
+    let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
+    head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
+}
+
 /// True when `data` is an NSIS or Inno Setup installer — formats that embed
 /// 7z archives as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder,
 /// `{tmp}` blobs in Inno), so a raw magic match would not denote a 7z SFX.
 fn is_installer_pe(data: &[u8]) -> bool {
-    let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
-    is_nsis_installer(data) || head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
+    is_nsis_installer(data) || is_innosetup_installer(data)
 }
 
 /// True when a PE file may be a 7z SFX whose archive data starts after the
@@ -203,9 +210,13 @@ fn extract_7z(
     // Read the whole file into memory once: block-parallel decoding shares
     // this buffer across worker threads. A plain 7z archive starts at
     // offset 0; the git package is a 7z SFX whose archive follows the PE
-    // stub.
-    let file_data = std::fs::read(src)
-        .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
+    // stub. Shared via Arc so the zip-SFX branch can hand it to workers
+    // without moving it (a failed zip parse still falls through to the
+    // 7z.exe fallback below).
+    let file_data =
+        Arc::new(std::fs::read(src).map_err(|e| {
+            Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e))
+        })?);
 
     const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
 
@@ -220,10 +231,10 @@ fn extract_7z(
         );
     }
 
-    // PE/SFX: search for embedded 7z data. Skip NSIS / Inno Setup installers:
-    // those formats legitimately embed standard 7z payloads
-    // (`$PLUGINSDIR\app-64.7z` in electron-builder, `{tmp}` blobs in Inno) and
-    // must keep their installer structure — 7-Zip preserves it instead.
+    // PE-prefixed 7z SFX: search for embedded 7z data. Skip NSIS / Inno
+    // Setup installers: those formats legitimately embed standard 7z payloads
+    // (`$PLUGINSDIR\app-64.7z` in electron-builder, `{tmp}` blobs in Inno)
+    // and must keep their installer structure — 7-Zip preserves it instead.
     if pe_embedded_sfx_searchable(&file_data) {
         if let Some(pos) = file_data
             .windows(MAGIC_7Z.len())
@@ -242,19 +253,6 @@ fn extract_7z(
                 );
             }
         }
-        // Some installers (e.g. Doubao's) prepend a PE stub to a plain ZIP
-        // payload. Parse it with the zip crate instead of falling back to
-        // 7z.exe: locate the EOCD, slice from the zip start, extract. A
-        // false EOCD match (or a zip the crate can't read) falls through to
-        // 7z.exe below — never a hard error from this path alone. No NSIS
-        // retry here: `pe_embedded_sfx_searchable` already excluded NSIS /
-        // Inno installers, so this branch is never one.
-        if let Some(zip_start) = find_embedded_zip_start(&file_data) {
-            if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
-                return Ok(());
-            }
-            return extract_with_7z_exe(src, dest, emitter);
-        }
     }
 
     // NSIS installers: extract the installer structure (including
@@ -263,6 +261,17 @@ fn extract_7z(
     // error from the Rust path alone.
     if is_nsis_installer(&file_data) && extract_nsis(src, dest, filter, emitter).is_ok() {
         return Ok(());
+    }
+
+    // PE-prefixed ZIP SFX (parallel to the 7z SFX check above): some
+    // installers (e.g. Doubao's) prepend a PE stub to a plain ZIP payload.
+    // Locate the EOCD, slice from the zip start, extract with the zip crate.
+    // A false EOCD match (or a zip the crate can't read) falls through to
+    // 7z.exe below — never a hard error from this path alone.
+    if let Some(zip_start) = find_embedded_zip_start(&file_data) {
+        if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
+            return Ok(());
+        }
     }
 
     // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
@@ -279,7 +288,7 @@ fn extract_7z(
 /// single-threaded); block parallelism brings total extraction to ~30 s,
 /// close to 7z.exe's ~29 s.
 fn extract_7z_entries_mt(
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     start: usize,
     dest: PathBuf,
     filter: Option<Vec<String>>,
@@ -289,7 +298,6 @@ fn extract_7z_entries_mt(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    let data = Arc::new(data);
     let mut cursor = std::io::Cursor::new(&data[start..]);
     let archive = Archive::read(&mut cursor, &Password::empty())
         .map_err(|e| Error::ExtractionFailed(format!("7z parse error: {}", e)))?;
@@ -419,7 +427,7 @@ enum ZipSource {
     /// A plain `.zip` file on disk.
     File(PathBuf),
     /// A zip payload embedded at `start` inside `data` (PE/SFX stub prefix).
-    Memory { data: Vec<u8>, start: usize },
+    Memory { data: Arc<Vec<u8>>, start: usize },
 }
 
 impl ZipSource {
@@ -450,6 +458,24 @@ impl ZipSource {
     /// Number of entries in the archive (probed once before spawning workers).
     fn len(&self) -> Fallible<usize> {
         Ok(self.open_archive()?.len())
+    }
+
+    /// Entry indices ordered by compressed size, largest first. Workers claim
+    /// indices in this order so the few huge entries (e.g. Doubao.dll at 304 MB
+    /// compressed in a 614 MB SFX) are started first — otherwise a worker can
+    /// get stuck on one big file while the others idle on small ones.
+    fn entry_order(&self) -> Fallible<Vec<usize>> {
+        let mut archive = self.open_archive()?;
+        let mut order: Vec<(usize, u64)> = Vec::with_capacity(archive.len());
+        for i in 0..archive.len() {
+            let size = archive
+                .by_index(i)
+                .map(|e| e.compressed_size())
+                .unwrap_or(0);
+            order.push((i, size));
+        }
+        order.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(order.into_iter().map(|(i, _)| i).collect())
     }
 }
 
@@ -488,6 +514,9 @@ fn extract_zip_mt(
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    // Largest-first claim order: huge entries start on the first workers
+    // instead of leaving them idle while small files finish.
+    let order = Arc::new(source.entry_order()?);
     let workers = total
         .min(
             std::thread::available_parallelism()
@@ -503,6 +532,7 @@ fn extract_zip_mt(
     let handles: Vec<_> = (0..workers)
         .map(|_| {
             let source = source.clone();
+            let order = order.clone();
             let next = next.clone();
             let done = done.clone();
             let errors = errors.clone();
@@ -521,11 +551,16 @@ fn extract_zip_mt(
                         return;
                     }
                 };
+                // Cache directories created by this worker so repeat
+                // `create_dir_all` calls for the same parent are skipped.
+                let mut made_dirs: std::collections::HashSet<PathBuf> =
+                    std::collections::HashSet::new();
                 loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= total {
+                    let slot = next.fetch_add(1, Ordering::Relaxed);
+                    if slot >= order.len() {
                         break;
                     }
+                    let i = order[slot];
                     let mut entry = match archive.by_index(i) {
                         Ok(e) => e,
                         Err(e) => {
@@ -557,9 +592,11 @@ fn extract_zip_mt(
                     }
                     let target_path = dest.join(&target);
                     if let Some(parent) = target_path.parent() {
-                        if let Err(e) = crate::internal::fs::ensure_dir(parent) {
-                            errors.lock().unwrap().push(e.to_string());
-                            break;
+                        if made_dirs.insert(parent.to_path_buf()) {
+                            if let Err(e) = crate::internal::fs::ensure_dir(parent) {
+                                errors.lock().unwrap().push(e.to_string());
+                                break;
+                            }
                         }
                     }
                     let mut data = Vec::new();
@@ -686,10 +723,8 @@ fn find_embedded_zip_start(data: &[u8]) -> Option<usize> {
 /// Extract a ZIP archive embedded at `start` inside `data` (PE/SFX stub
 /// prefix), with progress + filter semantics matching [`extract_zip`].
 /// Parallel: each worker slices its own `Cursor` over the shared payload.
-/// Takes ownership of `data` (the caller has finished probing it) so the
-/// payload can be shared across worker threads without copying.
 fn extract_zip_embedded(
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
     start: usize,
     dest: &Path,
     filter: Option<&[&str]>,
@@ -1525,7 +1560,7 @@ Inno Setup Setup Data (5.8.3)";
         let Ok(path) = std::env::var("DOUBAO_SAMPLE") else {
             return;
         };
-        let data = std::fs::read(&path).unwrap();
+        let data = Arc::new(std::fs::read(&path).unwrap());
         assert!(data.starts_with(b"MZ"), "sample should be a PE file");
 
         let start =
