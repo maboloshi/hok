@@ -1330,12 +1330,10 @@ dependencies = [
 [[package]]
 name = "nsis"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7418c2ed184f0893a1b777d39116124b96defdf8742787aeb7ce378e161010e8"
 dependencies = [
  "flate2",
  "goblin",
- "lzma-rs",
+ "lzma-rust2",
 ]
 
 [[package]]

@@ -53,7 +53,10 @@ bzip2 = "0.6.1"
 junction = "1.2.0"
 winreg = "0.52"
 innospect = "0.1"
-nsis = "0.3"
+# Vendored fork of nsis-rs (0.3.1) with the LZMA decoder switched from
+# lzma-rs 0.3 to lzma-rust2 (~14% faster, no trailing-byte error tolerance).
+# Upstream: https://github.com/ATRAPSLLC/nsis-rs
+nsis = { path = "../nsis" }
 shortcuts-rs = "1.1.1"
 
 [build-dependencies]
