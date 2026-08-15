@@ -652,6 +652,49 @@ fn extract_nsis(
             Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
         })?;
     }
+
+    // pass 3 — uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
+    // EW_WRITEUNINSTALLER payload (the crate skips the icon/patch prefix and
+    // re-attaches the installer's own PE stub to the decompressed overlay).
+    for result in installer.uninstallers() {
+        let uninstaller = result
+            .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller error: {}", e)))?;
+        let rel = uninstaller
+            .path()
+            .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller name error: {}", e)))
+            .map(|n| nsis_dest_path("", &n.to_string()))?;
+        if rel.is_empty() {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !f.iter().any(|d| rel.starts_with(d)) {
+                continue;
+            }
+        }
+        if let Some(tx) = emitter {
+            let _ = tx.send(Event::PackageExtractProgress(rel.clone()));
+        }
+        let rel_slashes = rel.replace('\\', "/");
+        let target = strip_dir(&rel_slashes, filter).unwrap_or(rel_slashes);
+        if Path::new(&target)
+            .components()
+            .any(|c| c == Component::ParentDir)
+        {
+            return Err(Error::PathTraversalDetected(format!("nsis: {}", target)));
+        }
+        let target_path = dest.join(&target);
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent)?;
+        }
+        // A broken uninstaller overlay must not fail the whole extraction
+        // (the payload files above are already written).
+        let Ok(content) = uninstaller.decompress() else {
+            continue;
+        };
+        std::fs::write(&target_path, &content).map_err(|e| {
+            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+        })?;
+    }
     Ok(())
 }
 
