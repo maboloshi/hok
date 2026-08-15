@@ -589,11 +589,23 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
             ))
         })?;
 
-    // Parse progress from stderr (format: "\r69% 6143")
+    // Parse progress from stderr. 7-Zip's `-bsp1` writes carriage-return
+    // separated progress (`\r69% 6143`) WITHOUT newlines, so
+    // `BufRead::lines()` would buffer the entire stream until the process
+    // exits and never emit progress. Read up to each `\r` instead.
     if let Some(stderr) = child.stderr.take() {
         use std::io::{BufRead, BufReader};
-        let reader = BufReader::new(stderr);
-        for text in reader.lines().map_while(Result::ok) {
+        let mut reader = BufReader::new(stderr);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_until(b'\r', &mut line)
+                .map_err(|e| Error::ExtractionFailed(format!("read 7z progress: {}", e)))?;
+            if n == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&line);
             if let Some(pct) = text
                 .trim()
                 .split('%')
