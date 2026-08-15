@@ -1137,7 +1137,7 @@ dependencies = [
  "json5",
  "jsonpath-rust",
  "junction",
- "lzma-rs",
+ "lzma-rust2",
  "md-5",
  "nsis",
  "rayon",
@@ -1248,6 +1248,9 @@ name = "lzma-rust2"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "243cb2271683c2855cad62142cbf38199db439b1b1e1ccdd5a011342894dd7cc"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "matchers"

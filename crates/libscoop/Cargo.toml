@@ -44,7 +44,7 @@ tar = { version = "0.4", default-features = false }
 # features (rust_backend); feature unification cannot remove it project-side —
 # upstream would need `default-features = false`.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-lzma-rs = "0.3"
+lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization", "xz"] }
 unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
 bzip2 = "0.6.1"

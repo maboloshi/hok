@@ -452,12 +452,10 @@ fn extract_tar(
     let reader: Box<dyn Read + Send> = match compression {
         Some(Compression::Gzip) => Box::new(flate2::read::GzDecoder::new(file)),
         Some(Compression::Bzip2) => Box::new(bzip2::read::BzDecoder::new(file)),
-        Some(Compression::Xz) => {
-            let mut data = Vec::new();
-            lzma_rs::xz_decompress(&mut std::io::BufReader::new(file), &mut data)
-                .map_err(|e| Error::ExtractionFailed(format!("xz decompress error: {}", e)))?;
-            Box::new(std::io::Cursor::new(data))
-        }
+        // lzma-rust2 (the same optimized decoder sevenz-rust2 uses) is ~1.5x
+        // faster than lzma-rs 0.3 and streams instead of buffering the whole
+        // decompressed archive in memory.
+        Some(Compression::Xz) => Box::new(lzma_rust2::XzReader::new(file, false)),
         Some(Compression::Zstd) => Box::new(zstd::Decoder::new(file)?),
         None => Box::new(file),
     };
