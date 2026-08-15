@@ -24,7 +24,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.120", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1.41"
-ureq = { version = "3", features = ["json"] }
+# ureq: default-features off so its gzip feature (flate2 with default
+# backend) does not pull miniz_oxide into the tree — without gzip, ureq
+# simply never sends `Accept-Encoding: gzip`, so servers return plain
+# responses. rustls (TLS) and json (API payloads) are kept.
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 jsonpath-rust = "1.0"
 json5 = "0.4"
 sxd-document = "0.3"
@@ -39,10 +43,9 @@ sha2 = "0.11"
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
-# flate2 unified on the pure-Rust zlib-rs backend. Note: miniz_oxide still
-# enters the tree because innospect and ureq declare flate2 with default
-# features (rust_backend); feature unification cannot remove it project-side —
-# upstream would need `default-features = false`.
+# flate2 unified on the pure-Rust zlib-rs backend across the workspace
+# (libscoop, vendored nsis/innospect, zip), so miniz_oxide stays out of
+# the tree entirely.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization", "xz"] }
 unrar = "0.5"
@@ -52,7 +55,10 @@ bzip2 = "0.6.1"
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
 winreg = "0.52"
-innospect = "0.1"
+# Vendored fork of inno-rs (0.1.2) with LZMA/Zlib decoders switched to
+# lzma-rust2 + flate2/zlib-rs (faster, removes miniz_oxide from the tree).
+# Upstream: https://github.com/BinFlip/inno-rs
+innospect = { path = "../innospect" }
 # Vendored fork of nsis-rs (0.3.1) with the LZMA decoder switched from
 # lzma-rs 0.3 to lzma-rust2 (~14% faster, no trailing-byte error tolerance).
 # Upstream: https://github.com/ATRAPSLLC/nsis-rs
