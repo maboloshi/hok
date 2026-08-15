@@ -12,7 +12,11 @@ use std::io::Write;
 ///
 /// Displays all sub-steps with status/done messages, matching
 /// Scoop's original CLI output style.
-pub struct ScoopHandler;
+pub struct ScoopHandler {
+    /// The package currently being extracted (set by PackageExtractStart),
+    /// shown alongside the throttled file counter on progress events.
+    extracting: Option<String>,
+}
 
 impl EventHandler for ScoopHandler {
     fn handle(&mut self, event: &Event) {
@@ -53,15 +57,38 @@ impl EventHandler for ScoopHandler {
             }
 
             // --- Extraction ---
+            // Progress lines are redrawn in place with `\r`; clear the whole
+            // line first (`\x1b[2K`) so a shorter name doesn't leave tail
+            // characters of the previous (longer) line behind. Progress
+            // carries a bare `n/total` counter (no filename), prefixed with
+            // the package name from the start event.
             Event::PackageExtractStart(ctx) => {
-                print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
+                self.extracting = Some(ctx.clone());
+                print!(
+                    "\r\x1b[2K  {}",
+                    rust_i18n::t!("detail.extracting", ctx = ctx)
+                );
                 let _ = std::io::stdout().flush();
             }
             Event::PackageExtractProgress(ctx) => {
-                print!("\r  {}", rust_i18n::t!("detail.extracting", ctx = ctx));
+                // `ctx` is "n/total" for native extraction or "7z NN%" for the
+                // external fallback — the latter already carries a label.
+                let ctx = if ctx.contains('/') {
+                    match self.extracting.as_deref() {
+                        Some(label) => format!("{label} {ctx}"),
+                        None => ctx.clone(),
+                    }
+                } else {
+                    ctx.clone()
+                };
+                print!(
+                    "\r\x1b[2K  {}",
+                    rust_i18n::t!("detail.extracting", ctx = ctx)
+                );
                 let _ = std::io::stdout().flush();
             }
             Event::PackageExtractDone => {
+                self.extracting = None;
                 println!();
                 output::detail(rust_i18n::t!("detail.extract_done"));
             }
@@ -238,6 +265,6 @@ impl EventHandler for ScoopHandler {
 
 impl ScoopHandler {
     pub fn new() -> Self {
-        Self
+        Self { extracting: None }
     }
 }

@@ -263,14 +263,7 @@ fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
 
     let total = entries.len();
     for (i, name) in entries.iter().enumerate() {
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(format!(
-                "{} ({}/{})",
-                name,
-                i + 1,
-                total
-            )));
-        }
+        emit_extract_progress(emitter, i, Some(total), name);
         let data = reader
             .read_file(name)
             .map_err(|e| Error::ExtractionFailed(format!("failed to read '{name}': {e}")))?;
@@ -319,14 +312,7 @@ fn extract_zip(
                 continue;
             }
         }
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(format!(
-                "{} ({}/{})",
-                name,
-                i + 1,
-                total
-            )));
-        }
+        emit_extract_progress(emitter, i, Some(total));
         let target = strip_dir(&name, filter).unwrap_or(name);
         if Path::new(&target)
             .components()
@@ -373,7 +359,7 @@ fn extract_tar(
     if filter.is_some() {
         let mut archive = TarArchive::new(reader);
         let entries = archive.entries()?;
-        for entry in entries {
+        for (i, entry) in entries.enumerate() {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
             if let Some(f) = filter {
@@ -381,9 +367,7 @@ fn extract_tar(
                     continue;
                 }
             }
-            if let Some(tx) = emitter {
-                let _ = tx.send(Event::PackageExtractProgress(path.clone()));
-            }
+            emit_extract_progress(emitter, i, None);
             let target = strip_dir(&path, filter).unwrap_or(path);
             if Path::new(&target)
                 .components()
@@ -423,6 +407,7 @@ fn extract_rar(
     let mut archive = Archive::new(src)
         .open_for_processing()
         .map_err(|e| Error::ExtractionFailed(format!("cannot open rar: {}", e)))?;
+    let mut file_idx = 0usize;
 
     loop {
         let entry = match archive.read_header() {
@@ -440,9 +425,8 @@ fn extract_rar(
                 continue;
             }
         }
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(name.clone()));
-        }
+        emit_extract_progress(emitter, file_idx, None);
+        file_idx += 1;
 
         let target = strip_dir(&name, filter).unwrap_or(name);
         if Path::new(&target)
@@ -546,7 +530,7 @@ fn extract_innosetup(
     let installer = innospect::InnoInstaller::from_bytes(&data)
         .map_err(|e| Error::ExtractionFailed(format!("innospect parse error: {}", e)))?;
 
-    for result in installer.extract_files() {
+    for (i, result) in installer.extract_files().enumerate() {
         let (file_entry, bytes) = result
             .map_err(|e| Error::ExtractionFailed(format!("innospect extract error: {}", e)))?;
 
@@ -566,9 +550,7 @@ fn extract_innosetup(
                 continue;
             }
         }
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(name.to_string()));
-        }
+        emit_extract_progress(emitter, i, None);
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
         if Path::new(&target)
             .components()
@@ -643,9 +625,7 @@ fn extract_nsis(
                 continue;
             }
         }
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(rel.clone()));
-        }
+        emit_extract_progress(emitter, dir_idx.saturating_sub(1), None);
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
@@ -672,7 +652,7 @@ fn extract_nsis(
     // pass 3 — uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
     // EW_WRITEUNINSTALLER payload (the crate skips the icon/patch prefix and
     // re-attaches the installer's own PE stub to the decompressed overlay).
-    for result in installer.uninstallers() {
+    for (i, result) in installer.uninstallers().enumerate() {
         let uninstaller = result
             .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller error: {}", e)))?;
         let rel = uninstaller
@@ -687,9 +667,7 @@ fn extract_nsis(
                 continue;
             }
         }
-        if let Some(tx) = emitter {
-            let _ = tx.send(Event::PackageExtractProgress(rel.clone()));
-        }
+        emit_extract_progress(emitter, i, None);
         let rel_slashes = rel.replace('\\', "/");
         let target = strip_dir(&rel_slashes, filter).unwrap_or(rel_slashes);
         if Path::new(&target)
@@ -779,6 +757,29 @@ fn nsis_dest_path(dir: &str, name: &str) -> String {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
+
+/// Emit an extraction progress event: a bare `n/total` counter (no filename —
+/// users don't care which file is being written), throttled to every
+/// `EXTRACT_PROGRESS_THROTTLE` entries plus the final one, so archives with
+/// thousands of files (e.g. git's mingw64 tzdata) don't flood the event bus
+/// and terminal with per-file redraws. Formats without a known total emit
+/// nothing (Start/Done feedback is enough).
+fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Option<usize>) {
+    const THROTTLE: usize = 50;
+    let Some(total) = total else {
+        return;
+    };
+    if i % THROTTLE != 0 && i + 1 != total {
+        return;
+    }
+    if let Some(tx) = emitter {
+        let _ = tx.send(Event::PackageExtractProgress(format!(
+            "{}/{}",
+            i + 1,
+            total
+        )));
+    }
+}
 
 /// Strip common Inno Setup path constants from a destination path.
 ///
@@ -1238,5 +1239,61 @@ Inno Setup Setup Data (5.8.3)";
             }
             _ => panic!("expected ExtractionFailed error"),
         }
+    }
+
+    /// TEMP benchmark: 10000-file zip extraction with no progress events vs
+    /// throttled progress events (sink does a real `\r` print + flush like
+    /// scoop_handler). Measures whether the progress bar slows extraction.
+    #[test]
+    #[ignore = "temporary progress-overhead benchmark"]
+    fn bench_progress_overhead() {
+        use std::io::Write;
+        use std::time::Instant;
+
+        let dir = tmpdir("bench_progress");
+        let zip_path = dir.join("many.zip");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(file);
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            for i in 0..10_000 {
+                zw.start_file(format!("f{i:05}.txt"), opts).unwrap();
+                zw.write_all(b"x").unwrap();
+            }
+            zw.finish().unwrap();
+        }
+
+        let run = |with_progress: bool| {
+            let dest = dir.join(if with_progress { "out_p" } else { "out_n" });
+            std::fs::create_dir_all(&dest).unwrap();
+            let tx = if with_progress {
+                let (tx, rx) = flume::unbounded();
+                std::thread::spawn(move || {
+                    while let Ok(ev) = rx.recv() {
+                        if let Event::PackageExtractProgress(ctx) = ev {
+                            print!("\r\x1b[2K  {ctx}");
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
+                });
+                Some(tx)
+            } else {
+                None
+            };
+            let t = Instant::now();
+            extract_zip(&zip_path, &dest, None, &tx).unwrap();
+            let elapsed = t.elapsed();
+            drop(tx);
+            elapsed
+        };
+
+        let t_none = run(false);
+        let t_prog = run(true);
+        println!("no-progress: {t_none:?}   throttled-progress: {t_prog:?}");
+        assert!(
+            t_prog.as_secs_f64() < t_none.as_secs_f64() * 5.0 + 0.5,
+            "progress overhead too large: {t_none:?} vs {t_prog:?}"
+        );
     }
 }
