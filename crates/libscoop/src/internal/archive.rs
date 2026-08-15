@@ -241,6 +241,16 @@ fn extract_7z(
                 );
             }
         }
+        // Some installers (e.g. Doubao's) prepend a PE stub to a plain ZIP
+        // payload. Parse it with the zip crate instead of falling back to
+        // 7z.exe: locate the EOCD, slice from the zip start, extract. A
+        // false EOCD match (or a zip the crate can't read) falls through to
+        // 7z.exe below — never a hard error from this path alone.
+        if let Some(zip_start) = find_embedded_zip_start(&file_data) {
+            if extract_zip_embedded(&file_data, zip_start, dest, filter, emitter).is_ok() {
+                return Ok(());
+            }
+        }
     }
 
     // NSIS installers: extract the installer structure (including
@@ -433,6 +443,148 @@ fn extract_zip(
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
         std::fs::write(&target_path, &data)?;
+    }
+    Ok(())
+}
+
+/// Locate a ZIP archive embedded inside a PE/SFX file (e.g. an installer
+/// stub that prepends executable code to a zip payload) by walking back from
+/// the end-of-central-directory record.
+///
+/// Returns the byte offset of the zip payload (where the central directory's
+/// relative offsets start) so callers can slice `data[start..]` and feed it to
+/// [`zip::ZipArchive`] directly. `None` when no EOCD is found or the computed
+/// start is inconsistent (out of bounds / not preceding the EOCD).
+///
+/// The EOCD's `cd_offset` is relative to the *zip payload start*, not the PE
+/// file start, so the slice must begin there or every central-directory /
+/// local-header offset would be wrong.
+///
+/// Layout: `[payload][central directory (cd_size)][EOCD record (22+comment)]`.
+/// The EOCD record (comment included) sits entirely *after* the central
+/// directory, so the CD starts at `eocd_pos - cd_size` — the comment length
+/// does not shift it (unlike a naive `eocd - comment - cd_size`). This
+/// mirrors rc-zip's `global_offset` derivation.
+fn find_embedded_zip_start(data: &[u8]) -> Option<usize> {
+    const EOCD_SIG: &[u8] = b"PK\x05\x06";
+    const EOCD_LEN: usize = 22;
+    const MAX_COMMENT: usize = 0xFFFF;
+
+    // EOCD sits within the last 64 KiB + comment of the file.
+    let tail_start = data.len().saturating_sub(MAX_COMMENT + EOCD_LEN);
+    let tail = data.get(tail_start..)?;
+    let eocd_rel = tail
+        .windows(EOCD_LEN)
+        .rposition(|w| w.starts_with(EOCD_SIG))?;
+    let eocd = tail_start + eocd_rel;
+
+    let u16_at = |o: usize| -> Option<u16> {
+        data.get(eocd + o..eocd + o + 2)?
+            .try_into()
+            .ok()
+            .map(u16::from_le_bytes)
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        data.get(eocd + o..eocd + o + 4)?
+            .try_into()
+            .ok()
+            .map(u32::from_le_bytes)
+    };
+
+    let records = u16_at(10)?;
+    let cd_size = u32_at(12)?;
+    let cd_offset = u32_at(16)?;
+
+    // ZIP64: sentinel values in the EOCD mean the real 64-bit numbers live in
+    // the zip64 EOCD record (PK\x06\x06), found via the locator (PK\x06\x07)
+    // which sits directly before the EOCD record.
+    let (cd_size, cd_offset, cd_end) =
+        if records == 0xFFFF || cd_size == u32::MAX || cd_offset == u32::MAX {
+            const LOCATOR_SIG: &[u8] = b"PK\x06\x07";
+            const LOCATOR_LEN: usize = 20;
+            const Z64_SIG: &[u8] = b"PK\x06\x06";
+            let locator = data.get(eocd.checked_sub(LOCATOR_LEN)?..eocd)?;
+            if !locator.starts_with(LOCATOR_SIG) {
+                return None;
+            }
+            let z64_offset = u64::from_le_bytes(locator.get(8..16)?.try_into().ok()?) as usize;
+            let z64 = data.get(z64_offset..)?;
+            if !z64.starts_with(Z64_SIG) {
+                return None;
+            }
+            // zip64 EOCD record: ... records(8) @24, cd_size(8) @40, cd_offset(8) @48.
+            // The central directory ends where the zip64 EOCD record begins.
+            let cd_size = u64::from_le_bytes(z64.get(40..48)?.try_into().ok()?) as usize;
+            let cd_offset = u64::from_le_bytes(z64.get(48..56)?.try_into().ok()?) as usize;
+            (cd_size, cd_offset, z64_offset)
+        } else {
+            (cd_size as usize, cd_offset as usize, eocd)
+        };
+
+    // The central directory ends where the EOCD (or zip64 EOCD) record
+    // begins; comment bytes are inside that record, not between CD and EOCD.
+    let cd_start = cd_end.checked_sub(cd_size)?;
+    if cd_start >= cd_end {
+        return None;
+    }
+    let zip_start = cd_start.checked_sub(cd_offset)?;
+    Some(zip_start)
+}
+
+/// Extract a ZIP archive embedded at `start` inside `data` (PE/SFX stub
+/// prefix), with progress + filter semantics matching [`extract_zip`].
+fn extract_zip_embedded(
+    data: &[u8],
+    start: usize,
+    dest: &Path,
+    filter: Option<&[&str]>,
+    emitter: &Option<Sender<Event>>,
+) -> Fallible<()> {
+    use std::io::Cursor;
+    use zip::ZipArchive;
+
+    let payload = data.get(start..).ok_or_else(|| {
+        Error::ExtractionFailed(format!("embedded zip start {} out of bounds", start))
+    })?;
+    let mut archive = ZipArchive::new(Cursor::new(payload))
+        .map_err(|e| Error::ExtractionFailed(format!("embedded zip parse error: {}", e)))?;
+    let total = archive.len();
+
+    for i in 0..total {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| Error::ExtractionFailed(format!("embedded zip read error: {}", e)))?;
+        let name = entry.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !f.iter().any(|d| name.starts_with(d)) {
+                continue;
+            }
+        }
+        emit_extract_progress(emitter, i, Some(total));
+        let target = strip_dir(&name, filter).unwrap_or(name);
+        if Path::new(&target)
+            .components()
+            .any(|c| c == Component::ParentDir)
+        {
+            return Err(Error::PathTraversalDetected(format!(
+                "embedded zip: {}",
+                target
+            )));
+        }
+        let target_path = dest.join(&target);
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent)?;
+        }
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::ExtractionFailed(format!("embedded zip read {}: {}", target, e)))?;
+        std::fs::write(&target_path, &buf).map_err(|e| {
+            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+        })?;
     }
     Ok(())
 }
@@ -1189,6 +1341,84 @@ Inno Setup Setup Data (5.8.3)";
         zip.start_file("root/sub/deep.txt", opts).unwrap();
         zip.write_all(b"Deep content").unwrap();
         zip.finish().unwrap();
+    }
+
+    /// `find_embedded_zip_start` locates a ZIP payload behind a PE/SFX stub:
+    /// the EOCD's `cd_offset` is relative to the *zip payload start*, so the
+    /// computed offset must point at the zip (not the stub), and the
+    /// extracted slice must parse via `ZipArchive`.
+    #[test]
+    fn find_embedded_zip_start_locates_payload_behind_stub() {
+        use std::io::{Cursor, Read};
+
+        // Build a real zip, then prepend a fake PE stub (MZ + junk + NSIS
+        // marker to force the installer path away from plain zip dispatch).
+        let mut zip_bytes = Vec::new();
+        {
+            let cursor = Cursor::new(&mut zip_bytes);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("payload.txt", opts).unwrap();
+            zip.write_all(b"stub-hidden payload").unwrap();
+            zip.finish().unwrap();
+        }
+
+        // Fake PE stub: "MZ" header + junk bytes padded to a fixed stub size.
+        let mut stub = vec![0u8; 0x2000];
+        stub[..4].copy_from_slice(b"MZ\x90\x00");
+        stub[4..28].copy_from_slice(b"embedded installer stub\x00");
+        let mut pe = stub;
+        pe.extend_from_slice(&zip_bytes);
+
+        let start = find_embedded_zip_start(&pe).expect("EOCD found behind stub");
+        assert!(
+            start >= 0x2000,
+            "payload starts after the stub, got {start}"
+        );
+        // zip_start is where the EOCD's cd_offset is relative to; the first
+        // local header may sit a few bytes later (e.g. 22-byte data-descriptor
+        // / extra prefix), so don't assert PK at `start` itself.
+
+        // The slice at `start` must parse as a zip.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&pe[start..])).unwrap();
+        assert_eq!(archive.len(), 1);
+        let mut entry = archive.by_index(0).unwrap();
+        let mut out = String::new();
+        entry.read_to_string(&mut out).unwrap();
+        assert_eq!(out, "stub-hidden payload");
+    }
+
+    /// No EOCD → no embedded zip (a plain PE/EXE returns None, so the caller
+    /// falls through to 7z.exe instead of mis-parsing).
+    #[test]
+    fn find_embedded_zip_start_none_for_plain_pe() {
+        let mut data = vec![0u8; 0x1000];
+        data[..4].copy_from_slice(b"MZ\x90\x00");
+        assert_eq!(find_embedded_zip_start(&data), None);
+    }
+
+    /// End-to-end on a real PE-prefixed ZIP installer (Doubao's download:
+    /// `Doubao_installer_*.exe`, cached as `doubao#<ver>#<hash>.7z`). Verifies
+    /// the EOCD-derived start parses via the zip crate and extraction writes
+    /// files. Point `DOUBAO_SAMPLE` at the cache file to run manually.
+    #[test]
+    #[ignore = "requires a local Doubao SFX sample (DOUBAO_SAMPLE env)"]
+    fn extract_embedded_zip_doubao_corpus() {
+        let Ok(path) = std::env::var("DOUBAO_SAMPLE") else {
+            return;
+        };
+        let data = std::fs::read(&path).unwrap();
+        assert!(data.starts_with(b"MZ"), "sample should be a PE file");
+
+        let start = find_embedded_zip_start(&data)
+            .unwrap_or_else(|| panic!("no EOCD found in {path}"));
+        let dest = tmpdir("doubao_sfx");
+        extract_zip_embedded(&data, start, &dest, None, &None).unwrap();
+        assert!(
+            has_nonempty_file(&dest),
+            "expected a non-empty payload in extraction of {path}"
+        );
     }
 
     fn create_test_tar_gz(path: &std::path::Path) {
