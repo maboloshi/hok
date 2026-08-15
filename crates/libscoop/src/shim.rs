@@ -29,6 +29,7 @@
 
 #![allow(dead_code)]
 
+use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
@@ -211,6 +212,85 @@ pub enum ShimType {
 
 // ─── Shim model & generation ────────────────────────────────────────────────
 
+/// Write the native shim for an executable target: the embedded hok-shim
+/// stub (console/GUI variant chosen by the target's PE subsystem) plus the
+/// `.shim` metadata file (the ownership carrier). Shared by the package
+/// [`add`] path and the custom `hok shim add` command so the two cannot
+/// drift.
+fn write_exe_shim(
+    session: &Session,
+    shim: &Shim<'_>,
+    target_abs: &str,
+    shims_dir: &Path,
+    owner: &str,
+) -> Fallible<()> {
+    // Pick the shim variant matching the target's PE subsystem: GUI targets
+    // get the GUI-subsystem shim (no console window on double-click; the
+    // invoking shell does not wait, like running the GUI program directly);
+    // everything else — console, unknown, or unreadable — gets the console
+    // shim (the shell waits for it, so interactive children keep working
+    // with stdin).
+    let shim_bytes = if internal::pe::is_gui(Path::new(target_abs)) {
+        HOK_SHIM_GUI_BYTES
+    } else {
+        HOK_SHIM_BYTES
+    };
+
+    // Use the embedded hok-shim binary as the native .exe shim
+    let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
+    let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
+
+    // Upstream Scoop overwrites the .exe stub unconditionally
+    // (Copy-Item -Force — it is a generic binary with no owner);
+    // only the .shim metadata file carries ownership and gets the
+    // `warn_on_overwrite` treatment.
+    handle_existing_shim(session, &shim_meta, owner)?;
+
+    // Write the embedded shim (selected variant)
+    if let Err(e) = std::fs::write(&shim_exe, shim_bytes) {
+        // The stub cannot be overwritten while it is running
+        // (e.g. `hok update hok` — the running hok was launched
+        // through shims\hok.exe). The stub is version-independent
+        // (it points at the `current` junction), so when the
+        // target is the binary currently running, silently keep
+        // the existing stub — it resolves to the new version
+        // after `link_current`. Any other failure still aborts.
+        let is_running_self = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .is_some_and(|stem| stem.eq_ignore_ascii_case(shim.name));
+        if is_running_self && shim_exe.exists() {
+            debug!(
+                "shim stub '{}' is in use by the running process; keeping it",
+                shim_exe.display()
+            );
+        } else {
+            return Err(e.into());
+        }
+    }
+
+    // Write .shim metadata file. Upstream writes an *absolute*
+    // path (`path = "$resolved_path"`, where `$resolved_path` is
+    // the `Convert-Path` result); hok previously wrote a
+    // `~\..\apps\...` relative form.
+    let meta_content = if let Some(args) = &shim.args {
+        format!(
+            "path = \"{target_abs}\"\r\nargs = \"{}\"\r\n",
+            args.join(" ")
+        )
+    } else {
+        format!("path = \"{target_abs}\"\r\n")
+    };
+    std::fs::write(&shim_meta, meta_content.as_bytes())?;
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.send(Event::PackageShimAddProgress(
+            shim_exe.file_name().unwrap().to_string_lossy().to_string(),
+        ));
+    }
+    Ok(())
+}
+
 impl Shim<'_> {
     pub fn new(def: Vec<&str>) -> Shim<'_> {
         let length = def.len();
@@ -283,94 +363,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 .join(shim.real_name);
             let target_abs = target_abs.to_string_lossy();
 
-            if shim.ty == ShimType::Exe {
-                // Pick the shim variant matching the target's PE subsystem:
-                // GUI targets get the GUI-subsystem shim (no console window
-                // on double-click; the invoking shell does not wait, like
-                // running the GUI program directly); everything else —
-                // console, unknown, or unreadable — gets the console shim
-                // (the shell waits for it, so interactive children keep
-                // working with stdin).
-                let shim_bytes = if internal::pe::is_gui(Path::new(&*target_abs)) {
-                    HOK_SHIM_GUI_BYTES
-                } else {
-                    HOK_SHIM_BYTES
-                };
-
-                // Use the embedded hok-shim binary as the native .exe shim
-                let shim_exe = shims_dir.join(format!("{}.exe", shim.name));
-                let shim_meta = shims_dir.join(format!("{}.shim", shim.name));
-
-                // Upstream Scoop overwrites the .exe stub unconditionally
-                // (Copy-Item -Force — it is a generic binary with no owner);
-                // only the .shim metadata file carries ownership and gets the
-                // `warn_on_overwrite` treatment.
-                handle_existing_shim(session, &shim_meta, pkg_name)?;
-
-                // Write the embedded shim (selected variant)
-                if let Err(e) = std::fs::write(&shim_exe, shim_bytes) {
-                    // The stub cannot be overwritten while it is running
-                    // (e.g. `hok update hok` — the running hok was launched
-                    // through shims\hok.exe). The stub is version-independent
-                    // (it points at the `current` junction), so when the
-                    // target is the binary currently running, silently keep
-                    // the existing stub — it resolves to the new version
-                    // after `link_current`. Any other failure still aborts.
-                    let is_running_self = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                        .is_some_and(|stem| stem.eq_ignore_ascii_case(shim.name));
-                    if is_running_self && shim_exe.exists() {
-                        debug!(
-                            "shim stub '{}' is in use by the running process; keeping it",
-                            shim_exe.display()
-                        );
-                    } else {
-                        return Err(e.into());
-                    }
-                }
-
-                // Write .shim metadata file. Upstream writes an *absolute*
-                // path (`path = "$resolved_path"`, where `$resolved_path` is
-                // the `Convert-Path` result); hok previously wrote a
-                // `~\..\apps\...` relative form.
-                let meta_content = if let Some(args) = &shim.args {
-                    format!(
-                        "path = \"{target_abs}\"\r\nargs = \"{}\"\r\n",
-                        args.join(" ")
-                    )
-                } else {
-                    format!("path = \"{target_abs}\"\r\n")
-                };
-                std::fs::write(&shim_meta, meta_content.as_bytes())?;
-
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageShimAddProgress(
-                        shim_exe.file_name().unwrap().to_string_lossy().to_string(),
-                    ));
-                }
-            } else {
-                // Use script-based shim (.cmd, .ps1, etc.)
-                let batches = generate_shim_batches(&shim, &target_abs, &shims_dir);
-
-                for (path, content) in batches {
-                    let full_path = shims_dir.join(&path);
-                    // Every generated file gets the `warn_on_overwrite`
-                    // treatment, mirroring upstream's per-file calls
-                    // (`warn_on_overwrite "$shim.ps1"`, `"$shim.cmd"`,
-                    // `$shim`); same-package updates are overwritten
-                    // silently. (Upstream's `.exe` stub is the exception —
-                    // `Copy-Item -Force`, handled separately above.)
-                    handle_existing_shim(session, &full_path, pkg_name)?;
-
-                    std::fs::write(&full_path, content.as_bytes())?;
-
-                    if let Some(tx) = session.emitter() {
-                        let name = full_path.file_name().unwrap().to_string_lossy().to_string();
-                        let _ = tx.send(Event::PackageShimAddProgress(name));
-                    }
-                }
-            }
+            write_shim(session, &shim, &target_abs, &shims_dir, pkg_name)?;
         }
 
         if let Some(tx) = session.emitter() {
@@ -379,6 +372,94 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     }
 
     Ok(())
+}
+
+/// Resolve a bare command name through `PATH` (upstream `Get-Command`).
+fn resolve_in_path(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for ext in ["", ".exe", ".cmd", ".bat", ".ps1"] {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Add a custom shim pointing at an arbitrary target
+/// (`hok shim add <name> <target> [args...]`), mirroring Scoop's
+/// `shim <path> <global> <name> <args>` (lib/install.ps1).
+///
+/// A bare target name (no path separator) is resolved through `PATH`
+/// (upstream falls back from existing shims to `Get-Command`).
+pub fn add_custom(session: &Session, name: &str, target: &str, args: &[String]) -> Fallible<()> {
+    let shims_dir = session.shims_dir();
+    internal::fs::ensure_dir(&shims_dir)?;
+
+    let target = if target.contains(['/', '\\']) {
+        target.to_owned()
+    } else if let Some(found) = resolve_in_path(target) {
+        found
+    } else {
+        target.to_owned()
+    };
+
+    // Absolutize relative targets (generated shims embed absolute paths,
+    // matching upstream `Convert-Path`).
+    let target_abs = std::path::absolute(&target)
+        .unwrap_or_else(|_| PathBuf::from(&target))
+        .to_string_lossy()
+        .into_owned();
+
+    let mut def = vec![target_abs.as_str(), name];
+    def.extend(args.iter().map(String::as_str));
+    let shim = Shim::new(def);
+
+    // Same generation as the package path: executable targets get the
+    // native embedded shim, everything else the script-based shim files —
+    // sharing [`write_shim`] so the dispatch cannot drift.
+    write_shim(session, &shim, &target_abs, &shims_dir, name)?;
+    Ok(())
+}
+
+/// Write a shim for a target, dispatching on the shim type: executable
+/// targets get the native embedded stub ([`write_exe_shim`]); everything
+/// else gets the script-based shim files from [`generate_shim_batches`],
+/// each with the `warn_on_overwrite` treatment. Shared by the package
+/// [`add`] path and the custom `hok shim add` command so the dispatch
+/// cannot drift.
+fn write_shim(
+    session: &Session,
+    shim: &Shim<'_>,
+    target_abs: &str,
+    shims_dir: &Path,
+    owner: &str,
+) -> Fallible<()> {
+    match shim.ty {
+        ShimType::Exe => write_exe_shim(session, shim, target_abs, shims_dir, owner),
+        _ => {
+            let batches = generate_shim_batches(shim, target_abs, shims_dir);
+            for (path, content) in batches {
+                let full_path = shims_dir.join(&path);
+                // Every generated file gets the `warn_on_overwrite`
+                // treatment, mirroring upstream's per-file calls
+                // (`warn_on_overwrite "$shim.ps1"`, `"$shim.cmd"`,
+                // `$shim`); same-package updates are overwritten silently.
+                // (Upstream's `.exe` stub is the exception — handled
+                // separately by `write_exe_shim`.)
+                handle_existing_shim(session, &full_path, owner)?;
+                std::fs::write(&full_path, content.as_bytes())?;
+
+                if let Some(tx) = session.emitter() {
+                    let name = full_path.file_name().unwrap().to_string_lossy().to_string();
+                    let _ = tx.send(Event::PackageShimAddProgress(name));
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Generate shim files content for a given shim definition.
@@ -402,17 +483,10 @@ fn generate_shim_batches(shim: &Shim, target: &str, shims_dir: &Path) -> Vec<(Pa
     let arg_str = shim.args.as_ref().map(|a| a.join(" ")).unwrap_or_default();
 
     match shim.ty {
-        ShimType::Exe => {
-            // .cmd file: batch redirect to the target executable
-            // (hok doesn't include Scoop's pre-built shim.exe stub,
-            //  so .cmd wrapper is used for CLI access)
-            let content = format!("@rem {target}\r\n@\"{target}\"{arg_suffix} %*\r\n");
-            result.push((PathBuf::from(format!("{}.cmd", shim.name)), content));
-
-            // .shim metadata file (Scoop-compatible format)
-            let shim_meta = format!("path = \"{target}\"\r\n");
-            result.push((PathBuf::from(format!("{}.shim", shim.name)), shim_meta));
-        }
+        // Exe targets never reach this function — both callers (package
+        // `add` and custom `shim add`) route executable targets through
+        // [`write_exe_shim`] (embedded native stub + `.shim`).
+        ShimType::Exe => unreachable!("Exe targets go through write_exe_shim"),
         ShimType::Batch => {
             // .cmd file: direct batch redirect (upstream bat/cmd branch)
             let content = format!("@rem {target}\r\n@\"{target}\"{arg_suffix} %*\r\n");
@@ -534,94 +608,14 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             };
 
             for ext in exts.into_iter() {
-                // Build the main file path: {name}.{ext}. The extension is
-                // appended verbatim (matching `generate_shim_batches`), so a
-                // dotted name like `foo.bar` yields `foo.bar.cmd`, never
-                // `foo.cmd` — removal must find what `add` created.
-                let shim_path = if ext.is_empty() {
-                    shims_dir.join(shim.name)
-                } else {
-                    shims_dir.join(format!("{}.{}", shim.name, ext))
-                };
-
-                // Alt file path (created by another package's conflict): {name}.{ext}.{pkg}
-                let alt_path = alt_filename(&shim_path, pkg_name);
-
-                if alt_path.exists() {
-                    if let Some(tx) = session.emitter() {
-                        let shim_name = alt_path.file_name().unwrap().to_string_lossy().to_string();
-                        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
-                    }
-
-                    std::fs::remove_file(&alt_path)?;
-                } else if shim_path.exists() {
-                    if let Some(tx) = session.emitter() {
-                        let shim_name =
-                            shim_path.file_name().unwrap().to_string_lossy().to_string();
-                        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
-                    }
-
-                    std::fs::remove_file(&shim_path)?;
-
-                    // restore alter shim from another package
-                    let fname = shim_path.file_name().unwrap().to_str().unwrap();
-                    let mut alt_shims = shims_dir_entries
-                        .iter()
-                        .flat_map(|entry| {
-                            let path = entry.path();
-                            let name = path.file_name().unwrap().to_str().unwrap();
-
-                            // matches `{fname}.{owner}` backups, excluding the
-                            // main shim variants (`.shim`/`.cmd`/`.ps1` are
-                            // handled by their own loop iterations — upstream
-                            // `rm_shim` excludes them with `-Exclude`)
-                            if name.starts_with(fname)
-                                && name != fname
-                                && !is_main_shim_variant(fname, name)
-                            {
-                                Some(entry)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-
-                    if alt_shims.is_empty() {
-                        // upstream: when the removed `.shim` had no backup to
-                        // restore, its `.exe` stub is orphaned — remove it too
-                        if ext == "shim" {
-                            let exe_path = shims_dir.join(format!("{}.exe", shim.name));
-                            if exe_path.exists() {
-                                if let Some(tx) = session.emitter() {
-                                    let name =
-                                        exe_path.file_name().unwrap().to_string_lossy().to_string();
-                                    let _ = tx.send(Event::PackageShimRemoveProgress(name));
-                                }
-                                std::fs::remove_file(&exe_path)?;
-                            }
-                        }
-                        continue;
-                    }
-
-                    // sort by modified time, so the latest one will be used
-                    // when there are multiple alter shims for the same shim
-                    if alt_shims.len() > 1 {
-                        alt_shims.sort_by_key(|de| {
-                            // Unreadable metadata must not panic a production
-                            // path; treat as the oldest.
-                            std::cmp::Reverse(
-                                de.metadata()
-                                    .and_then(|m| m.modified())
-                                    .unwrap_or(std::time::UNIX_EPOCH),
-                            )
-                        });
-                    }
-
-                    let alt_shim = alt_shims.first().unwrap();
-                    let alt_old_path = alt_shim.path();
-                    let alt_new_path = alt_old_path.with_file_name(fname);
-                    std::fs::rename(&alt_old_path, &alt_new_path)?;
-                }
+                remove_shim_variant(
+                    session,
+                    &shims_dir,
+                    &shims_dir_entries,
+                    shim.name,
+                    ext,
+                    Some(pkg_name),
+                )?;
             }
         }
 
@@ -631,6 +625,136 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
     }
 
     Ok(())
+}
+
+/// Remove one shim variant (`{name}{ext}`) and restore the newest
+/// `{name}.{ext}.{owner}` backup, mirroring upstream `rm_shim`. With
+/// `owner` set (package remove), that owner's own backup is removed instead
+/// of restored; without it (`shim rm`), any same-named backup is restored.
+/// Returns whether any file was touched.
+fn remove_shim_variant(
+    session: &Session,
+    shims_dir: &Path,
+    entries: &[DirEntry],
+    name: &str,
+    ext: &str,
+    owner: Option<&str>,
+) -> Fallible<bool> {
+    // Build the main file path: {name}.{ext}. The extension is appended
+    // verbatim (matching `generate_shim_batches`), so a dotted name like
+    // `foo.bar` yields `foo.bar.cmd`, never `foo.cmd` — removal must find
+    // what `add` created.
+    let shim_path = if ext.is_empty() {
+        shims_dir.join(name)
+    } else {
+        shims_dir.join(format!("{}.{}", name, ext))
+    };
+
+    // Package remove: this package's own backup ({name}.{ext}.{owner})
+    // is removed rather than restored.
+    if let Some(owner) = owner {
+        let alt_path = alt_filename(&shim_path, owner);
+        if alt_path.exists() {
+            if let Some(tx) = session.emitter() {
+                let shim_name = alt_path.file_name().unwrap().to_string_lossy().to_string();
+                let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
+            }
+            std::fs::remove_file(&alt_path)?;
+            return Ok(true);
+        }
+    }
+
+    if !shim_path.exists() {
+        return Ok(false);
+    }
+    if let Some(tx) = session.emitter() {
+        let shim_name = shim_path.file_name().unwrap().to_string_lossy().to_string();
+        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
+    }
+    std::fs::remove_file(&shim_path)?;
+
+    // Restore the backup from another package, if any: matches
+    // `{fname}.{owner}` backups, excluding the main shim variants
+    // (`.shim`/`.cmd`/`.ps1` are handled by their own loop iterations —
+    // upstream `rm_shim` excludes them with `-Exclude`).
+    let fname = shim_path.file_name().unwrap().to_str().unwrap();
+    let mut alt_shims = entries
+        .iter()
+        .flat_map(|entry| {
+            let path = entry.path();
+            let entry_name = path.file_name().unwrap().to_str().unwrap();
+            if entry_name.starts_with(fname)
+                && entry_name != fname
+                && !is_main_shim_variant(fname, entry_name)
+            {
+                Some(entry)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if alt_shims.is_empty() {
+        // Upstream: when the removed `.shim` had no backup to restore, its
+        // `.exe` stub is orphaned — remove it too.
+        if ext == "shim" {
+            let exe_path = shims_dir.join(format!("{name}.exe"));
+            if exe_path.exists() {
+                if let Some(tx) = session.emitter() {
+                    let exe_name = exe_path.file_name().unwrap().to_string_lossy().to_string();
+                    let _ = tx.send(Event::PackageShimRemoveProgress(exe_name));
+                }
+                std::fs::remove_file(&exe_path)?;
+            }
+        }
+        return Ok(true);
+    }
+
+    // Sort by modified time, so the latest backup wins when there are
+    // multiple alter shims for the same shim.
+    if alt_shims.len() > 1 {
+        alt_shims.sort_by_key(|de| {
+            // Unreadable metadata must not panic a production path; treat
+            // as the oldest.
+            std::cmp::Reverse(
+                de.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH),
+            )
+        });
+    }
+
+    let alt_shim = alt_shims.first().unwrap();
+    let alt_old_path = alt_shim.path();
+    let alt_new_path = alt_old_path.with_file_name(fname);
+    std::fs::rename(&alt_old_path, &alt_new_path)?;
+    Ok(true)
+}
+
+/// Remove a shim by name (`hok shim rm <name>`), mirroring Scoop's
+/// `rm_shim` (lib/install.ps1): the main shim files are removed and, when
+/// a same-named backup created by another package's conflict exists, the
+/// newest one is restored. Returns whether anything was removed.
+pub fn remove_by_name(session: &Session, name: &str) -> Fallible<bool> {
+    let shims_dir = session.shims_dir();
+    if !shims_dir.exists() {
+        return Ok(false);
+    }
+    let entries = shims_dir
+        .read_dir()?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    let mut removed = false;
+
+    // Every variant upstream creates for a shim: extension-less (Bash),
+    // `.cmd`, `.ps1`, and the `.shim` metadata (the ownership carrier).
+    // Shared with the package [`remove`] path via [`remove_shim_variant`];
+    // extensions are passed without the dot, matching `remove`'s list.
+    for ext in ["", "cmd", "ps1", "shim"] {
+        removed |= remove_shim_variant(session, &shims_dir, &entries, name, ext, None)?;
+    }
+
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -1069,5 +1193,70 @@ mod tests {
                 "remove must delete the orphaned {expect}.exe stub for {bin_json}"
             );
         }
+    }
+
+    // ── add_custom / remove_by_name (hok shim add / rm) ───────────────────────
+
+    #[test]
+    fn add_custom_creates_shim_files() {
+        let root = test_utils::tmpdir("shim_add_custom");
+        let session = test_utils::test_session(&root);
+        let target = root.join("tool.exe");
+        std::fs::write(&target, b"MZ").unwrap();
+
+        add_custom(&session, "mytool", target.to_str().unwrap(), &[]).unwrap();
+
+        let shims = session.shims_dir();
+        // Executable targets get the native embedded shim (same as the
+        // package path): .exe stub + .shim metadata.
+        assert!(shims.join("mytool.exe").exists(), ".exe stub");
+        assert!(shims.join("mytool.shim").exists(), ".shim metadata");
+        let meta = std::fs::read_to_string(shims.join("mytool.shim")).unwrap();
+        assert!(meta.contains("tool.exe"), "target in .shim: {meta}");
+    }
+
+    #[test]
+    fn add_custom_with_args_then_remove() {
+        let root = test_utils::tmpdir("shim_add_args");
+        let session = test_utils::test_session(&root);
+        let target = root.join("tool.exe");
+        std::fs::write(&target, b"MZ").unwrap();
+
+        add_custom(
+            &session,
+            "mytool",
+            target.to_str().unwrap(),
+            &["--flag".to_string(), "value".to_string()],
+        )
+        .unwrap();
+        let shims = session.shims_dir();
+        let meta = std::fs::read_to_string(shims.join("mytool.shim")).unwrap();
+        assert!(
+            meta.contains("args = \"--flag value\""),
+            "args in meta: {meta}"
+        );
+
+        assert!(remove_by_name(&session, "mytool").unwrap());
+        assert!(!shims.join("mytool.cmd").exists());
+        assert!(!shims.join("mytool.shim").exists());
+        // Second removal finds nothing.
+        assert!(!remove_by_name(&session, "mytool").unwrap());
+    }
+
+    #[test]
+    fn remove_by_name_restores_backup() {
+        let root = test_utils::tmpdir("shim_rm_backup");
+        let session = test_utils::test_session(&root);
+        let shims = session.shims_dir();
+        std::fs::create_dir_all(&shims).unwrap();
+        // A shim whose .cmd was taken over by another package (backup).
+        std::fs::write(shims.join("shared.cmd"), "main").unwrap();
+        std::fs::write(shims.join("shared.cmd.otherpkg"), "backup").unwrap();
+
+        assert!(remove_by_name(&session, "shared").unwrap());
+        // The backup is restored as the main .cmd.
+        let restored = std::fs::read_to_string(shims.join("shared.cmd")).unwrap();
+        assert_eq!(restored, "backup", "backup must be restored");
+        assert!(!shims.join("shared.cmd.otherpkg").exists());
     }
 }

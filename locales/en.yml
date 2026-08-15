@@ -137,6 +137,9 @@ cmd:
   refresh_cache: "Refreshing manifest cache..."
   cache_done: "Manifest cache refreshed."
   shim_info_usage: "Usage: hok shim info <name>"
+  shim_added: "Added shim: %{name}"
+  shim_removed_by_name: "Removed shim: %{name}"
+  shim_not_found: "shim not found: %{name}"
   shim_no_dir: "No shims directory found."
   missing_checkver_scan: "Scanned %{total} manifests: %{missing} missing checkver, %{noauto} missing autoupdate."
   missing_checkver_all: "All manifests have checkver and autoupdate."
@@ -481,9 +484,36 @@ cli_help:
       with_description: Search through package descriptions as well
   shim:
     about: List or inspect shims
+    long_about: |-
+      Manipulate Scoop shims (add / remove / list / inspect).
+
+      Subcommands:
+        add <name> <target> [args...]  Add a custom shim pointing at an
+                                       arbitrary command path (or a name
+                                       resolved through PATH)
+        rm <name>...                   Remove shims (CAUTION: this may
+                                       remove shims created by an app
+                                       manifest)
+        list [<regex_pattern>...]      List all shims or matching shims
+        info <name>                    Show a shim's information
+
+      Options:
+        -g, --global  Manipulate global shim(s)
+
+      HINT: the first `--`, if any, is treated as the POSIX-style command
+      option terminator and is NOT included in the shim arguments, so pass
+      arguments starting with `-` after it:
+        hok shim add myapp D:\\path\\myapp.exe -- --global
     args:
-      command: "Command: info (default), list"
-      name: Shim name (for info command)
+      global: Manipulate global shim(s)
+      add: Add a custom shim
+      add.parts: "`<name> <target> [args...]` — name, then the target command path (or a name resolved through PATH), then any args"
+      remove: "Remove shims (CAUTION: may remove shims created by an app manifest)"
+      remove.names: Shim name
+      list: List all shims (default), optionally filtered by regex pattern(s)
+      list.patterns: Regex pattern(s) to filter by
+      info: Show shim information for a specific app
+      info.name: Shim name
   status:
     about: Show the status of all installed apps
     args:

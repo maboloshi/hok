@@ -137,6 +137,9 @@ cmd:
   refresh_cache: "正在刷新清单缓存..."
   cache_done: "清单缓存已刷新。"
   shim_info_usage: "用法: hok shim info <名称>"
+  shim_added: "已添加 shim: %{name}"
+  shim_removed_by_name: "已移除 shim: %{name}"
+  shim_not_found: "未找到 shim: %{name}"
   shim_no_dir: "没有找到 shims 目录。"
   missing_checkver_scan: "已扫描 %{total} 个清单: %{missing} 缺少 checkver, %{noauto} 缺少 autoupdate。"
   missing_checkver_all: "所有清单都有 checkver 和 autoupdate。"
@@ -478,9 +481,32 @@ cli_help:
       with_description: 同时搜索包的描述信息
   shim:
     about: 列出或检查 shim
+    long_about: |-
+      管理 Scoop shims（添加 / 移除 / 列出 / 检查）。
+
+      子命令:
+        add <名称> <目标> [参数...]  添加自定义 shim，指向任意命令路径
+                                     （或通过 PATH 解析的命令名）
+        rm <名称>...                 移除 shims（注意: 可能移除应用清单创建的 shim）
+        list [<正则模式>...]         列出所有 shims 或匹配的 shims
+        info <名称>                   显示 shim 的信息
+
+      选项:
+        -g, --global  操作全局 shim(s)
+
+      提示: 第一个 `--`（若有）被当作 POSIX 风格选项终止符，不会包含在
+      shim 参数中；请把 `-` 开头的参数放在它后面:
+        hok shim add myapp D:\\path\\myapp.exe -- --global
     args:
-      command: "命令: info（默认），list"
-      name: "Shim 名称（用于 info 命令）"
+      global: 操作全局 shim(s)
+      add: 添加自定义 shim
+      add.parts: "`<名称> <目标> [参数...]` — 名称，然后是目标命令路径（或通过 PATH 解析的命令名），再后是任意参数"
+      remove: "移除 shims（注意: 可能移除应用清单创建的 shim）"
+      remove.names: Shim 名称
+      list: 列出所有 shims（默认），可选正则过滤
+      list.patterns: 用于过滤的正则模式
+      info: 显示特定应用的 shim 信息
+      info.name: Shim 名称
   status:
     about: 显示所有已安装应用的状态
     args:
