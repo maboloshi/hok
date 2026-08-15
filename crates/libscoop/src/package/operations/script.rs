@@ -50,6 +50,13 @@ pub fn run_script(
     // trap on every script run. Upstream sets `$global` the same way.
     let is_global = session.is_global();
 
+    // `$fname`: remote filename of the first download URL (Scoop semantics,
+    // install.ps1 `$Name[0]`). Package scripts commonly reference
+    // `"$dir\$fname"` (e.g. `Expand-InnoArchive` on an installer exe);
+    // `copy_downloaded_files` places the file in `$dir` under exactly this
+    // name, so the variable must resolve to it.
+    let fname = first_download_fname(&package.manifest().url());
+
     // Embed PS helper scripts so package scripts can use functions
     // like Expand-InnoArchive, Expand-7zipArchive, Get-HelperPath, etc.
     const CORE_PS1: &str = include_str!("../../../../../asset_scripts/core.ps1");
@@ -85,11 +92,13 @@ $bucket = $env:SCOOP_PACKAGE_BUCKET
 $architecture = "{arch}"
 $global = [bool]::Parse('{is_global}')
 $cmd = $env:SCOOP_PACKAGE_CMD
+$fname = '{fname}'
 "#,
         core = CORE_PS1,
         decompress = DECOMPRESS_PS1,
         arch = crate::internal::arch::Arch::current().name(),
-        is_global = is_global
+        is_global = is_global,
+        fname = fname.replace('\'', "''")
     );
     let full_script = format!("{preamble}\r\n{script}");
 
@@ -151,6 +160,17 @@ $cmd = $env:SCOOP_PACKAGE_CMD
     super::extract_markers(session, working_dir);
 
     Ok(())
+}
+
+/// Remote filename of the first download URL (Scoop `$fname` semantics):
+/// the name `copy_downloaded_files` gives the file inside `$dir`.
+fn first_download_fname(urls: &[&str]) -> String {
+    urls.first()
+        .map(|u| {
+            let stripped = internal::url::strip_url_query(u);
+            stripped.rsplit('/').next().unwrap_or_default().to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// Expand Scoop-style variables (`$dir`, `$scoopdir`, `$persist_dir`, etc.)
@@ -506,6 +526,32 @@ mod tests {
             expand_scoop_vars(&args, &session, &pkg, &working_dir, "uninstall");
         assert_eq!(expanded_install[0], "install");
         assert_eq!(expanded_uninstall[0], "uninstall");
+    }
+
+    /// `$fname` resolves to the remote filename of the first download URL.
+    #[test]
+    fn test_first_download_fname() {
+        // plain URL → remote filename
+        assert_eq!(
+            first_download_fname(&[
+                "https://github.com/zed-industries/zed/releases/download/v1.15.0/Zed-x86_64.exe"
+            ]),
+            "Zed-x86_64.exe"
+        );
+        // Scoop `#/rename.ext` fragment wins (copy_downloaded_files uses the
+        // same stripped name)
+        assert_eq!(
+            first_download_fname(&["https://example.com/installer.bin#/setup.exe"]),
+            "setup.exe"
+        );
+        // query stripped
+        assert_eq!(
+            first_download_fname(&["https://example.com/app.exe?download=1"]),
+            "app.exe"
+        );
+        // no URLs → empty
+        let none: &[&str] = &[];
+        assert_eq!(first_download_fname(none), "");
     }
 
     /// Test that all variables together in a realistic installer arg string are expanded.
