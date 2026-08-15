@@ -43,6 +43,8 @@ path = "tests/integration.rs"
 
 [dependencies.flate2]
 version = "1.1.9"
+default-features = false
+features = ["zlib-rs"]
 
 [dependencies.goblin]
 version = "0.10.7"
