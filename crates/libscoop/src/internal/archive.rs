@@ -100,7 +100,7 @@ pub fn extract(
         .ok_or_else(|| Error::ExtractionFailed(format!("unknown archive format: {}", filename)))?;
 
     match fmt {
-        "7z" => extract_7z(cache_path, &effective_dest, extract_dir, emitter),
+        "7z" => extract_pseudo_7z(cache_path, &effective_dest, extract_dir, emitter),
         "zip" => extract_zip(cache_path, &effective_dest, extract_dir, emitter),
         "tar" => extract_tar(cache_path, &effective_dest, extract_dir, None, emitter),
         "gz" => extract_tar(
@@ -164,36 +164,40 @@ const INSTALLER_SIGNATURE_SCAN_LIMIT: usize = 1024 * 1024; // 1 MiB
 /// omit. 7-Zip identifies NSIS by this same signature.
 const NSIS_FIRST_HEADER_MAGIC: &[u8] = b"NullsoftInst";
 
-/// True when `data` is an NSIS installer — a format that embeds 7z archives
-/// as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder), so a raw
-/// magic match would not denote a 7z SFX.
-fn is_nsis_installer(data: &[u8]) -> bool {
+/// Installer signature detected in the file head.
+///
+/// A single-pass classification: all markers live in the first 1 MiB of a PE
+/// stub, so one bounded scan answers "is this an NSIS / Inno Setup installer,
+/// and which one?" — used by both the SFX probe (which must *exclude*
+/// installers) and the dispatch in [`extract_pseudo_7z`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallerKind {
+    /// Not a recognised NSIS / Inno Setup installer.
+    None,
+    Nsis,
+    Inno,
+}
+
+/// Classify the installer format from the file head.
+///
+/// `NSIS_MARKER` / `NSIS_FIRST_HEADER_MAGIC` and `INNO_MARKER` are matched
+/// over the first `INSTALLER_SIGNATURE_SCAN_LIMIT` bytes in one pass (the
+/// Windows substring search is cheap; avoiding three separate 1 MiB scans
+/// matters less than clarity, but one classifier keeps the three consumers
+/// consistent by construction).
+fn classify_installer(data: &[u8]) -> InstallerKind {
     let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
-    head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
+    if head.windows(NSIS_MARKER.len()).any(|w| w == NSIS_MARKER)
         || head
             .windows(NSIS_FIRST_HEADER_MAGIC.len())
             .any(|w| w == NSIS_FIRST_HEADER_MAGIC)
-}
-
-/// True when `data` is an Inno Setup installer — a format that embeds 7z
-/// archives as payloads (`{tmp}` blobs), so a raw magic match would not
-/// denote a 7z SFX.
-fn is_innosetup_installer(data: &[u8]) -> bool {
-    let head = &data[..data.len().min(INSTALLER_SIGNATURE_SCAN_LIMIT)];
-    head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER)
-}
-
-/// True when `data` is an NSIS or Inno Setup installer — formats that embed
-/// 7z archives as *payloads* (`$PLUGINSDIR\app-64.7z` in electron-builder,
-/// `{tmp}` blobs in Inno), so a raw magic match would not denote a 7z SFX.
-fn is_installer_pe(data: &[u8]) -> bool {
-    is_nsis_installer(data) || is_innosetup_installer(data)
-}
-
-/// True when a PE file may be a 7z SFX whose archive data starts after the
-/// stub — i.e. it is not a recognised NSIS / Inno Setup installer.
-fn pe_embedded_sfx_searchable(data: &[u8]) -> bool {
-    data.starts_with(b"MZ") && !is_installer_pe(data)
+    {
+        InstallerKind::Nsis
+    } else if head.windows(INNO_MARKER.len()).any(|w| w == INNO_MARKER) {
+        InstallerKind::Inno
+    } else {
+        InstallerKind::None
+    }
 }
 
 /// Own the filter slice so it can be shared across worker threads.
@@ -201,7 +205,11 @@ fn owned_filter(filter: Option<&[&str]>) -> Option<Vec<String>> {
     filter.map(|f| f.iter().map(|s| s.to_string()).collect())
 }
 
-fn extract_7z(
+/// Extract a `.7z`-named cache file whose real content is unknown up front —
+/// hence "pseudo-7z". Dispatches by sniffing the actual bytes: plain 7z,
+/// 7z SFX / zip SFX (PE stub prefix), NSIS / Inno Setup installers, or a
+/// fallback to external 7z.exe.
+fn extract_pseudo_7z(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
@@ -231,47 +239,61 @@ fn extract_7z(
         );
     }
 
-    // PE-prefixed 7z SFX: search for embedded 7z data. Skip NSIS / Inno
-    // Setup installers: those formats legitimately embed standard 7z payloads
-    // (`$PLUGINSDIR\app-64.7z` in electron-builder, `{tmp}` blobs in Inno)
-    // and must keep their installer structure — 7-Zip preserves it instead.
-    if pe_embedded_sfx_searchable(&file_data) {
-        if let Some(pos) = file_data
-            .windows(MAGIC_7Z.len())
-            .position(|w| w == MAGIC_7Z)
-        {
-            // Validate the candidate before committing to the Rust path, so a
-            // false magic match falls through to 7z.exe instead of failing.
-            let mut probe = std::io::Cursor::new(&file_data[pos..]);
-            if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty()).is_ok() {
-                return extract_7z_entries_mt(
-                    file_data,
-                    pos,
-                    dest.to_path_buf(),
-                    owned_filter(filter),
-                    emitter.clone(),
-                );
+    // Classify the file once (single 1 MiB head scan) and dispatch:
+    // - None: any non-installer pseudo-7z may carry a 7z payload behind a PE
+    //   stub (7z SFX) or a ZIP payload (behind a PE stub, e.g. Doubao, or as
+    //   a plain zip misnamed .7z — the EOCD locator works for both, a
+    //   prefix-less zip yields start 0). NSIS/Inno installers never take
+    //   this path: they legitimately embed standard 7z payloads
+    //   (`$PLUGINSDIR\app-64.7z` in electron-builder, `{tmp}` blobs in
+    //   Inno) and must keep their installer structure — 7-Zip preserves it.
+    // - Nsis/Inno: extract the installer structure with the pure-Rust nsis /
+    //   innospect crates. The manifest's `innosetup: true` flag is the
+    //   primary Inno route (exe files); this signature branch is the
+    //   fallback for a `.7z`-named file whose content is actually an
+    //   installer.
+    // On any failure fall through to 7z.exe — never a hard error.
+    match classify_installer(&file_data) {
+        InstallerKind::None => {
+            // PE-prefixed 7z SFX: search for embedded 7z data. The magic
+            // search is bounded to PE files (a 7z SFX stub is always MZ);
+            // the zip probe below has no such constraint.
+            if file_data.starts_with(b"MZ") {
+                if let Some(pos) = file_data
+                    .windows(MAGIC_7Z.len())
+                    .position(|w| w == MAGIC_7Z)
+                {
+                    // Validate the candidate before committing to the Rust
+                    // path, so a false magic match falls through to 7z.exe.
+                    let mut probe = std::io::Cursor::new(&file_data[pos..]);
+                    if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty())
+                        .is_ok()
+                    {
+                        return extract_7z_entries_mt(
+                            file_data,
+                            pos,
+                            dest.to_path_buf(),
+                            owned_filter(filter),
+                            emitter.clone(),
+                        );
+                    }
+                }
+            }
+            // ZIP SFX / plain-zip-misnamed-.7z: locate the EOCD, slice from
+            // the zip start, extract with the zip crate.
+            if let Some(zip_start) = find_embedded_zip_start(&file_data) {
+                if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
+                    return Ok(());
+                }
             }
         }
-    }
-
-    // NSIS installers: extract the installer structure (including
-    // `$PLUGINSDIR\app-64.7z`) with the pure-Rust nsis crate. On any
-    // parse/extract failure fall through to 7z.exe below — never a hard
-    // error from the Rust path alone.
-    if is_nsis_installer(&file_data) && extract_nsis(src, dest, filter, emitter).is_ok() {
-        return Ok(());
-    }
-
-    // PE-prefixed ZIP SFX (parallel to the 7z SFX check above): some
-    // installers (e.g. Doubao's) prepend a PE stub to a plain ZIP payload.
-    // Locate the EOCD, slice from the zip start, extract with the zip crate.
-    // A false EOCD match (or a zip the crate can't read) falls through to
-    // 7z.exe below — never a hard error from this path alone.
-    if let Some(zip_start) = find_embedded_zip_start(&file_data) {
-        if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
+        InstallerKind::Nsis if extract_nsis(src, dest, filter, emitter).is_ok() => {
             return Ok(());
         }
+        InstallerKind::Inno if extract_innosetup(src, dest, filter, emitter).is_ok() => {
+            return Ok(());
+        }
+        _ => {}
     }
 
     // Fall back to external 7z.exe which handles 7z SFX, Inno, NSIS, etc.
@@ -1294,63 +1316,42 @@ mod tests {
     }
 
     #[test]
-    fn test_is_installer_pe() {
-        // NSIS (electron-builder etc.) — marker in the stub
-        let nsis = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
-Nullsoft Install System v3.08\x00\x00\x00\x00uninstall.exe";
-        assert!(is_installer_pe(nsis));
+    fn test_classify_installer() {
+        use InstallerKind::*;
 
-        // NSIS with a stripped/custom stub that only carries the overlay
-        // FirstHeader magic (`NullsoftInst`) — e.g. AltSnap 1.67.
-        let first_header_only = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
-\xef\xbe\xad\xdeNullsoftInst\x00\x00\x00\x00";
-        assert!(is_installer_pe(first_header_only));
+        // NSIS (electron-builder etc.) — marker in the stub
+        let nsis = b"MZ\x90\x00\x03Nullsoft Install System v3.08";
+        assert_eq!(classify_installer(nsis), Nsis);
+
+        // FirstHeader-magic-only NSIS (AltSnap-style)
+        let fh = b"MZ\x90\x00\x03\xef\xbe\xad\xdeNullsoftInst";
+        assert_eq!(classify_installer(fh), Nsis);
 
         // Inno Setup — marker in the stub
-        let inno = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
-Inno Setup Setup Data (5.8.3)";
-        assert!(is_installer_pe(inno));
+        let inno = b"MZ\x90\x00\x03Inno Setup Setup Data (5.8.3)";
+        assert_eq!(classify_installer(inno), Inno);
 
-        // Plain PE (e.g. a real 7z SFX stub) — no installer marker
-        let sfx = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\
-\x37\x7a\xbc\xaf\x27\x1c\x00\x04";
-        assert!(!is_installer_pe(sfx));
+        // Plain PE without installer markers
+        let sfx = b"MZ\x90\x00\x03\x00\x00\x00\x00\x00";
+        assert_eq!(classify_installer(sfx), None);
 
         // Non-PE data
-        assert!(!is_installer_pe(b"7z\xbc\xaf\x27\x1c random data"));
+        assert_eq!(classify_installer(b"not a PE"), None);
+        assert_eq!(classify_installer(b"7z\xbc\xaf\x27\x1c random data"), None);
 
         // Marker beyond the 1 MiB scan limit is ignored (payload area)
         let mut deep = Vec::from(b"MZ\x90\x00\x03".as_slice());
         deep.resize(INSTALLER_SIGNATURE_SCAN_LIMIT + 64, 0);
         deep[INSTALLER_SIGNATURE_SCAN_LIMIT + 10..][..NSIS_MARKER.len()]
             .copy_from_slice(NSIS_MARKER);
-        assert!(!is_installer_pe(&deep));
+        assert_eq!(classify_installer(&deep), None);
 
         // ...and the FirstHeader magic is likewise bounded by the scan limit
         let mut deep2 = Vec::from(b"MZ\x90\x00\x03".as_slice());
         deep2.resize(INSTALLER_SIGNATURE_SCAN_LIMIT + 64, 0);
         deep2[INSTALLER_SIGNATURE_SCAN_LIMIT + 10..][..NSIS_FIRST_HEADER_MAGIC.len()]
             .copy_from_slice(NSIS_FIRST_HEADER_MAGIC);
-        assert!(!is_installer_pe(&deep2));
-    }
-
-    #[test]
-    fn test_pe_embedded_sfx_searchable() {
-        // NSIS/Inno installers never take the embedded-7z search path
-        let nsis = b"MZ\x90\x00\x03Nullsoft Install System v3.08";
-        assert!(!pe_embedded_sfx_searchable(nsis));
-        // FirstHeader-magic-only NSIS (AltSnap-style) is excluded too
-        let fh = b"MZ\x90\x00\x03\xef\xbe\xad\xdeNullsoftInst";
-        assert!(!pe_embedded_sfx_searchable(fh));
-        let inno = b"MZ\x90\x00\x03Inno Setup Setup Data (5.8.3)";
-        assert!(!pe_embedded_sfx_searchable(inno));
-
-        // A plain PE without installer markers may be a 7z SFX
-        let sfx = b"MZ\x90\x00\x03\x00\x00\x00\x00\x00";
-        assert!(pe_embedded_sfx_searchable(sfx));
-
-        // Non-PE never searches
-        assert!(!pe_embedded_sfx_searchable(b"not a PE"));
+        assert_eq!(classify_installer(&deep2), None);
     }
 
     #[test]
@@ -1805,7 +1806,7 @@ Inno Setup Setup Data (5.8.3)";
 
         // decode-only: read all data, discard (no disk writes). The git
         // package is a 7z SFX (MZ header), so locate the embedded 7z like
-        // extract_7z does.
+        // extract_pseudo_7z does.
         let t = Instant::now();
         {
             let file_data = std::fs::read(&path).unwrap();
@@ -1897,7 +1898,7 @@ Inno Setup Setup Data (5.8.3)";
 
         let dest = tmpdir("git7z_hok");
         let t = Instant::now();
-        extract_7z(std::path::Path::new(&path), &dest, None, &None).unwrap();
+        extract_pseudo_7z(std::path::Path::new(&path), &dest, None, &None).unwrap();
         println!("hok builtin extract git pkg: {:?}", t.elapsed());
     }
 }
