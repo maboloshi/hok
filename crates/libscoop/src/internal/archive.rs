@@ -1403,9 +1403,6 @@ Inno Setup Setup Data (5.8.3)";
         );
     }
 
-    /// TEMP benchmark: hok's built-in (sevenz-rust2) extraction of the git
-    /// package vs 7z.exe, plus a decode-only pass to split decoding vs disk
-    /// I/O cost. Set GIT7Z_BENCH to a .7z package path.
     #[test]
     #[ignore = "temporary git 7z benchmark"]
     fn bench_git_7z_extract() {
@@ -1442,6 +1439,69 @@ Inno Setup Setup Data (5.8.3)";
                 .unwrap();
         }
         println!("decode-only: {:?}", t.elapsed());
+
+        // Block layout + parallel decode ceiling (max block time).
+        let file_data = std::fs::read(&path).unwrap();
+        const MAGIC: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+        let pos = file_data
+            .windows(MAGIC.len())
+            .position(|w| w == MAGIC)
+            .expect("embedded 7z magic");
+        let archive = sevenz_rust2::Archive::read(
+            &mut std::io::Cursor::new(&file_data[pos..]),
+            &sevenz_rust2::Password::empty(),
+        )
+        .expect("archive read");
+        let mut total_unpack = 0u64;
+        for (i, b) in archive.blocks.iter().enumerate() {
+            let sz = b.get_unpack_size();
+            total_unpack += sz;
+            println!("block {i}: unpack={} MiB", sz / (1024 * 1024));
+        }
+        println!("total unpack: {} MiB", total_unpack / (1024 * 1024));
+
+        let t = Instant::now();
+        {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::sync::Arc;
+            let archive = Arc::new(archive);
+            let password = Arc::new(sevenz_rust2::Password::empty());
+            let next = Arc::new(AtomicUsize::new(0));
+            let handles: Vec<_> = (0..archive.blocks.len().min(16))
+                .map(|_| {
+                    let archive = archive.clone();
+                    let password = password.clone();
+                    let next = next.clone();
+                    let file_data = file_data.clone();
+                    std::thread::spawn(move || loop {
+                        let bi = next.fetch_add(1, Ordering::Relaxed);
+                        if bi >= archive.blocks.len() {
+                            break;
+                        }
+                        let mut src = std::io::Cursor::new(&file_data[pos..]);
+                        let decoder =
+                            sevenz_rust2::BlockDecoder::new(1, bi, &archive, &password, &mut src);
+                        decoder
+                            .for_each_entries(&mut |_e, r| {
+                                let mut b = Vec::new();
+                                r.read_to_end(&mut b).map_err(|e| {
+                                    sevenz_rust2::Error::Other(e.to_string().into())
+                                })?;
+                                Ok(true)
+                            })
+                            .expect("block decode");
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            println!(
+                "parallel decode-only ({} blocks): {:?}",
+                archive.blocks.len(),
+                t.elapsed()
+            );
+        }
 
         let dest = tmpdir("git7z_hok");
         let t = Instant::now();
