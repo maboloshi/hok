@@ -207,6 +207,14 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         .into_iter()
         .partition(|p| p.is_strictly_installed());
 
+    // Filter out apps that are still running *before* assembling the
+    // transaction, so the confirmation list matches what will actually be
+    // processed (mirrors scoop-update.ps1: test_running_process runs before
+    // the upgrade list is confirmed/downloaded). Newly installed apps have
+    // no apps/<name> directory yet, so `installable` never matches.
+    let (upgradable, replaceable) =
+        filter_not_running(session, upgradable, replaceable, ignore_failure)?;
+
     if !only_upgrade && !installable.is_empty() {
         transaction.set_install(installable);
     }
@@ -251,37 +259,6 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     let reuse_cache = !options.contains(&SyncOption::IgnoreCache);
 
     let packages = transaction.add_view();
-    if packages.is_empty() {
-        return Ok(());
-    }
-
-    // Detect apps that are still running before sizing/downloading anything
-    // (mirrors scoop-update.ps1: test_running_process runs before
-    // downloading the new version). A running app aborts the whole batch
-    // unless `ignore_failures` is enabled — the app's failure (including
-    // process-in-use) is then skipped while the rest of the batch
-    // continues. Newly installed apps have no apps/<name> directory yet, so
-    // they never match. The set is built from the kept packages below, so
-    // skipped ones are never downloaded.
-    let packages = {
-        let mut kept = Vec::new();
-        for &pkg in packages.iter() {
-            match check_not_running(session, pkg.name(), "updating") {
-                // Not running, or running but ignored (warning printed):
-                // update proceeds either way (matches Scoop's
-                // IGNORE_RUNNING_PROCESSES branch, which continues).
-                Ok(_) => kept.push(pkg),
-                Err(Error::AppRunning(name)) if ignore_failure => {
-                    session
-                        .output()
-                        .warn(format!("Running process detected, skip updating '{name}'."));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-        kept
-    };
-
     if packages.is_empty() {
         return Ok(());
     }
@@ -353,6 +330,38 @@ pub enum RunningCheck {
     /// A warning (with the process list) was already printed; the caller
     /// decides whether to proceed or skip this package.
     Ignored,
+}
+
+/// Drop packages whose app is currently running, *before* the transaction is
+/// assembled, so the confirmation list matches what will actually be
+/// processed. With `ignore_failure` a running app is skipped with a warning
+/// (matching upstream's per-package skip when `ignore_failures` is on);
+/// without it the whole batch aborts.
+fn filter_not_running(
+    session: &Session,
+    upgradable: Vec<Package>,
+    replaceable: Vec<Package>,
+    ignore_failure: bool,
+) -> Fallible<(Vec<Package>, Vec<Package>)> {
+    let filter = |packages: Vec<Package>| -> Fallible<Vec<Package>> {
+        let mut kept = Vec::new();
+        for pkg in packages {
+            match check_not_running(session, pkg.name(), "updating") {
+                // Not running, or running but ignored (warning printed):
+                // update proceeds either way (matches Scoop's
+                // IGNORE_RUNNING_PROCESSES branch, which continues).
+                Ok(_) => kept.push(pkg),
+                Err(Error::AppRunning(name)) if ignore_failure => {
+                    session
+                        .output()
+                        .warn(format!("Running process detected, skip updating '{name}'."));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(kept)
+    };
+    Ok((filter(upgradable)?, filter(replaceable)?))
 }
 
 /// Check if the given package's process is currently running under
