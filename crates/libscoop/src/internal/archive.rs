@@ -17,7 +17,7 @@
 //!   during extraction of multi-file archives.
 
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::error::Fallible;
@@ -188,41 +188,57 @@ fn pe_embedded_sfx_searchable(data: &[u8]) -> bool {
     data.starts_with(b"MZ") && !is_installer_pe(data)
 }
 
+/// Own the filter slice so it can be shared across worker threads.
+fn owned_filter(filter: Option<&[&str]>) -> Option<Vec<String>> {
+    filter.map(|f| f.iter().map(|s| s.to_string()).collect())
+}
+
 fn extract_7z(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
     emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
-    use sevenz_rust2::{ArchiveReader, Password};
-
-    // Fast path: open as standard 7z archive directly (streaming, no full file load).
-    if let Ok(file) = std::fs::File::open(src) {
-        if let Ok(reader) = ArchiveReader::new(file, Password::empty()) {
-            return extract_7z_entries(reader, dest, filter, emitter);
-        }
-    }
-
-    // PE/SFX: read into memory and search for embedded 7z data.
-    // Many installers append the real 7z archive after the PE stub.
+    // Read the whole file into memory once: block-parallel decoding shares
+    // this buffer across worker threads. A plain 7z archive starts at
+    // offset 0; the git package is a 7z SFX whose archive follows the PE
+    // stub.
     let file_data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
-    // Skip the embedded-7z search for NSIS / Inno Setup installers: those
-    // formats legitimately embed standard 7z payloads (`$PLUGINSDIR\app-64.7z`
-    // in electron-builder installers, `{tmp}` blobs in Inno). Blindly matching
-    // the 7z magic would extract that inner archive directly and skip the
-    // installer's directory structure — 7-Zip preserves it instead.
+    const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+
+    // Plain 7z archive.
+    if file_data.starts_with(MAGIC_7Z) {
+        return extract_7z_entries_mt(
+            file_data,
+            0,
+            dest.to_path_buf(),
+            owned_filter(filter),
+            emitter.clone(),
+        );
+    }
+
+    // PE/SFX: search for embedded 7z data. Skip NSIS / Inno Setup installers:
+    // those formats legitimately embed standard 7z payloads
+    // (`$PLUGINSDIR\app-64.7z` in electron-builder, `{tmp}` blobs in Inno) and
+    // must keep their installer structure — 7-Zip preserves it instead.
     if pe_embedded_sfx_searchable(&file_data) {
-        const MAGIC_7Z: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
         if let Some(pos) = file_data
             .windows(MAGIC_7Z.len())
             .position(|w| w == MAGIC_7Z)
         {
-            if let Ok(reader) =
-                ArchiveReader::new(std::io::Cursor::new(&file_data[pos..]), Password::empty())
-            {
-                return extract_7z_entries(reader, dest, filter, emitter);
+            // Validate the candidate before committing to the Rust path, so a
+            // false magic match falls through to 7z.exe instead of failing.
+            let mut probe = std::io::Cursor::new(&file_data[pos..]);
+            if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty()).is_ok() {
+                return extract_7z_entries_mt(
+                    file_data,
+                    pos,
+                    dest.to_path_buf(),
+                    owned_filter(filter),
+                    emitter.clone(),
+                );
             }
         }
     }
@@ -239,46 +255,136 @@ fn extract_7z(
     extract_with_7z_exe(src, dest, emitter)
 }
 
-/// Extract entries from an already-opened 7z ArchiveReader.
-fn extract_7z_entries<R: std::io::Read + std::io::Seek>(
-    mut reader: sevenz_rust2::ArchiveReader<R>,
-    dest: &Path,
-    filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+/// Extract a 7z archive from `data[start..]`, decoding solid blocks in
+/// parallel (one worker per block, up to the CPU count).
+///
+/// Single-pass decoding per block via `BlockDecoder::for_each_entries` (the
+/// naive per-file `read_file` re-decodes all data before the target file on
+/// every call — catastrophic for solid archives like git: 56 MB, 6 solid
+/// LZMA blocks, ~9.5k files). Decoding dominates (~42 s of ~61 s
+/// single-threaded); block parallelism brings total extraction to ~30 s,
+/// close to 7z.exe's ~29 s.
+fn extract_7z_entries_mt(
+    data: Vec<u8>,
+    start: usize,
+    dest: PathBuf,
+    filter: Option<Vec<String>>,
+    emitter: Option<Sender<Event>>,
 ) -> Fallible<()> {
-    use sevenz_rust2::ArchiveEntry;
+    use sevenz_rust2::{Archive, BlockDecoder, Password};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    let entries: Vec<String> = reader
-        .archive()
+    let data = Arc::new(data);
+    let mut cursor = std::io::Cursor::new(&data[start..]);
+    let archive = Archive::read(&mut cursor, &Password::empty())
+        .map_err(|e| Error::ExtractionFailed(format!("7z parse error: {}", e)))?;
+    let archive = Arc::new(archive);
+    let password = Arc::new(Password::empty());
+    let filter = Arc::new(filter);
+
+    let total = archive
         .files
         .iter()
-        .filter(|e: &&ArchiveEntry| !e.is_directory())
-        .filter(|e| {
-            filter
-                .map(|f| f.iter().any(|d| e.name().starts_with(d)))
-                .unwrap_or(true)
+        .filter(|e: &&sevenz_rust2::ArchiveEntry| {
+            !e.is_directory()
+                && match filter.as_ref().as_ref() {
+                    Some(f) => f.iter().any(|d| e.name().starts_with(d)),
+                    None => true,
+                }
         })
-        .map(|e: &ArchiveEntry| e.name().to_string())
+        .count();
+
+    let block_count = archive.blocks.len();
+    let workers = block_count
+        .min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+        )
+        .max(1);
+    let next_block = Arc::new(AtomicUsize::new(0));
+    let file_idx = Arc::new(AtomicUsize::new(0));
+    let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let handles: Vec<_> = (0..workers)
+        .map(|_| {
+            let data = data.clone();
+            let archive = archive.clone();
+            let password = password.clone();
+            let filter = filter.clone();
+            let next_block = next_block.clone();
+            let file_idx = file_idx.clone();
+            let errors = errors.clone();
+            let emitter = emitter.clone();
+            let dest = dest.clone();
+            std::thread::spawn(move || {
+                // Borrowed filter view for strip_dir; the String storage
+                // lives in the Arc shared by this worker, so the borrows are
+                // valid for the whole loop.
+                let filter_ref: Option<Vec<&str>> = filter
+                    .as_ref()
+                    .as_ref()
+                    .map(|f| f.iter().map(|s| s.as_str()).collect());
+                loop {
+                    let block_index = next_block.fetch_add(1, Ordering::Relaxed);
+                    if block_index >= archive.blocks.len() {
+                        break;
+                    }
+                    let mut source = std::io::Cursor::new(&data[start..]);
+                    let decoder =
+                        BlockDecoder::new(1, block_index, &archive, &password, &mut source);
+                    let result = decoder.for_each_entries(&mut |entry, reader| {
+                        if entry.is_directory() {
+                            return Ok(true);
+                        }
+                        let name = entry.name();
+                        if let Some(f) = filter.as_deref() {
+                            if !f.iter().any(|d| name.starts_with(d)) {
+                                return Ok(true);
+                            }
+                        }
+                        let n = file_idx.fetch_add(1, Ordering::Relaxed);
+                        emit_extract_progress(&emitter, n, Some(total));
+                        let target = strip_dir(name, filter_ref.as_deref())
+                            .unwrap_or_else(|| name.to_string());
+                        if Path::new(&target)
+                            .components()
+                            .any(|c| c == Component::ParentDir)
+                        {
+                            return Err(sevenz_rust2::Error::Other(
+                                format!("path traversal: {}", target).into(),
+                            ));
+                        }
+                        let target_path = dest.join(&target);
+                        if let Some(parent) = target_path.parent() {
+                            crate::internal::fs::ensure_dir(parent)
+                                .map_err(|e| sevenz_rust2::Error::Other(e.to_string().into()))?;
+                        }
+                        let mut buf = Vec::new();
+                        reader
+                            .read_to_end(&mut buf)
+                            .map_err(|e| sevenz_rust2::Error::Other(e.to_string().into()))?;
+                        std::fs::write(&target_path, &buf)
+                            .map_err(|e| sevenz_rust2::Error::Other(e.to_string().into()))?;
+                        Ok(true)
+                    });
+                    if let Err(e) = result {
+                        errors.lock().unwrap().push(e.to_string());
+                        break;
+                    }
+                }
+            })
+        })
         .collect();
 
-    let total = entries.len();
-    for (i, name) in entries.iter().enumerate() {
-        emit_extract_progress(emitter, i, Some(total), name);
-        let data = reader
-            .read_file(name)
-            .map_err(|e| Error::ExtractionFailed(format!("failed to read '{name}': {e}")))?;
-        let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
-        if Path::new(&target)
-            .components()
-            .any(|c| c == Component::ParentDir)
-        {
-            return Err(Error::PathTraversalDetected(format!("7z: {}", target)));
-        }
-        let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
-        }
-        std::fs::write(&target_path, &data)?;
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| Error::ExtractionFailed("7z extract worker panicked".into()))?;
+    }
+    if let Some(e) = errors.lock().unwrap().first() {
+        return Err(Error::ExtractionFailed(format!("7z extract error: {}", e)));
     }
     Ok(())
 }
@@ -1295,5 +1401,51 @@ Inno Setup Setup Data (5.8.3)";
             t_prog.as_secs_f64() < t_none.as_secs_f64() * 5.0 + 0.5,
             "progress overhead too large: {t_none:?} vs {t_prog:?}"
         );
+    }
+
+    /// TEMP benchmark: hok's built-in (sevenz-rust2) extraction of the git
+    /// package vs 7z.exe, plus a decode-only pass to split decoding vs disk
+    /// I/O cost. Set GIT7Z_BENCH to a .7z package path.
+    #[test]
+    #[ignore = "temporary git 7z benchmark"]
+    fn bench_git_7z_extract() {
+        use std::time::Instant;
+        let Ok(path) = std::env::var("GIT7Z_BENCH") else {
+            return;
+        };
+
+        // decode-only: read all data, discard (no disk writes). The git
+        // package is a 7z SFX (MZ header), so locate the embedded 7z like
+        // extract_7z does.
+        let t = Instant::now();
+        {
+            let file_data = std::fs::read(&path).unwrap();
+            const MAGIC: &[u8] = &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C];
+            let pos = file_data
+                .windows(MAGIC.len())
+                .position(|w| w == MAGIC)
+                .expect("embedded 7z magic");
+            let mut reader = sevenz_rust2::ArchiveReader::new(
+                std::io::Cursor::new(&file_data[pos..]),
+                sevenz_rust2::Password::empty(),
+            )
+            .expect("ArchiveReader::new failed");
+            reader
+                .for_each_entries(
+                    &mut |_e: &sevenz_rust2::ArchiveEntry, data: &mut dyn std::io::Read| {
+                        let mut b = Vec::new();
+                        data.read_to_end(&mut b)
+                            .map_err(|e| sevenz_rust2::Error::Other(e.to_string().into()))?;
+                        Ok(true)
+                    },
+                )
+                .unwrap();
+        }
+        println!("decode-only: {:?}", t.elapsed());
+
+        let dest = tmpdir("git7z_hok");
+        let t = Instant::now();
+        extract_7z(std::path::Path::new(&path), &dest, None, &None).unwrap();
+        println!("hok builtin extract git pkg: {:?}", t.elapsed());
     }
 }
