@@ -235,9 +235,8 @@ pub(crate) fn decompress_chunk(
         }
         CompressMethod::Lzma2 => {
             // Inno's LZMA2 wrap: 1-byte property prefix + raw
-            // LZMA2 stream. lzma-rust2 needs a dict size which Inno's
-            // 1-byte prop does not carry — use a generous default and
-            // let the stream's own chunk headers reset it.
+            // LZMA2 stream. lzma-rs ignores the property byte
+            // (memory unbounded), so just skip it.
             let [_inno_prop, stream @ ..] = compressed else {
                 return Err(Error::Truncated {
                     what: "LZMA2 prop byte",
