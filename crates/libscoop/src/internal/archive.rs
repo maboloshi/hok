@@ -16,9 +16,10 @@
 //! - **Event emission**: Progress events are sent via the event bus
 //!   during extraction of multi-file archives.
 
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use crate::error::Fallible;
 use crate::event::Event;
@@ -245,11 +246,14 @@ fn extract_7z(
         // payload. Parse it with the zip crate instead of falling back to
         // 7z.exe: locate the EOCD, slice from the zip start, extract. A
         // false EOCD match (or a zip the crate can't read) falls through to
-        // 7z.exe below — never a hard error from this path alone.
+        // 7z.exe below — never a hard error from this path alone. No NSIS
+        // retry here: `pe_embedded_sfx_searchable` already excluded NSIS /
+        // Inno installers, so this branch is never one.
         if let Some(zip_start) = find_embedded_zip_start(&file_data) {
-            if extract_zip_embedded(&file_data, zip_start, dest, filter, emitter).is_ok() {
+            if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
                 return Ok(());
             }
+            return extract_with_7z_exe(src, dest, emitter);
         }
     }
 
@@ -401,48 +405,196 @@ fn extract_7z_entries_mt(
 
 // ─── Zip extraction via zip crate ────────────────────────────────────
 
+/// Combination of `Read + Seek` usable as a single trait object bound
+/// (`dyn Read + Seek` is illegal — only one non-auto trait may be the
+/// object's principal trait). Blanket-implemented for every reader.
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
+/// Where a zip archive's bytes come from for parallel extraction. Each worker
+/// builds its own `ZipArchive` from this source (the zip crate's `ZipArchive`
+/// is not `Sync`), so a file source is reopened per worker and a memory
+/// source is a shared slice each worker wraps in its own `Cursor`.
+enum ZipSource {
+    /// A plain `.zip` file on disk.
+    File(PathBuf),
+    /// A zip payload embedded at `start` inside `data` (PE/SFX stub prefix).
+    Memory { data: Vec<u8>, start: usize },
+}
+
+impl ZipSource {
+    fn open_archive(&self) -> Fallible<zip::ZipArchive<Box<dyn ReadSeek + '_>>> {
+        use std::io::Cursor;
+        match self {
+            ZipSource::File(path) => {
+                let file = std::fs::File::open(path)?;
+                let reader: Box<dyn ReadSeek> = Box::new(file);
+                let archive = zip::ZipArchive::new(reader).map_err(|e| {
+                    Error::ExtractionFailed(format!("zip error for {}: {}", path.display(), e))
+                })?;
+                Ok(archive)
+            }
+            ZipSource::Memory { data, start } => {
+                let payload = data.get(*start..).ok_or_else(|| {
+                    Error::ExtractionFailed(format!("embedded zip start {} out of bounds", start))
+                })?;
+                let reader: Box<dyn ReadSeek> = Box::new(Cursor::new(payload));
+                let archive = zip::ZipArchive::new(reader).map_err(|e| {
+                    Error::ExtractionFailed(format!("embedded zip parse error: {}", e))
+                })?;
+                Ok(archive)
+            }
+        }
+    }
+
+    /// Number of entries in the archive (probed once before spawning workers).
+    fn len(&self) -> Fallible<usize> {
+        Ok(self.open_archive()?.len())
+    }
+}
+
 fn extract_zip(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
     emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
-    use std::fs::File;
-    use zip::ZipArchive;
+    let source = Arc::new(ZipSource::File(src.to_path_buf()));
+    let total = source.len()?;
+    extract_zip_mt(
+        source,
+        total,
+        dest.to_path_buf(),
+        owned_filter(filter),
+        emitter.clone(),
+    )
+}
 
-    let file = File::open(src)?;
-    let mut archive = ZipArchive::new(file)
-        .map_err(|e| Error::ExtractionFailed(format!("zip error for {}: {}", src.display(), e)))?;
-    let total = archive.len();
+/// Parallel zip extraction core: each worker owns a `ZipArchive` instance
+/// (built from `source` — `ZipArchive` is not `Sync`, so it cannot be
+/// shared), and entries are claimed dynamically via an atomic counter. ZIP
+/// entries carry their own local headers, so unlike solid 7z there is no
+/// decode dependency between them — pure per-entry parallelism.
+///
+/// Progress/filter/path-traversal semantics match the single-threaded
+/// version; failures are collected and reported after all workers join.
+fn extract_zip_mt(
+    source: Arc<ZipSource>,
+    total: usize,
+    dest: PathBuf,
+    filter: Option<Vec<String>>,
+    emitter: Option<Sender<Event>>,
+) -> Fallible<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    for i in 0..total {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| Error::ExtractionFailed(format!("zip read error: {}", e)))?;
-        let name = entry.name().to_string();
-        if name.ends_with('/') {
-            continue;
-        }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
-                continue;
-            }
-        }
-        emit_extract_progress(emitter, i, Some(total));
-        let target = strip_dir(&name, filter).unwrap_or(name);
-        if Path::new(&target)
-            .components()
-            .any(|c| c == Component::ParentDir)
-        {
-            return Err(Error::PathTraversalDetected(format!("zip: {}", target)));
-        }
-        let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
-        }
-        let mut data = Vec::new();
-        entry.read_to_end(&mut data)?;
-        std::fs::write(&target_path, &data)?;
+    let workers = total
+        .min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+        )
+        .max(1);
+    let next = Arc::new(AtomicUsize::new(0));
+    let done = Arc::new(AtomicUsize::new(0));
+    let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let filter = Arc::new(filter);
+
+    let handles: Vec<_> = (0..workers)
+        .map(|_| {
+            let source = source.clone();
+            let next = next.clone();
+            let done = done.clone();
+            let errors = errors.clone();
+            let filter = filter.clone();
+            let emitter = emitter.clone();
+            let dest = dest.clone();
+            std::thread::spawn(move || {
+                let filter_ref: Option<Vec<&str>> = filter
+                    .as_ref()
+                    .as_ref()
+                    .map(|f| f.iter().map(|s| s.as_str()).collect());
+                let mut archive = match source.open_archive() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        errors.lock().unwrap().push(e.to_string());
+                        return;
+                    }
+                };
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let mut entry = match archive.by_index(i) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            errors.lock().unwrap().push(format!("zip entry {i}: {e}"));
+                            break;
+                        }
+                    };
+                    let name = entry.name().to_string();
+                    if name.ends_with('/') {
+                        continue;
+                    }
+                    if let Some(f) = filter_ref.as_deref() {
+                        if !f.iter().any(|d| name.starts_with(d)) {
+                            continue;
+                        }
+                    }
+                    let n = done.fetch_add(1, Ordering::Relaxed);
+                    emit_extract_progress(&emitter, n, Some(total));
+                    let target = strip_dir(&name, filter_ref.as_deref()).unwrap_or(name);
+                    if Path::new(&target)
+                        .components()
+                        .any(|c| c == Component::ParentDir)
+                    {
+                        errors
+                            .lock()
+                            .unwrap()
+                            .push(format!("path traversal: {}", target));
+                        break;
+                    }
+                    let target_path = dest.join(&target);
+                    if let Some(parent) = target_path.parent() {
+                        if let Err(e) = crate::internal::fs::ensure_dir(parent) {
+                            errors.lock().unwrap().push(e.to_string());
+                            break;
+                        }
+                    }
+                    let mut data = Vec::new();
+                    if let Err(e) = entry.read_to_end(&mut data) {
+                        errors
+                            .lock()
+                            .unwrap()
+                            .push(format!("zip read {target}: {e}"));
+                        break;
+                    }
+                    if let Err(e) = std::fs::write(&target_path, &data) {
+                        errors.lock().unwrap().push(format!(
+                            "cannot write {}: {}",
+                            target_path.display(),
+                            e
+                        ));
+                        break;
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| Error::ExtractionFailed("zip extract worker panicked".into()))?;
+    }
+
+    let errs = errors.lock().unwrap();
+    if !errs.is_empty() {
+        return Err(Error::ExtractionFailed(format!(
+            "zip extraction failed: {}",
+            errs.join("; ")
+        )));
     }
     Ok(())
 }
@@ -533,60 +685,25 @@ fn find_embedded_zip_start(data: &[u8]) -> Option<usize> {
 
 /// Extract a ZIP archive embedded at `start` inside `data` (PE/SFX stub
 /// prefix), with progress + filter semantics matching [`extract_zip`].
+/// Parallel: each worker slices its own `Cursor` over the shared payload.
+/// Takes ownership of `data` (the caller has finished probing it) so the
+/// payload can be shared across worker threads without copying.
 fn extract_zip_embedded(
-    data: &[u8],
+    data: Vec<u8>,
     start: usize,
     dest: &Path,
     filter: Option<&[&str]>,
     emitter: &Option<Sender<Event>>,
 ) -> Fallible<()> {
-    use std::io::Cursor;
-    use zip::ZipArchive;
-
-    let payload = data.get(start..).ok_or_else(|| {
-        Error::ExtractionFailed(format!("embedded zip start {} out of bounds", start))
-    })?;
-    let mut archive = ZipArchive::new(Cursor::new(payload))
-        .map_err(|e| Error::ExtractionFailed(format!("embedded zip parse error: {}", e)))?;
-    let total = archive.len();
-
-    for i in 0..total {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(|e| Error::ExtractionFailed(format!("embedded zip read error: {}", e)))?;
-        let name = entry.name().to_string();
-        if name.ends_with('/') {
-            continue;
-        }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
-                continue;
-            }
-        }
-        emit_extract_progress(emitter, i, Some(total));
-        let target = strip_dir(&name, filter).unwrap_or(name);
-        if Path::new(&target)
-            .components()
-            .any(|c| c == Component::ParentDir)
-        {
-            return Err(Error::PathTraversalDetected(format!(
-                "embedded zip: {}",
-                target
-            )));
-        }
-        let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
-        }
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
-            .map_err(|e| Error::ExtractionFailed(format!("embedded zip read {}: {}", target, e)))?;
-        std::fs::write(&target_path, &buf).map_err(|e| {
-            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
-        })?;
-    }
-    Ok(())
+    let source = Arc::new(ZipSource::Memory { data, start });
+    let total = source.len()?;
+    extract_zip_mt(
+        source,
+        total,
+        dest.to_path_buf(),
+        owned_filter(filter),
+        emitter.clone(),
+    )
 }
 
 // ─── Tar extraction via tar crate ────────────────────────────────────
@@ -1411,10 +1528,10 @@ Inno Setup Setup Data (5.8.3)";
         let data = std::fs::read(&path).unwrap();
         assert!(data.starts_with(b"MZ"), "sample should be a PE file");
 
-        let start = find_embedded_zip_start(&data)
-            .unwrap_or_else(|| panic!("no EOCD found in {path}"));
+        let start =
+            find_embedded_zip_start(&data).unwrap_or_else(|| panic!("no EOCD found in {path}"));
         let dest = tmpdir("doubao_sfx");
-        extract_zip_embedded(&data, start, &dest, None, &None).unwrap();
+        extract_zip_embedded(data, start, &dest, None, &None).unwrap();
         assert!(
             has_nonempty_file(&dest),
             "expected a non-empty payload in extraction of {path}"
