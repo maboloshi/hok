@@ -206,5 +206,92 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Calling the grant twice must not accumulate duplicate Users ACEs —
+    /// upstream `SetAccessRule` replaces the matching ACE instead.
+    #[test]
+    fn grant_users_write_inherit_is_idempotent() {
+        let dir =
+            std::env::temp_dir().join(format!("hok-acl-idem-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        grant_users_write_inherit(&dir).unwrap();
+        grant_users_write_inherit(&dir).unwrap();
+
+        let path_wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut sd: *mut core::ffi::c_void = std::ptr::null_mut();
+        unsafe {
+            let status = GetNamedSecurityInfoW(
+                path_wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut sd,
+            );
+            assert_eq!(status, 0, "GetNamedSecurityInfoW failed: {status}");
+
+            let mut sid_buf = [0u8; SECURITY_MAX_SID_SIZE];
+            let mut sid_len = SECURITY_MAX_SID_SIZE as u32;
+            assert_ne!(
+                CreateWellKnownSid(
+                    WinBuiltinUsersSid,
+                    std::ptr::null_mut(),
+                    sid_buf.as_mut_ptr().cast(),
+                    &mut sid_len,
+                ),
+                0,
+                "CreateWellKnownSid failed"
+            );
+            let users_sid = &sid_buf[..sid_len as usize];
+
+            use windows_sys::Win32::Security::{GetAce, GetAclInformation, AclSizeInformation};
+            let mut size_info = windows_sys::Win32::Security::ACL_SIZE_INFORMATION {
+                AceCount: 0,
+                AclBytesInUse: 0,
+                AclBytesFree: 0,
+            };
+            let size_info_ptr: *mut core::ffi::c_void =
+                (&mut size_info as *mut windows_sys::Win32::Security::ACL_SIZE_INFORMATION)
+                    .cast();
+            assert_ne!(
+                GetAclInformation(
+                    dacl,
+                    size_info_ptr,
+                    std::mem::size_of::<windows_sys::Win32::Security::ACL_SIZE_INFORMATION>()
+                        as u32,
+                    AclSizeInformation,
+                ),
+                0,
+                "GetAclInformation failed"
+            );
+
+            let mut users_aces = 0;
+            for i in 0..size_info.AceCount {
+                let mut pace: *mut core::ffi::c_void = std::ptr::null_mut();
+                if GetAce(dacl, i, &mut pace) == 0 {
+                    continue;
+                }
+                let header = pace as *const u8;
+                // ACCESS_ALLOWED_ACE_TYPE == 0; the SID starts at offset 8
+                // (ACE_HEADER 4 bytes + ACCESS_MASK 4 bytes).
+                if *header == 0 {
+                    let sid_ptr = header.add(8);
+                    if std::slice::from_raw_parts(sid_ptr, users_sid.len()) == users_sid {
+                        users_aces += 1;
+                    }
+                }
+            }
+            assert_eq!(
+                users_aces, 1,
+                "expected exactly one Users ACE after two grants, got {users_aces}"
+            );
+
+            LocalFree(sd);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
