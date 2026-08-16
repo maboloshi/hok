@@ -28,3 +28,4 @@ Cargo.lock.txt
 /src/cmd/__cmd_reg__.rs
 
 .reasonix
+.dsh
