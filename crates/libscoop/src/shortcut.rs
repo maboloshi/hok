@@ -149,7 +149,15 @@ fn create_shortcut(
         .and_then(|s| s.to_str())
         .map(|s| s.to_owned());
 
-    let sl = ShellLink::new(target, args, name, icon).map_err(std::io::Error::other)?;
+    // `ShellLink::new` (shortcuts-rs 1.1.1) applies the arguments/name/icon
+    // setters *before* overwriting the header link flags, which drops
+    // HAS_ARGUMENTS/HAS_NAME/HAS_ICON_LOCATION — the strings then never reach
+    // the .lnk (observed with ima-copilot's `--force-device-scale-factor=1.5`).
+    // Re-apply the setters afterwards so the flags stick.
+    let mut sl = ShellLink::new(target, None, None, None).map_err(std::io::Error::other)?;
+    sl.set_arguments(args);
+    sl.set_name(name);
+    sl.set_icon_location(icon);
     sl.create_lnk(link_str.as_ref())
         .map_err(std::io::Error::other)
 }
@@ -336,6 +344,15 @@ mod tests {
         let _ = std::fs::remove_file(&link);
     }
 
+    /// UTF-16LE byte encoding of `s` — StringData strings in a .lnk are
+    /// UTF-16LE, so presence in the file proves the writer actually emitted
+    /// the field (shortcuts-rs 1.1.1's `ShellLink::new` can clear the header
+    /// link flags and silently drop arguments/name/icon).
+    fn lnk_contains_utf16(bytes: &[u8], s: &str) -> bool {
+        let utf16: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        !utf16.is_empty() && bytes.windows(utf16.len()).any(|w| w == utf16.as_slice())
+    }
+
     #[test]
     fn test_create_shortcut_with_args_and_icon() {
         let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
@@ -357,6 +374,40 @@ mod tests {
             result.err()
         );
         assert!(link.exists(), ".lnk file was not created");
+
+        let bytes = std::fs::read(&link).unwrap();
+        assert!(
+            lnk_contains_utf16(&bytes, "/k echo hello"),
+            "arguments string missing from .lnk"
+        );
+        assert!(
+            lnk_contains_utf16(&bytes, &target_str),
+            "icon location string missing from .lnk"
+        );
+
+        let _ = std::fs::remove_file(&link);
+    }
+
+    #[test]
+    fn test_create_shortcut_persists_manifest_args() {
+        // Regression: hok must write shortcut arguments from the manifest
+        // (e.g. ima-copilot's `--force-device-scale-factor=1.5`) into the .lnk.
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        let target = Path::new(&system_root).join("System32\\cmd.exe");
+        let link = std::env::temp_dir().join("hok_test_shortcut_manifest_args.lnk");
+        let target_str = target.to_string_lossy().into_owned();
+
+        let _ = std::fs::remove_file(&link);
+
+        let args = "--force-device-scale-factor=1.5";
+        let result = create_shortcut(&target_str, &link, Some(args.into()), None);
+        assert!(result.is_ok(), "create_shortcut failed: {:?}", result.err());
+
+        let bytes = std::fs::read(&link).unwrap();
+        assert!(
+            lnk_contains_utf16(&bytes, args),
+            "shortcut arguments `{args}` were not written into the .lnk"
+        );
 
         let _ = std::fs::remove_file(&link);
     }
