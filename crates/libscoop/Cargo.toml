@@ -44,8 +44,8 @@ sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
 # flate2 unified on the pure-Rust zlib-rs backend across the workspace
-# (libscoop, vendored nsis/innospect, zip), so miniz_oxide stays out of
-# the tree entirely.
+# (libscoop, upstream nsis 0.4, vendored innospect, zip), so miniz_oxide
+# stays out of the tree entirely.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization", "xz"] }
 unrar = "0.5"
@@ -59,10 +59,10 @@ winreg = "0.52"
 # lzma-rust2 + flate2/zlib-rs (faster, removes miniz_oxide from the tree).
 # Upstream: https://github.com/BinFlip/inno-rs
 innospect = { path = "../innospect" }
-# Vendored fork of nsis-rs (0.3.1) with the LZMA decoder switched from
-# lzma-rs 0.3 to lzma-rust2 (~14% faster, no trailing-byte error tolerance).
-# Upstream: https://github.com/ATRAPSLLC/nsis-rs
-nsis = { path = "../nsis" }
+# Upstream nsis-rs 0.4.0 (registry): adopted our lzma-rust2/zlib-rs PR
+# (upstream commit 201df25) plus dest_path/solid-truncation fixes, so the
+# vendored fork (crates/nsis) is retired. Upstream: https://github.com/ATRAPSLLC/nsis-rs
+nsis = "0.4"
 shortcuts-rs = "1.1.1"
 
 [build-dependencies]

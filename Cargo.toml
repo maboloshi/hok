@@ -9,7 +9,7 @@ edition = "2021"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crates/nsis", "crates/innospect"]
+members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crates/innospect"]
 
 [lib]
 path = "src/lib.rs"

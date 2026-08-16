@@ -496,7 +496,7 @@ impl ZipSource {
                 .unwrap_or(0);
             order.push((i, size));
         }
-        order.sort_by(|a, b| b.1.cmp(&a.1));
+        order.sort_by_key(|b| std::cmp::Reverse(b.1));
         Ok(order.into_iter().map(|(i, _)| i).collect())
     }
 }
@@ -1026,39 +1026,31 @@ fn extract_nsis(
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
 
     // Parse with a generous decompression budget. The crate's default
-    // (64 MiB) silently bounds solid streams via DecodeLimit::Truncate, so
-    // large solid installers would fail with a confusing bounds error and
-    // fall back to 7z.exe. 512 MiB covers real-world installers (Obsidian's
-    // electron-builder payload alone is ~114 MiB decompressed).
+    // (64 MiB) bounds solid streams via DecodeLimit::Truncate, so large solid
+    // installers would fail with a confusing bounds error and fall back to
+    // 7z.exe. 512 MiB covers real-world installers (Obsidian's
+    // electron-builder payload alone is ~114 MiB decompressed). Upstream 0.4.0
+    // reports over-budget files with Error::OutputTooLarge instead of silent
+    // truncation.
     let installer = nsis::NsisInstaller::builder(&data)
         .max_decompressed_size(512 * 1024 * 1024)
         .parse()
         .map_err(|e| Error::ExtractionFailed(format!("nsis parse error: {}", e)))?;
 
     // 7-Zip derives each file's destination from the *instruction stream*:
-    // EW_CREATEDIR (update_instdir) / EW_ASSIGNVAR($OUTDIR) track the current
-    // install directory, and every EW_EXTRACTFILE is written under it with
-    // the `$INSTDIR` prefix stripped. `files()` only exposes the bare
-    // EXTRACTFILE target name, so the directory is tracked separately:
-    // pass 1 records the directory in effect for each EXTRACTFILE (stream
-    // order), pass 2 pairs it with each file from `files()` (same order).
-    let dirs = nsis_extract_dirs(&installer)?;
-    let mut dir_idx = 0usize;
-
+    // `SetOutPath` instructions track the current install directory and every
+    // EW_EXTRACTFILE is written under it. Upstream `files()` already walks the
+    // stream (EW_CREATEDIR / $OUTDIR assignment) and `dest_path()` yields the
+    // installer's own destination path; `to_install_path()` renders it in
+    // 7-Zip's form — `$INSTDIR\` prefix stripped, `$VAR` directories kept
+    // literally (`$PLUGINSDIR\app-64.7z`), backslash separators.
     for result in installer.files() {
         let file =
             result.map_err(|e| Error::ExtractionFailed(format!("nsis file error: {}", e)))?;
-        let name = file
-            .name()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis name error: {}", e)))?
-            .to_string();
-        if name.is_empty() {
-            continue;
-        }
-        let dir = dirs.get(dir_idx).map(String::as_str).unwrap_or("");
-        dir_idx += 1;
-
-        let rel = nsis_dest_path(dir, &name);
+        let rel = file
+            .dest_path()
+            .map_err(|e| Error::ExtractionFailed(format!("nsis dest_path error: {}", e)))?
+            .to_install_path();
         if rel.is_empty() {
             continue;
         }
@@ -1067,7 +1059,6 @@ fn extract_nsis(
                 continue;
             }
         }
-        emit_extract_progress(emitter, dir_idx.saturating_sub(1), None);
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
@@ -1085,13 +1076,13 @@ fn extract_nsis(
         }
         let content = file
             .decompress()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis decompress '{}': {}", name, e)))?;
+            .map_err(|e| Error::ExtractionFailed(format!("nsis decompress '{}': {}", rel, e)))?;
         std::fs::write(&target_path, &content).map_err(|e| {
             Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
         })?;
     }
 
-    // pass 3 — uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
+    // Uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
     // EW_WRITEUNINSTALLER payload (the crate skips the icon/patch prefix and
     // re-attaches the installer's own PE stub to the decompressed overlay).
     for (i, result) in installer.uninstallers().enumerate() {
@@ -1099,8 +1090,8 @@ fn extract_nsis(
             .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller error: {}", e)))?;
         let rel = uninstaller
             .path()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller name error: {}", e)))
-            .map(|n| nsis_dest_path("", &n.to_string()))?;
+            .map_err(|e| Error::ExtractionFailed(format!("nsis uninstaller name error: {}", e)))?
+            .to_install_path();
         if rel.is_empty() {
             continue;
         }
@@ -1134,70 +1125,6 @@ fn extract_nsis(
     Ok(())
 }
 
-/// Track the current install directory through the NSIS instruction stream,
-/// recording the directory in effect at each `EW_EXTRACTFILE` (stream order).
-///
-/// Mirrors 7-Zip's NsisIn.cpp: `EW_CREATEDIR` with `update_instdir` set and
-/// `EW_ASSIGNVAR` targeting `$OUTDIR` (variable index 22) both update the
-/// current directory; subsequent files are extracted under it. A file name
-/// that already contains a separator (`$PLUGINSDIR\app-64.7z`) is used as-is
-/// and does not need a directory from the stream.
-fn nsis_extract_dirs(installer: &nsis::NsisInstaller<'_>) -> Fallible<Vec<String>> {
-    const OUTDIR_VAR: i32 = 22; // $OUTDIR
-    let mut dirs: Vec<String> = Vec::new();
-    let mut cur_dir: Option<String> = None;
-    for result in installer.entries() {
-        let entry =
-            result.map_err(|e| Error::ExtractionFailed(format!("nsis entry error: {}", e)))?;
-        match installer.normalize_opcode(entry.which()) {
-            nsis::opcode::EW_CREATEDIR => {
-                let path = installer
-                    .read_string(entry.offset(0))
-                    .map_err(|e| Error::ExtractionFailed(format!("nsis createdir error: {}", e)))?
-                    .to_string();
-                if entry.offset(1) != 0 {
-                    cur_dir = Some(path);
-                }
-            }
-            nsis::opcode::EW_ASSIGNVAR => {
-                if entry.offset(0) == OUTDIR_VAR {
-                    let path = installer
-                        .read_string(entry.offset(1))
-                        .map_err(|e| {
-                            Error::ExtractionFailed(format!("nsis assignvar error: {}", e))
-                        })?
-                        .to_string();
-                    cur_dir = Some(path);
-                }
-            }
-            nsis::opcode::EW_EXTRACTFILE => {
-                dirs.push(cur_dir.clone().unwrap_or_default());
-            }
-            _ => {}
-        }
-    }
-    Ok(dirs)
-}
-
-/// 7-Zip-style destination for an NSIS `EW_EXTRACTFILE`: join the tracked
-/// current directory with the bare target name and strip the `$INSTDIR`
-/// install-root prefix (the extraction root). A name that already contains a
-/// directory separator is used verbatim.
-fn nsis_dest_path(dir: &str, name: &str) -> String {
-    let joined = if name.contains('\\') || name.contains('/') {
-        name.to_string()
-    } else if dir.is_empty() {
-        name.to_string()
-    } else {
-        format!("{dir}\\{name}")
-    };
-    joined
-        .strip_prefix("$INSTDIR")
-        .map(|rest| rest.trim_start_matches('\\').trim_start_matches('/'))
-        .unwrap_or(&joined)
-        .to_string()
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Emit an extraction progress event: a bare `n/total` counter (no filename —
@@ -1211,7 +1138,7 @@ fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Optio
     let Some(total) = total else {
         return;
     };
-    if i % THROTTLE != 0 && i + 1 != total {
+    if !i.is_multiple_of(THROTTLE) && i + 1 != total {
         return;
     }
     if let Some(tx) = emitter {
@@ -1373,27 +1300,34 @@ mod tests {
     }
 
     #[test]
-    fn test_nsis_dest_path() {
-        // Bare name under the install root ($INSTDIR is the extraction root).
-        assert_eq!(nsis_dest_path("$INSTDIR", "payload.txt"), "payload.txt");
-        // Bare name under a tracked subdirectory — the traditional-NSIS case
-        // that 7-Zip preserves (e.g. AltSnap's `Lang\de_DE.ini`).
+    fn test_nsis_install_path_render() {
+        // Upstream 0.4.0 owns the 7-Zip-style destination semantics
+        // (`ExtractedFile::dest_path()` + `NsisString::to_install_path()`),
+        // replacing our vendored `nsis_dest_path`. This pins the rendering
+        // contract we depend on: a leading `$INSTDIR\` is stripped (the
+        // install root IS the extraction root) and `$VAR` directories are
+        // kept literally (`$PLUGINSDIR\app-64.7z`, which pre_install scripts
+        // reference as-is).
+        use nsis::strings::{NsisString, StringSegment};
+        let lit = |s: &str| NsisString {
+            segments: vec![StringSegment::Literal(s.into())],
+        };
         assert_eq!(
-            nsis_dest_path("$INSTDIR\\docs", "payload.txt"),
+            lit("$INSTDIR\\docs\\payload.txt").to_install_path(),
             "docs\\payload.txt"
         );
-        // No directory tracked yet (no leading SetOutPath): bare name.
-        assert_eq!(nsis_dest_path("", "config.ini"), "config.ini");
-        // Tracked directory without an $INSTDIR prefix (relative SetOutPath).
-        assert_eq!(nsis_dest_path("Lang", "de_DE.ini"), "Lang\\de_DE.ini");
-        // electron-builder: the name already carries its literal $VAR
-        // directory, kept verbatim (pre_install scripts reference it as-is).
         assert_eq!(
-            nsis_dest_path("$INSTDIR", "$PLUGINSDIR\\app-64.7z"),
+            lit("$INSTDIR\\a\\sub\\x.bin").to_install_path(),
+            "a\\sub\\x.bin"
+        );
+        // No $INSTDIR prefix → rendered verbatim (relative SetOutPath).
+        assert_eq!(lit("Lang\\de_DE.ini").to_install_path(), "Lang\\de_DE.ini");
+        // electron-builder: name carries its own literal $VAR directory.
+        assert_eq!(
+            lit("$PLUGINSDIR\\app-64.7z").to_install_path(),
             "$PLUGINSDIR\\app-64.7z"
         );
-        // Name with a plain directory is used verbatim too.
-        assert_eq!(nsis_dest_path("$INSTDIR\\a", "sub\\x.bin"), "sub\\x.bin");
+        assert_eq!(lit("config.ini").to_install_path(), "config.ini");
     }
 
     /// True when `dir` contains at least one file in a nested subdirectory.
