@@ -113,6 +113,7 @@ cmd:
   create_manifest_saved: "清单已保存到: %{path}"
   depends_invalid: "无效选择。"
   depends_not_found: "找不到名为 '%{query}' 的包。"
+  reset_app_missing: "缺少 <app>。使用 'hok reset <app>' 或 'hok reset -a' 重置所有应用。"
   dir_not_found: "错误: '%{path}' 不是目录"
   err_download: "下载失败: %{e}"
   err_hash: "哈希错误: %{e}"
@@ -472,6 +473,7 @@ cli_help:
     args:
       app: 应用名称
       version: 要重置到的特定版本
+      all: 重置所有已安装的应用
     about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
   search:
     about: "搜索可用包"

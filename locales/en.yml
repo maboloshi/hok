@@ -113,6 +113,7 @@ cmd:
   create_manifest_saved: "Manifest saved to: %{path}"
   depends_invalid: "Invalid selection."
   depends_not_found: "Could not find package named '%{query}'."
+  reset_app_missing: "<app> missing. Use 'hok reset <app>' or 'hok reset -a' to reset all apps."
   dir_not_found: "error: '%{path}' is not a directory"
   err_download: "download failed: %{e}"
   err_hash: "hash error: %{e}"
@@ -475,6 +476,7 @@ cli_help:
     args:
       app: The app name
       version: A specific version to reset to
+      all: Reset all installed apps
     about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
   search:
     about: "Search available package(s)"
