@@ -43,7 +43,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
                     ));
                     continue;
                 }
-                package::sync::reset(session, pkg.name(), None)?;
+                // Official scoop-reset.ps1 iterates apps independently
+                // (ForEach-Object with `return`): a failing app is reported
+                // and skipped, the remaining apps keep resetting.
+                if let Err(e) = package::sync::reset(session, pkg.name(), None) {
+                    output::err(format!("Failed to reset '{}': {e}", pkg.name()));
+                    continue;
+                }
             }
         }
         // Leave the session back in the default (user-level) state.
