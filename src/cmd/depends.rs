@@ -12,9 +12,23 @@ use crate::{output, Result};
 pub struct Args {
     /// Name of the package
     package: String,
+
+    /// Use the specified architecture (32bit/64bit/arm64), overriding the
+    /// runtime-detected and configured default (Scoop's -a/--arch)
+    #[arg(short = 'a', long = "arch")]
+    arch: Option<String>,
 }
 
 pub fn execute(args: Args, session: &Session) -> Result<()> {
+    // `-a/--arch` overrides the effective architecture (Scoop's
+    // `Format-ArchitectureString` + `Get-DefaultArchitecture` override).
+    // Parsed after the session was created, so it beats the
+    // `default_architecture` config — architecture-specific `depends`
+    // entries then resolve for the requested architecture.
+    if let Some(arch) = args.arch.as_deref() {
+        session.set_default_architecture(arch)?;
+    }
+
     let query = args.package;
     let queries = vec![query.as_str()];
     let options = vec![QueryOption::Explicit];

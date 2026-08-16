@@ -361,6 +361,7 @@ cli_help:
   depends:
     args:
       package: 包名称
+      arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
     about: 显示包的依赖关系
   download:
     about: 将包下载到缓存文件夹而不安装

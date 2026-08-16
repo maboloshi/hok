@@ -362,6 +362,7 @@ cli_help:
   depends:
     args:
       package: Name of the package
+      arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
     about: Show dependencies of a package
   download:
     about: Download apps in the cache folder and verify hashes
