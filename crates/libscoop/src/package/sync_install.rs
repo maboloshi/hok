@@ -542,6 +542,10 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
     persist::link(session, pkg)?;
+    // 6.1 persist_permission (upstream install.ps1:67): global installs
+    // with persist data grant the Users group write access on the global
+    // persist root, so non-admin users can write persisted data.
+    persist::persist_permission(session, pkg)?;
 
     // 7. post_install (Scoop order: last hook). Runs with `$dir` = the
     // `current` junction (upstream `link_current` reassigns $dir), while

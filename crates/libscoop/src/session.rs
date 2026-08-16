@@ -317,7 +317,17 @@ impl Session {
     /// so global installs keep their persist data under the global root.
     #[inline]
     pub fn persist_dir(&self, name: &str) -> std::path::PathBuf {
-        self.effective_root_path().join("persist").join(name)
+        self.persist_root().join(name)
+    }
+
+    /// Get the persist root directory: `<root>/persist`.
+    ///
+    /// Follows the *effective* root (upstream `persistdir $null $global`),
+    /// used by `persist_permission` to grant Users write access on the
+    /// global persist root for non-admin users.
+    #[inline]
+    pub fn persist_root(&self) -> std::path::PathBuf {
+        self.effective_root_path().join("persist")
     }
 
     /// Get the `buckets` directory: `<root>/buckets`.

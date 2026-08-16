@@ -348,6 +348,9 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
 
     // Re-link persistent data
     persist::link(session, &pkg)?;
+    // persist_permission (upstream reset.ps1:91): global apps reset their
+    // persist root grant as well (idempotent).
+    persist::persist_permission(session, &pkg)?;
 
     // Re-create shims + shortcuts
     shim::remove(session, &pkg)?;

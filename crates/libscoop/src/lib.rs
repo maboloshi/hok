@@ -68,6 +68,7 @@ mod internal;
 pub mod network;
 pub mod output;
 pub mod package;
+mod permission;
 mod persist;
 mod psmodule;
 mod session;

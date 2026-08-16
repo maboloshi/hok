@@ -18,7 +18,7 @@ use std::path::Path;
 
 use tracing::debug;
 
-use crate::{error::Fallible, internal, package::Package, Event, Session};
+use crate::{error::Fallible, internal, package::Package, permission, Event, Session};
 
 /// Link persistent data for a package.
 ///
@@ -94,6 +94,23 @@ pub fn link(session: &Session, package: &Package) -> Fallible<()> {
 /// Check if a persist entry name looks like a file (has extension).
 fn has_extension(name: &str) -> bool {
     std::path::Path::new(name).extension().is_some()
+}
+
+/// Scoop's `persist_permission` (lib/install.ps1:522-531): for *global*
+/// installs with a `persist` field, grant the built-in Users group
+/// (S-1-5-32-545) `Write` + `ObjectInherit` on the global persist root, so
+/// non-admin users can write persisted data. Idempotent; skipped unless the
+/// current process is elevated — exactly the `$global -and $manifest.persist
+/// -and (is_admin)` guard of upstream. Runs right after [`link`] on install
+/// and reset (install.ps1:67 / reset.ps1:91).
+///
+/// The ACL execution lives in [`permission`] as a reusable primitive; this
+/// function owns the persist-specific guard and root resolution.
+pub fn persist_permission(session: &Session, package: &Package) -> Fallible<()> {
+    if !session.is_global() || package.manifest().persist().is_none() || !session.is_admin() {
+        return Ok(());
+    }
+    permission::grant_users_write_inherit(&session.persist_root())
 }
 
 /// Remove persistent data symlinks in a specific version directory

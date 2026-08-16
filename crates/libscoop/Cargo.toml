@@ -55,6 +55,15 @@ bzip2 = "0.6.1"
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
 winreg = "0.52"
+# Native Windows ACL APIs (GetNamedSecurityInfoW/SetEntriesInAclW/
+# SetNamedSecurityInfoW) for `permission::grant_users_write_inherit` —
+# keeps the ACL grant a pure-Rust call instead of shelling out to icacls.
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
 # Vendored fork of inno-rs (0.1.2) with LZMA/Zlib decoders switched to
 # lzma-rust2 + flate2/zlib-rs (faster, removes miniz_oxide from the tree).
 # Upstream: https://github.com/BinFlip/inno-rs

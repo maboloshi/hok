@@ -1165,6 +1165,7 @@ dependencies = [
  "tracing",
  "unrar",
  "ureq",
+ "windows-sys 0.52.0",
  "winreg",
  "zip",
  "zstd",
