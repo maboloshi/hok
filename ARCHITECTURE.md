@@ -10,7 +10,6 @@ hok (binary)
 │   ├── Event-driven operation pipeline
 │   └── Shim / shortcut / persist management
 ├── hok-shim (shim creation)
-├── hok-shim-ref (shim reference binary)
 └── hok-i18n-derive (i18n derive macro)
 ```
 
