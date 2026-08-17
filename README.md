@@ -34,41 +34,43 @@ Hok is a CLI implementation of Scoop in Rust
 Usage: hok.exe <COMMAND>
 
 Commands:
-  alias        Manage Scoop aliases
-  bucket       Manage manifest buckets
-  cache        Package cache management
-  cat          Inspect the manifest of a package
-  checkhashes  Verify and update manifest hashes
-  checkup      Check for potential problems with installed packages
-  checkurls    Check URLs of manifests are accessible
-  checkver     Check manifest for a newer version
-  cleanup      Cleanup apps by removing old versions
-  completions  Generate shell completions
-  config       Configuration management
-  create       Create a manifest from a download URL
-  depends      Show dependencies of a package
-  export       Export installed packages list
-  formatjson   Format manifests and update them in-place
-  hold         Hold package(s) to disable changes
-  home         Browse the homepage of a package
-  import       Import installed packages from a file
-  info         Show package(s) basic information
-  install      Install package(s)
-  list         List installed package(s)
-  missing-checkver  Check bucket manifests missing checkver/autoupdate
-  prefix       Show the directory where a package is installed
-  reset        Reset a package to reapply shims/shortcuts
-  reinstall    Reinstall package(s) (uninstall then install)
-  search       Search available package(s)
-  shim         List or inspect shims
-  status       Show status of installed package(s)
-  unhold       Unhold package(s) to enable changes
-  uninstall    Uninstall package(s)
-  update       Fetch and update subscribed buckets, or upgrade package(s)
-  upgrade      Upgrade installed package(s)
-  virustotal   Check a package's download against VirusTotal
-  which        Show the shim location(s) of a command
-  help         Print this message or the help of the given subcommand(s)
+  alias             List, add, or remove Scoop aliases
+  bucket            Manage manifest buckets
+  cache             Package cache management
+  cat               Inspect the manifest of a package
+  checkhashes       Verify and update manifest hashes
+  checkup           Check for potential problems with installed packages
+  checkurls         Check manifest URLs for validity
+  checkver          Check manifest for a newer version
+  ci-auto-pr        Auto-update manifests and create pull-requests via GitHub API (CI mode)
+  cleanup           Cleanup apps by removing old versions
+  completions       Generate shell completions
+  config            Configuration management
+  create            Create a manifest from a download URL
+  depends           Show dependencies of a package
+  download          Download apps in the cache folder and verify hashes
+  export            Export installed packages list
+  format-json       Format manifest JSON files in a bucket directory
+  hold              Hold package(s) to disable changes
+  home              Browse the homepage of a package
+  import            Import installed packages from a file
+  info              Show package(s) basic information
+  install           Install package(s)
+  list              List installed package(s)
+  missing-checkver  Check bucket manifests missing checkver and autoupdate
+  prefix            Show the directory where a package is installed
+  reinstall         Reinstall a package
+  reset             Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)
+  search            Search available package(s)
+  shim              List or inspect shims
+  status            Show the status of all installed apps
+  unhold            Unhold package(s) to enable changes
+  uninstall         Uninstall package(s)
+  update            Fetch and update subscribed buckets, or upgrade installed package(s)
+  upgrade           Upgrade installed package(s)
+  virustotal        Check a package's download URL against VirusTotal
+  which             Show the shim location(s) of a command
+  help              Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
