@@ -23,6 +23,7 @@ use crate::error::Fallible as Result;
 
 use crate::internal::github;
 use crate::internal::url;
+use crate::package::checkver::CheckverReport;
 use crate::package::manifest_walker;
 use crate::Session;
 
@@ -63,11 +64,20 @@ pub struct AutoPrConfig {
 /// Run the full auto-PR pipeline.
 ///
 /// 1. Snapshots manifests in `config.dir`.
-/// 2. Runs `checkver --update` to refresh versions.
+/// 2. Runs `checkver --update` to refresh versions, streaming the per-manifest
+///    [`CheckverReport`]s to `on_report` as each completes.
 /// 3. Detects which manifests changed.
 /// 4. For each changed manifest either pushes a commit or creates a PR,
 ///    depending on `config.push` / `config.request`.
-pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
+///
+/// `on_report` is the presentation hook: `None` keeps the compact
+/// progress/ok markers, `Some(callback)` streams the checkver reports to the
+/// caller, which decides how (or whether) to render them.
+pub fn run_auto_pr(
+    config: AutoPrConfig,
+    session: &Session,
+    mut on_report: Option<impl FnMut(&CheckverReport)>,
+) -> Result<()> {
     // Validate token
     if config.token.is_empty() {
         return Err(crate::Error::Custom(
@@ -119,8 +129,11 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
     let before = read_manifests(session, &dir)?;
     session.output().ok();
 
-    // Run checkver to update all manifests
-    session.output().progress("Checking", "for updates");
+    // Run checkver to update all manifests. Reports stream to the caller's
+    // callback; without one, the compact progress/ok pair is shown instead.
+    if on_report.is_none() {
+        session.output().progress("Checking", "for updates");
+    }
     let cv_args = crate::package::checkver::CheckverOptions {
         dir: dir.clone(),
         app: vec!["*".to_string()],
@@ -130,12 +143,20 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         version: None,
         timeout: 30,
     };
-    let _ = crate::package::checkver::execute(cv_args, session, |_| {});
-    session.output().ok();
+    let _ = crate::package::checkver::execute(cv_args, session, |report| {
+        if let Some(cb) = on_report.as_mut() {
+            cb(report);
+        }
+    });
+    if on_report.is_none() {
+        session.output().ok();
+    }
 
     // Force-update special manifests
     for name in &config.special {
-        session.output().progress("Forcing", name);
+        if on_report.is_none() {
+            session.output().progress("Forcing", name);
+        }
         let cv_args = crate::package::checkver::CheckverOptions {
             dir: dir.clone(),
             app: vec![name.to_string()],
@@ -145,8 +166,14 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
             version: None,
             timeout: 30,
         };
-        let _ = crate::package::checkver::execute(cv_args, session, |_| {});
-        session.output().ok();
+        let _ = crate::package::checkver::execute(cv_args, session, |report| {
+            if let Some(cb) = on_report.as_mut() {
+                cb(report);
+            }
+        });
+        if on_report.is_none() {
+            session.output().ok();
+        }
     }
 
     // Detect which manifests changed
