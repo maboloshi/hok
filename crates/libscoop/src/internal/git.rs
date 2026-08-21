@@ -290,6 +290,10 @@ mod tests {
         let mut cfg = clone.config().unwrap();
         cfg.set_str("user.name", "hok tester").unwrap();
         cfg.set_str("user.email", "tester@example.com").unwrap();
+        // Isolate the test from the user's global `core.autocrlf`: the temp
+        // repo has no .gitattributes, so a global autocrlf=true would make
+        // libgit2 check out LF files as CRLF and break content assertions.
+        cfg.set_bool("core.autocrlf", false).unwrap();
 
         (origin_dir, origin, clone_dir, clone)
     }
