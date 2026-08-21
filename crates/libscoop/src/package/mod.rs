@@ -372,9 +372,17 @@ impl Package {
     /// in scripts). Upstream rewrites `nightly` to `nightly-YYYYMMDD`
     /// (lib/install.ps1:21-25, `nightly_version`), giving each daily build
     /// its own versioned directory — hok mirrors that here.
+    ///
+    /// Host-dependent (reads the wall clock); the deterministic
+    /// computation lives in [`Package::effective_version_at`].
     pub fn effective_version(&self) -> String {
+        self.effective_version_at(time::OffsetDateTime::now_utc())
+    }
+
+    /// Pure variant of [`Package::effective_version`]: the nightly date
+    /// stamp against an explicit clock (deterministic, testable).
+    pub fn effective_version_at(&self, now: time::OffsetDateTime) -> String {
         if self.is_nightly() {
-            let now = time::OffsetDateTime::now_utc();
             format!(
                 "nightly-{:04}{:02}{:02}",
                 now.year(),
@@ -583,5 +591,20 @@ mod tests {
         let pkg = pkg("app", "1.0.0");
         assert!(!pkg.is_nightly());
         assert_eq!(pkg.effective_version(), "1.0.0");
+    }
+
+    #[test]
+    fn effective_version_at_is_deterministic_for_fixed_clock() {
+        // Pure variant: the nightly stamp depends only on the given clock.
+        let nightly = pkg("nightly-app", "nightly");
+        let now = time::OffsetDateTime::parse(
+            "2026-08-21T12:34:56Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(nightly.effective_version_at(now), "nightly-20260821");
+        // Non-nightly ignores the clock entirely.
+        let normal = pkg("app", "1.0.0");
+        assert_eq!(normal.effective_version_at(now), "1.0.0");
     }
 }
