@@ -203,6 +203,8 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 - **不要重复造轮子，但也不当冤大头** —— 标准算法（MD5/SHA）用现成 crate，平台特定 API（COM/Win32）用 raw FFI。后者没有合适的轻量 crate，几十行 FFI 比引入整个 crate 更合理。
 - **兼容原版 Scoop** —— SQLite 缓存 schema、config 格式、autoupdate 行为均保持兼容。
 - **零 warning 策略** —— 所有代码 0 warning，101 测试全过。
+- **`unsafe_code = deny` 护栏** —— 安全 crate 全量 deny `unsafe`；仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块（`internal::os`、`permission`）按审计豁免（审计清单在 `docs/unsafe-audit.md`）。
+- **criterion 基准护栏** —— `cargo bench` 对关键纯函数（版本比较 / glob / 哈希 / manifest 解析 / URL 工具）跑微基准，防重构回归。
 
 ---
 
@@ -211,6 +213,7 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 - [用 Rust 写的 Scoop 再实现 — Chawye Hsu（原版博文）](./用%20Rust%20写的%20Scoop%20再实现%20-%20Chawye%20Hsu.md)
 - [更新日志](./CHANGELOG.md)
 - [命令列表（英文）](./README.md#commands)
+- [hok-vs-Scoop 脚本基准](./scripts/benchmark_vs_scoop.ps1)（本机直跑，无需 Windows Sandbox）
 
 ## License
 

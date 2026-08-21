@@ -158,6 +158,7 @@ git clone https://github.com/maboloshi/hok
 cd hok
 cargo build
 cargo run -- help
+cargo bench   # guardrail micro-benchmarks over libscoop pure functions
 ```
 
 ## Code Quality
@@ -168,6 +169,8 @@ This fork maintains a strong focus on dependency hygiene. Notable improvements o
 - **Eliminated duplicate crate versions**: `unarc-rs` replaced (removed `sevenz-rust2 v0.20` + `zip v8` duplicates), `thiserror v1+v2` unified, `md-5/sha1/sha2 v0.10+v0.11` unified
 - **Code deduplication**: Macroized repetitive accessor patterns (×16), extracted shared helpers (×5), consolidated 4 benchmark files into 1
 - **Zero external C build dependencies for decompression**: All archive formats (7z, zip, tar, gz, bz2, xz, zst) handled by pure Rust crates; RAR via `unrar` (C++ unrar library); LZH/ISO via 7z.exe fallback
+- **`unsafe_code = deny` guardrail**: `unsafe` is denied crate-wide across the safe crates; the only exceptions are the `no_std` Win32 shim (`hok-shim`) and the small FFI modules (`libscoop::internal::os`, `libscoop::permission`). Every `unsafe` is audited and classified in the (working-tree) `docs/unsafe-audit.md`.
+- **criterion guardrail benchmarks**: `cargo bench` runs micro-benchmarks over the key pure functions (`compare_versions`, glob, hashing, manifest parsing, URL helpers) to catch refactor regressions.
 
 ## Performance
 
@@ -196,6 +199,14 @@ Summary
 
 You may run the benchmarks yourself using provided benchmark scripts in the
 [`scripts` directory]. Results may vary on different environments.
+
+A host-direct (no Windows Sandbox needed) hok-vs-Scoop guardrail benchmark is
+provided in [`scripts/benchmark_vs_scoop.ps1`](scripts/benchmark_vs_scoop.ps1):
+it runs the same read-only commands on both tools, compares exit codes and
+normalized output for behavioral equivalence, and reports a timing ratio
+(Scoop's network/stateful commands are skipped gracefully when the environment
+is offline). Micro-benchmarks over the pure functions live in `libscoop` and
+run via `cargo bench`.
 
 ## License
 
