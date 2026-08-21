@@ -53,6 +53,15 @@ pub(crate) fn verify_downloads(
             continue;
         }
 
+        // Resolve the upgradable reference exactly like `load_cache` does
+        // (`pkg.upgradable().unwrap_or(pkg)`), so verification checks the
+        // same cache filename the downloader produced for the *new* version.
+        // In force/reinstall mode `set.packages` holds the installed package
+        // (old version) whose `upgradable` points at the bucket manifest;
+        // using the raw package would look for the old version's cache file
+        // and fail with "file not found" even though the new one is cached.
+        let pkg = pkg.upgradable().unwrap_or(pkg);
+
         let files = pkg.download_filenames();
         let hashes = pkg.download_hashes();
         let files_cnt = files.len();
