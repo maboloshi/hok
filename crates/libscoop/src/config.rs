@@ -19,7 +19,7 @@
 //! - **Path discovery**: `possible_config_paths()` returns the known Scoop
 //!   config file locations (user-local and global); [`crate::Session::new()`] picks
 //!   the first one that exists as the migration source.
-//! - **Defaults**: If no config file exists, `Config::init()` creates a
+//! - **Defaults**: If no config file exists, `config::init_default()` creates a
 //!   blank hok config with sensible defaults.
 //!
 //! # Thread safety
@@ -339,15 +339,16 @@ impl FromStr for IsolatedPath {
 }
 
 impl Config {
-    /// Initialize the config with default values.
+    /// The cooldown remaining is computed against an explicit clock.
     ///
-    /// This function will try to write the default config to hok's own config
-    /// path (`~/.config/hok/config.json`).
-    pub(crate) fn init() -> Config {
-        let config = Config::default();
-        // try to write the default config to the default path, error is ignored
-        let _ = internal::fs::write_json(default::hok_config_path(), &config.inner);
-        config
+    /// Pure variant of [`Config::update_cooldown_remaining`]: deterministic
+    /// and host-independent.
+    pub fn update_cooldown_remaining_at(&self, now: time::OffsetDateTime) -> Option<i64> {
+        const COOLDOWN_SECS: i64 = 900; // 15 minutes
+        let last_ts = internal::time::parse_last_update(self.inner.last_update.as_ref()?)?;
+        let elapsed = now.unix_timestamp() - last_ts.unix_timestamp();
+        let remaining = COOLDOWN_SECS - elapsed;
+        (remaining > 0).then_some(remaining)
     }
 
     /// Get the `cache` directory of Scoop.
@@ -402,6 +403,9 @@ impl Config {
     }
 
     /// Set or remove an alias.
+    ///
+    /// Pure mutation (no file I/O): the caller persists the result via
+    /// [`write`].
     pub fn set_alias(&mut self, name: &str, command: Option<&str>) -> Fallible<()> {
         self.inner
             .alias
@@ -415,7 +419,7 @@ impl Config {
                 map.remove(name);
             }
         }
-        self.commit()
+        Ok(())
     }
 
     /// Get the `proxy` config.
@@ -463,12 +467,11 @@ impl Config {
     /// Returns the cooldown duration (in seconds) remaining before the next
     /// bucket update is allowed. Returns `None` if no last update recorded.
     /// The default cooldown is 15 minutes (900 seconds).
+    ///
+    /// Host-dependent (reads the wall clock); the deterministic computation
+    /// lives in [`Config::update_cooldown_remaining_at`].
     pub fn update_cooldown_remaining(&self) -> Option<i64> {
-        const COOLDOWN_SECS: i64 = 900; // 15 minutes
-        let last_ts = internal::time::parse_last_update(self.inner.last_update.as_ref()?)?;
-        let elapsed = time::OffsetDateTime::now_utc().unix_timestamp() - last_ts.unix_timestamp();
-        let remaining = COOLDOWN_SECS - elapsed;
-        (remaining > 0).then_some(remaining)
+        self.update_cooldown_remaining_at(time::OffsetDateTime::now_utc())
     }
 
     /// Get the `use_isoloated_path` config.
@@ -542,7 +545,10 @@ impl Config {
             .unwrap_or(DEFAULT)
     }
 
-    /// Update config key with new value.
+    /// Update a config key with a new value.
+    ///
+    /// Pure mutation (no file I/O): the caller persists the result via
+    /// [`write`].
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Fallible<()> {
         let is_unset = value.is_empty();
         match key {
@@ -693,16 +699,7 @@ impl Config {
             key => return Err(Error::ConfigKeyInvalid(key.to_owned())),
         }
 
-        self.commit()
-    }
-
-    /// Commit config changes and save to hok's own config file.
-    ///
-    /// `ConfigInner` only contains hok-supported keys, so the serialized
-    /// file is exactly the supported set; Scoop-only settings are never
-    /// copied over.
-    pub(crate) fn commit(&self) -> Fallible<()> {
-        internal::fs::write_json(&self.path, &self.inner)
+        Ok(())
     }
 
     /// Pretty print the config
@@ -755,6 +752,27 @@ impl Deref for Config {
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
+}
+
+/// Initialize the default config, writing it to the config path best-effort
+/// (a fresh install gets a config file on first run).
+///
+/// The persistence boundary for [`Config::default`]; called once at session
+/// creation. The [`Config`] type itself performs no file I/O.
+pub(crate) fn init_default() -> Config {
+    let config = Config::default();
+    // try to write the default config to the default path, error is ignored
+    let _ = write(&config);
+    config
+}
+
+/// Write the config back to its file (`~/.config/hok/config.json`).
+///
+/// The file-I/O boundary for the pure [`Config`] type: the mutation methods
+/// (`set`, `set_alias`) only update in-memory state — callers persist
+/// explicitly with this function.
+pub(crate) fn write(config: &Config) -> Fallible<()> {
+    internal::fs::write_json(&config.path, &config.inner)
 }
 
 /// Get a list of possible config paths.
@@ -1199,19 +1217,29 @@ pub fn edit(session: &crate::Session) -> Fallible<bool> {
 /// [2]: crate::Error::ConfigKeyInvalid
 /// [3]: crate::Error::ConfigValueInvalid
 pub fn set(session: &crate::Session, key: &str, value: &str) -> Fallible<()> {
-    session.config_mut()?.set(key, value)
+    {
+        let mut config = session.config_mut()?;
+        config.set(key, value)?;
+    }
+    write(&session.config())
 }
 
 /// Add an alias to the config.
 pub fn alias_add(session: &crate::Session, name: &str, command: &str) -> Fallible<()> {
-    let mut config = session.config_mut()?;
-    config.set_alias(name, Some(command))
+    {
+        let mut config = session.config_mut()?;
+        config.set_alias(name, Some(command))?;
+    }
+    write(&session.config())
 }
 
 /// Remove an alias from the config.
 pub fn alias_remove(session: &crate::Session, name: &str) -> Fallible<()> {
-    let mut config = session.config_mut()?;
-    config.set_alias(name, None)
+    {
+        let mut config = session.config_mut()?;
+        config.set_alias(name, None)?;
+    }
+    write(&session.config())
 }
 
 #[cfg(test)]
@@ -1496,6 +1524,37 @@ mod tests {
         assert_eq!(config.proxy(), Some("bom-proxy"));
     }
 
+    /// The cooldown computation is deterministic given an explicit clock
+    /// (pure `update_cooldown_remaining_at`); the wall-clock wrapper just
+    /// supplies `now`.
+    #[test]
+    fn cooldown_remaining_at_is_deterministic() {
+        let root = crate::test_utils::tmpdir("config_cooldown");
+        let hok = root.join("hok.json");
+        std::fs::write(&hok, r#"{"last_update": "2026-08-01T00:00:00Z"}"#).unwrap();
+        let config = ConfigBuilder::new().path(&hok).load().unwrap();
+
+        use time::format_description::well_known::Rfc3339;
+        let t0 = time::OffsetDateTime::parse("2026-08-01T00:00:00Z", &Rfc3339).unwrap();
+
+        // 10 minutes after the recorded update → 5 minutes (300 s) remaining.
+        assert_eq!(
+            config.update_cooldown_remaining_at(t0 + time::Duration::minutes(10)),
+            Some(300)
+        );
+        // 20 minutes after → cooldown expired.
+        assert_eq!(
+            config.update_cooldown_remaining_at(t0 + time::Duration::minutes(20)),
+            None
+        );
+        // No recorded update → no cooldown.
+        let root2 = crate::test_utils::tmpdir("config_cooldown_none");
+        let hok2 = root2.join("hok.json");
+        std::fs::write(&hok2, "{}").unwrap();
+        let config2 = ConfigBuilder::new().path(&hok2).load().unwrap();
+        assert_eq!(config2.update_cooldown_remaining_at(t0), None);
+    }
+
     /// Writing (commit) writes the whole `ConfigInner`, which by construction
     /// contains only hok-supported keys.
     #[test]
@@ -1506,7 +1565,7 @@ mod tests {
         let mut config = ConfigBuilder::new().path(&hok).load().unwrap();
         config.inner.proxy = Some("p".to_string());
         config.inner.no_junction = Some(true);
-        config.commit().unwrap();
+        write(&config).unwrap();
 
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&hok).unwrap()).unwrap();

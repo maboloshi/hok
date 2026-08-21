@@ -525,6 +525,7 @@ pub fn update(session: &Session) -> Fallible<()> {
     // — so the cooldown/outdated checks see that an update ran.
     let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
     config.set("last_update", time.as_str())?;
+    crate::config::write(&config)?;
 
     // Drop the mutable config borrow before calling open(), which needs
     // an immutable borrow on config via session.config().

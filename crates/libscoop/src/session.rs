@@ -137,7 +137,7 @@ impl Session {
         }
 
         // Config loading failed, create a new default config and return.
-        let config = RefCell::new(Config::init());
+        let config = RefCell::new(crate::config::init_default());
         let session = Session {
             config,
             event_bus: OnceCell::new(),
