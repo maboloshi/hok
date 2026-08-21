@@ -3,6 +3,9 @@ flamegraph.svg
 bench.ps1
 sandbox.wsb
 
+# vs-Scoop guardrail benchmark output
+scripts/benchmark-output/
+
 # Rust
 *.pyc
 *.swp
