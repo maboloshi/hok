@@ -316,11 +316,12 @@ mod tests {
         // fast-forward must NOT create a merge commit
         assert_eq!(head.parent_count(), 1);
         // worktree and index are clean after the fast-forward
-        assert!(repo
-            .statuses(None)
-            .unwrap()
-            .iter()
-            .all(|e| e.status().is_empty()));
+        assert!(
+            repo.statuses(None)
+                .unwrap()
+                .iter()
+                .all(|e| e.status().is_empty())
+        );
 
         cleanup(&origin_dir);
         cleanup(&clone_dir);
