@@ -148,8 +148,12 @@ mod windows {
     /// winreg's own string encoding (`to_utf16` + `v16_to_v8`).
     fn to_utf16_bytes(s: &OsString) -> Vec<u8> {
         let words: Vec<u16> = s.encode_wide().chain(Some(0)).collect();
-        // SAFETY: u16 is 2 bytes; reinterpreting the buffer as u8 bytes is
-        // what winreg does internally (`v16_to_v8`).
-        unsafe { std::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * 2).to_vec() }
+        // Emit UTF-16LE bytes (little-endian u16 to u8 pairs), matching the
+        // byte layout winreg produces for a `RegValue` (`v16_to_v8`).
+        let mut bytes = Vec::with_capacity(words.len() * 2);
+        for w in words {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        bytes
     }
 }
