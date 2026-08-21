@@ -426,7 +426,7 @@ pub fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
             .ok_or_else(|| Error::BucketAddRemoteRequired(name.to_owned()))?,
     };
 
-    internal::git::clone_repo(remote_url, path, proxy)
+    session.git().clone_repo(remote_url, &path, proxy)
 }
 
 /// Get a list of added buckets.
@@ -481,6 +481,9 @@ pub fn update(session: &Session) -> Fallible<()> {
     let mut config = session.config_mut()?;
     let proxy = config.proxy().map(|s| s.to_owned());
     let emitter = session.emitter();
+    // The git capability is shareable across update threads (unlike the
+    // !Sync session); tests inject an in-memory fake here.
+    let git = session.git();
 
     let handles: Vec<_> = buckets
         .iter()
@@ -489,6 +492,7 @@ pub fn update(session: &Session) -> Fallible<()> {
             let repo = bucket.path().to_owned();
             let name = bucket.name().to_owned();
             let proxy = proxy.clone();
+            let git = git.clone();
             let emitter = emitter.clone();
 
             std::thread::spawn(move || {
@@ -498,7 +502,7 @@ pub fn update(session: &Session) -> Fallible<()> {
                     let _ = tx.send(crate::Event::BucketUpdateProgress(ctx.clone()));
                 }
 
-                match internal::git::pull(repo, proxy) {
+                match git.pull(&repo, proxy.as_deref()) {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
