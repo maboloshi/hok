@@ -11,7 +11,7 @@ use crate::internal::string::encode_wide;
 // ─── FFI declarations ─────────────────────────────────────────────────────
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> isize; // HANDLE
 
     fn Process32FirstW(hSnapshot: isize, lppe: *mut PROCESSENTRY32W) -> i32; // BOOL
@@ -55,7 +55,7 @@ struct PROCESSENTRY32W {
 // ─── Shell32 FFI for admin/privilege checks ─────────────────────────────────
 
 #[link(name = "shell32")]
-extern "system" {
+unsafe extern "system" {
     /// Returns a non-zero value if the current process is running under a
     /// user account that has administrator privileges; zero otherwise.
     /// https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-isuseranadmin
@@ -272,7 +272,7 @@ pub fn run_gui(exe: &Path, args: &[&str], working_dir: Option<&Path>) -> std::io
     }
 
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn ShellExecuteExW(p_exec_info: *mut SHELLEXECUTEINFOW) -> i32;
     }
 
@@ -369,7 +369,7 @@ fn shell_open(file: &str) -> std::io::Result<()> {
 // handle or null.
 #[cfg(windows)]
 #[link(name = "shell32")]
-extern "system" {
+unsafe extern "system" {
     fn ShellExecuteW(
         hwnd: *mut std::ffi::c_void,
         lp_operation: *const u16,

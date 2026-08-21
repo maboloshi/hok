@@ -25,7 +25,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[cfg(not(test))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn mainCRTStartup() -> ! {
     let code = unsafe { hok_shim::entry() };
     hok_shim::exit_process(code)

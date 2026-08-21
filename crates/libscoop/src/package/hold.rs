@@ -3,7 +3,7 @@
 //! Toggles the `held` flag in the package's `install.json`, preventing
 //! accidental upgrades — mirroring Scoop's `hold` / `unhold` commands.
 
-use crate::{error::Fallible, internal, package::InstallInfo, Error, Session};
+use crate::{Error, Session, error::Fallible, internal, package::InstallInfo};
 
 /// Result of a hold/unhold toggle.
 ///
@@ -42,15 +42,16 @@ pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<HoldResult> {
     path.push("current");
     path.push("install.json");
 
-    if let Ok(mut install_info) = InstallInfo::parse(&path) {
-        if install_info.is_held() == flag {
-            return Ok(HoldResult::Unchanged);
+    match InstallInfo::parse(&path) {
+        Ok(mut install_info) => {
+            if install_info.is_held() == flag {
+                return Ok(HoldResult::Unchanged);
+            }
+            install_info.set_held(flag);
+            internal::fs::write_json(path, install_info)?;
+            Ok(HoldResult::Changed)
         }
-        install_info.set_held(flag);
-        internal::fs::write_json(path, install_info)?;
-        Ok(HoldResult::Changed)
-    } else {
-        Err(Error::PackageHoldBrokenInstall(name.to_owned()))
+        _ => Err(Error::PackageHoldBrokenInstall(name.to_owned())),
     }
 }
 

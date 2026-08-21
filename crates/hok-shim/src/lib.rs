@@ -34,12 +34,12 @@ extern crate std;
 // `panic = "abort"` — but the symbol must resolve at link time. Not needed
 // under `cargo test` (std links the real vcruntime symbol).
 #[cfg(all(windows, not(test)))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn __CxxFrameHandler3() -> i32 {
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Copy `n` bytes from `src` to `dst`.
 ///
 /// # Safety
@@ -47,24 +47,28 @@ pub extern "C" fn __CxxFrameHandler3() -> i32 {
 /// `dst` and `src` must be valid for reads/writes of `n` bytes and must not
 /// overlap.
 pub unsafe extern "C" fn shim_memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
-    for i in 0..n {
-        *dst.add(i) = *src.add(i);
+    unsafe {
+        for i in 0..n {
+            *dst.add(i) = *src.add(i);
+        }
+        dst
     }
-    dst
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Fill `n` bytes of `dst` with `c` (as an unsigned byte).
 ///
 /// # Safety
 ///
 /// `dst` must be valid for writes of `n` bytes.
 pub unsafe extern "C" fn shim_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
-    for i in 0..n {
-        *dst.add(i) = c as u8;
+    unsafe {
+        for i in 0..n {
+            *dst.add(i) = c as u8;
+        }
+        dst
     }
-    dst
 }
-#[no_mangle]
+#[unsafe(no_mangle)]
 /// Compare `n` bytes of `a` and `b`, returning a negative, zero, or positive
 /// value like `memcmp`.
 ///
@@ -72,19 +76,21 @@ pub unsafe extern "C" fn shim_memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 
 ///
 /// `a` and `b` must be valid for reads of `n` bytes.
 pub unsafe extern "C" fn shim_memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
-    for i in 0..n {
-        let diff = (*a.add(i) as i32) - (*b.add(i) as i32);
-        if diff != 0 {
-            return diff;
+    unsafe {
+        for i in 0..n {
+            let diff = (*a.add(i) as i32) - (*b.add(i) as i32);
+            if diff != 0 {
+                return diff;
+            }
         }
+        0
     }
-    0
 }
 
 // ── FFI ───────────────────────────────────────────────────────────────
 
 #[link(name = "kernel32")]
-extern "system" {
+unsafe extern "system" {
     fn GetModuleFileNameW(hModule: isize, lpFilename: *mut u16, nSize: u32) -> u32;
     fn GetCommandLineW() -> *mut u16;
     fn GetFullPathNameW(
@@ -150,7 +156,7 @@ extern "system" {
 }
 
 #[link(name = "shell32")]
-extern "system" {
+unsafe extern "system" {
     fn ShellExecuteExW(lpExecInfo: *mut u8) -> i32;
 }
 
@@ -232,57 +238,65 @@ impl U16Buf {
 ///
 /// `msg` must point to `msg.len()` readable bytes.
 pub unsafe fn write_stderr(msg: &[u8]) {
-    let h = GetStdHandle(STD_ERROR_HANDLE);
-    if h != NULL_HANDLE && h != INVALID_HANDLE {
-        let mut written: u32 = 0;
-        WriteFile(
-            h,
-            msg.as_ptr(),
-            msg.len() as u32,
-            &mut written,
-            core::ptr::null(),
-        );
+    unsafe {
+        let h = GetStdHandle(STD_ERROR_HANDLE);
+        if h != NULL_HANDLE && h != INVALID_HANDLE {
+            let mut written: u32 = 0;
+            WriteFile(
+                h,
+                msg.as_ptr(),
+                msg.len() as u32,
+                &mut written,
+                core::ptr::null(),
+            );
+        }
     }
 }
 
 unsafe fn u16_strlen(p: *const u16, max: usize) -> usize {
-    let mut i = 0;
-    while i < max && *p.add(i) != 0 {
-        i += 1;
+    unsafe {
+        let mut i = 0;
+        while i < max && *p.add(i) != 0 {
+            i += 1;
+        }
+        i
     }
-    i
 }
 
 unsafe fn u16_to_buf(ptr: *const u16) -> U16Buf {
-    let len = u16_strlen(ptr, MAX_U16 - 1);
-    let mut b = U16Buf::new();
-    core::ptr::copy_nonoverlapping(ptr, b.mut_ptr(), len);
-    b.buf[len] = 0;
-    b.len = len;
-    b
+    unsafe {
+        let len = u16_strlen(ptr, MAX_U16 - 1);
+        let mut b = U16Buf::new();
+        core::ptr::copy_nonoverlapping(ptr, b.mut_ptr(), len);
+        b.buf[len] = 0;
+        b.len = len;
+        b
+    }
 }
 
 /// Skip argv[0] from a command line string. Returns everything after the
 /// first argument (argv[0] can be quoted or unquoted).
 unsafe fn skip_argv0(cmd: *mut u16) -> U16Buf {
-    let mut p = 0usize;
-    if *cmd.add(p) == b'"' as u16 {
-        p += 1;
-        while *cmd.add(p) != 0 && *cmd.add(p) != b'"' as u16 {
-            p += 1;
-        }
+    unsafe {
+        let mut p = 0usize;
         if *cmd.add(p) == b'"' as u16 {
             p += 1;
+            while *cmd.add(p) != 0 && *cmd.add(p) != b'"' as u16 {
+                p += 1;
+            }
+            if *cmd.add(p) == b'"' as u16 {
+                p += 1;
+            }
+        } else {
+            while *cmd.add(p) != 0 && *cmd.add(p) != b' ' as u16 {
+                p += 1;
+            }
         }
-    } else {
-        while *cmd.add(p) != 0 && *cmd.add(p) != b' ' as u16 {
+        while *cmd.add(p) == b' ' as u16 {
             p += 1;
         }
+        u16_to_buf(cmd.add(p))
     }
-    while *cmd.add(p) == b' ' as u16 {
-        p += 1;
-    }
-    u16_to_buf(cmd.add(p))
 }
 
 /// Case-insensitive comparison of two ASCII byte slices.
@@ -323,30 +337,32 @@ pub(crate) fn is_known_field(key: &[u8]) -> bool {
 // ── .shim file I/O ────────────────────────────────────────────────────
 
 unsafe fn read_shim_file(path: &U16Buf) -> ([u8; FILE_BUF], usize) {
-    let mut buf = [0u8; FILE_BUF];
-    let h = CreateFileW(
-        path.ptr(),
-        GENERIC_READ,
-        FILE_SHARE_READ,
-        core::ptr::null(),
-        OPEN_EXISTING,
-        0,
-        NULL_HANDLE,
-    );
-    if h == INVALID_HANDLE || h == NULL_HANDLE {
-        return (buf, 0);
+    unsafe {
+        let mut buf = [0u8; FILE_BUF];
+        let h = CreateFileW(
+            path.ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            NULL_HANDLE,
+        );
+        if h == INVALID_HANDLE || h == NULL_HANDLE {
+            return (buf, 0);
+        }
+        let mut read: u32 = 0;
+        ReadFile(
+            h,
+            buf.as_mut_ptr(),
+            FILE_BUF as u32,
+            &mut read,
+            core::ptr::null(),
+        );
+        let n = read as usize;
+        CloseHandle(h);
+        (buf, n)
     }
-    let mut read: u32 = 0;
-    ReadFile(
-        h,
-        buf.as_mut_ptr(),
-        FILE_BUF as u32,
-        &mut read,
-        core::ptr::null(),
-    );
-    let n = read as usize;
-    CloseHandle(h);
-    (buf, n)
 }
 
 // ── UTF-8 parser for .shim content ──────────────────────────────────
@@ -405,16 +421,18 @@ pub(crate) fn parse_key_value(line: &[u8]) -> Option<(&[u8], &[u8])> {
 
 /// Expand `%ENV%` using ExpandEnvironmentStringsW.
 unsafe fn expand_env(src: &U16Buf) -> U16Buf {
-    let required = ExpandEnvironmentStringsW(src.ptr(), core::ptr::null_mut(), 0);
-    if required == 0 || required as usize > MAX_U16 {
-        return *src;
+    unsafe {
+        let required = ExpandEnvironmentStringsW(src.ptr(), core::ptr::null_mut(), 0);
+        if required == 0 || required as usize > MAX_U16 {
+            return *src;
+        }
+        let mut buf = [0u16; MAX_U16];
+        let actual = ExpandEnvironmentStringsW(src.ptr(), buf.as_mut_ptr(), required);
+        if actual == 0 {
+            return *src;
+        }
+        u16_to_buf(buf.as_ptr())
     }
-    let mut buf = [0u16; MAX_U16];
-    let actual = ExpandEnvironmentStringsW(src.ptr(), buf.as_mut_ptr(), required);
-    if actual == 0 {
-        return *src;
-    }
-    u16_to_buf(buf.as_ptr())
 }
 
 /// Replace all `%~dp0` with target exe directory (trailing backslash).
@@ -472,40 +490,44 @@ pub(crate) fn expand_dp0(val: &mut U16Buf, target_dir: &U16Buf) {
 // ── Path resolution ───────────────────────────────────────────────────
 
 unsafe fn get_shim_dir() -> U16Buf {
-    let mut buf = [0u16; MAX_U16];
-    let len = GetModuleFileNameW(NULL_HANDLE, buf.as_mut_ptr(), MAX_U16 as u32);
-    if len == 0 || len as usize >= MAX_U16 {
-        return U16Buf::new();
-    }
-    let mut last_sep = 0usize;
-    for (i, &c) in buf.iter().enumerate().take(len as usize) {
-        if c == b'\\' as u16 || c == b'/' as u16 {
-            last_sep = i;
+    unsafe {
+        let mut buf = [0u16; MAX_U16];
+        let len = GetModuleFileNameW(NULL_HANDLE, buf.as_mut_ptr(), MAX_U16 as u32);
+        if len == 0 || len as usize >= MAX_U16 {
+            return U16Buf::new();
         }
+        let mut last_sep = 0usize;
+        for (i, &c) in buf.iter().enumerate().take(len as usize) {
+            if c == b'\\' as u16 || c == b'/' as u16 {
+                last_sep = i;
+            }
+        }
+        U16Buf::from_slice(&buf[..last_sep])
     }
-    U16Buf::from_slice(&buf[..last_sep])
 }
 
 unsafe fn get_exe_stem() -> U16Buf {
-    let mut buf = [0u16; MAX_U16];
-    let len = GetModuleFileNameW(NULL_HANDLE, buf.as_mut_ptr(), MAX_U16 as u32);
-    if len == 0 || len as usize >= MAX_U16 {
-        return U16Buf::new();
-    }
-    let mut file_start = 0usize;
-    for (i, &c) in buf.iter().enumerate().take(len as usize) {
-        if c == b'\\' as u16 || c == b'/' as u16 {
-            file_start = i + 1;
+    unsafe {
+        let mut buf = [0u16; MAX_U16];
+        let len = GetModuleFileNameW(NULL_HANDLE, buf.as_mut_ptr(), MAX_U16 as u32);
+        if len == 0 || len as usize >= MAX_U16 {
+            return U16Buf::new();
         }
-    }
-    let mut ext_end = len as usize;
-    for i in (file_start..len as usize).rev() {
-        if buf[i] == b'.' as u16 {
-            ext_end = i;
-            break;
+        let mut file_start = 0usize;
+        for (i, &c) in buf.iter().enumerate().take(len as usize) {
+            if c == b'\\' as u16 || c == b'/' as u16 {
+                file_start = i + 1;
+            }
         }
+        let mut ext_end = len as usize;
+        for i in (file_start..len as usize).rev() {
+            if buf[i] == b'.' as u16 {
+                ext_end = i;
+                break;
+            }
+        }
+        U16Buf::from_slice(&buf[file_start..ext_end])
     }
-    U16Buf::from_slice(&buf[file_start..ext_end])
 }
 
 unsafe fn get_shim_path(dir: &U16Buf, stem: &U16Buf) -> U16Buf {
@@ -556,51 +578,53 @@ pub(crate) fn target_dir_of(resolved: &U16Buf) -> U16Buf {
 }
 
 unsafe fn resolve_target(raw: &U16Buf, shim_dir: &U16Buf) -> U16Buf {
-    let raw_slice = raw.slice();
-    if raw_slice.len() < 5 {
-        return *raw;
-    }
-    let prefix: &[u16] = &[
-        b'~' as u16,
-        b'\\' as u16,
-        b'.' as u16,
-        b'.' as u16,
-        b'\\' as u16,
-    ];
-    if &raw_slice[..5] == prefix {
-        let mut buf = [0u16; MAX_U16];
-        let mut pos = 0;
-        for &c in shim_dir.slice().iter() {
-            if pos < MAX_U16 - 3 {
+    unsafe {
+        let raw_slice = raw.slice();
+        if raw_slice.len() < 5 {
+            return *raw;
+        }
+        let prefix: &[u16] = &[
+            b'~' as u16,
+            b'\\' as u16,
+            b'.' as u16,
+            b'.' as u16,
+            b'\\' as u16,
+        ];
+        if &raw_slice[..5] == prefix {
+            let mut buf = [0u16; MAX_U16];
+            let mut pos = 0;
+            for &c in shim_dir.slice().iter() {
+                if pos < MAX_U16 - 3 {
+                    buf[pos] = c;
+                    pos += 1;
+                }
+            }
+            for &c in [b'\\' as u16, b'.' as u16, b'.' as u16, b'\\' as u16].iter() {
                 buf[pos] = c;
                 pos += 1;
             }
-        }
-        for &c in [b'\\' as u16, b'.' as u16, b'.' as u16, b'\\' as u16].iter() {
-            buf[pos] = c;
-            pos += 1;
-        }
-        for &c in raw_slice[5..].iter() {
-            if pos < MAX_U16 - 2 {
-                buf[pos] = c;
-                pos += 1;
+            for &c in raw_slice[5..].iter() {
+                if pos < MAX_U16 - 2 {
+                    buf[pos] = c;
+                    pos += 1;
+                }
             }
+            buf[pos] = 0;
+            return U16Buf::from_slice(&buf[..pos]);
         }
-        buf[pos] = 0;
-        return U16Buf::from_slice(&buf[..pos]);
+        let mut resolved = [0u16; MAX_U16];
+        let mut file_part: *mut u16 = core::ptr::null_mut();
+        let len = GetFullPathNameW(
+            raw.ptr(),
+            MAX_U16 as u32,
+            resolved.as_mut_ptr(),
+            &mut file_part,
+        );
+        if len > 0 && (len as usize) < MAX_U16 {
+            return u16_to_buf(resolved.as_ptr());
+        }
+        *raw
     }
-    let mut resolved = [0u16; MAX_U16];
-    let mut file_part: *mut u16 = core::ptr::null_mut();
-    let len = GetFullPathNameW(
-        raw.ptr(),
-        MAX_U16 as u32,
-        resolved.as_mut_ptr(),
-        &mut file_part,
-    );
-    if len > 0 && (len as usize) < MAX_U16 {
-        return u16_to_buf(resolved.as_ptr());
-    }
-    *raw
 }
 
 // ── GUI detection via PE header (no shell32 dependency) ────────────
@@ -608,73 +632,73 @@ unsafe fn resolve_target(raw: &U16Buf, shim_dir: &U16Buf) -> U16Buf {
 /// Check if the target executable has GUI subsystem by reading its PE header.
 /// Reads the IMAGE_OPTIONAL_HEADER->Subsystem field: 2 = GUI, 3 = Console.
 unsafe fn is_gui_app(path: &U16Buf) -> bool {
-    let h = CreateFileW(
-        path.ptr(),
-        GENERIC_READ,
-        FILE_SHARE_READ,
-        core::ptr::null(),
-        OPEN_EXISTING,
-        0,
-        NULL_HANDLE,
-    );
-    if h == INVALID_HANDLE || h == NULL_HANDLE {
-        return false;
-    }
+    unsafe {
+        let h = CreateFileW(
+            path.ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ,
+            core::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            NULL_HANDLE,
+        );
+        if h == INVALID_HANDLE || h == NULL_HANDLE {
+            return false;
+        }
 
-    let mut buf = [0u8; 512];
-    let mut read: u32 = 0;
-    ReadFile(h, buf.as_mut_ptr(), 512, &mut read, core::ptr::null());
-    CloseHandle(h);
+        let mut buf = [0u8; 512];
+        let mut read: u32 = 0;
+        ReadFile(h, buf.as_mut_ptr(), 512, &mut read, core::ptr::null());
+        CloseHandle(h);
 
-    if read < 64 {
-        return false;
+        if read < 64 {
+            return false;
+        }
+        // Check MZ signature
+        if buf[0] != b'M' || buf[1] != b'Z' {
+            return false;
+        }
+        // PE offset at 0x3C; guard against an offset that would overrun the
+        // bytes actually read (no subtraction that could underflow)
+        let pe_off = *(buf.as_ptr().add(0x3C) as *const u32) as usize;
+        if pe_off as u32 + 0x5E > read {
+            return false;
+        }
+        // Check PE signature
+        if buf[pe_off] != b'P' || buf[pe_off + 1] != b'E' {
+            return false;
+        }
+        // Subsystem is at PE offset + 0x5C
+        // Structure: PE sig(4) + COFF hdr(20) + OptionalHdr(0x44 to subsystem field)
+        // = 4 + 20 + 0x44 = 0x5C from PE start
+        let subsystem = core::ptr::read_unaligned(buf.as_ptr().add(pe_off + 0x5C) as *const u16);
+        subsystem == 2 // IMAGE_SUBSYSTEM_WINDOWS_GUI
     }
-    // Check MZ signature
-    if buf[0] != b'M' || buf[1] != b'Z' {
-        return false;
-    }
-    // PE offset at 0x3C; guard against an offset that would overrun the
-    // bytes actually read (no subtraction that could underflow)
-    let pe_off = *(buf.as_ptr().add(0x3C) as *const u32) as usize;
-    if pe_off as u32 + 0x5E > read {
-        return false;
-    }
-    // Check PE signature
-    if buf[pe_off] != b'P' || buf[pe_off + 1] != b'E' {
-        return false;
-    }
-    // Subsystem is at PE offset + 0x5C
-    // Structure: PE sig(4) + COFF hdr(20) + OptionalHdr(0x44 to subsystem field)
-    // = 4 + 20 + 0x44 = 0x5C from PE start
-    let subsystem = core::ptr::read_unaligned(buf.as_ptr().add(pe_off + 0x5C) as *const u16);
-    subsystem == 2 // IMAGE_SUBSYSTEM_WINDOWS_GUI
 }
 
 // ── Job object ────────────────────────────────────────────────────────
 
 unsafe fn create_job() -> isize {
-    let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
-    if job == NULL_HANDLE || job == INVALID_HANDLE {
-        return NULL_HANDLE;
-    }
-    // JOBOBJECT_EXTENDED_LIMIT_INFORMATION on x64 = 0x60 bytes
-    // BasicLimitInformation.LimitFlags offset: 0x10 (x64) / 0x0C (x86)
-    #[cfg(target_pointer_width = "64")]
-    const LF_OFF: usize = 0x10;
-    #[cfg(target_pointer_width = "32")]
-    const LF_OFF: usize = 0x0C;
-    let mut info = [0u8; 0x60];
-    *(info.as_mut_ptr().add(LF_OFF) as *mut u32) = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    let r = SetInformationJobObject(
-        job,
-        JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
-        info.as_ptr(),
-        info.len() as u32,
-    );
-    if r == 0 {
-        NULL_HANDLE
-    } else {
-        job
+    unsafe {
+        let job = CreateJobObjectW(core::ptr::null(), core::ptr::null());
+        if job == NULL_HANDLE || job == INVALID_HANDLE {
+            return NULL_HANDLE;
+        }
+        // JOBOBJECT_EXTENDED_LIMIT_INFORMATION on x64 = 0x60 bytes
+        // BasicLimitInformation.LimitFlags offset: 0x10 (x64) / 0x0C (x86)
+        #[cfg(target_pointer_width = "64")]
+        const LF_OFF: usize = 0x10;
+        #[cfg(target_pointer_width = "32")]
+        const LF_OFF: usize = 0x0C;
+        let mut info = [0u8; 0x60];
+        *(info.as_mut_ptr().add(LF_OFF) as *mut u32) = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let r = SetInformationJobObject(
+            job,
+            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            info.as_ptr(),
+            info.len() as u32,
+        );
+        if r == 0 { NULL_HANDLE } else { job }
     }
 }
 
@@ -760,127 +784,131 @@ unsafe fn spawn(
     cwd: &U16Buf,
     elevate_req: bool,
 ) -> (isize, bool) {
-    let mut cmdline_buf = [0u16; MAX_U16 * 4];
-    build_cmdline(path, args, user_tail, &mut cmdline_buf);
+    unsafe {
+        let mut cmdline_buf = [0u16; MAX_U16 * 4];
+        build_cmdline(path, args, user_tail, &mut cmdline_buf);
 
-    if elevate_req {
-        return (NULL_HANDLE, true);
+        if elevate_req {
+            return (NULL_HANDLE, true);
+        }
+
+        let mut si: [u8; 104] = [0u8; 104];
+        *(si.as_mut_ptr() as *mut u32) = 104;
+        let mut pi: [u8; 24] = [0u8; 24];
+
+        // Build a mutable command line for CreateProcessW
+        let mut cmd_mut = cmdline_buf;
+
+        let cwd_ptr = if cwd.len > 0 {
+            cwd.ptr()
+        } else {
+            core::ptr::null()
+        };
+
+        let r = CreateProcessW(
+            core::ptr::null(),
+            cmd_mut.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            1,
+            CREATE_SUSPENDED,
+            core::ptr::null(),
+            cwd_ptr,
+            si.as_mut_ptr(),
+            pi.as_mut_ptr(),
+        );
+
+        if r != 0 {
+            let proc_h = *(pi.as_ptr() as *const isize);
+            let thread_h = *(pi.as_ptr() as *const isize).add(1);
+            ResumeThread(thread_h);
+            return (proc_h, false);
+        }
+
+        if GetLastError() == ERROR_ELEVATION_REQUIRED {
+            return (NULL_HANDLE, true);
+        }
+
+        (NULL_HANDLE, false)
     }
-
-    let mut si: [u8; 104] = [0u8; 104];
-    *(si.as_mut_ptr() as *mut u32) = 104;
-    let mut pi: [u8; 24] = [0u8; 24];
-
-    // Build a mutable command line for CreateProcessW
-    let mut cmd_mut = cmdline_buf;
-
-    let cwd_ptr = if cwd.len > 0 {
-        cwd.ptr()
-    } else {
-        core::ptr::null()
-    };
-
-    let r = CreateProcessW(
-        core::ptr::null(),
-        cmd_mut.as_mut_ptr(),
-        core::ptr::null(),
-        core::ptr::null(),
-        1,
-        CREATE_SUSPENDED,
-        core::ptr::null(),
-        cwd_ptr,
-        si.as_mut_ptr(),
-        pi.as_mut_ptr(),
-    );
-
-    if r != 0 {
-        let proc_h = *(pi.as_ptr() as *const isize);
-        let thread_h = *(pi.as_ptr() as *const isize).add(1);
-        ResumeThread(thread_h);
-        return (proc_h, false);
-    }
-
-    if GetLastError() == ERROR_ELEVATION_REQUIRED {
-        return (NULL_HANDLE, true);
-    }
-
-    (NULL_HANDLE, false)
 }
 
 /// Launch with elevation via ShellExecuteExW and wait for exit.
 /// Returns the child's exit code.
 unsafe fn do_elevate(path: &U16Buf, args: &U16Buf, user_tail: &U16Buf, cwd: &U16Buf) -> u32 {
-    let verb: &[u16] = &[
-        b'r' as u16,
-        b'u' as u16,
-        b'n' as u16,
-        b'a' as u16,
-        b's' as u16,
-        0,
-    ];
-    let verb_buf = U16Buf::from_slice(verb);
-    let mut cmdline = [0u16; MAX_U16 * 4];
-    build_cmdline(path, args, user_tail, &mut cmdline);
-    let cwd_ptr = if cwd.len > 0 {
-        cwd.ptr()
-    } else {
-        core::ptr::null()
-    };
+    unsafe {
+        let verb: &[u16] = &[
+            b'r' as u16,
+            b'u' as u16,
+            b'n' as u16,
+            b'a' as u16,
+            b's' as u16,
+            0,
+        ];
+        let verb_buf = U16Buf::from_slice(verb);
+        let mut cmdline = [0u16; MAX_U16 * 4];
+        build_cmdline(path, args, user_tail, &mut cmdline);
+        let cwd_ptr = if cwd.len > 0 {
+            cwd.ptr()
+        } else {
+            core::ptr::null()
+        };
 
-    // SHELLEXECUTEINFOW (104 bytes on x64)
-    #[repr(C)]
-    #[allow(non_snake_case)]
-    #[allow(clippy::upper_case_acronyms)]
-    struct SEI {
-        cbSize: u32,
-        fMask: u32,
-        hwnd: isize,
-        lpVerb: *const u16,
-        lpFile: *const u16,
-        lpParameters: *const u16,
-        lpDirectory: *const u16,
-        nShow: i32,
-        hInstApp: isize,
-        lpIDList: isize,
-        lpClass: *const u16,
-        hkeyClass: isize,
-        dwHotKey: u32,
-        hMonitor: isize,
-        hProcess: isize,
+        // SHELLEXECUTEINFOW (104 bytes on x64)
+        #[repr(C)]
+        #[allow(non_snake_case)]
+        #[allow(clippy::upper_case_acronyms)]
+        struct SEI {
+            cbSize: u32,
+            fMask: u32,
+            hwnd: isize,
+            lpVerb: *const u16,
+            lpFile: *const u16,
+            lpParameters: *const u16,
+            lpDirectory: *const u16,
+            nShow: i32,
+            hInstApp: isize,
+            lpIDList: isize,
+            lpClass: *const u16,
+            hkeyClass: isize,
+            dwHotKey: u32,
+            hMonitor: isize,
+            hProcess: isize,
+        }
+
+        let mut sei = SEI {
+            cbSize: core::mem::size_of::<SEI>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            hwnd: 0,
+            lpVerb: verb_buf.ptr(),
+            lpFile: path.ptr(),
+            lpParameters: cmdline.as_ptr(),
+            lpDirectory: cwd_ptr,
+            nShow: 1,
+            hInstApp: 0,
+            lpIDList: 0,
+            lpClass: core::ptr::null(),
+            hkeyClass: 0,
+            dwHotKey: 0,
+            hMonitor: 0,
+            hProcess: 0,
+        };
+
+        if ShellExecuteExW(&mut sei as *mut _ as *mut u8) == 0 {
+            return 1;
+        }
+
+        let proc_h = sei.hProcess;
+        if proc_h == NULL_HANDLE || proc_h == INVALID_HANDLE {
+            return 1;
+        }
+
+        WaitForSingleObject(proc_h, INFINITE);
+        let mut exit_code: u32 = 1;
+        GetExitCodeProcess(proc_h, &mut exit_code);
+        CloseHandle(proc_h);
+        exit_code
     }
-
-    let mut sei = SEI {
-        cbSize: core::mem::size_of::<SEI>() as u32,
-        fMask: SEE_MASK_NOCLOSEPROCESS,
-        hwnd: 0,
-        lpVerb: verb_buf.ptr(),
-        lpFile: path.ptr(),
-        lpParameters: cmdline.as_ptr(),
-        lpDirectory: cwd_ptr,
-        nShow: 1,
-        hInstApp: 0,
-        lpIDList: 0,
-        lpClass: core::ptr::null(),
-        hkeyClass: 0,
-        dwHotKey: 0,
-        hMonitor: 0,
-        hProcess: 0,
-    };
-
-    if ShellExecuteExW(&mut sei as *mut _ as *mut u8) == 0 {
-        return 1;
-    }
-
-    let proc_h = sei.hProcess;
-    if proc_h == NULL_HANDLE || proc_h == INVALID_HANDLE {
-        return 1;
-    }
-
-    WaitForSingleObject(proc_h, INFINITE);
-    let mut exit_code: u32 = 1;
-    GetExitCodeProcess(proc_h, &mut exit_code);
-    CloseHandle(proc_h);
-    exit_code
 }
 
 // ── Entry ─────────────────────────────────────────────────────────────
@@ -899,151 +927,153 @@ unsafe extern "system" fn ignore_ctrl_c(_: u32) -> i32 {
 /// Relies on the Windows process environment; called once from the entry
 /// points in the bin targets.
 pub unsafe fn entry() -> i32 {
-    // Swallow Ctrl+C — the child inherits the console and handles it
-    SetConsoleCtrlHandler(ignore_ctrl_c as *const () as isize, 1);
+    unsafe {
+        // Swallow Ctrl+C — the child inherits the console and handles it
+        SetConsoleCtrlHandler(ignore_ctrl_c as *const () as isize, 1);
 
-    // ── Parse .shim file ───────────────────────────────────────────
-    let shim_dir = get_shim_dir();
-    let exe_stem = get_exe_stem();
-    let shim_path = get_shim_path(&shim_dir, &exe_stem);
+        // ── Parse .shim file ───────────────────────────────────────────
+        let shim_dir = get_shim_dir();
+        let exe_stem = get_exe_stem();
+        let shim_path = get_shim_path(&shim_dir, &exe_stem);
 
-    let (content, content_len) = read_shim_file(&shim_path);
-    if content_len == 0 {
-        write_stderr(b"shim: cannot read .shim file\n");
-        return 1;
-    }
+        let (content, content_len) = read_shim_file(&shim_path);
+        if content_len == 0 {
+            write_stderr(b"shim: cannot read .shim file\n");
+            return 1;
+        }
 
-    let mut content_slice = &content[..content_len];
+        let mut content_slice = &content[..content_len];
 
-    // Strip UTF-8 BOM (\xEF\xBB\xBF) if present
-    if content_slice.len() >= 3
-        && content_slice[0] == 0xEF
-        && content_slice[1] == 0xBB
-        && content_slice[2] == 0xBF
-    {
-        content_slice = &content_slice[3..];
-    }
+        // Strip UTF-8 BOM (\xEF\xBB\xBF) if present
+        if content_slice.len() >= 3
+            && content_slice[0] == 0xEF
+            && content_slice[1] == 0xBB
+            && content_slice[2] == 0xBF
+        {
+            content_slice = &content_slice[3..];
+        }
 
-    let mut target = U16Buf::new();
-    let mut args_u16 = U16Buf::new();
-    let mut cwd_u16 = U16Buf::new();
-    let mut elevate = false;
-    let mut env_names: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
-    let mut env_vals: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
-    let mut env_count = 0usize;
-    let mut has_target = false;
+        let mut target = U16Buf::new();
+        let mut args_u16 = U16Buf::new();
+        let mut cwd_u16 = U16Buf::new();
+        let mut elevate = false;
+        let mut env_names: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
+        let mut env_vals: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
+        let mut env_count = 0usize;
+        let mut has_target = false;
 
-    let mut offset = 0usize;
-    while let Some((line, next)) = next_line(content_slice, offset) {
-        if let Some((key, val)) = parse_key_value(line) {
-            if u16_ieq(key, b"path") {
-                target.set_utf8(val);
-                has_target = true;
-            } else if u16_ieq(key, b"args") {
-                args_u16.set_utf8(val);
-            } else if u16_ieq(key, b"cwd") || u16_ieq(key, b"workdir") {
-                cwd_u16.set_utf8(val);
-            } else if u16_ieq(key, b"elevate") || u16_ieq(key, b"runas") {
-                // Only true/1/yes means elevate
-                if (val.len() == 1 && val[0] == b'1')
-                    || u16_ieq(val, b"true")
-                    || u16_ieq(val, b"yes")
-                {
-                    elevate = true;
+        let mut offset = 0usize;
+        while let Some((line, next)) = next_line(content_slice, offset) {
+            if let Some((key, val)) = parse_key_value(line) {
+                if u16_ieq(key, b"path") {
+                    target.set_utf8(val);
+                    has_target = true;
+                } else if u16_ieq(key, b"args") {
+                    args_u16.set_utf8(val);
+                } else if u16_ieq(key, b"cwd") || u16_ieq(key, b"workdir") {
+                    cwd_u16.set_utf8(val);
+                } else if u16_ieq(key, b"elevate") || u16_ieq(key, b"runas") {
+                    // Only true/1/yes means elevate
+                    if (val.len() == 1 && val[0] == b'1')
+                        || u16_ieq(val, b"true")
+                        || u16_ieq(val, b"yes")
+                    {
+                        elevate = true;
+                    }
+                } else if env_count < EVARS_MAX && !is_known_field(key) {
+                    // Environment variable override (case-insensitive key)
+                    env_names[env_count].set_utf8(key);
+                    env_vals[env_count].set_utf8(val);
+                    env_count += 1;
                 }
-            } else if env_count < EVARS_MAX && !is_known_field(key) {
-                // Environment variable override (case-insensitive key)
-                env_names[env_count].set_utf8(key);
-                env_vals[env_count].set_utf8(val);
-                env_count += 1;
             }
+            offset = next;
         }
-        offset = next;
-    }
 
-    if !has_target {
-        write_stderr(b"shim: no 'path' in .shim file\n");
-        return 1;
-    }
+        if !has_target {
+            write_stderr(b"shim: no 'path' in .shim file\n");
+            return 1;
+        }
 
-    let resolved = resolve_target(&target, &shim_dir);
-    let target_dir = target_dir_of(&resolved);
+        let resolved = resolve_target(&target, &shim_dir);
+        let target_dir = target_dir_of(&resolved);
 
-    // Expand env vars in path, args, cwd
-    let target_exp = expand_env(&resolved);
-    let mut args_exp = expand_env(&args_u16);
-    let mut cwd_exp = U16Buf::new();
+        // Expand env vars in path, args, cwd
+        let target_exp = expand_env(&resolved);
+        let mut args_exp = expand_env(&args_u16);
+        let mut cwd_exp = U16Buf::new();
 
-    // Expand %~dp0 in args and cwd (NOT in path, per spec)
-    expand_dp0(&mut args_exp, &target_dir);
+        // Expand %~dp0 in args and cwd (NOT in path, per spec)
+        expand_dp0(&mut args_exp, &target_dir);
 
-    if cwd_u16.len > 0 {
-        cwd_exp = expand_env(&cwd_u16);
-        expand_dp0(&mut cwd_exp, &target_dir);
-    }
+        if cwd_u16.len > 0 {
+            cwd_exp = expand_env(&cwd_u16);
+            expand_dp0(&mut cwd_exp, &target_dir);
+        }
 
-    // Expand env vars in env override values
-    let mut env_vals_exp: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
-    for i in 0..env_count {
-        env_vals_exp[i] = expand_env(&env_vals[i]);
-    }
+        // Expand env vars in env override values
+        let mut env_vals_exp: [U16Buf; EVARS_MAX] = [U16Buf::new(); EVARS_MAX];
+        for i in 0..env_count {
+            env_vals_exp[i] = expand_env(&env_vals[i]);
+        }
 
-    // ── Get user command-line arguments ──────────────────────────
-    // Skip argv[0] (shim's own path); return everything else as-is.
-    let user_tail = skip_argv0(GetCommandLineW());
-    let has_user_args = user_tail.len > 0;
+        // ── Get user command-line arguments ──────────────────────────
+        // Skip argv[0] (shim's own path); return everything else as-is.
+        let user_tail = skip_argv0(GetCommandLineW());
+        let has_user_args = user_tail.len > 0;
 
-    // ── Set environment variable overrides ──────────────────────
-    for i in 0..env_count {
-        SetEnvironmentVariableW(env_names[i].ptr(), env_vals_exp[i].ptr());
-    }
+        // ── Set environment variable overrides ──────────────────────
+        for i in 0..env_count {
+            SetEnvironmentVariableW(env_names[i].ptr(), env_vals_exp[i].ptr());
+        }
 
-    // ── GUI detection + console handling ──────────────────────────
-    if is_gui_app(&target_exp) {
-        // GUI app: hide console unless there are args (user wants terminal output)
-        if has_user_args || args_exp.len > 0 {
-            AttachConsole(ATTACH_PARENT_PROCESS);
+        // ── GUI detection + console handling ──────────────────────────
+        if is_gui_app(&target_exp) {
+            // GUI app: hide console unless there are args (user wants terminal output)
+            if has_user_args || args_exp.len > 0 {
+                AttachConsole(ATTACH_PARENT_PROCESS);
+            } else {
+                FreeConsole();
+            }
         } else {
-            FreeConsole();
+            // Console app: attach to parent console so child inherits it.
+            // Without this, since the GUI shim is a GUI binary, Windows
+            // allocates a new console for the child (costly ~400ms).
+            AttachConsole(ATTACH_PARENT_PROCESS);
         }
-    } else {
-        // Console app: attach to parent console so child inherits it.
-        // Without this, since the GUI shim is a GUI binary, Windows
-        // allocates a new console for the child (costly ~400ms).
-        AttachConsole(ATTACH_PARENT_PROCESS);
-    }
 
-    // ── Job object ─────────────────────────────────────────────
-    let job = create_job();
+        // ── Job object ─────────────────────────────────────────────
+        let job = create_job();
 
-    // ── Launch ─────────────────────────────────────────────────
-    let (proc_h, needs_elevate) = spawn(&target_exp, &args_exp, &user_tail, &cwd_exp, elevate);
-    if needs_elevate {
-        return do_elevate(&target_exp, &args_exp, &user_tail, &cwd_exp) as i32;
-    }
-    if proc_h == NULL_HANDLE {
-        return 1;
-    }
+        // ── Launch ─────────────────────────────────────────────────
+        let (proc_h, needs_elevate) = spawn(&target_exp, &args_exp, &user_tail, &cwd_exp, elevate);
+        if needs_elevate {
+            return do_elevate(&target_exp, &args_exp, &user_tail, &cwd_exp) as i32;
+        }
+        if proc_h == NULL_HANDLE {
+            return 1;
+        }
 
-    if job != NULL_HANDLE {
-        AssignProcessToJobObject(job, proc_h);
-    }
+        if job != NULL_HANDLE {
+            AssignProcessToJobObject(job, proc_h);
+        }
 
-    WaitForSingleObject(proc_h, INFINITE);
-    let mut exit_code: u32 = 1;
-    GetExitCodeProcess(proc_h, &mut exit_code);
-    CloseHandle(proc_h);
-    if job != NULL_HANDLE {
-        CloseHandle(job);
+        WaitForSingleObject(proc_h, INFINITE);
+        let mut exit_code: u32 = 1;
+        GetExitCodeProcess(proc_h, &mut exit_code);
+        CloseHandle(proc_h);
+        if job != NULL_HANDLE {
+            CloseHandle(job);
+        }
+        exit_code as i32
     }
-    exit_code as i32
 }
 
 /// Terminate the shim process with the given exit code.
 #[cfg(not(test))]
 pub fn exit_process(code: i32) -> ! {
     unsafe {
-        extern "system" {
+        unsafe extern "system" {
             fn ExitProcess(uExitCode: u32);
         }
         ExitProcess(code as u32);

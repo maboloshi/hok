@@ -30,9 +30,9 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tracing::warn;
 
+use crate::Session;
 use crate::error::{Error, Fallible};
 use crate::internal;
-use crate::Session;
 
 /// Scoop bucket representation.
 ///
@@ -207,36 +207,39 @@ impl Bucket {
         let mut path = self.path().to_owned();
         path.push("bucket");
 
-        let iter = if let Ok(entries) = par_read_dir(&path) {
-            // Skip entries whose metadata cannot be read (concurrent removal,
-            // permissions, network drives) instead of panicking.
-            type Classified = (Vec<(DirEntry, bool)>, Vec<(DirEntry, bool)>);
-            let classified: Classified = entries
-                .filter_map(|de| de.file_type().ok().map(|ft| (de, ft.is_dir())))
-                .partition(|(_, is_dir)| *is_dir);
-            let dirs = classified.0.into_iter().map(|(de, _)| de);
-            let files = classified.1.into_iter().map(|(de, _)| de);
+        let iter = match par_read_dir(&path) {
+            Ok(entries) => {
+                // Skip entries whose metadata cannot be read (concurrent removal,
+                // permissions, network drives) instead of panicking.
+                type Classified = (Vec<(DirEntry, bool)>, Vec<(DirEntry, bool)>);
+                let classified: Classified = entries
+                    .filter_map(|de| de.file_type().ok().map(|ft| (de, ft.is_dir())))
+                    .partition(|(_, is_dir)| *is_dir);
+                let dirs = classified.0.into_iter().map(|(de, _)| de);
+                let files = classified.1.into_iter().map(|(de, _)| de);
 
-            // If the inner `bucket` directory contains subdirectories then it
-            // is considered as a bucket with categories and we need to search
-            // all subdirectories for manifest files.
-            //
-            // Category support was introduced in Scoop v0.3.0:
-            // https://github.com/ScoopInstaller/Scoop/pull/5119
-            let dirs = dirs.collect::<Vec<_>>();
-            let files = files.collect::<Vec<_>>();
-            if dirs.is_empty() {
-                files.into_par_iter()
-            } else {
-                dirs.into_par_iter()
-                    .filter_map(|de| par_read_dir(&de.path()).ok())
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .into_par_iter()
+                // If the inner `bucket` directory contains subdirectories then it
+                // is considered as a bucket with categories and we need to search
+                // all subdirectories for manifest files.
+                //
+                // Category support was introduced in Scoop v0.3.0:
+                // https://github.com/ScoopInstaller/Scoop/pull/5119
+                let dirs = dirs.collect::<Vec<_>>();
+                let files = files.collect::<Vec<_>>();
+                if dirs.is_empty() {
+                    files.into_par_iter()
+                } else {
+                    dirs.into_par_iter()
+                        .filter_map(|de| par_read_dir(&de.path()).ok())
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .into_par_iter()
+                }
             }
-        } else {
-            path.pop();
-            par_read_dir(&path)?.collect::<Vec<_>>().into_par_iter()
+            _ => {
+                path.pop();
+                par_read_dir(&path)?.collect::<Vec<_>>().into_par_iter()
+            }
         };
 
         let ret = iter.filter(is_manifest).collect::<Vec<_>>();
@@ -246,7 +249,7 @@ impl Bucket {
 }
 
 /// Helper function to interate entries in a directory in parallel.
-fn par_read_dir(path: &Path) -> std::io::Result<impl ParallelIterator<Item = DirEntry>> {
+fn par_read_dir(path: &Path) -> std::io::Result<impl ParallelIterator<Item = DirEntry> + use<>> {
     let dir = path.read_dir()?;
     let path = path.to_owned();
     Ok(dir.par_bridge().filter_map(move |de| match de {

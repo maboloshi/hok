@@ -9,9 +9,9 @@
 
 use std::io::Read;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
-use crate::{error::Fallible, internal, package::Manifest, Session};
+use crate::{Session, error::Fallible, internal, package::Manifest};
 
 /// Serialize an optional manifest field to JSON for the cache. Returns
 /// `Some(None)` for a missing field, `Some(Some(s))` on success, and `None`
@@ -221,9 +221,12 @@ pub fn refresh(session: &Session) {
     if !session.config().use_sqlite_cache() {
         return;
     }
-    if let Ok(conn) = open(session) {
-        let _ = populate(&conn, session);
-    } else {
-        tracing::warn!("failed to open manifest cache");
+    match open(session) {
+        Ok(conn) => {
+            let _ = populate(&conn, session);
+        }
+        _ => {
+            tracing::warn!("failed to open manifest cache");
+        }
     }
 }
