@@ -316,15 +316,13 @@ impl Network for RealNetwork {
         let mut req = agent
             .get(url)
             .header("Range", &format!("bytes={start}-{end}"));
-        if let Some(cookies) = opts.cookies {
-            if !cookies.is_empty() {
-                let cookie_val = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                req = req.header("Cookie", &cookie_val);
-            }
+        if let Some(cookies) = opts.cookies.filter(|c| !c.is_empty()) {
+            let cookie_val = cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            req = req.header("Cookie", &cookie_val);
         }
 
         match req.call() {
@@ -376,15 +374,13 @@ impl Network for RealNetwork {
     ) -> Result<(), String> {
         let agent = build_agent(opts)?;
         let mut req = agent.get(url);
-        if let Some(cookies) = opts.cookies {
-            if !cookies.is_empty() {
-                let cookie_val = cookies
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                req = req.header("Cookie", &cookie_val);
-            }
+        if let Some(cookies) = opts.cookies.filter(|c| !c.is_empty()) {
+            let cookie_val = cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            req = req.header("Cookie", &cookie_val);
         }
 
         let resp = req.call().map_err(|e| format!("download failed: {e}"))?;

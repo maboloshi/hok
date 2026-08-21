@@ -477,8 +477,8 @@ impl Session {
     /// # Errors
     ///
     /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
-    pub fn set_network(&self, net: Box<dyn Network + Send + Sync>) -> Fallible<()> {
-        self.network.set(Arc::from(net)).map_err(|_| Error::InfraAlreadySet)
+    pub fn set_network(&self, net: Arc<dyn Network + Send + Sync>) -> Fallible<()> {
+        self.network.set(net).map_err(|_| Error::InfraAlreadySet)
     }
 
     /// Get the session's git capability (default: real `git2`-based).
@@ -491,8 +491,8 @@ impl Session {
     /// # Errors
     ///
     /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
-    pub fn set_git(&self, git: Box<dyn Git + Send + Sync>) -> Fallible<()> {
-        self.git.set(Arc::from(git)).map_err(|_| Error::InfraAlreadySet)
+    pub fn set_git(&self, git: Arc<dyn Git + Send + Sync>) -> Fallible<()> {
+        self.git.set(git).map_err(|_| Error::InfraAlreadySet)
     }
 
     /// Get the session's archive capability (default: real extractors).
@@ -505,9 +505,9 @@ impl Session {
     /// # Errors
     ///
     /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
-    pub fn set_archive(&self, archive: Box<dyn Archive + Send + Sync>) -> Fallible<()> {
+    pub fn set_archive(&self, archive: Arc<dyn Archive + Send + Sync>) -> Fallible<()> {
         self.archive
-            .set(Arc::from(archive))
+            .set(archive)
             .map_err(|_| Error::InfraAlreadySet)
     }
 
