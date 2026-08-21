@@ -31,7 +31,7 @@ pub struct Args {
     arch: Option<String>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `-a/--arch` overrides the effective architecture (same as install).
     if let Some(arch) = args.arch.as_deref() {
         session.set_default_architecture(arch)?;

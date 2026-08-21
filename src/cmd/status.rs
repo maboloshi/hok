@@ -13,7 +13,7 @@ pub struct Args {
     all: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = vec!["*"];
     let options = vec![QueryOption::Upgradable];
     let packages = package::query::query(session, queries, options, false)?;

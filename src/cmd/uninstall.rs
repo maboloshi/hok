@@ -32,7 +32,7 @@ pub struct Args {
     purge: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "uninstall")?;
 
     let mut options = vec![SyncOption::Remove];

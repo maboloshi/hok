@@ -48,7 +48,7 @@ pub enum Command {
     },
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `-g/--global` switches the session so `shims_dir()` resolves to the
     // global shims directory for the operation.
     if args.global {

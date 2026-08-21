@@ -59,7 +59,7 @@ pub struct Args {
     pub(crate) verbose: u8,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let token = args
         .token
         .clone()

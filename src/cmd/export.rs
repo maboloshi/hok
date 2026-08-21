@@ -13,7 +13,7 @@ pub struct Args {
     all: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let output = export::build_export(session, args.all)?;
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
     Ok(())

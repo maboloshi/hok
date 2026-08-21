@@ -91,7 +91,7 @@ impl SyncFlags for Args {
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `-a/--arch` overrides the effective architecture (Scoop's
     // `Format-ArchitectureString` + `Get-DefaultArchitecture` override).
     // Parsed after the session was created, so it beats the

@@ -53,7 +53,7 @@ impl SyncFlags for Args {
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // --all is a shorthand for upgrading all packages (like passing '*'),
     // matching `update --all` semantics.
     if args.all && args.package.is_empty() {
@@ -62,8 +62,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             &[String::from("*")],
             &args.sync_args(),
             false,
-        );
+        )
+        .await;
     }
 
-    super::update::execute_upgrade(session, &args.package, &args.sync_args(), false)
+    super::update::execute_upgrade(session, &args.package, &args.sync_args(), false).await
 }

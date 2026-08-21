@@ -39,7 +39,7 @@ pub enum Command {
     },
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Edit => {
             let path = &session.config().path;

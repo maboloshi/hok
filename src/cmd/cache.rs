@@ -32,7 +32,7 @@ pub enum Command {
     },
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::List { query } => {
             let query = query.unwrap_or("*".to_string());

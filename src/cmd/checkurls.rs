@@ -27,7 +27,7 @@ pub struct Args {
     skip_valid: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     validate_dir(&args.dir)?;
     let dir = &args.dir;
 

@@ -13,7 +13,7 @@ pub struct Args {
     package: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let app_dir = session.current_dir(&args.package);
 
     if !app_dir.exists() {

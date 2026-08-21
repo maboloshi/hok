@@ -13,7 +13,7 @@ pub struct Args {
     command: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let command = args.command;
     let mut found = false;
 

@@ -19,7 +19,7 @@ pub struct Args {
     supported: bool,
 }
 
-pub fn execute(args: Args) -> Result<()> {
+pub async fn execute(args: Args) -> Result<()> {
     validate_dir(&args.dir)?;
     let dir = &args.dir;
 

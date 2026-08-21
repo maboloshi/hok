@@ -23,7 +23,7 @@ pub struct Args {
     cache: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     session.set_global(args.global);
     // --all or '*' overrides any specific app names
     let apps: Vec<String> = if args.all || args.app.iter().any(|a| a == "*") {

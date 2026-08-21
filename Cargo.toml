@@ -28,6 +28,11 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 rust-i18n = "3.1.5"
 sys-locale = "0.3"
 
+# Async runtime for the CLI (phase 4: operations async-ification).
+# `rt-multi-thread` + `macros` for the blocking runtime host in `create_app()`;
+# `sync` for concurrency primitives used by concurrent commands.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
 [build-dependencies]

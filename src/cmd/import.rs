@@ -13,7 +13,7 @@ pub struct Args {
     file: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let content = match fs::read_to_string(&args.file) {
         Ok(c) => c,
         Err(e) => {

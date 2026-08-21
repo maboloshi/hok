@@ -129,5 +129,13 @@ fn report(err: &anyhow::Error) {
 }
 
 pub fn create_app() -> bool {
-    cmd::start().inspect_err(report).is_err()
+    // Async runtime host for the whole CLI (phase 4: operations
+    // async-ification). Commands run as async tasks; a multi-thread runtime
+    // lets concurrent commands (checkver/checkup/download, later install/
+    // upgrade) interleave their I/O on worker threads.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build the tokio runtime");
+    runtime.block_on(cmd::start()).inspect_err(report).is_err()
 }

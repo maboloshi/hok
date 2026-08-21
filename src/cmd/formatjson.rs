@@ -19,7 +19,7 @@ pub struct Args {
     app: Vec<String>,
 }
 
-pub fn execute(args: Args) -> Result<()> {
+pub async fn execute(args: Args) -> Result<()> {
     validate_dir(&args.dir)?;
     let dir = &args.dir;
 

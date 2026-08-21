@@ -18,7 +18,7 @@ pub struct Args {
     app: Vec<String>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = args.app.iter().map(|s| s.as_str()).collect();
     let options = vec![QueryOption::Explicit];
     let pkgs = package::query::query(session, queries, options, false)?;

@@ -87,14 +87,14 @@ impl SyncFlags for Args {
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // --all is a shorthand for upgrading all packages (like passing '*')
     if args.all && args.package.is_empty() {
-        return execute_upgrade(session, &[String::from("*")], &args.sync_args(), args.force);
+        return execute_upgrade(session, &[String::from("*")], &args.sync_args(), args.force).await;
     }
 
     if !args.package.is_empty() {
-        return execute_upgrade(session, &args.package, &args.sync_args(), args.force);
+        return execute_upgrade(session, &args.package, &args.sync_args(), args.force).await;
     }
 
     // Bucket update mode (no packages specified).
@@ -153,7 +153,7 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
 }
 
 /// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.
-pub fn execute_upgrade(
+pub async fn execute_upgrade(
     session: &Session,
     packages: &[String],
     sync: &SyncArgs,

@@ -54,7 +54,7 @@ impl SyncFlags for Args {
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "reinstall")?;
 
     // Build sync options once, reuse for both phases

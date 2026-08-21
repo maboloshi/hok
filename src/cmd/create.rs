@@ -20,7 +20,7 @@ pub struct Args {
     output: Option<PathBuf>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let url = args.url.trim();
     if url.is_empty() {
         output::err(rust_i18n::t!("cmd.create_url_required"));

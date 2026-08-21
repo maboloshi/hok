@@ -40,7 +40,7 @@ pub struct Args {
     cache: Option<PathBuf>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     validate_dir(&args.dir)?;
 
     let options = checkhashes::CheckhashesOptions {

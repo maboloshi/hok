@@ -14,7 +14,7 @@ pub struct Args {
     package: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let query = args.package;
 
     let queries = vec![query.as_str()];

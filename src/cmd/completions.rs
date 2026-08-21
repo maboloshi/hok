@@ -13,7 +13,7 @@ pub struct Args {
     shell: Shell,
 }
 
-pub fn execute(args: Args) -> Result<()> {
+pub async fn execute(args: Args) -> Result<()> {
     let mut buf = vec![];
     clap_complete::generate(args.shell, &mut Cli::command(), crate_name!(), &mut buf);
     println!(

@@ -42,7 +42,7 @@ pub enum Command {
     },
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Add { name, repo } => {
             output::progress(rust_i18n::t!("cmd.adding_bucket"), &name);

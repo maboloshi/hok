@@ -28,7 +28,7 @@ pub struct Args {
     with_description: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
     // Build QueryArgs from individual fields, then convert to options

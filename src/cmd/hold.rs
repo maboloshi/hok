@@ -78,7 +78,7 @@ pub(super) fn hold_packages(
     Ok(())
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "hold")?;
     hold_packages(session, &args.package, true, rust_i18n::t!("cmd.holding"))
 }

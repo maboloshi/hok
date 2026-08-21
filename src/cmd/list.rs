@@ -27,7 +27,7 @@ pub struct Args {
     versions: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let mut options = vec![QueryOption::UpgradableCheck];
 

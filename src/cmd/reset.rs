@@ -17,7 +17,7 @@ pub struct Args {
     all: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `*` is a shorthand for `-a/--all` (Scoop: `$apps -eq '*' -or $all`)
     let all = args.all || args.app.as_deref() == Some("*");
     if args.app.is_none() && !all {

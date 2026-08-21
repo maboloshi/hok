@@ -13,7 +13,7 @@ pub struct Args {
     query: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let query = args.query;
 
     let queries = vec![query.as_str()];

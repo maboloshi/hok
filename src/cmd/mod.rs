@@ -183,7 +183,7 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
 }
 
 /// CLI entry point
-pub fn start() -> Result<()> {
+pub async fn start() -> Result<()> {
     // Detect language before Cli::parse() so help text is rendered in the right language
     let preselected_language = i18n::detect_language_choice_from_args();
     i18n::init_language(preselected_language);
@@ -231,67 +231,71 @@ pub fn start() -> Result<()> {
     ));
 
     // --- Config-driven initialization ---
-    let config = session.config();
+    // Read the config inside a scope so the read guard is dropped before the
+    // command dispatch below: the dispatch awaits every command, and a guard
+    // held across an await would block a command that takes `config_mut()`
+    // (e.g. `bucket update`), deadlocking or failing with `ConfigInUse`.
+    let no_color = {
+        let config = session.config();
 
-    // Set output style from config (default: scoop)
-    crate::output::set_style(config.output_style());
+        // Set output style from config (default: scoop)
+        crate::output::set_style(config.output_style());
 
-    // Apply language from config if --lang was not explicitly set
-    if matches!(args.language, LanguageChoice::Auto) {
-        let cfg_lang = config.language();
-        if cfg_lang != "auto" {
-            let choice = match cfg_lang.to_lowercase().as_str() {
-                "en" => LanguageChoice::En,
-                "zh" => LanguageChoice::Zh,
-                _ => LanguageChoice::Auto,
-            };
-            i18n::init_language(choice);
+        // Apply language from config if --lang was not explicitly set
+        if matches!(args.language, LanguageChoice::Auto) {
+            let cfg_lang = config.language();
+            if cfg_lang != "auto" {
+                let choice = match cfg_lang.to_lowercase().as_str() {
+                    "en" => LanguageChoice::En,
+                    "zh" => LanguageChoice::Zh,
+                    _ => LanguageChoice::Auto,
+                };
+                i18n::init_language(choice);
+            }
         }
-    }
 
-    // Color setting: CLI --no-color > config no_color > default enabled
-    let no_color = args.no_color || config.no_color();
+        // Color setting: CLI --no-color > config no_color > default enabled
+        args.no_color || config.no_color()
+    };
     crate::output::set_color_enabled(!no_color);
 
-    drop(config);
-
     match args.command {
-        Command::Alias(args) => alias::execute(args, &session),
-        Command::CiAutoPr(args) => auto_pr::execute(args, &session),
-        Command::Bucket(args) => bucket::execute(args, &session),
-        Command::Cache(args) => cache::execute(args, &session),
-        Command::Cat(args) => cat::execute(args, &session),
-        Command::Checkhashes(args) => checkhashes::execute(args, &session),
-        Command::Checkup(args) => checkup::execute(args, &session),
-        Command::Checkurls(args) => checkurls::execute(args, &session),
-        Command::Checkver(args) => checkver::execute(args, &session),
-        Command::Cleanup(args) => cleanup::execute(args, &session),
-        Command::Completions(args) => completions::execute(args),
-        Command::Config(args) => config::execute(args, &session),
-        Command::Create(args) => create::execute(args, &session),
-        Command::Depends(args) => depends::execute(args, &session),
-        Command::Download(args) => download::execute(args, &session),
-        Command::Export(args) => export::execute(args, &session),
-        Command::FormatJson(args) => formatjson::execute(args),
-        Command::Hold(args) => hold::execute(args, &session),
-        Command::Home(args) => home::execute(args, &session),
-        Command::Import(args) => import::execute(args, &session),
-        Command::Info(args) => info::execute(args, &session),
-        Command::Install(args) => install::execute(args, &session),
-        Command::List(args) => list::execute(args, &session),
-        Command::MissingCheckver(args) => missing_checkver::execute(args),
-        Command::Prefix(args) => prefix::execute(args, &session),
-        Command::Reinstall(args) => reinstall::execute(args, &session),
-        Command::Search(args) => search::execute(args, &session),
-        Command::Shim(args) => shim::execute(args, &session),
-        Command::Reset(args) => reset::execute(args, &session),
-        Command::Status(args) => status::execute(args, &session),
-        Command::Unhold(args) => unhold::execute(args, &session),
-        Command::Uninstall(args) => uninstall::execute(args, &session),
-        Command::Update(args) => update::execute(args, &session),
-        Command::Upgrade(args) => upgrade::execute(args, &session),
-        Command::Virustotal(args) => virustotal::execute(args, &session),
-        Command::Which(args) => which::execute(args, &session),
+        Command::Alias(args) => alias::execute(args, &session).await,
+        Command::CiAutoPr(args) => auto_pr::execute(args, &session).await,
+        Command::Bucket(args) => bucket::execute(args, &session).await,
+        Command::Cache(args) => cache::execute(args, &session).await,
+        Command::Cat(args) => cat::execute(args, &session).await,
+        Command::Checkhashes(args) => checkhashes::execute(args, &session).await,
+        Command::Checkup(args) => checkup::execute(args, &session).await,
+        Command::Checkurls(args) => checkurls::execute(args, &session).await,
+        Command::Checkver(args) => checkver::execute(args, &session).await,
+        Command::Cleanup(args) => cleanup::execute(args, &session).await,
+        Command::Completions(args) => completions::execute(args).await,
+        Command::Config(args) => config::execute(args, &session).await,
+        Command::Create(args) => create::execute(args, &session).await,
+        Command::Depends(args) => depends::execute(args, &session).await,
+        Command::Download(args) => download::execute(args, &session).await,
+        Command::Export(args) => export::execute(args, &session).await,
+        Command::FormatJson(args) => formatjson::execute(args).await,
+        Command::Hold(args) => hold::execute(args, &session).await,
+        Command::Home(args) => home::execute(args, &session).await,
+        Command::Import(args) => import::execute(args, &session).await,
+        Command::Info(args) => info::execute(args, &session).await,
+        Command::Install(args) => install::execute(args, &session).await,
+        Command::List(args) => list::execute(args, &session).await,
+        Command::MissingCheckver(args) => missing_checkver::execute(args).await,
+        Command::Prefix(args) => prefix::execute(args, &session).await,
+        Command::Reinstall(args) => reinstall::execute(args, &session).await,
+        Command::Search(args) => search::execute(args, &session).await,
+        Command::Shim(args) => shim::execute(args, &session).await,
+        Command::Reset(args) => reset::execute(args, &session).await,
+        Command::Status(args) => status::execute(args, &session).await,
+        Command::Unhold(args) => unhold::execute(args, &session).await,
+        Command::Uninstall(args) => uninstall::execute(args, &session).await,
+        Command::Update(args) => update::execute(args, &session).await,
+        Command::Upgrade(args) => upgrade::execute(args, &session).await,
+        Command::Virustotal(args) => virustotal::execute(args, &session).await,
+        Command::Which(args) => which::execute(args, &session).await,
     }
 }
 

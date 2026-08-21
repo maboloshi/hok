@@ -9,7 +9,7 @@ use crate::{output, Result};
 #[derive(Debug, Parser)]
 pub struct Args {}
 
-pub fn execute(_: Args, session: &Session) -> Result<()> {
+pub async fn execute(_: Args, session: &Session) -> Result<()> {
     let issues = checkup::check_installed(session);
 
     if issues.is_empty() {

@@ -40,7 +40,7 @@ pub enum Command {
     },
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         // If no subcommand is provided, default to List
         Some(Command::List) | None => {
