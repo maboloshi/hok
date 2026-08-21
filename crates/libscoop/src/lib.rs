@@ -82,7 +82,7 @@ pub use event::Event;
 pub use handler::EventHandler;
 pub use internal::arch::Arch;
 pub use internal::compare_versions;
-pub use package::manifest::{Checkver, Manifest};
+pub use package::manifest::{parse_file, Checkver, Manifest};
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;
 pub use shim::{add_custom, remove_by_name};

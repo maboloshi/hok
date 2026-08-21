@@ -3,7 +3,9 @@
 //! Toggles the `held` flag in the package's `install.json`, preventing
 //! accidental upgrades — mirroring Scoop's `hold` / `unhold` commands.
 
-use crate::{Error, Session, error::Fallible, internal, package::InstallInfo};
+use crate::{
+    Error, Session, error::Fallible, internal, package::install_state::parse_install_info,
+};
 
 /// Result of a hold/unhold toggle.
 ///
@@ -42,7 +44,7 @@ pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<HoldResult> {
     path.push("current");
     path.push("install.json");
 
-    match InstallInfo::parse(&path) {
+    match parse_install_info(&path) {
         Ok(mut install_info) => {
             if install_info.is_held() == flag {
                 return Ok(HoldResult::Unchanged);
@@ -91,12 +93,12 @@ mod tests {
 
         // hold
         hold(&session, "app", true).unwrap();
-        let info = InstallInfo::parse(root.0.join("apps/app/current/install.json")).unwrap();
+        let info = parse_install_info(&root.0.join("apps/app/current/install.json")).unwrap();
         assert!(info.is_held(), "held flag should be set");
 
         // unhold
         hold(&session, "app", false).unwrap();
-        let info = InstallInfo::parse(root.0.join("apps/app/current/install.json")).unwrap();
+        let info = parse_install_info(&root.0.join("apps/app/current/install.json")).unwrap();
         assert!(!info.is_held(), "held flag should be cleared");
     }
 
@@ -111,7 +113,7 @@ mod tests {
 
         hold(&session, "app", true).unwrap();
 
-        let info = InstallInfo::parse(root.0.join("apps/app/current/install.json")).unwrap();
+        let info = parse_install_info(&root.0.join("apps/app/current/install.json")).unwrap();
         assert_eq!(info.arch(), "32bit");
         assert_eq!(info.bucket(), Some("main"));
         assert!(info.is_held());

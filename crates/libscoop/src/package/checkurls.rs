@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::internal::url::strip_url_fragment;
-use crate::package::manifest_walker;
-use crate::{error::Fallible, network, Manifest, Session};
+use crate::package::{manifest, manifest_walker};
+use crate::{Session, error::Fallible, network};
 
 #[derive(Debug, Clone)]
 pub struct UrlCheckError {
@@ -41,7 +41,7 @@ pub fn check_urls(
     let mut on_result = on_result;
 
     for (path, name) in manifest_walker::discover_matching(dir, app_filters)? {
-        let manifest = match Manifest::parse(path) {
+        let manifest = match manifest::parse_file(path) {
             Ok(m) => m,
             Err(_) => continue,
         };

@@ -65,7 +65,7 @@ pub fn execute(
     let discovered = manifest_walker::discover_matching(&options.dir, &options.app)?;
 
     for (path, name) in &discovered {
-        let manifest = match Manifest::parse(path) {
+        let manifest = match manifest::parse_file(path) {
             Ok(m) => m,
             Err(_) => continue,
         };

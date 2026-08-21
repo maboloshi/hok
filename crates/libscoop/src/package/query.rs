@@ -26,14 +26,12 @@ use std::path::Path;
 use tracing::debug;
 
 use crate::{
-    constant::ISOLATED_PACKAGE_BUCKET,
-    error::Fallible,
-    package::manifest::{InstallInfo, Manifest},
-    Session,
+    Session, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible, package::manifest::parse_file,
 };
 
 use super::install_state::{
-    fill_install_state, load_bucket_manifest, maybe_fill_upgradable, select_current_version,
+    fill_install_state, load_bucket_manifest, maybe_fill_upgradable, parse_install_info,
+    select_current_version,
 };
 use super::query_matcher::{build_matchers, manifest_matches, name_prefiltered_out, QueryOption};
 use super::{manifest_cache, InstallState, InstallStateInstalled, Package};
@@ -89,8 +87,8 @@ pub fn query_installed(
                             return None;
                         }
 
-                        if let Ok(manifest) = Manifest::parse(manifest_path) {
-                            if let Ok(install_info) = InstallInfo::parse(install_info_path) {
+                        if let Ok(manifest) = parse_file(manifest_path) {
+                            if let Ok(install_info) = parse_install_info(&install_info_path) {
                                 // Noted that packages installed via URLs don't have
                                 // bucket info in install info file. We mark them as
                                 // isolated packages and use `ISOLATED_PACKAGE_BUCKET`
@@ -187,7 +185,7 @@ pub(crate) fn query_synced(
                             return None;
                         }
 
-                        if let Ok(manifest) = Manifest::parse(entry.path()) {
+                        if let Ok(manifest) = parse_file(entry.path()) {
                             let bucket = bucket.name();
 
                             if !manifest_matches(

@@ -195,7 +195,7 @@ pub fn execute(
     let mut pending: Vec<PendingItem> = Vec::new();
 
     for (path, stem) in manifest_walker::discover_matching(dir, &options.app)? {
-        let manifest = match Manifest::parse(&path) {
+        let manifest = match manifest::parse_file(&path) {
             Ok(m) => m,
             Err(_) => continue,
         };

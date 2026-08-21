@@ -694,50 +694,52 @@ fn parse_manifest_spec(json: &str) -> Fallible<ManifestSpec> {
     }
 }
 
+/// Parse a manifest JSON file from disk into a [`Manifest`].
+///
+/// The file-I/O boundary for the pure [`Manifest`] type: reading, UTF-8
+/// validation and path normalization happen here, so the type itself stays
+/// I/O-free (construct it from memory via [`Manifest::from_json`] or
+/// [`Manifest::parse_str`]).
+///
+/// ## Errors
+///
+/// Returns a [`std::io::Error`] when the file cannot be read, and a
+/// serde error when the JSON deserialization fails.
+pub fn parse_file<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
+    let path = path.as_ref();
+
+    // Read the entire manifest JSON file into memory firstly and then
+    // deserialize it as this way is *a lot* faster than reading via
+    // `serde_json::from_reader`.
+    //
+    // Discussion in https://github.com/serde-rs/json/issues/160
+    let mut bytes = Vec::new();
+    File::open(path)?.read_to_end(&mut bytes)?;
+
+    // Parsing manifest files is the key bottleneck of the entire
+    // project. We use `serde_json` because it's well documented and easy
+    // to integrate. But I believe there should be an alternative to
+    // `serde_json` which can parse JSON files much *faster*. Perhaps
+    // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
+    let text = std::str::from_utf8(&bytes).map_err(|e| {
+        crate::Error::Custom(format!(
+            "failed to parse manifest {}: not valid UTF-8: {e}",
+            path.display()
+        ))
+    })?;
+    let inner: ManifestSpec = parse_manifest_spec(text).inspect_err(|e| {
+        warn!("failed to parse manifest {} (err: {})", path.display(), e);
+    })?;
+    let path = internal::path::normalize_path(path);
+
+    Ok(Manifest {
+        path,
+        inner,
+        raw: None,
+    })
+}
+
 impl Manifest {
-    /// Create a [`Manifest`] representation of a manfest JSON file with the
-    /// given path.
-    ///
-    /// ## Errors
-    ///
-    /// If the process fails to read the file, this method will return a
-    /// [`std::io::Error`].
-    ///
-    /// It returns a `serde_json::Error` when the JSON deserialization fails.
-    pub fn parse<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
-        let path = path.as_ref();
-
-        // Read the entire manifest JSON file into memory firstly and then
-        // deserialize it as this way is *a lot* faster than reading via
-        // `serde_json::from_reader`.
-        //
-        // Discussion in https://github.com/serde-rs/json/issues/160
-        let mut bytes = Vec::new();
-        File::open(path)?.read_to_end(&mut bytes)?;
-
-        // Parsing manifest files is the key bottleneck of the entire
-        // project. We use `serde_json` because it's well documented and easy
-        // to integrate. But I believe there should be an alternative to
-        // `serde_json` which can parse JSON files much *faster*. Perhaps
-        // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
-        let text = std::str::from_utf8(&bytes).map_err(|e| {
-            crate::Error::Custom(format!(
-                "failed to parse manifest {}: not valid UTF-8: {e}",
-                path.display()
-            ))
-        })?;
-        let inner: ManifestSpec = parse_manifest_spec(text).inspect_err(|e| {
-            warn!("failed to parse manifest {} (err: {})", path.display(), e);
-        })?;
-        let path = internal::path::normalize_path(path);
-
-        Ok(Manifest {
-            path,
-            inner,
-            raw: None,
-        })
-    }
-
     /// Return the file path of this manifest.
     #[inline]
     pub fn path(&self) -> &Path {
@@ -1372,22 +1374,6 @@ pub struct InstallInfo {
 }
 
 impl InstallInfo {
-    pub fn parse<P: AsRef<Path>>(path: P) -> Fallible<InstallInfo> {
-        let path = path.as_ref();
-        let mut bytes = Vec::new();
-        File::open(path)?.read_to_end(&mut bytes)?;
-
-        let info = serde_json::from_slice(&bytes).inspect_err(|e| {
-            warn!(
-                "failed to parse install_info {} (err: {})",
-                path.display(),
-                e
-            );
-        })?;
-
-        Ok(info)
-    }
-
     #[inline]
     pub fn bucket(&self) -> Option<&str> {
         self.bucket.as_deref()

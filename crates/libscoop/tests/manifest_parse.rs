@@ -1,4 +1,4 @@
-use libscoop::Manifest;
+use libscoop::{parse_file, Manifest};
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,7 +19,7 @@ fn scoop_fixture(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn test_parse_simple_manifest() {
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     assert_eq!(manifest.version(), "1.0.0");
     assert_eq!(manifest.description(), Some("Simple test package"));
     assert_eq!(manifest.homepage(), "https://example.com/simple");
@@ -31,7 +31,7 @@ fn test_parse_simple_manifest() {
 
 #[test]
 fn test_parse_architecture_manifest() {
-    let manifest = Manifest::parse(fixture_path("architecture.json")).unwrap();
+    let manifest = parse_file(fixture_path("architecture.json")).unwrap();
     assert_eq!(manifest.version(), "2.0.0");
     assert_eq!(manifest.license().identifier(), "Apache-2.0");
     // Architecture-specific fields
@@ -42,7 +42,7 @@ fn test_parse_architecture_manifest() {
 
 #[test]
 fn test_parse_checkver_manifest() {
-    let manifest = Manifest::parse(fixture_path("checkver.json")).unwrap();
+    let manifest = parse_file(fixture_path("checkver.json")).unwrap();
     assert_eq!(manifest.version(), "3.0.0");
     // Checkver field
     let cv = manifest.checkver().expect("should have checkver");
@@ -55,7 +55,7 @@ fn test_parse_checkver_manifest() {
 
 #[test]
 fn test_parse_dependencies_manifest() {
-    let manifest = Manifest::parse(fixture_path("dependencies.json")).unwrap();
+    let manifest = parse_file(fixture_path("dependencies.json")).unwrap();
     assert_eq!(manifest.version(), "4.5.6");
     // Multiple URLs and hashes
     assert_eq!(manifest.url().len(), 2);
@@ -69,13 +69,13 @@ fn test_parse_dependencies_manifest() {
 
 #[test]
 fn test_parse_nonexistent_file() {
-    let result = Manifest::parse(fixture_path("nonexistent.json"));
+    let result = parse_file(fixture_path("nonexistent.json"));
     assert!(result.is_err());
 }
 
 #[test]
 fn test_manifest_version_accessor() {
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     let v = manifest.version();
     assert_eq!(v, "1.0.0");
     // Verify it's a &str not a cloned String
@@ -100,14 +100,14 @@ fn test_manifest_from_json() {
 #[test]
 fn test_manifest_roundtrip_url_hash_count() {
     // Verify URL and hash counts match
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     assert_eq!(
         manifest.url().len(),
         manifest.hash().len(),
         "URL and hash counts should match"
     );
 
-    let manifest = Manifest::parse(fixture_path("dependencies.json")).unwrap();
+    let manifest = parse_file(fixture_path("dependencies.json")).unwrap();
     assert_eq!(
         manifest.url().len(),
         manifest.hash().len(),
@@ -122,7 +122,7 @@ fn test_scoop_wget_manifest() {
     // Real-world Scoop manifest: wget.json contains an empty hash string ("")
     // for the cacert.pem URL, meaning "no verification" (original Scoop's
     // check_hash only warns). Our parser must accept it.
-    let manifest = Manifest::parse(scoop_fixture("manifest/wget.json")).unwrap();
+    let manifest = parse_file(scoop_fixture("manifest/wget.json")).unwrap();
     let hashes = manifest.all_hashes();
     // 64bit (2) + 32bit (2), each with [real_hash, ""]
     assert_eq!(hashes.len(), 4);
@@ -132,7 +132,7 @@ fn test_scoop_wget_manifest() {
 #[test]
 fn test_scoop_broken_wget() {
     // Malformed JSON (missing closing brace)
-    let result = Manifest::parse(scoop_fixture("manifest/broken_wget.json"));
+    let result = parse_file(scoop_fixture("manifest/broken_wget.json"));
     assert!(result.is_err(), "broken JSON should fail to parse");
 }
 
@@ -142,7 +142,7 @@ fn test_scoop_invalid_wget() {
     // Upstream Scoop never validates these, so hok now tolerates the
     // absence — missing fields surface as `formatjson` warnings instead
     // of failing the whole manifest parse.
-    let result = Manifest::parse(scoop_fixture("manifest/invalid_wget.json"));
+    let result = parse_file(scoop_fixture("manifest/invalid_wget.json"));
     assert!(
         result.is_ok(),
         "missing required fields should be tolerated (formatjson warns)"
@@ -152,7 +152,7 @@ fn test_scoop_invalid_wget() {
 #[test]
 fn test_scoop_broken_schema() {
     // JSON valid, schema valid but has broken references
-    let result = Manifest::parse(scoop_fixture("manifest/broken_schema.json"));
+    let result = parse_file(scoop_fixture("manifest/broken_schema.json"));
     assert!(
         result.is_err() || result.is_ok(),
         "schema may be valid depending on strictness"
@@ -163,7 +163,7 @@ fn test_scoop_broken_schema() {
 fn test_all_urls_arch_order_matches_scoop() {
     // Architecture segments must be emitted 64bit → 32bit → arm64, in the
     // same fixed order as Scoop's bin/checkhashes.ps1.
-    let manifest = Manifest::parse(fixture_path("arch-order.json")).unwrap();
+    let manifest = parse_file(fixture_path("arch-order.json")).unwrap();
 
     let urls = manifest.all_urls();
     assert_eq!(
@@ -203,7 +203,7 @@ fn test_all_urls_arch_order_matches_scoop() {
 
 #[test]
 fn test_parse_installer_file() {
-    let manifest = Manifest::parse(fixture_path("installer-file.json")).unwrap();
+    let manifest = parse_file(fixture_path("installer-file.json")).unwrap();
     assert_eq!(manifest.version(), "1.0.0");
 
     let installer = manifest.installer().expect("should have installer");

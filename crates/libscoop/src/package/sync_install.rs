@@ -507,7 +507,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         } else {
             session.current_dir(pkg.name()).join("manifest.json")
         };
-        let old_manifest = crate::package::Manifest::parse(old_manifest_path).ok();
+        let old_manifest = crate::package::manifest::parse_file(old_manifest_path).ok();
         match old_manifest {
             Some(m) => env::remove_with_manifest(session, pkg, &m, version)?,
             None => env::remove(session, pkg)?,

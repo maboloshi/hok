@@ -11,10 +11,10 @@ use tracing::{debug, info};
 
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::{
-    install_state,
-    manifest::{InstallInfo, Manifest},
+    InstallState, InstallStateInstalled, Package, install_state,
+    manifest::parse_file,
     operations::{self, run_script},
-    query, resolve, InstallState, InstallStateInstalled, Package,
+    query, resolve,
 };
 use crate::{
     env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
@@ -419,11 +419,11 @@ fn resolve_reset_target(
     }
 
     // Parse the version directory's manifest (upstream `installed_manifest`).
-    let manifest = Manifest::parse(version_dir.join("manifest.json"))
+    let manifest = parse_file(version_dir.join("manifest.json"))
         .map_err(|_| Error::Custom(format!("'{}' ({}) isn't installed", name, version)))?;
 
     // install.json is optional; bucket defaults to the isolated bucket.
-    let install_info = InstallInfo::parse(version_dir.join("install.json")).ok();
+    let install_info = install_state::parse_install_info(&version_dir.join("install.json")).ok();
     let bucket = install_info
         .as_ref()
         .and_then(|i| i.bucket().map(|s| s.to_owned()))

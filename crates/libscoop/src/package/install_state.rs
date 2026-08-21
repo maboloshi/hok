@@ -5,17 +5,37 @@
 //! the origin bucket manifest) is a distinct concern from the query walkers
 //! in `query.rs`.
 
+use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::bucket::Bucket;
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
+use crate::error::Fallible;
 use crate::internal::compare_versions;
-use crate::package::manifest::{InstallInfo, Manifest};
+use crate::package::manifest::{InstallInfo, Manifest, parse_file};
 use crate::package::{InstallState, InstallStateInstalled, Package};
 
 use super::query_matcher::QueryOption;
+
+/// Read and parse `<app>/<version>/install.json` into an [`InstallInfo`].
+///
+/// The file-I/O boundary for the pure [`InstallInfo`] type.
+pub(crate) fn parse_install_info(path: &Path) -> Fallible<InstallInfo> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
+
+    let info = serde_json::from_slice(&bytes).inspect_err(|e| {
+        warn!(
+            "failed to parse install_info {} (err: {})",
+            path.display(),
+            e
+        );
+    })?;
+
+    Ok(info)
+}
 
 /// Resolve the current installed version of an app, mirroring upstream
 /// `Select-CurrentVersion` (lib/versions.ps1):
@@ -29,7 +49,7 @@ use super::query_matcher::QueryOption;
 /// the mtime fallback of step 2 (which scans the versioned dirs) applies.
 pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
     // 1. current\manifest.json version
-    if let Ok(manifest) = Manifest::parse(pkg_dir.join("current").join("manifest.json")) {
+    if let Ok(manifest) = parse_file(pkg_dir.join("current").join("manifest.json")) {
         let version = manifest.version().to_owned();
         if version == "nightly" {
             if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
@@ -75,8 +95,8 @@ pub(crate) fn load_install_state(
     } else {
         pkg_dir.join("current")
     };
-    let install_info = InstallInfo::parse(meta_dir.join("install.json")).ok()?;
-    let install_manifest = Manifest::parse(meta_dir.join("manifest.json")).ok()?;
+    let install_info = parse_install_info(&meta_dir.join("install.json")).ok()?;
+    let install_manifest = parse_file(meta_dir.join("manifest.json")).ok()?;
 
     Some(InstallState::Installed(InstallStateInstalled {
         version: install_manifest.version().to_owned(),
@@ -102,7 +122,7 @@ pub(crate) fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -
     let bucket_path = crate::internal::path::bucket_dir(root_path, bucket);
     let bucket = Bucket::from(&bucket_path).ok()?;
     let manifest_path = bucket.path_of_manifest(name)?;
-    Manifest::parse(manifest_path).ok()
+    parse_file(manifest_path).ok()
 }
 
 pub(crate) fn maybe_fill_upgradable(

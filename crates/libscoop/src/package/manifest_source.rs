@@ -17,7 +17,7 @@ use crate::bucket::Bucket;
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::error::Fallible;
 use crate::internal;
-use crate::package::manifest::Manifest;
+use crate::package::manifest::{Manifest, parse_file};
 use crate::package::{checkver, identity, Package};
 use crate::{Error, Session};
 
@@ -68,7 +68,7 @@ pub(crate) fn resolve_manifest(
 
     // 3. Bucket lookup — scan the requested (or all added) buckets.
     let (_bucket_name, manifest_path) = find_bucket_manifest(session, app, bucket)?;
-    let manifest = Manifest::parse(&manifest_path)?;
+    let manifest = parse_file(&manifest_path)?;
     Ok(ResolvedManifest {
         name: app.to_owned(),
         manifest,
