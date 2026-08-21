@@ -47,7 +47,7 @@ pub fn extract_archives(
             let stripped = internal::url::strip_url_query(url);
             let target_name = stripped.rsplit('/').next().unwrap_or(f);
 
-            if internal::archive::detect_format(target_name).is_some() {
+            if session.archive().detect_format(target_name).is_some() {
                 Some(idx)
             } else {
                 None
@@ -76,7 +76,7 @@ pub fn extract_archives(
                     )));
                 }
                 let emit = session.emitter();
-                internal::archive::extract(
+                session.archive().extract(
                     &src,
                     working_dir,
                     pkg.manifest().extract_dir().as_deref(),
@@ -162,8 +162,9 @@ pub fn extract_markers(session: &Session, working_dir: &Path) {
 
             if source.exists() {
                 let emit = session.emitter();
-                if let Err(e) =
-                    internal::archive::extract(source, dest, None, None, innosetup, &emit)
+                if let Err(e) = session
+                    .archive()
+                    .extract(source, dest, None, None, innosetup, &emit)
                 {
                     // Log but don't abort — extraction errors may be handled
                     // by the PS script's own error handling
