@@ -15,6 +15,12 @@
 //!
 //! The PE entry points and the panic handler live in the bin targets.
 
+// `hok-shim` is a `no_std` shim launcher whose whole body is Win32 FFI
+// (CreateProcessW, job objects, GUI detection) — unsafe is inherent here, so
+// this crate carries a deliberate, documented exemption to the crate-level
+// `unsafe_code = deny` guardrail instead of module-local allows.
+#![allow(unsafe_code)]
+
 #![no_std]
 #![cfg_attr(test, allow(dead_code))]
 

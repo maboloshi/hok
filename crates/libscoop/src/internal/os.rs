@@ -2,6 +2,12 @@
 //!
 //! Uses raw Win32 FFI on Windows to avoid heavy dependencies like `sysinfo`.
 
+// This module is entirely Win32 FFI (Toolhelp32 snapshot, ShellExecuteExW,
+// ShellExecuteW, admin checks) — the necessary-FFI exemption to the crate-level
+// `unsafe_code = deny` guardrail. Only `os.rs` and `permission.rs` carry a local
+// allow; everything else in the crate must stay unsafe-free.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::path::Path;
 

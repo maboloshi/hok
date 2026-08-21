@@ -9,6 +9,7 @@
 //! declared explicitly (rust-lld cannot infer it from the custom entry point
 //! under `#![no_main]`).
 
+#![allow(unsafe_code)]
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 #![windows_subsystem = "console"]

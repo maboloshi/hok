@@ -66,5 +66,8 @@ inherits = "release"
 debug = true
 strip = false
 
+[lints.rust]
+unsafe_code = "deny"
+
 [lints.rustdoc]
 broken_intra_doc_links = "deny"

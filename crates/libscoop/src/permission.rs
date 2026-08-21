@@ -7,6 +7,11 @@
 //! flows (process shutdown, uninstall cleanup, ...) can reuse it for any
 //! directory.
 
+// This module performs the Windows ACL grant via `windows-sys` FFI
+// (GetNamedSecurityInfoW / SetEntriesInAclW / SetNamedSecurityInfoW) — the
+// necessary-FFI exemption to the crate-level `unsafe_code = deny` guardrail.
+#![allow(unsafe_code)]
+
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
