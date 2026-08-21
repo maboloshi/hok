@@ -235,12 +235,13 @@ pub fn head_commit_time<P: AsRef<Path>>(path: P) -> Option<i64> {
 /// verbatim; tests inject an in-memory fake via [`Session::set_git`] to avoid
 /// touching real repositories. Lives in the tool layer (no domain-service
 /// dependency).
-pub trait Git {
+#[async_trait::async_trait]
+pub trait Git: Send + Sync {
     /// Clone a remote repository into `path`.
-    fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()>;
+    async fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()>;
 
     /// Update a bucket repo with `git pull` semantics.
-    fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()>;
+    async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()>;
 
     /// Get the URL of a remote in a repository.
     fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>>;
@@ -253,12 +254,13 @@ pub trait Git {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealGit;
 
+#[async_trait::async_trait]
 impl Git for RealGit {
-    fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()> {
+    async fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()> {
         clone_repo(remote_url, path, proxy)
     }
 
-    fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()> {
+    async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()> {
         pull(path, proxy)
     }
 

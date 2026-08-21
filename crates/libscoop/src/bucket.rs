@@ -404,10 +404,14 @@ impl BucketUpdateState {
 /// url is not specified when adding a non built-in bucket.
 ///
 /// A git error will be returned if failed to clone the bucket.
-pub fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
-    let config = session.config();
-    let mut path = config.root_path().to_owned();
-    path.push("buckets");
+pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
+    let (mut path, proxy) = {
+        let config = session.config();
+        let mut path = config.root_path().to_owned();
+        path.push("buckets");
+        let proxy = config.proxy().map(|s| s.to_owned());
+        (path, proxy)
+    };
 
     internal::fs::ensure_dir(&path)?;
 
@@ -416,7 +420,6 @@ pub fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
         return Err(Error::BucketAlreadyExists(name.to_owned()));
     }
 
-    let proxy = config.proxy();
     let remote_url = match remote_url.is_empty() {
         false => remote_url,
         true => crate::constant::BUILTIN_BUCKET_LIST
@@ -426,7 +429,10 @@ pub fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
             .ok_or_else(|| Error::BucketAddRemoteRequired(name.to_owned()))?,
     };
 
-    session.git().clone_repo(remote_url, &path, proxy)
+    session
+        .git()
+        .clone_repo(remote_url, &path, proxy.as_deref())
+        .await
 }
 
 /// Get a list of added buckets.
@@ -465,7 +471,7 @@ pub fn list_known() -> Vec<(&'static str, &'static str)> {
 /// A [`ConfigInUse`][1] error will be returned if the config is borrowed elsewhere.
 ///
 /// [1]: crate::Error::ConfigInUse
-pub fn update(session: &Session) -> Fallible<()> {
+pub async fn update(session: &Session) -> Fallible<()> {
     let buckets = bucket_added(session)?;
 
     if buckets.is_empty() {
@@ -476,15 +482,20 @@ pub fn update(session: &Session) -> Fallible<()> {
         return Ok(());
     }
 
-    // Doing bucket update will update the last_update timestamp in the config.
-    // A mutable reference to the config is borrowed here.
-    let mut config = session.config_mut()?;
-    let proxy = config.proxy().map(|s| s.to_owned());
+    // Extract the proxy before the awaits; the config read guard is dropped
+    // so a concurrent `config_mut()` is never blocked by the async pulls.
+    let proxy = {
+        let config = session.config();
+        config.proxy().map(|s| s.to_owned())
+    };
     let emitter = session.emitter();
-    // The git capability is shareable across update threads (unlike the
-    // !Sync session); tests inject an in-memory fake here.
+    // The git capability is shareable across update tasks; tests inject an
+    // in-memory fake here.
     let git = session.git();
 
+    // Pull each bucket concurrently. git2 pulls are blocking, so each runs as
+    // its own task on the runtime's worker pool (真 async orchestration; the
+    // blocking body is offloaded by tokio).
     let handles: Vec<_> = buckets
         .iter()
         .filter(|b| b.remote_url().is_some())
@@ -495,14 +506,14 @@ pub fn update(session: &Session) -> Fallible<()> {
             let git = git.clone();
             let emitter = emitter.clone();
 
-            std::thread::spawn(move || {
+            tokio::task::spawn(async move {
                 let mut ctx = BucketUpdateProgressContext::new(name.as_str());
 
                 if let Some(tx) = emitter.clone() {
                     let _ = tx.send(crate::Event::BucketUpdateProgress(ctx.clone()));
                 }
 
-                match git.pull(&repo, proxy.as_deref()) {
+                match git.pull(&repo, proxy.as_deref()).await {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
@@ -521,19 +532,18 @@ pub fn update(session: &Session) -> Fallible<()> {
         .collect();
 
     for handle in handles {
-        let _ = handle.join();
+        let _ = handle.await;
     }
 
     // Scoop writes LAST_UPDATE unconditionally after the no-arg update
     // branch (scoop-update.ps1:399) — even when every bucket was skipped
     // — so the cooldown/outdated checks see that an update ran.
     let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
-    config.set("last_update", time.as_str())?;
-    crate::config::write(&config)?;
-
-    // Drop the mutable config borrow before calling open(), which needs
-    // an immutable borrow on config via session.config().
-    drop(config);
+    {
+        let mut config = session.config_mut()?;
+        config.set("last_update", time.as_str())?;
+        crate::config::write(&config)?;
+    }
 
     if let Some(tx) = emitter {
         let _ = tx.send(crate::Event::BucketUpdateDone);
@@ -562,8 +572,8 @@ pub fn remove(session: &Session, name: &str) -> Fallible<()> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn known_buckets_match_official_list() {
+    #[tokio::test]
+    async fn known_buckets_match_official_list() {
         // The compile-time generated list must contain all 10 official
         // ScoopInstaller buckets (assets/buckets.json), including the three
         // hok previously missed.
@@ -595,8 +605,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bucket_priority_matches_known_keys() {
+    #[tokio::test]
+    async fn bucket_priority_matches_known_keys() {
         // BUCKET_PRIORITY is generated from the same buckets.json key order,
         // so the two lists must agree on the key set.
         let known: Vec<&str> = crate::constant::BUILTIN_BUCKET_LIST
@@ -607,8 +617,8 @@ mod tests {
         assert_eq!(known, priority, "priority must match known key order");
     }
 
-    #[test]
-    fn bucket_add_uses_injected_git_fake() {
+    #[tokio::test]
+    async fn bucket_add_uses_injected_git_fake() {
         use crate::test_utils::{FakeGit, test_session, tmpdir};
         use std::sync::Arc;
 
@@ -617,7 +627,9 @@ mod tests {
         let fake = Arc::new(FakeGit::default());
         session.set_git(fake.clone()).unwrap();
 
-        crate::bucket::add(&session, "extras", "https://example.com/extras.git").unwrap();
+        crate::bucket::add(&session, "extras", "https://example.com/extras.git")
+            .await
+            .unwrap();
 
         let clones = fake.clones.lock().unwrap();
         assert_eq!(clones.len(), 1);
@@ -629,8 +641,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bucket_update_uses_injected_git_fake() {
+    #[tokio::test]
+    async fn bucket_update_uses_injected_git_fake() {
         use crate::test_utils::{FakeGit, test_session, tmpdir};
         use std::sync::Arc;
 
@@ -648,7 +660,7 @@ mod tests {
         let fake = Arc::new(FakeGit::default());
         session.set_git(fake.clone()).unwrap();
 
-        crate::bucket::update(&session).unwrap();
+        crate::bucket::update(&session).await.unwrap();
 
         let pulls = fake.pulls.lock().unwrap();
         assert_eq!(pulls.len(), 1, "pulls: {:?}", *pulls);

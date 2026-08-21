@@ -287,8 +287,14 @@ pub struct FakeGit {
     pub fail_pull: AtomicBool,
 }
 
+#[async_trait::async_trait]
 impl Git for FakeGit {
-    fn clone_repo(&self, remote_url: &str, path: &Path, _proxy: Option<&str>) -> Fallible<()> {
+    async fn clone_repo(
+        &self,
+        remote_url: &str,
+        path: &Path,
+        _proxy: Option<&str>,
+    ) -> Fallible<()> {
         self.clones
             .lock()
             .unwrap()
@@ -296,7 +302,7 @@ impl Git for FakeGit {
         Ok(())
     }
 
-    fn pull(&self, path: &Path, _proxy: Option<&str>) -> Fallible<()> {
+    async fn pull(&self, path: &Path, _proxy: Option<&str>) -> Fallible<()> {
         if self.fail_pull.load(Ordering::SeqCst) {
             return Err(Error::Custom("fake pull failed".to_string()));
         }

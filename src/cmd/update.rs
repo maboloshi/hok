@@ -103,11 +103,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if args.global {
         return Err(anyhow::anyhow!(rust_i18n::t!("cmd.update_global_no_app")));
     }
-    update_buckets(session, args.force)
+    update_buckets(session, args.force).await
 }
 
 /// Update all buckets with simple inline status.
-fn update_buckets(session: &Session, force: bool) -> Result<()> {
+async fn update_buckets(session: &Session, force: bool) -> Result<()> {
     // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
     if !force {
         if let Some(remaining) = session.config().update_cooldown_remaining() {
@@ -139,7 +139,7 @@ fn update_buckets(session: &Session, force: bool) -> Result<()> {
     });
 
     output::header(rust_i18n::t!("cmd.header_buckets"));
-    bucket::update(session)?;
+    bucket::update(session).await?;
     handle.join().unwrap();
 
     // Refresh SQLite manifest cache with visible feedback
