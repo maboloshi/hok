@@ -24,6 +24,11 @@ pub fn extract_archives(
     pkg: &Package,
     working_dir: &Path,
 ) -> Fallible<Vec<usize>> {
+    // Resolve the upgradable reference exactly like `load_cache` does, so the
+    // cache filename being extracted matches the one the downloader wrote for
+    // the *new* version (force/reinstall mode holds the installed old-version
+    // package whose `upgradable` points at the bucket manifest).
+    let pkg = pkg.upgradable().unwrap_or(pkg);
     let files = pkg.download_filenames();
     let urls = pkg.manifest().url();
 
@@ -100,6 +105,9 @@ pub fn copy_downloaded_files(
     working_dir: &Path,
     archives: &[usize],
 ) -> Fallible<()> {
+    // Same upgradable resolution as `load_cache` / `extract_archives`: copy
+    // the cache files that were downloaded under the *new* version's names.
+    let pkg = pkg.upgradable().unwrap_or(pkg);
     let files = pkg.download_filenames();
     let urls = pkg.manifest().url();
 
