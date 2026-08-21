@@ -414,7 +414,7 @@ pub async fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption
 
     let is_op_remove = options.contains(&SyncOption::Remove);
     let result = if is_op_remove {
-        remove(session, &queries, &options)
+        remove(session, &queries, &options).await
     } else {
         install(session, &queries, &options).await
     };

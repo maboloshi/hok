@@ -1213,12 +1213,13 @@ fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
 /// above verbatim; tests inject an in-memory fake via [`Session::set_archive`]
 /// to avoid touching real archive files. Lives in the tool layer. The
 /// progress callback (`emitter`) semantics are preserved exactly.
-pub trait Archive {
+#[async_trait::async_trait]
+pub trait Archive: Send + Sync {
     /// Detect the archive format from a filename extension.
     fn detect_format(&self, filename: &str) -> Option<&'static str>;
 
     /// Extract an archive file to a destination directory.
-    fn extract(
+    async fn extract(
         &self,
         cache_path: &Path,
         dest_dir: &Path,
@@ -1233,12 +1234,13 @@ pub trait Archive {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealArchive;
 
+#[async_trait::async_trait]
 impl Archive for RealArchive {
     fn detect_format(&self, filename: &str) -> Option<&'static str> {
         detect_format(filename)
     }
 
-    fn extract(
+    async fn extract(
         &self,
         cache_path: &Path,
         dest_dir: &Path,

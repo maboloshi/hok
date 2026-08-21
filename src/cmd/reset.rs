@@ -46,7 +46,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 // Official scoop-reset.ps1 iterates apps independently
                 // (ForEach-Object with `return`): a failing app is reported
                 // and skipped, the remaining apps keep resetting.
-                if let Err(e) = package::sync::reset(session, pkg.name(), None) {
+                if let Err(e) = package::sync::reset(session, pkg.name(), None).await {
                     output::err(format!("Failed to reset '{}': {e}", pkg.name()));
                     continue;
                 }
@@ -59,6 +59,6 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let name = args.app.unwrap();
     let version = args.version.as_deref();
-    package::sync::reset(session, &name, version)?;
+    package::sync::reset(session, &name, version).await?;
     Ok(())
 }

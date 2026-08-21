@@ -25,7 +25,7 @@ use super::sync_install::check_not_running;
 use super::{SyncOption, Transaction, confirm_transaction};
 
 /// Sync operation: remove packages.
-pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
+pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let escape_hold = options.contains(&SyncOption::EscapeHold);
     let no_dependent_check = options.contains(&SyncOption::NoDependentCheck);
     let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
@@ -116,7 +116,7 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
     if let Some(packages) = transaction.remove_view() {
         let purge = options.contains(&SyncOption::Purge);
         let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
-        commit_remove(session, packages, purge, ignore_failure)?;
+        commit_remove(session, packages, purge, ignore_failure).await?;
     }
 
     Ok(())
@@ -124,14 +124,14 @@ pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fa
 
 /// Execute the removal commit: run scripts, clean up shims/shortcuts/env,
 /// remove app directory, and optionally purge persist data.
-fn commit_remove(
+async fn commit_remove(
     session: &Session,
     packages: &[Package],
     purge: bool,
     ignore_failure: bool,
 ) -> Fallible<()> {
     for package in packages.iter() {
-        if let Err(e) = commit_one_remove(session, package, purge) {
+        if let Err(e) = commit_one_remove(session, package, purge).await {
             if matches!(e, Error::AppRunning(_)) && ignore_failure {
                 // App is still running: skip this package and continue with
                 // the rest (its process-in-use failure is covered by
@@ -155,7 +155,7 @@ fn commit_remove(
     Ok(())
 }
 
-fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
+async fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
     debug!("remove: {} - starting", package.name());
 
     if let Some(tx) = session.emitter() {
@@ -191,7 +191,8 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
         "pre_uninstall",
         "uninstall",
         package.manifest().pre_uninstall(),
-    )?;
+    )
+    .await?;
 
     // Check if the app is currently running after running pre_uninstall
     // (mirrors scoop-uninstall.ps1: pre_uninstall hook runs first, then
@@ -210,7 +211,8 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             uninstaller.args(),
             uninstaller.keep(),
             uninstaller.script(),
-        )?;
+        )
+        .await?;
     }
 
     debug!(
@@ -257,7 +259,8 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
             "post_uninstall",
             "uninstall",
             package.manifest().post_uninstall(),
-        )?;
+        )
+        .await?;
     }
 
     // Remove older versions one by one, unlinking persist data in each
@@ -327,7 +330,7 @@ fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Falli
 /// Unlike `query_installed`, this does **not** require both
 /// `current\manifest.json` and `current\install.json` to exist, so a
 /// half-broken install (e.g. missing `install.json`) can still be reset.
-pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
+pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
     let (pkg, pkg_dir, version_dir) = resolve_reset_target(session, name, target_version)?;
     let version = pkg.installed_version().unwrap_or(pkg.version());
 
@@ -372,7 +375,8 @@ pub fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fal
         "post_install",
         "install",
         pkg.manifest().post_install(),
-    )?;
+    )
+    .await?;
 
     Ok(())
 }

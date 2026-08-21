@@ -21,7 +21,7 @@ use crate::{error::Fallible, internal, Error, Session};
 /// - `SCOOP_PACKAGE_NAME` — the package name
 /// - `SCOOP_PACKAGE_VERSION` — the installed version
 /// - `version` — same as SCOOP_PACKAGE_VERSION (Scoop convention)
-pub fn run_script(
+pub async fn run_script(
     session: &Session,
     package: &Package,
     working_dir: &Path,
@@ -157,7 +157,7 @@ $fname = '{fname}'
     }
 
     // Process extraction markers (P2: Rust native extraction)
-    super::extract_markers(session, working_dir);
+    super::extract_markers(session, working_dir).await;
 
     Ok(())
 }
@@ -307,7 +307,7 @@ pub fn run_installer_file(
 // (file + script) across the install and remove pipelines; a struct
 // would just move the same fields behind one more indirection.
 #[allow(clippy::too_many_arguments)]
-pub fn run_hook(
+pub async fn run_hook(
     session: &Session,
     package: &Package,
     dir: &Path,
@@ -351,7 +351,7 @@ pub fn run_hook(
     //    lib/install.ps1:144,163-166).
     if let Some(script) = script {
         debug!("run_hook: {} - {}.script", package.name(), hook);
-        run_script(session, package, dir, None, hook, cmd, Some(script))?;
+        run_script(session, package, dir, None, hook, cmd, Some(script)).await?;
     }
 
     Ok(())

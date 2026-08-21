@@ -316,7 +316,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        commit_install(session, &packages, ignore_failure)?;
+        commit_install(session, &packages, ignore_failure).await?;
     }
 
     Ok(())
@@ -409,9 +409,9 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
 
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
-fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
+async fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
     for &pkg in packages.iter() {
-        if let Err(e) = commit_one_install(session, pkg) {
+        if let Err(e) = commit_one_install(session, pkg).await {
             let msg = format!("failed to install '{}': {}", pkg.name(), e);
             if ignore_failure {
                 session.output().error(msg);
@@ -423,8 +423,10 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
     Ok(())
 }
 
-fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
-    let config = session.config();
+async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
+    // Extract config-derived values before the awaits so the config read guard
+    // is dropped (a guard held across an await would block `config_mut()`).
+    let no_junction = { let config = session.config(); config.no_junction() };
     let apps_dir = session.apps_dir();
 
     // The install layout version: upstream rewrites `nightly` to
@@ -449,7 +451,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     // 1. extract/copy downloaded files
-    let archives = operations::extract_archives(session, pkg, &working_dir)?;
+    let archives = operations::extract_archives(session, pkg, &working_dir).await?;
     operations::copy_downloaded_files(session, pkg, &working_dir, &archives)?;
 
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
@@ -463,7 +465,8 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             "pre_install",
             "install",
             pkg.manifest().pre_install(),
-        )?;
+        )
+        .await?;
     }
 
     // 3. installer, $dir = version dir)
@@ -478,7 +481,8 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             installer.args(),
             installer.keep(),
             installer.script(),
-        )?;
+        )
+        .await?;
     }
 
     // 3.25 Undo installers that added the app directory to PATH
@@ -500,7 +504,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         // Locate the old manifest: with junctions, `current` still points at
         // the old version; without junctions, use the versioned dir directly.
         // Fall back to the new manifest if the old one can't be read.
-        let old_manifest_path = if config.no_junction() {
+        let old_manifest_path = if no_junction {
             apps_dir
                 .join(pkg.name())
                 .join(old_version)
@@ -520,7 +524,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     operations::link_current(
         &apps_dir.join(pkg.name()),
         &working_dir,
-        config.no_junction(),
+        no_junction,
     )?;
 
     // 5. shims + shortcuts
@@ -564,7 +568,8 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             "post_install",
             "install",
             pkg.manifest().post_install(),
-        )?;
+        )
+        .await?;
     }
 
     if let Some(tx) = session.emitter() {
