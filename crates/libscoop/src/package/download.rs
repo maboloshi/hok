@@ -11,12 +11,11 @@
 use std::cell::OnceCell;
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{Read, Write},
+    fs::File,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 use tracing::debug;
@@ -215,15 +214,16 @@ impl<'a> PackageSet<'a> {
             .min(config.aria2_max_connection_per_server()) as u64;
         let min_split_size = config.aria2_min_split_size();
 
-        // Build agent once (shared for all downloads)
-        let agent_opts = internal::network::RequestOptions {
+        // Shared request options (proxy + UA); the cookie is injected per
+        // file below. The network capability is injected per session so tests
+        // can substitute an in-memory fake.
+        let base_opts = internal::network::RequestOptions {
             proxy,
             timeout_secs: 120,
             user_agent: Some(user_agent),
             ..internal::network::RequestOptions::default()
         };
-        let agent = internal::network::build_agent(&agent_opts).map_err(crate::Error::Custom)?;
-        let agent = &agent;
+        let net = self.session.network();
 
         for cache in package_caches.values() {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
@@ -237,6 +237,20 @@ impl<'a> PackageSet<'a> {
 
             let cookie = cache.package.cookie().unwrap_or_default();
             let ident = cache.package.ident();
+            let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
+                None
+            } else {
+                Some(
+                    cookie
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect(),
+                )
+            };
+            let file_opts = internal::network::RequestOptions {
+                cookies: cookie_map.as_ref(),
+                ..base_opts.clone()
+            };
 
             // A failure on any file marks the whole package as failed so the
             // rest of the transaction can still be committed (IgnoreFailure).
@@ -271,7 +285,6 @@ impl<'a> PackageSet<'a> {
                         // degrades to fewer connections instead of failing the
                         // whole file.
                         let url_str = dlinfo.url.to_owned();
-                        let cookie_clone = cookie.clone();
                         // Aggregate per-chunk deltas into a file-level count so
                         // the progress event matches the single-stream path.
                         let progress_total = Arc::new(AtomicU64::new(0));
@@ -296,9 +309,9 @@ impl<'a> PackageSet<'a> {
                             }
                         };
                         let part_paths = download_fragmented(
-                            agent,
+                            net.as_ref(),
                             &url_str,
-                            &cookie_clone,
+                            &file_opts,
                             dlinfo.remote_size,
                             chunk_count,
                             &part_dir,
@@ -316,40 +329,11 @@ impl<'a> PackageSet<'a> {
 
                         let fname = filename.to_owned();
                         let url_str = dlinfo.url.to_owned();
-                        let cookie_clone = cookie.clone();
                         let dlinfo_total = dlinfo.remote_size;
 
-                        // Download via ureq
-                        let mut req = agent.get(&url_str);
-                        if !cookie_clone.is_empty() {
-                            let cookie_val = cookie_clone
-                                .iter()
-                                .map(|(k, v)| format!("{}={}", k, v))
-                                .collect::<Vec<_>>()
-                                .join("; ");
-                            req = req.header("Cookie", &cookie_val);
-                        }
-
-                        let resp = req.call().map_err(|e| {
-                            crate::error::Error::Custom(format!("download failed: {}", e))
-                        })?;
-
-                        let mut file = OpenOptions::new().create(true).append(true).open(&tmp)?;
-
-                        let mut reader = resp.into_body().into_reader();
-                        let mut buf = [0u8; 32768];
-                        let mut dlnow = 0u64;
-
-                        loop {
-                            let n = reader
-                                .read(&mut buf)
-                                .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
-                            if n == 0 {
-                                break;
-                            }
-                            file.write_all(&buf[..n])?;
-                            dlnow += n as u64;
-
+                        // Stream the whole body through the network capability
+                        // (reports cumulative bytes written via on_progress).
+                        let mut on_progress = |dlnow: u64| {
                             if let Some(tx) = &emitter {
                                 let ctx = PackageDownloadProgressContext {
                                     ident: ident.clone(),
@@ -360,7 +344,9 @@ impl<'a> PackageSet<'a> {
                                 };
                                 let _ = tx.send(Event::PackageDownloadProgress(ctx));
                             }
-                        }
+                        };
+                        net.download_stream(&url_str, &file_opts, &tmp, &mut on_progress)
+                            .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
 
                         filepaths.push((tmp, path, ident.clone()));
                     }
@@ -487,40 +473,23 @@ impl<'a> PackageSet<'a> {
                     cookies: cookie_map.as_ref(),
                     ..internal::network::RequestOptions::default()
                 };
-                let result = internal::network::head(url, &opts);
+                let result = self.session.network().head(url, &opts);
                 let code = result.status_code;
 
                 if code == 200 {
-                    // Get Content-Length via a dedicated HEAD (need the raw header)
-                    if let Ok(cl_agent) =
-                        internal::network::build_agent(&internal::network::RequestOptions {
-                            proxy,
-                            timeout_secs: 30,
-                            ..internal::network::RequestOptions::default()
-                        })
-                    {
-                        let mut cl_req = cl_agent.head(*url);
-                        if !cookie.is_empty() {
-                            let cookie_val = cookie
-                                .iter()
-                                .map(|(k, v)| format!("{}={}", k, v))
-                                .collect::<Vec<_>>()
-                                .join("; ");
-                            cl_req = cl_req.header("Cookie", &cookie_val);
-                        }
-                        info.remote_size = cl_req
-                            .call()
-                            .ok()
-                            .and_then(|resp| {
-                                resp.headers()
-                                    .get("Content-Length")?
-                                    .to_str()
-                                    .ok()?
-                                    .parse::<u64>()
-                                    .ok()
-                            })
-                            .unwrap_or(0);
-                    }
+                    // Get Content-Length via a dedicated HEAD (need the header).
+                    let cl_opts = internal::network::RequestOptions {
+                        proxy,
+                        timeout_secs: 30,
+                        cookies: cookie_map.as_ref(),
+                        ..internal::network::RequestOptions::default()
+                    };
+                    info.remote_size = self
+                        .session
+                        .network()
+                        .head(url, &cl_opts)
+                        .content_length
+                        .unwrap_or(0);
                     if info.remote_size != info.local_size {
                         total += info.remote_size;
                     }
