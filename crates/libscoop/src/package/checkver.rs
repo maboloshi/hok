@@ -340,6 +340,9 @@ pub fn execute(
     let proxy_ref: Option<&str> = proxy.as_deref();
     let ua_ref: &str = &user_agent;
     let hosts_ref = &private_hosts;
+    // The network capability is shareable across worker threads (unlike the
+    // !Sync session), so tests can inject an in-memory fake here.
+    let net = session.network();
     let (tx, rx) = std::sync::mpsc::channel::<(usize, CheckverFetch)>();
     std::thread::scope(|s| {
         for (i, item) in pending.iter().enumerate() {
@@ -347,13 +350,14 @@ pub fn execute(
             let script = item.script_text.clone();
             let script_url = item.cv.url.clone();
             let token = gh_token.clone();
+            let net = net.clone();
             let tx = tx.clone();
             s.spawn(move || {
                 // catch_unwind: a panicking worker must still send its message
                 // so the receiver loop below (which expects exactly one message
                 // per item) never deadlocks or panics on RecvError.
                 let is_script = script.is_some();
-                let fetch = std::panic::catch_unwind(|| {
+                let fetch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if let Some(script) = script {
                         // Script-based check: the script's stdout is the page
                         // (matching Scoop checkver.ps1 lines 298-301).
@@ -387,14 +391,14 @@ pub fn execute(
                             token: token.as_deref(),
                             extra_headers: extra_ref,
                         };
-                        match crate::internal::network::download(&url, &dl_opts)
+                        match net.download(&url, &dl_opts)
                             .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
                         {
                             Ok(page) => CheckverFetch::Page(page),
                             Err(e) => CheckverFetch::DownloadError(e),
                         }
                     }
-                });
+                }));
                 let _ = tx.send((
                     i,
                     fetch.unwrap_or_else(|_| {

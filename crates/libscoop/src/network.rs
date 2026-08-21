@@ -51,7 +51,7 @@ pub fn head_url(
         extra_headers: extra_headers.as_ref(),
         token: None,
     };
-    internal::network::head(url, &opts)
+    session.network().head(url, &opts)
 }
 
 /// Download a file via HTTP GET and save to a local path, using the session's proxy.
@@ -62,7 +62,10 @@ pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> 
         timeout_secs: 120,
         ..internal::network::RequestOptions::default()
     };
-    let data = internal::network::download(url, &opts).map_err(|e| Error::Custom(e.to_string()))?;
+    let data = session
+        .network()
+        .download(url, &opts)
+        .map_err(|e| Error::Custom(e.to_string()))?;
     if let Some(parent) = dest.parent() {
         internal::fs::ensure_dir(parent)?;
     }
@@ -111,6 +114,9 @@ pub fn download_page(
         extra_headers: extra_headers.as_ref(),
         token,
     };
-    let data = internal::network::download(url, &opts).map_err(Error::Custom)?;
+    let data = session
+        .network()
+        .download(url, &opts)
+        .map_err(Error::Custom)?;
     String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
 }
