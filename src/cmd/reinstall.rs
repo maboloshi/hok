@@ -133,10 +133,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Step 1: Uninstall
     let mut remove_opts = all_opts.clone();
     remove_opts.push(SyncOption::Remove);
-    run_remove(session, &queries, &remove_opts)?;
+    run_remove(session, &queries, &remove_opts).await?;
 
     // Step 2: Install
-    run_install(session, &queries, &all_opts)?;
+    run_install(session, &queries, &all_opts).await?;
 
     // Re-hold packages that were held before
     if !held.is_empty() {
@@ -153,22 +153,22 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 }
 
 /// Uninstall phase.
-fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
+async fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let handle = eventloop::run_event_loop_default(session);
-    package::sync::sync(session, queries.to_vec(), opts.to_vec())?;
+    package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
     handle.join().unwrap();
     Ok(())
 }
 
 /// Install phase.
-fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
+async fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let config = eventloop::EventLoopConfig { auto_confirm: true };
     let handle = eventloop::run_event_loop(
         session,
         config,
         Box::new(crate::scoop_handler::ScoopHandler::new()),
     );
-    package::sync::sync(session, queries.to_vec(), opts.to_vec())?;
+    package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
     handle.join().unwrap();
     Ok(())
 }

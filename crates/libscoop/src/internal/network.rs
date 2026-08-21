@@ -1,23 +1,28 @@
-//! HTTP networking using `ureq` (pure Rust).
+//! HTTP networking using `reqwest` (async, rustls).
 //!
-//! Replaced `curl` (libcurl bindings, static C build) to avoid C compilation
-//! overhead and align with the project's "pure Rust first" policy.
+//! Replaced `ureq` (blocking) so the [`Network`] trait can be async and
+//! deliver real non-blocking I/O on a tokio runtime (phase 4, 方案 B).
 //!
 //! # Architecture
 //!
-//! All configurable options are bundled into [`RequestOptions`]; the two core
+//! All configurable options are bundled into [`RequestOptions`]; the core
 //! functions [`head`] and [`download`] accept it by reference.  Simple callers
 //! that only need a proxy and timeout can use [`RequestOptions::default()`].
 //!
-//! Internal helpers `build_agent` and `apply_headers` are `pub(crate)` so
-//! that `package/download.rs` can reuse them without duplicating logic.
+//! Internal helpers `build_client` and `apply_headers` are `pub(crate)` so
+//! that `package/*` can reuse them without duplicating logic.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 use tracing::warn;
+
+use futures::StreamExt;
+use reqwest::header::{
+    AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, COOKIE, RANGE, REFERER, USER_AGENT,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,36 +61,37 @@ pub struct RequestOptions<'a> {
 // Internal helpers (pub(crate) for download.rs reuse)
 // ---------------------------------------------------------------------------
 
-/// Build a [`ureq::Agent`] from the proxy and timeout in `opts`.
-pub(crate) fn build_agent(opts: &RequestOptions) -> Result<ureq::Agent, String> {
-    let mut cfg =
-        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(opts.timeout_secs)));
+/// Build a [`reqwest::Client`] from the proxy and timeout in `opts`.
+pub(crate) fn build_client<'a>(opts: &RequestOptions<'a>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(opts.timeout_secs))
+        .danger_accept_invalid_certs(false);
     if let Some(proxy_url) = opts.proxy {
-        let p = ureq::Proxy::new(proxy_url).map_err(|e| e.to_string())?;
-        cfg = cfg.proxy(Some(p));
+        let p = reqwest::Proxy::all(proxy_url).map_err(|e| e.to_string())?;
+        builder = builder.proxy(p);
     }
-    Ok(cfg.build().new_agent())
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// Inject common HTTP headers into a request based on the given options.
-pub(crate) fn apply_headers<B>(
-    mut req: ureq::RequestBuilder<B>,
-    opts: &RequestOptions,
-) -> ureq::RequestBuilder<B> {
+pub(crate) fn apply_headers<'a>(
+    mut req: reqwest::RequestBuilder,
+    opts: &RequestOptions<'a>,
+) -> reqwest::RequestBuilder {
     if let Some(ua) = opts.user_agent {
-        req = req.header("User-Agent", ua);
+        req = req.header(USER_AGENT, ua);
     }
     if let Some(r) = opts.referer {
-        req = req.header("Referer", r);
+        req = req.header(REFERER, r);
     }
     if let Some(cookies) = opts.cookies {
         let cookie_str: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
         if !cookie_str.is_empty() {
-            req = req.header("Cookie", cookie_str.join("; "));
+            req = req.header(COOKIE, cookie_str.join("; "));
         }
     }
     if let Some(token) = opts.token {
-        req = req.header("Authorization", &format!("Bearer {token}"));
+        req = req.header(AUTHORIZATION, format!("Bearer {token}"));
     }
     if let Some(extra) = opts.extra_headers {
         for (k, v) in extra {
@@ -150,9 +156,9 @@ fn parse_headers(headers: &str) -> impl Iterator<Item = (String, String)> + '_ {
 ///
 /// Returns a [`HeadResult`] that always succeeds at the `Result` level —
 /// network errors are captured inside the struct's `error` field.
-pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
-    let agent = match build_agent(opts) {
-        Ok(a) => a,
+pub async fn head(url: &str, opts: &RequestOptions<'_>) -> HeadResult {
+    let client = match build_client(opts) {
+        Ok(c) => c,
         Err(e) => {
             return HeadResult {
                 url: url.to_string(),
@@ -162,14 +168,14 @@ pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
             };
         }
     };
-    let req = apply_headers(agent.head(url), opts);
+    let req = apply_headers(client.head(url), opts);
 
-    match req.call() {
+    match req.send().await {
         Ok(resp) => {
             let code = resp.status().as_u16();
             let content_length = resp
                 .headers()
-                .get("Content-Length")
+                .get(CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok());
             HeadResult {
@@ -193,18 +199,19 @@ pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
 }
 
 /// Download a URL's content as bytes via HTTP GET with full option control.
-pub fn download(url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
-    let agent = build_agent(opts)?;
-    let req = apply_headers(agent.get(url), opts);
+pub async fn download(url: &str, opts: &RequestOptions<'_>) -> Result<Vec<u8>, String> {
+    let client = build_client(opts)?;
+    let req = apply_headers(client.get(url), opts);
 
-    let mut body = Vec::new();
-    req.call()
-        .map_err(|e| format!("request failed: {e}"))?
-        .into_body()
-        .into_reader()
-        .read_to_end(&mut body)
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(body)
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let resp = resp.error_for_status().map_err(|e| e.to_string())?;
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read failed: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -263,17 +270,18 @@ impl std::fmt::Display for RangeError {
 /// this module verbatim; tests inject an in-memory fake via
 /// [`Session::set_network`] to avoid the real network. The trait lives here
 /// (the tool layer) so it has no dependency on any domain service.
-pub trait Network {
+#[async_trait::async_trait]
+pub trait Network: Send + Sync {
     /// Perform an HTTP HEAD request.
-    fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult;
+    async fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult;
 
     /// Download a URL's content as bytes via HTTP GET.
-    fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String>;
+    async fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String>;
 
     /// Perform one range request (`bytes={start}-{end}`), returning the
     /// response status, `Content-Range` start offset and body. The caller
     /// (fragmented downloader) owns retry/resume/validation logic.
-    fn range_get(
+    async fn range_get(
         &self,
         url: &str,
         start: u64,
@@ -283,12 +291,12 @@ pub trait Network {
 
     /// Download a URL to `dest` in a streaming loop, reporting cumulative
     /// bytes written through `on_progress`.
-    fn download_stream(
+    async fn download_stream(
         &self,
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut dyn FnMut(u64),
+        on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<(), String>;
 }
 
@@ -296,112 +304,95 @@ pub trait Network {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealNetwork;
 
+#[async_trait::async_trait]
 impl Network for RealNetwork {
-    fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult {
-        head(url, opts)
+    async fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult {
+        head(url, opts).await
     }
 
-    fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
-        download(url, opts)
+    async fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
+        download(url, opts).await
     }
 
-    fn range_get(
+    async fn range_get(
         &self,
         url: &str,
         start: u64,
         end: u64,
         opts: &RequestOptions,
     ) -> Result<RangeResponse, RangeError> {
-        let agent = build_agent(opts).map_err(RangeError::Transient)?;
-        let mut req = agent
-            .get(url)
-            .header("Range", &format!("bytes={start}-{end}"));
-        if let Some(cookies) = opts.cookies.filter(|c| !c.is_empty()) {
-            let cookie_val = cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            req = req.header("Cookie", &cookie_val);
-        }
+        let client = build_client(opts).map_err(RangeError::Transient)?;
+        let req = apply_headers(
+            client
+                .get(url)
+                .header(RANGE, format!("bytes={start}-{end}")),
+            opts,
+        );
 
-        match req.call() {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                if status != 206 {
-                    return Err(RangeError::Final(format!(
-                        "expected 206 Partial Content, got {status} (server ignored Range request)"
-                    )));
-                }
-                let content_range_start = resp
-                    .headers()
-                    .get("Content-Range")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|cr| cr.strip_prefix("bytes ").and_then(|r| r.split('-').next()))
-                    .and_then(|s| s.parse::<u64>().ok());
-                let mut body = Vec::new();
-                resp.into_body()
-                    .into_reader()
-                    .read_to_end(&mut body)
-                    .map_err(|e| RangeError::Transient(format!("read failed: {e}")))?;
-                Ok(RangeResponse {
-                    status,
-                    content_range_start,
-                    bytes: body,
-                })
-            }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| RangeError::Transient(format!("request failed: {e}")))?;
+        let status = resp.status().as_u16();
+        if status == 206 {
+            let content_range_start = resp
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cr| cr.strip_prefix("bytes ").and_then(|r| r.split('-').next()))
+                .and_then(|s| s.parse::<u64>().ok());
+            let bytes = resp
+                .bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(|e| RangeError::Transient(format!("read failed: {e}")))?;
+            Ok(RangeResponse {
+                status,
+                content_range_start,
+                bytes,
+            })
+        } else if (400..500).contains(&status) && status != 408 && status != 429 {
             // 4xx (except retryable 408/429) — the server rejected the
             // request, retrying won't help.
-            Err(ureq::Error::StatusCode(code))
-                if (400..500).contains(&code) && code != 408 && code != 429 =>
-            {
-                Err(RangeError::Final(format!("HTTP {code} for {url}")))
-            }
-            // Everything else — 5xx, 408/429, Io, Timeout, ... — transient.
-            Err(ureq::Error::StatusCode(code)) => {
-                Err(RangeError::Transient(format!("HTTP {code}")))
-            }
-            Err(e) => Err(RangeError::Transient(e.to_string())),
+            Err(RangeError::Final(format!("HTTP {status} for {url}")))
+        } else if status >= 500 || status == 408 || status == 429 {
+            // 5xx, 408/429 — transient, safe to retry with backoff.
+            Err(RangeError::Transient(format!("HTTP {status}")))
+        } else {
+            // 2xx/3xx that is not 206 (e.g. the server ignored `Range`).
+            Err(RangeError::Final(format!(
+                "expected 206 Partial Content, got {status} (server ignored Range request)"
+            )))
         }
     }
 
-    fn download_stream(
+    async fn download_stream(
         &self,
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut dyn FnMut(u64),
+        on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<(), String> {
-        let agent = build_agent(opts)?;
-        let mut req = agent.get(url);
-        if let Some(cookies) = opts.cookies.filter(|c| !c.is_empty()) {
-            let cookie_val = cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            req = req.header("Cookie", &cookie_val);
-        }
+        let client = build_client(opts)?;
+        let req = apply_headers(client.get(url), opts);
 
-        let resp = req.call().map_err(|e| format!("download failed: {e}"))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("download failed: {e}"))?;
+        let resp = resp.error_for_status().map_err(|e| e.to_string())?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(dest)
             .map_err(|e| e.to_string())?;
-        let mut reader = resp.into_body().into_reader();
-        let mut buf = [0u8; 32768];
+        let mut stream = resp.bytes_stream();
         let mut dlnow = 0u64;
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| format!("read failed: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            file.write_all(&buf[..n])
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("read failed: {e}"))?;
+            file.write_all(&chunk)
                 .map_err(|e| format!("write failed: {e}"))?;
-            dlnow += n as u64;
+            dlnow += chunk.len() as u64;
             on_progress(dlnow);
         }
         Ok(())

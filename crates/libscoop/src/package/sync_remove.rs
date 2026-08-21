@@ -17,12 +17,12 @@ use crate::package::{
     query, resolve,
 };
 use crate::{
-    env, error::Fallible, internal, persist, psmodule, shim, shortcut, Error, Event, QueryOption,
-    Session,
+    Error, Event, QueryOption, Session, env, error::Fallible, internal, persist, psmodule, shim,
+    shortcut,
 };
 
 use super::sync_install::check_not_running;
-use super::{confirm_transaction, SyncOption, Transaction};
+use super::{SyncOption, Transaction, confirm_transaction};
 
 /// Sync operation: remove packages.
 pub fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {

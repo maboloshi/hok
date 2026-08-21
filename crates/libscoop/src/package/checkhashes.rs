@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::package::{manifest, manifest_walker};
-use crate::{error::Fallible, internal::url::url_remote_filename, network, Manifest, Session};
+use crate::{Manifest, Session, error::Fallible, internal::url::url_remote_filename, network};
 
 /// Options for a checkhashes run, filled by the CLI layer from its clap options.
 ///
@@ -49,7 +49,7 @@ struct HashEntry {
     index: usize,
 }
 
-pub fn execute(
+pub async fn execute(
     options: CheckhashesOptions,
     session: &Session,
     on_item: impl FnMut(&CheckHashesItem),
@@ -119,7 +119,7 @@ pub fn execute(
             let cache_path = cache_dir.join(&cache_filename);
 
             if !cache_path.exists() || options.force {
-                if let Err(e) = network::download_file(session, url, &cache_path) {
+                if let Err(e) = network::download_file(session, url, &cache_path).await {
                     item.status = CheckHashesStatus::Failed;
                     item.messages.push(format!("download failed: {}", e));
                     has_any_failure = true;

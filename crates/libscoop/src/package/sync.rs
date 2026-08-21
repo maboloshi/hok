@@ -29,9 +29,9 @@
 
 use std::cell::OnceCell;
 
-use crate::{error::Fallible, Error, Event, Session};
+use crate::{Error, Event, Session, error::Fallible};
 
-use super::{download::DownloadSize, Package};
+use super::{Package, download::DownloadSize};
 
 #[path = "sync_install.rs"]
 mod sync_install;
@@ -39,7 +39,7 @@ mod sync_install;
 mod sync_remove;
 
 pub use sync_install::install;
-pub use sync_install::{check_not_running, RunningCheck};
+pub use sync_install::{RunningCheck, check_not_running};
 pub use sync_remove::{remove, reset};
 
 /// Options that may be used to tweak behavior of package sync operation.
@@ -402,7 +402,7 @@ fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible
 ///
 /// [1]: crate::Error::PackageNotFound
 /// [2]: crate::Error::PackageMultipleCandidates
-pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
+pub async fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
     // remove possible duplicates
     let queries = std::collections::HashSet::<&str>::from_iter(queries)
         .into_iter()
@@ -416,7 +416,7 @@ pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> 
     let result = if is_op_remove {
         remove(session, &queries, &options)
     } else {
-        install(session, &queries, &options)
+        install(session, &queries, &options).await
     };
 
     // Always close the resolve/sync phases — including error paths (e.g.

@@ -6,11 +6,11 @@
 //! per-package without aborting the rest.
 
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
-use crate::{error::Fallible, Error, Event, Session};
+use crate::{Error, Event, Session, error::Fallible};
 
 use super::download::PackageSet;
 use super::download_verify::download_and_verify;
-use super::{identity, manifest_source, Package};
+use super::{Package, identity, manifest_source};
 
 /// Options for [`download_apps`].
 pub struct DownloadOptions {
@@ -27,11 +27,15 @@ pub struct DownloadOptions {
 /// `name@version`, a manifest URL, or a local manifest path — and a
 /// failure on one app does not abort the rest. No dependencies are
 /// downloaded and no installation state is touched.
-pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions) -> Fallible<()> {
+pub async fn download_apps(
+    session: &Session,
+    queries: &[&str],
+    opts: &DownloadOptions,
+) -> Fallible<()> {
     let mut packages: Vec<Package> = Vec::new();
 
     for &query in queries {
-        match resolve_download_query(session, query) {
+        match resolve_download_query(session, query).await {
             Ok(pkg) => {
                 let version = pkg.version();
                 if version.is_empty() {
@@ -83,10 +87,10 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 
     // HEAD requests fill in remote_size: fragmented download and the
     // progress bar both depend on it (same as the install pipeline).
-    let result = (|| -> Fallible<()> {
+    let result: Fallible<()> = async {
         let mut set = PackageSet::new(session, &refs, !opts.force)?;
-        set.calculate_download_size()?;
-        let failed = download_and_verify(&mut set, !opts.check_hash, true, false)?;
+        set.calculate_download_size().await?;
+        let failed = download_and_verify(&mut set, !opts.check_hash, true, false).await?;
 
         for pkg in &refs {
             if !failed.contains(&pkg.ident()) {
@@ -110,7 +114,8 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
         }
 
         Ok(())
-    })();
+    }
+    .await;
 
     // Always end the event loop — including error paths (set creation,
     // sizing, verify) — or the CLI's handle.join() hangs forever.
@@ -126,14 +131,15 @@ pub fn download_apps(session: &Session, queries: &[&str], opts: &DownloadOptions
 /// Resolve one download query to a [`Package`], mirroring the install
 /// pipeline's dispatch: `name@version` → `generate_user_manifest`, anything
 /// else → `resolve_manifest` (URL / local path / bucket lookup).
-fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
-    if let Some(pkg) = manifest_source::resolve_isolated_query(session, query)? {
+async fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
+    if let Some(pkg) = manifest_source::resolve_isolated_query(session, query).await? {
         return Ok(pkg);
     }
     // Plain bucket reference: resolve directly — download has no
     // installed-package semantics, so no bucket scanning is needed.
     let aq = identity::parse_app(query).ok_or_else(|| Error::PackageNotFound(query.to_owned()))?;
-    let resolved = manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref())?;
+    let resolved =
+        manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref()).await?;
     Ok(Package::from(
         &resolved.name,
         ISOLATED_PACKAGE_BUCKET,
@@ -186,8 +192,8 @@ mod tests {
         files.sort();
         files
     }
-    #[test]
-    fn test_download_apps_local_manifest() {
+    #[tokio::test]
+    async fn test_download_apps_local_manifest() {
         let data = b"download-apps-test-data".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_basic");
@@ -199,21 +205,25 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
         server.shutdown();
 
         let files = cache_files(&session);
         assert_eq!(files.len(), 1, "cache files: {:?}", files);
-        assert!(files[0]
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("testapp#1.0#"));
+        assert!(
+            files[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("testapp#1.0#")
+        );
         assert_eq!(std::fs::read(&files[0]).unwrap(), data);
     }
 
-    #[test]
-    fn test_download_apps_hash_mismatch_removes_file() {
+    #[tokio::test]
+    async fn test_download_apps_hash_mismatch_removes_file() {
         let data = b"download-apps-mismatch".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_mismatch");
@@ -228,6 +238,7 @@ mod tests {
             check_hash: true,
         };
         let err = download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+            .await
             .expect_err("hash mismatch must be reported");
         assert!(
             err.to_string().contains("download failed for"),
@@ -242,8 +253,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_apps_no_hash_check_keeps_file() {
+    #[tokio::test]
+    async fn test_download_apps_no_hash_check_keeps_file() {
         let data = b"download-apps-no-hash".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_no_hash");
@@ -255,14 +266,16 @@ mod tests {
             force: false,
             check_hash: false,
         };
-        download_apps(&session, &[manifest.to_str().unwrap()], &opts).unwrap();
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
         server.shutdown();
 
         assert_eq!(cache_files(&session).len(), 1);
     }
 
-    #[test]
-    fn test_download_apps_rejects_bad_version() {
+    #[tokio::test]
+    async fn test_download_apps_rejects_bad_version() {
         let root = crate::test_utils::tmpdir("download_apps_bad_version");
         let session = crate::test_utils::test_session(&root);
 
@@ -286,13 +299,14 @@ mod tests {
             &[no_version.to_str().unwrap(), bad_char.to_str().unwrap()],
             &opts,
         )
+        .await
         .unwrap();
 
         assert!(cache_files(&session).is_empty());
     }
 
-    #[test]
-    fn test_download_apps_one_bad_query_does_not_abort_others() {
+    #[tokio::test]
+    async fn test_download_apps_one_bad_query_does_not_abort_others() {
         let data = b"download-apps-mixed".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_mixed");
@@ -309,14 +323,15 @@ mod tests {
             &[manifest.to_str().unwrap(), r"D:\nonexistent\app.json"],
             &opts,
         )
+        .await
         .unwrap();
         server.shutdown();
 
         assert_eq!(cache_files(&session).len(), 1);
     }
 
-    #[test]
-    fn test_download_apps_force_redownloads() {
+    #[tokio::test]
+    async fn test_download_apps_force_redownloads() {
         let data = b"download-apps-force".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_force");
@@ -329,11 +344,15 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[&manifest_str], &cache_hit).unwrap();
+        download_apps(&session, &[&manifest_str], &cache_hit)
+            .await
+            .unwrap();
         let requests_after_first = server.ranges.lock().unwrap().len();
 
         // Cache hit: no new request is sent.
-        download_apps(&session, &[&manifest_str], &cache_hit).unwrap();
+        download_apps(&session, &[&manifest_str], &cache_hit)
+            .await
+            .unwrap();
         assert_eq!(
             server.ranges.lock().unwrap().len(),
             requests_after_first,
@@ -345,7 +364,9 @@ mod tests {
             force: true,
             check_hash: true,
         };
-        download_apps(&session, &[&manifest_str], &force).unwrap();
+        download_apps(&session, &[&manifest_str], &force)
+            .await
+            .unwrap();
         server.shutdown();
 
         assert!(

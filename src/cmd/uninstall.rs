@@ -60,7 +60,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    let sync_result = package::sync::sync(session, queries, options);
+    let sync_result = package::sync::sync(session, queries, options).await;
     handle.join().unwrap();
     // A declined confirmation is not a failure: exit 0 without ok_all.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {

@@ -21,11 +21,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Fallible as Result;
 
+use crate::Session;
 use crate::internal::github;
 use crate::internal::url;
 use crate::package::checkver::CheckverReport;
 use crate::package::manifest_walker;
-use crate::Session;
 
 // ---------------------------------------------------------------------------
 // Public configuration type
@@ -73,7 +73,7 @@ pub struct AutoPrConfig {
 /// `on_report` is the presentation hook: `None` keeps the compact
 /// progress/ok markers, `Some(callback)` streams the checkver reports to the
 /// caller, which decides how (or whether) to render them.
-pub fn run_auto_pr(
+pub async fn run_auto_pr(
     config: AutoPrConfig,
     session: &Session,
     mut on_report: Option<impl FnMut(&CheckverReport)>,
@@ -147,7 +147,8 @@ pub fn run_auto_pr(
         if let Some(cb) = on_report.as_mut() {
             cb(report);
         }
-    });
+    })
+    .await;
     if on_report.is_none() {
         session.output().ok();
     }
@@ -170,7 +171,8 @@ pub fn run_auto_pr(
             if let Some(cb) = on_report.as_mut() {
                 cb(report);
             }
-        });
+        })
+        .await;
         if on_report.is_none() {
             session.output().ok();
         }

@@ -42,7 +42,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // per-package failures (a broken app must not abort the whole import).
     let options = vec![SyncOption::AssumeYes, SyncOption::IgnoreFailure];
 
-    match package::sync::sync(session, queries, options) {
+    match package::sync::sync(session, queries, options).await {
         Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),
         Err(e) => output::err(format!("Import error: {}", e)),
     }

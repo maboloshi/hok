@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use crate::{error::Fallible, internal, Error, Session};
+use crate::{Error, Session, error::Fallible, internal};
 
 /// Perform an HTTP HEAD request with Scoop-compatible headers.
 ///
@@ -24,26 +24,31 @@ use crate::{error::Fallible, internal, Error, Session};
 /// - Default User-Agent
 ///
 /// `cookies` is optional — pass `Some(&map)` for manifest-level cookies.
-pub fn head_url(
+pub async fn head_url(
     session: &Session,
     url: &str,
     timeout_secs: u64,
     cookies: Option<&std::collections::HashMap<String, String>>,
 ) -> internal::network::HeadResult {
-    let config = session.config();
-    let proxy = config.proxy();
     let referer = internal::network::strip_filename(url);
-
-    // Build PRIVATE_HOSTS extra headers
-    let extra_headers = config.private_hosts().and_then(|hosts| {
-        internal::network::match_private_hosts(
-            hosts.iter().map(|h| (h.match_pattern(), h.headers())),
-            url,
+    // Extract config data into owned values inside a scope so the config read
+    // guard is dropped before the `.await` below (a guard held across an await
+    // would block a concurrent `config_mut()`).
+    let (proxy, extra_headers) = {
+        let config = session.config();
+        (
+            config.proxy().map(|s| s.to_owned()),
+            config.private_hosts().and_then(|hosts| {
+                internal::network::match_private_hosts(
+                    hosts.iter().map(|h| (h.match_pattern(), h.headers())),
+                    url,
+                )
+            }),
         )
-    });
+    };
 
     let opts = internal::network::RequestOptions {
-        proxy,
+        proxy: proxy.as_deref(),
         timeout_secs,
         user_agent: Some("Scoop/1.0 (+http://scoop.sh/)"),
         referer: Some(&referer),
@@ -51,20 +56,24 @@ pub fn head_url(
         extra_headers: extra_headers.as_ref(),
         token: None,
     };
-    session.network().head(url, &opts)
+    session.network().head(url, &opts).await
 }
 
 /// Download a file via HTTP GET and save to a local path, using the session's proxy.
-pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
-    let config = session.config();
+pub async fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
+    let proxy = {
+        let config = session.config();
+        config.proxy().map(|s| s.to_owned())
+    };
     let opts = internal::network::RequestOptions {
-        proxy: config.proxy(),
+        proxy: proxy.as_deref(),
         timeout_secs: 120,
         ..internal::network::RequestOptions::default()
     };
     let data = session
         .network()
         .download(url, &opts)
+        .await
         .map_err(|e| Error::Custom(e.to_string()))?;
     if let Some(parent) = dest.parent() {
         internal::fs::ensure_dir(parent)?;
@@ -82,23 +91,27 @@ pub fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> 
 /// - User-Agent from session or default
 ///
 /// `token` is optional — pass `Some("ghp_...")` for GitHub API Bearer auth.
-pub fn download_page(
+pub async fn download_page(
     session: &Session,
     url: &str,
     timeout_secs: u64,
     token: Option<&str>,
 ) -> Fallible<String> {
-    let config = session.config();
-    let proxy = config.proxy();
     let referer = internal::network::strip_filename(url);
-
-    // Build PRIVATE_HOSTS extra headers
-    let extra_headers = config.private_hosts().and_then(|hosts| {
-        internal::network::match_private_hosts(
-            hosts.iter().map(|h| (h.match_pattern(), h.headers())),
-            url,
+    // Extract config data into owned values inside a scope so the config read
+    // guard is dropped before the `.await` below.
+    let (proxy, extra_headers) = {
+        let config = session.config();
+        (
+            config.proxy().map(|s| s.to_owned()),
+            config.private_hosts().and_then(|hosts| {
+                internal::network::match_private_hosts(
+                    hosts.iter().map(|h| (h.match_pattern(), h.headers())),
+                    url,
+                )
+            }),
         )
-    });
+    };
 
     // User-Agent: use session's custom UA or default
     let user_agent = session
@@ -106,7 +119,7 @@ pub fn download_page(
         .unwrap_or("Scoop/1.0 (+http://scoop.sh/)");
 
     let opts = internal::network::RequestOptions {
-        proxy,
+        proxy: proxy.as_deref(),
         timeout_secs,
         user_agent: Some(user_agent),
         referer: Some(&referer),
@@ -117,6 +130,7 @@ pub fn download_page(
     let data = session
         .network()
         .download(url, &opts)
+        .await
         .map_err(Error::Custom)?;
     String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
 }

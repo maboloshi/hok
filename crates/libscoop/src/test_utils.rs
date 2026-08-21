@@ -169,8 +169,9 @@ impl Default for FakeNetwork {
     }
 }
 
+#[async_trait::async_trait]
 impl Network for FakeNetwork {
-    fn head(&self, url: &str, _opts: &RequestOptions) -> HeadResult {
+    async fn head(&self, url: &str, _opts: &RequestOptions) -> HeadResult {
         self.responses.lock().unwrap().push(200);
         let body = self.body(url);
         HeadResult {
@@ -181,12 +182,12 @@ impl Network for FakeNetwork {
         }
     }
 
-    fn download(&self, url: &str, _opts: &RequestOptions) -> Result<Vec<u8>, String> {
+    async fn download(&self, url: &str, _opts: &RequestOptions) -> Result<Vec<u8>, String> {
         self.body(url)
             .ok_or_else(|| format!("no canned body for {url}"))
     }
 
-    fn range_get(
+    async fn range_get(
         &self,
         url: &str,
         start: u64,
@@ -250,12 +251,12 @@ impl Network for FakeNetwork {
         })
     }
 
-    fn download_stream(
+    async fn download_stream(
         &self,
         url: &str,
         _opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut dyn FnMut(u64),
+        on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<(), String> {
         self.ranges.lock().unwrap().push(String::new());
         let body = self

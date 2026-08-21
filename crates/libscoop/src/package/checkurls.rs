@@ -29,7 +29,7 @@ pub struct CheckUrlsReport {
     pub results: Vec<ManifestUrlCheck>,
 }
 
-pub fn check_urls(
+pub async fn check_urls(
     session: &Session,
     dir: &Path,
     app_filters: &[String],
@@ -74,7 +74,8 @@ pub fn check_urls(
 
         for url in &urls {
             report.total_urls += 1;
-            let result = network::head_url(session, url, timeout_secs, manifest_cookies.as_ref());
+            let result =
+                network::head_url(session, url, timeout_secs, manifest_cookies.as_ref()).await;
 
             match result.error {
                 None => {

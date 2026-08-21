@@ -1,7 +1,7 @@
-//! Concurrent package download with `ureq` (pure Rust).
+//! Concurrent package download via the async `Network` trait (reqwest).
 //!
-//! Replaced `curl` (libcurl bindings) to avoid static C compilation overhead.
-//! Fragmented downloads use `std::thread::scope` instead of `curl::multi::Multi`.
+//! Replaced the blocking `ureq` client (phase 4) so downloads are真 async I/O.
+//! Fragmented downloads run concurrent chunk tasks with `buffer_unordered`.
 //!
 //! The module is split into focused files: the download core lives here,
 //! fragmented (range-parallel) machinery in [`download_fragmented`],
@@ -184,20 +184,32 @@ impl<'a> PackageSet<'a> {
     /// first failure aborts with an error, so the list is empty on success.
     ///
     /// [1]: PackageSet::set_ignore_failure
-    pub fn download(&mut self) -> Fallible<Vec<String>> {
+    pub async fn download(&mut self) -> Fallible<Vec<String>> {
         if self.caches.get().is_none() {
             self.load_cache();
         }
 
-        let config = self.session.config();
-        let cache_root = config.cache_path();
-        let proxy = config.proxy();
-        let user_agent = self
-            .session
-            .user_agent
-            .get()
-            .map(|s| s.as_str())
-            .unwrap_or(DEFAULT_USER_AGENT);
+        // Extract config data into owned values inside a scope so the config
+        // read guard is dropped before the awaits below (a guard held across an
+        // await would block a concurrent `config_mut()`).
+        let (cache_root, proxy, user_agent, fragmentation_enabled, chunk_count, min_split_size) = {
+            let config = self.session.config();
+            (
+                config.cache_path().to_path_buf(),
+                config.proxy().map(|s| s.to_owned()),
+                self.session
+                    .user_agent
+                    .get()
+                    .map(|s| s.as_str())
+                    .unwrap_or(DEFAULT_USER_AGENT)
+                    .to_owned(),
+                config.aria2_enabled(),
+                config
+                    .aria2_split()
+                    .min(config.aria2_max_connection_per_server()) as u64,
+                config.aria2_min_split_size(),
+            )
+        };
 
         let package_caches = self.caches.get_mut().unwrap();
 
@@ -207,20 +219,13 @@ impl<'a> PackageSet<'a> {
 
         internal::fs::ensure_dir(&cache_root)?;
 
-        // Read fragmentation settings from aria2 config (reuse existing user config)
-        let fragmentation_enabled = config.aria2_enabled();
-        let chunk_count = config
-            .aria2_split()
-            .min(config.aria2_max_connection_per_server()) as u64;
-        let min_split_size = config.aria2_min_split_size();
-
         // Shared request options (proxy + UA); the cookie is injected per
         // file below. The network capability is injected per session so tests
         // can substitute an in-memory fake.
         let base_opts = internal::network::RequestOptions {
-            proxy,
+            proxy: proxy.as_deref(),
             timeout_secs: 120,
-            user_agent: Some(user_agent),
+            user_agent: Some(&user_agent),
             ..internal::network::RequestOptions::default()
         };
         let net = self.session.network();
@@ -274,7 +279,7 @@ impl<'a> PackageSet<'a> {
                     // the file is smaller than the configured chunk count.
                     && chunk_count <= dlinfo.remote_size;
 
-                let result = (|| -> Fallible<()> {
+                let result: Fallible<()> = async {
                     if use_fragments {
                         let path = cache_root.join(filename);
                         let part_dir = cache_root.join(format!("{}.parts", filename));
@@ -317,6 +322,7 @@ impl<'a> PackageSet<'a> {
                             &part_dir,
                             &on_progress,
                         )
+                        .await
                         .map_err(crate::error::Error::Custom)?;
 
                         chunk_file_map.insert(path, (part_paths, ident.clone()));
@@ -346,12 +352,14 @@ impl<'a> PackageSet<'a> {
                             }
                         };
                         net.download_stream(&url_str, &file_opts, &tmp, &mut on_progress)
+                            .await
                             .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
 
                         filepaths.push((tmp, path, ident.clone()));
                     }
                     Ok(())
-                })();
+                }
+                .await;
 
                 if let Err(e) = result {
                     pkg_error = Some(e);
@@ -422,19 +430,23 @@ impl<'a> PackageSet<'a> {
 
     // ─── Calculate download size ──────────────────────────────────────────────
 
-    pub fn calculate_download_size(&mut self) -> Fallible<DownloadSize> {
+    pub async fn calculate_download_size(&mut self) -> Fallible<DownloadSize> {
         if self.caches.get().is_none() {
             self.load_cache();
         }
 
-        let config = self.session.config();
-        let proxy = config.proxy();
-        let user_agent = self
-            .session
-            .user_agent
-            .get()
-            .map(|s| s.as_str())
-            .unwrap_or(DEFAULT_USER_AGENT);
+        let (proxy, user_agent) = {
+            let config = self.session.config();
+            (
+                config.proxy().map(|s| s.to_owned()),
+                self.session
+                    .user_agent
+                    .get()
+                    .map(|s| s.as_str())
+                    .unwrap_or(DEFAULT_USER_AGENT)
+                    .to_owned(),
+            )
+        };
 
         let package_caches = self.caches.get_mut().unwrap();
 
@@ -467,19 +479,19 @@ impl<'a> PackageSet<'a> {
                     )
                 };
                 let opts = internal::network::RequestOptions {
-                    proxy,
+                    proxy: proxy.as_deref(),
                     timeout_secs: 30,
-                    user_agent: Some(user_agent),
+                    user_agent: Some(&user_agent),
                     cookies: cookie_map.as_ref(),
                     ..internal::network::RequestOptions::default()
                 };
-                let result = self.session.network().head(url, &opts);
+                let result = self.session.network().head(url, &opts).await;
                 let code = result.status_code;
 
                 if code == 200 {
                     // Get Content-Length via a dedicated HEAD (need the header).
                     let cl_opts = internal::network::RequestOptions {
-                        proxy,
+                        proxy: proxy.as_deref(),
                         timeout_secs: 30,
                         cookies: cookie_map.as_ref(),
                         ..internal::network::RequestOptions::default()
@@ -488,6 +500,7 @@ impl<'a> PackageSet<'a> {
                         .session
                         .network()
                         .head(url, &cl_opts)
+                        .await
                         .content_length
                         .unwrap_or(0);
                     if info.remote_size != info.local_size {

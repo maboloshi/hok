@@ -22,10 +22,10 @@ use crate::internal::network::{Network, RangeError, RequestOptions};
 /// instead of failing the whole file. Every returned part is verified
 /// complete, and the ranges are checked to tile `[0, remote_size)` with no
 /// gaps or overlaps.
-pub(crate) fn download_fragmented(
+pub(crate) async fn download_fragmented(
     net: &(dyn Network + Sync),
     url: &str,
-    opts: &RequestOptions,
+    opts: &RequestOptions<'_>,
     remote_size: u64,
     chunk_count: u64,
     part_dir: &std::path::Path,
@@ -37,26 +37,37 @@ pub(crate) fn download_fragmented(
     let mut parts: Vec<(PathBuf, u64, u64)> = Vec::new();
     let failed_ranges = Arc::new(Mutex::new(Vec::<(u64, u64)>::new()));
 
-    std::thread::scope(|scope| {
-        for chunk_idx in 0..chunk_count {
+    // Build a chunk descriptor per range so owned clones can move into each
+    // concurrent task below.
+    let chunks: Vec<(u64, u64, PathBuf)> = (0..chunk_count)
+        .map(|chunk_idx| {
             let start = chunk_idx * chunk_size;
             let end = if chunk_idx == chunk_count - 1 {
                 remote_size - 1
             } else {
                 (chunk_idx + 1) * chunk_size - 1
             };
-
             let part_path = part_dir.join(format!("part.{}", chunk_idx));
-            parts.push((part_path.clone(), start, end));
+            (start, end, part_path)
+        })
+        .collect();
 
-            // Don't remove — allow resume if part exists
+    for (start, end, part_path) in &chunks {
+        // Don't remove — allow resume if part exists
+        parts.push((part_path.clone(), *start, *end));
+    }
 
-            let part_path = part_path.clone();
+    // Download all chunks concurrently (真 async I/O via reqwest; the futures
+    // are non-Send so `buffer_unordered` runs them on the current task rather
+    // than `tokio::spawn`).
+    use futures::StreamExt as _;
+    let _: Vec<()> = futures::stream::iter(chunks)
+        .map(|(start, end, part_path)| {
             let url = url.to_owned();
             let failed = failed_ranges.clone();
-
-            scope.spawn(move || {
-                if let Err(e) = download_range(net, &url, start, end, &part_path, opts, on_progress)
+            async move {
+                if let Err(e) =
+                    download_range(net, &url, start, end, &part_path, opts, on_progress).await
                 {
                     debug!("chunk {}-{} failed: {}", start, end, e);
                     // Drop the partial part so the fallback re-downloads the
@@ -64,9 +75,11 @@ pub(crate) fn download_fragmented(
                     let _ = std::fs::remove_file(&part_path);
                     failed.lock().unwrap().push((start, end));
                 }
-            });
-        }
-    });
+            }
+        })
+        .buffer_unordered(chunk_count as usize)
+        .collect()
+        .await;
 
     // Re-download failed ranges serially. The more chunks fail, the fewer
     // concurrent connections remain — degrading to a plain sequential
@@ -76,10 +89,12 @@ pub(crate) fn download_fragmented(
         parts.retain(|(_, s, _)| !failed.iter().any(|(fs, _)| fs == s));
         for (idx, (s, e)) in merge_adjacent_ranges(failed).iter().enumerate() {
             let fb_path = part_dir.join(format!("fallback.{}", idx));
-            download_range(net, url, *s, *e, &fb_path, opts, on_progress).map_err(|e| {
-                let _ = std::fs::remove_file(&fb_path);
-                format!("fallback download of {}-{} failed: {}", s, e, e)
-            })?;
+            download_range(net, url, *s, *e, &fb_path, opts, on_progress)
+                .await
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&fb_path);
+                    format!("fallback download of {}-{} failed: {}", s, e, e)
+                })?;
             parts.push((fb_path, *s, *e));
         }
     }
@@ -156,18 +171,18 @@ const CHUNK_BACKOFF_BASE_MS: u64 = 500;
 /// Every byte written to `dest` is reported through `on_progress` (as a
 /// delta), exactly once, so callers can aggregate download progress across
 /// concurrent chunks.
-fn download_range(
+async fn download_range(
     net: &(dyn Network + Sync),
     url: &str,
     start: u64,
     end: u64,
     dest: &std::path::Path,
-    opts: &RequestOptions,
+    opts: &RequestOptions<'_>,
     on_progress: &(dyn Fn(u64) + Sync),
 ) -> Result<(), String> {
     let mut attempt = 1u32;
     loop {
-        match try_download_range(net, url, start, end, dest, opts, on_progress) {
+        match try_download_range(net, url, start, end, dest, opts, on_progress).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if attempt >= MAX_CHUNK_ATTEMPTS || matches!(&e, RangeError::Final(_)) {
@@ -178,7 +193,7 @@ fn download_range(
                     "chunk download failed (attempt {}/{}): {}; retrying in {:?}",
                     attempt, MAX_CHUNK_ATTEMPTS, e, delay
                 );
-                std::thread::sleep(delay);
+                tokio::time::sleep(delay).await;
                 attempt += 1;
             }
         }
@@ -199,13 +214,13 @@ fn chunk_retry_delay(attempt: u32) -> std::time::Duration {
 
 /// One download attempt for a chunk range; the retry loop lives in
 /// [`download_range`].
-fn try_download_range(
+async fn try_download_range(
     net: &(dyn Network + Sync),
     url: &str,
     start: u64,
     end: u64,
     dest: &std::path::Path,
-    opts: &RequestOptions,
+    opts: &RequestOptions<'_>,
     on_progress: &(dyn Fn(u64) + Sync),
 ) -> Result<(), RangeError> {
     let expected_size = end - start + 1;
@@ -231,7 +246,7 @@ fn try_download_range(
     // carries the status, Content-Range start offset and the requested slice;
     // retry / resume / validation logic all lives here (matching the previous
     // ureq implementation, just routed through the trait).
-    let resp = net.range_get(url, start + resume_start, end, opts)?;
+    let resp = net.range_get(url, start + resume_start, end, opts).await?;
 
     // Guard against 206 responses whose payload starts at a different offset
     // than requested (a broken server that returns `bytes=0-59` for a
@@ -277,7 +292,6 @@ fn try_download_range(
     }
     Ok(())
 }
-
 /// In-process HTTP test server for fragmented-download tests.
 ///
 /// Shared by the `download_fragmented` and `download_apps` test modules:
@@ -511,8 +525,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
 
-    #[test]
-    fn test_download_range_retries_transient_failure() {
+    #[tokio::test]
+    async fn test_download_range_retries_transient_failure() {
         let data: Vec<u8> = (0..100u8).collect();
         // One 500 then success. (fail_first=1 rather than 2: under parallel
         // Windows test load the client's first connection can die before its
@@ -527,10 +541,10 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let mut result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {});
+        let mut result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).await;
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {});
+            result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).await;
         }
         result.unwrap();
 
@@ -555,8 +569,8 @@ mod tests {
         assert!(responses.len() <= 3, "responses: {:?}", responses);
     }
 
-    #[test]
-    fn test_download_range_gives_up_after_max_attempts() {
+    #[tokio::test]
+    async fn test_download_range_gives_up_after_max_attempts() {
         let data = vec![7u8; 64];
         let mut server = spawn_range_server(data.clone(), u32::MAX, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_giveup").join("part.0");
@@ -566,7 +580,9 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {}).unwrap_err();
+        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {})
+            .await
+            .unwrap_err();
 
         server.shutdown();
         assert!(err.contains("500"), "unexpected error: {}", err);
@@ -582,8 +598,8 @@ mod tests {
         assert!(responses.len() <= 3, "responses: {:?}", responses);
     }
 
-    #[test]
-    fn test_download_range_4xx_not_retried() {
+    #[tokio::test]
+    async fn test_download_range_4xx_not_retried() {
         let data = vec![7u8; 64];
         let mut server = spawn_range_server(data.clone(), u32::MAX, 404, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_404").join("part.0");
@@ -593,7 +609,9 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {}).unwrap_err();
+        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {})
+            .await
+            .unwrap_err();
 
         server.shutdown();
         assert!(err.contains("404"), "unexpected error: {}", err);
@@ -616,8 +634,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_range_rejects_full_body_200() {
+    #[tokio::test]
+    async fn test_download_range_rejects_full_body_200() {
         let data = vec![7u8; 64];
         // Server ignores `Range` and always answers 200 with the full body.
         let mut server = spawn_range_server(data.clone(), 0, 500, true, false, None);
@@ -628,7 +646,9 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {}).unwrap_err();
+        let err = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {})
+            .await
+            .unwrap_err();
 
         server.shutdown();
         assert!(err.contains("206"), "unexpected error: {}", err);
@@ -655,8 +675,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_range_resumes_partial_part() {
+    #[tokio::test]
+    async fn test_download_range_resumes_partial_part() {
         let data: Vec<u8> = (0..100u8).collect();
         let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_resume").join("part.0");
@@ -668,7 +688,9 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).unwrap();
+        download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {})
+            .await
+            .unwrap();
 
         server.shutdown();
         let got = std::fs::read(&dest).unwrap();
@@ -683,8 +705,8 @@ mod tests {
         assert_eq!(ranges.first().map(String::as_str), Some("bytes=40-99"));
     }
 
-    #[test]
-    fn test_download_range_resets_corrupted_part() {
+    #[tokio::test]
+    async fn test_download_range_resets_corrupted_part() {
         let data: Vec<u8> = (0..100u8).collect();
         let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_reset").join("part.0");
@@ -698,14 +720,16 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).unwrap();
+        download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {})
+            .await
+            .unwrap();
 
         server.shutdown();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
     }
 
-    #[test]
-    fn test_download_range_429_is_retried() {
+    #[tokio::test]
+    async fn test_download_range_429_is_retried() {
         // 429 Too Many Requests is transient (rate limiting) — unlike other
         // 4xx codes it must be retried until success.
         let data: Vec<u8> = (0..64u8).collect();
@@ -717,10 +741,10 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let mut result = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {});
+        let mut result = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {}).await;
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {});
+            result = download_range(&RealNetwork, &url, 0, 63, &dest, &opts, &|_| {}).await;
         }
         result.unwrap();
 
@@ -740,8 +764,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_range_short_write_resumes() {
+    #[tokio::test]
+    async fn test_download_range_short_write_resumes() {
         // The server answers the first request with a 206 body truncated to
         // half the range; the client must detect the short write, retry from
         // the new offset and end up with the full part. Retried once overall
@@ -756,10 +780,10 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let mut result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {});
+        let mut result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).await;
         if result.is_err() {
             let _ = std::fs::remove_file(&dest);
-            result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {});
+            result = download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &|_| {}).await;
         }
         result.unwrap();
 
@@ -770,8 +794,8 @@ mod tests {
         assert_eq!(responses, vec![206, 206], "responses: {:?}", responses);
     }
 
-    #[test]
-    fn test_merge_adjacent_ranges() {
+    #[tokio::test]
+    async fn test_merge_adjacent_ranges() {
         assert_eq!(merge_adjacent_ranges(vec![]), Vec::<(u64, u64)>::new());
         assert_eq!(merge_adjacent_ranges(vec![(5, 9)]), vec![(5, 9)]);
         // Adjacent ranges coalesce into a single contiguous one.
@@ -791,8 +815,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_fragmented_fallback_recovers_failed_chunk() {
+    #[tokio::test]
+    async fn test_download_fragmented_fallback_recovers_failed_chunk() {
         // 1000 bytes split into 4 chunks of 250. The third chunk's range
         // (500-749) answers 500 for its first 3 requests — exhausting the
         // per-chunk retries — and succeeds afterwards. The fallback must
@@ -809,14 +833,16 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let mut parts = download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {});
+        let mut parts =
+            download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {}).await;
         if parts.is_err() {
             // Retried once to tolerate the spurious pre-request connection
             // drop (see the retries test); failed parts were removed, so a
             // fresh run only re-downloads the failed range.
             let _ = std::fs::remove_dir_all(&part_dir);
             std::fs::create_dir_all(&part_dir).unwrap();
-            parts = download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {});
+            parts =
+                download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {}).await;
         }
         let parts = parts.unwrap();
 
@@ -846,8 +872,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_download_range_reports_progress() {
+    #[tokio::test]
+    async fn test_download_range_reports_progress() {
         let data: Vec<u8> = (0..100u8).collect();
         let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dest = crate::test_utils::tmpdir("download_range_progress").join("part.0");
@@ -862,6 +888,7 @@ mod tests {
         download_range(&RealNetwork, &url, 0, 99, &dest, &opts, &move |n| {
             total_h.fetch_add(n, Ordering::Relaxed);
         })
+        .await
         .unwrap();
 
         server.shutdown();
@@ -870,8 +897,8 @@ mod tests {
         assert_eq!(total.load(Ordering::Relaxed), 100);
     }
 
-    #[test]
-    fn test_download_fragmented_reports_total_progress() {
+    #[tokio::test]
+    async fn test_download_fragmented_reports_total_progress() {
         let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
         let mut server = spawn_range_server(data.clone(), 0, 500, false, false, None);
         let dir = crate::test_utils::tmpdir("fragmented_progress");
@@ -888,6 +915,7 @@ mod tests {
         let parts = download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &move |n| {
             total_h.fetch_add(n, Ordering::Relaxed);
         })
+        .await
         .unwrap();
 
         server.shutdown();
@@ -896,8 +924,8 @@ mod tests {
         assert_eq!(total.load(Ordering::Relaxed), 1000);
     }
 
-    #[test]
-    fn test_download_fragmented_offline_with_fake_network() {
+    #[tokio::test]
+    async fn test_download_fragmented_offline_with_fake_network() {
         use crate::test_utils::FakeNetwork;
 
         let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
@@ -912,8 +940,9 @@ mod tests {
             ..RequestOptions::default()
         };
 
-        let parts =
-            download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {}).unwrap();
+        let parts = download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(parts.len(), 4);
         let mut file = Vec::new();
         for p in &parts {
@@ -927,8 +956,8 @@ mod tests {
     }
 
 
-    #[test]
-    fn test_download_range_retries_transient_offline() {
+    #[tokio::test]
+    async fn test_download_range_retries_transient_offline() {
         use crate::test_utils::FakeNetwork;
 
         let data: Vec<u8> = (0..100u8).collect();
@@ -942,7 +971,9 @@ mod tests {
             ..RequestOptions::default()
         };
 
-        download_range(&fake, url, 0, 99, &dest, &opts, &|_| {}).unwrap();
+        download_range(&fake, url, 0, 99, &dest, &opts, &|_| {})
+            .await
+            .unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), data);
         let responses = fake.responses.lock().unwrap();

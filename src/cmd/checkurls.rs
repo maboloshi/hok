@@ -71,7 +71,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 eprintln!("        > {} ({})", err.message.clone().dark_red(), err.url);
             }
         },
-    )?;
+    ).await?;
 
     if report.total_manifests == 0 {
         output::info(rust_i18n::t!("cmd.checkurls_no_manifests"));

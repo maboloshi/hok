@@ -117,7 +117,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    let sync_result = package::sync::sync(session, to_install.clone(), options);
+    let sync_result = package::sync::sync(session, to_install.clone(), options).await;
     handle.join().unwrap();
     // A declined confirmation is not a failure: exit 0 without the
     // "Everything is ok!" message.

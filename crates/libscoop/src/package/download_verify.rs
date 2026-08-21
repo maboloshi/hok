@@ -10,10 +10,10 @@ use std::io::Read;
 
 use tracing::info;
 
-use crate::{error::Fallible, internal, Error, Event, Session};
+use crate::{Error, Event, Session, error::Fallible, internal};
 
-use super::download::PackageSet;
 use super::Package;
+use super::download::PackageSet;
 
 // ─── Download verification & standalone download API ───────────────────────
 
@@ -146,7 +146,7 @@ pub(crate) fn verify_downloads(
 /// The caller must have run [`PackageSet::calculate_download_size`] on the
 /// set first: the HEAD requests it makes fill in `remote_size`, which both
 /// fragmented download (splitting) and the progress bar's total depend on.
-pub(crate) fn download_and_verify(
+pub(crate) async fn download_and_verify(
     set: &mut PackageSet<'_>,
     no_hash_check: bool,
     ignore_failure: bool,
@@ -161,7 +161,7 @@ pub(crate) fn download_and_verify(
         }
 
         set.set_ignore_failure(ignore_failure);
-        failed = set.download()?.into_iter().collect();
+        failed = set.download().await?.into_iter().collect();
 
         if let Some(tx) = session.emitter() {
             let _ = tx.send(Event::PackageDownloadDone);

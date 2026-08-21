@@ -109,6 +109,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     };
 
     libscoop::package::auto_pr::run_auto_pr(config, session, on_report)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 

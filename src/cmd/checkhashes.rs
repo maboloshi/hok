@@ -77,7 +77,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 output::err(format!("  {msg}"));
             }
         }
-    })?;
+    }).await?;
 
     output::info(rust_i18n::t!(
         "cmd.checkhashes_summary",

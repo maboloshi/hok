@@ -31,6 +31,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     output::progress(rust_i18n::t!("cmd.downloading"), "");
     let manifest = create::create_manifest(session, url)
+        .await
         .map_err(|e| anyhow::anyhow!("create manifest failed: {e}"))?;
     output::ok();
 

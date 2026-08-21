@@ -7,11 +7,11 @@
 use regex::Regex;
 
 use crate::internal::url;
-use crate::{error::Fallible as Result, network, Session};
+use crate::{Session, error::Fallible as Result, network};
 
 use super::checkver_url::sub_url;
 
-pub(super) fn download_and_hash_multi(
+pub(super) async fn download_and_hash_multi(
     session: &Session,
     urls: &[String],
     extractions: &[serde_json::Value],
@@ -49,14 +49,15 @@ pub(super) fn download_and_hash_multi(
                 match effective_mode {
                     // ── download: download file + compute hash ──────────────────────
                     "download" | "" if !has_url => {
-                        download_file_compute_hash(session, url, ext, tmp_dir)?
+                        download_file_compute_hash(session, url, ext, tmp_dir).await?
                     }
                     // ── extract (default when hash URL present): fetch + regex/jsonpath/find ──
                     "extract" | "" if has_url => {
                         let hash_url = ext["url"].as_str().unwrap_or(url);
                         let page_url = sub_url(hash_url, url);
-                        let page =
-                            network::download_page(session, &page_url, 30, None).map_err(|e| {
+                        let page = network::download_page(session, &page_url, 30, None)
+                            .await
+                            .map_err(|e| {
                                 crate::Error::Custom(format!("fetch hash page {}: {}", page_url, e))
                             })?;
                         extract_hash_from_page(&page, ext)?
@@ -64,8 +65,9 @@ pub(super) fn download_and_hash_multi(
                     // ── json: fetch JSON + jsonpath extraction ──────────────────────
                     "json" if has_jp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page =
-                            network::download_page(session, hash_url, 30, None).map_err(|e| {
+                        let page = network::download_page(session, hash_url, 30, None)
+                            .await
+                            .map_err(|e| {
                                 crate::Error::Custom(format!("fetch json {}: {}", hash_url, e))
                             })?;
                         extract_hash_from_page(&page, ext)?
@@ -73,24 +75,27 @@ pub(super) fn download_and_hash_multi(
                     // ── xpath: fetch XML + xpath extraction ─────────────────────────
                     "xpath" if has_xp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page =
-                            network::download_page(session, hash_url, 30, None).map_err(|e| {
+                        let page = network::download_page(session, hash_url, 30, None)
+                            .await
+                            .map_err(|e| {
                                 crate::Error::Custom(format!("fetch xml {}: {}", hash_url, e))
                             })?;
                         extract_hash_from_page(&page, ext)?
                     }
                     // ── rdf: fetch RDF XML, find digest by basename ─────────────────
-                    "rdf" => fetch_rdf_hash(session, url, ext)?,
+                    "rdf" => fetch_rdf_hash(session, url, ext).await?,
                     // ── metalink: HTTP Digest header fallback .meta4 ────────────────
-                    "metalink" => fetch_metalink_hash(session, url, ext)?,
+                    "metalink" => fetch_metalink_hash(session, url, ext).await?,
                     // ── fosshub: extract sha256 from fosshub download page ──────────
                     "fosshub" => {
                         // Scoop: fetch the download page itself, find sha256 with regex
                         // Regex: <filename>.*?"sha256":"([a-fA-F0-9]{64})"
                         let filename = crate::internal::url::remote_filename(url);
-                        let page = network::download_page(session, url, 30, None).map_err(|e| {
-                            crate::Error::Custom(format!("fetch fosshub page {}: {}", url, e))
-                        })?;
+                        let page = network::download_page(session, url, 30, None)
+                            .await
+                            .map_err(|e| {
+                                crate::Error::Custom(format!("fetch fosshub page {}: {}", url, e))
+                            })?;
                         let regex_str = format!(r#"{filename}.*?"sha256":"([a-fA-F0-9]+)""#);
                         let re = Regex::new(&regex_str).map_err(|e| {
                             crate::Error::Custom(format!("bad fosshub regex: {}", e))
@@ -125,6 +130,7 @@ pub(super) fn download_and_hash_multi(
                         let sf_page_url =
                             format!("https://sourceforge.net/projects/{project}/files/{file_path}");
                         let page = network::download_page(session, &sf_page_url, 30, None)
+                            .await
                             .map_err(|e| {
                                 crate::Error::Custom(format!(
                                     "fetch sourceforge page {}: {}",
@@ -162,9 +168,10 @@ pub(super) fn download_and_hash_multi(
                         let gh_token = session.config().gh_token.clone();
                         let page = if let Some(token) = gh_token {
                             network::download_page(session, &api_url, 30, Some(&token))
+                                .await
                                 .map_err(|e| crate::Error::Custom(format!("{}", e)))?
                         } else {
-                            network::download_page(session, &api_url, 30, None)?
+                            network::download_page(session, &api_url, 30, None).await?
                         };
                         // Parse JSON and query via jsonpath
                         use jsonpath_rust::JsonPath;
@@ -186,7 +193,7 @@ pub(super) fn download_and_hash_multi(
                         }
                     }
                     // ── unknown mode: fallback to download + compute hash ───────────
-                    _ => download_file_compute_hash(session, url, ext, tmp_dir)?,
+                    _ => download_file_compute_hash(session, url, ext, tmp_dir).await?,
                 }
             }
             None => {
@@ -194,6 +201,7 @@ pub(super) fn download_and_hash_multi(
                 let filename = url.rsplit('/').next().unwrap_or("download");
                 let dest = tmp_dir.join(filename);
                 network::download_file(session, url, &dest)
+                    .await
                     .map_err(|e| crate::Error::Custom(format!("download {}: {}", url, e)))?;
                 crate::internal::hash::compute_file_hash(&dest, "sha256")?
             }
@@ -225,7 +233,7 @@ fn detect_hash_mode(url: &str) -> Option<&'static str> {
 }
 
 /// Download a single file and compute its hash using the algorithm from extraction config.
-fn download_file_compute_hash(
+async fn download_file_compute_hash(
     session: &Session,
     url: &str,
     ext: &serde_json::Value,
@@ -234,6 +242,7 @@ fn download_file_compute_hash(
     let filename = url.rsplit('/').next().unwrap_or("download");
     let dest = tmp_dir.join(filename);
     network::download_file(session, url, &dest)
+        .await
         .map_err(|e| crate::Error::Custom(format!("download {}: {}", url, e)))?;
     let algo = ext
         .get("algorithm")
@@ -244,9 +253,10 @@ fn download_file_compute_hash(
 }
 
 /// Fetch RDF XML and extract hash by basename (matching Scoop's find_hash_in_rdf).
-fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Result<String> {
+async fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Result<String> {
     let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
     let page = network::download_page(session, hash_url, 30, None)
+        .await
         .map_err(|e| crate::Error::Custom(format!("fetch rdf {}: {}", hash_url, e)))?;
 
     // Parse RDF XML and find Content entry matching the basename
@@ -263,20 +273,28 @@ fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Resu
 }
 
 /// Fetch metalink hash: check HTTP Digest header, fallback to .meta4 file.
-fn fetch_metalink_hash(session: &Session, url: &str, _ext: &serde_json::Value) -> Result<String> {
+async fn fetch_metalink_hash(
+    session: &Session,
+    url: &str,
+    _ext: &serde_json::Value,
+) -> Result<String> {
     // Scoop (find_hash_in_headers + find_hash_in_textfile .meta4):
     //   1. HEAD request → check Digest header for SHA-256=...
     //   2. Fallback: fetch $url.meta4 and extract hash via regex
     //
     // Step 1: HEAD with Digest header check
-    let config = session.config();
-    if let Ok(digest) = head_digest_sha256(url, config.proxy(), 30) {
+    let proxy = {
+        let config = session.config();
+        config.proxy().map(|s| s.to_owned())
+    };
+    if let Ok(digest) = head_digest_sha256(url, proxy.as_deref(), 30).await {
         return Ok(digest);
     }
 
     // Step 2: fallback to .meta4 file
     let meta4_url = format!("{}.meta4", url);
     let page = network::download_page(session, &meta4_url, 30, None)
+        .await
         .map_err(|e| crate::Error::Custom(format!("fetch metalink {}: {}", meta4_url, e)))?;
 
     // Extract first SHA256 hash from .meta4 XML
@@ -305,26 +323,22 @@ fn find_hash_in_rdf(content: &str, _basename: &str) -> Option<String> {
     .ok()?;
     let caps = re.captures(content)?;
     let hash = caps.get(1)?.as_str().trim().to_string();
-    if !hash.is_empty() {
-        Some(hash)
-    } else {
-        None
-    }
+    if !hash.is_empty() { Some(hash) } else { None }
 }
 
 /// Perform a HEAD request and extract SHA-256 digest from the Digest header.
-fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<String> {
-    let mut cfg = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
-    if let Some(proxy_url) = proxy {
-        let p = ureq::Proxy::new(proxy_url)
-            .map_err(|e| crate::Error::Custom(format!("proxy: {}", e)))?;
-        cfg = cfg.proxy(Some(p));
-    }
-    let agent = cfg.build().new_agent();
-    let resp = agent
+async fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Result<String> {
+    let opts = crate::internal::network::RequestOptions {
+        proxy,
+        timeout_secs,
+        ..crate::internal::network::RequestOptions::default()
+    };
+    let client = crate::internal::network::build_client(&opts)
+        .map_err(|e| crate::Error::Custom(format!("proxy: {}", e)))?;
+    let resp = client
         .head(url)
-        .call()
+        .send()
+        .await
         .map_err(|e| crate::Error::Custom(format!("HEAD {}: {}", url, e)))?;
 
     // Scoop checks for Digest header: SHA-256=..., SHA=..., MD5=...

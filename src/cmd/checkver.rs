@@ -82,7 +82,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         }
-    })?;
+    }).await?;
 
     Ok(())
 }

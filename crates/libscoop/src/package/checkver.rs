@@ -19,9 +19,11 @@
 //!   injection is provided by `network::download_page`.
 
 use crate::internal::url;
+use futures::StreamExt;
+
 use crate::{
-    package::{manifest, manifest_walker},
     Manifest, Session,
+    package::{manifest, manifest_walker},
 };
 use regex::Regex;
 use std::collections::HashMap;
@@ -141,7 +143,7 @@ enum CheckverFetch {
     ScriptError(String),
 }
 
-pub fn execute(
+pub async fn execute(
     options: CheckverOptions,
     session: &Session,
     on_report: impl FnMut(&CheckverReport),
@@ -223,7 +225,9 @@ pub fn execute(
                     ver_override,
                     &captures,
                     &HashMap::new(),
-                ) {
+                )
+                .await
+                {
                     Ok(()) => report.updated = true,
                     Err(e) => {
                         report.message =
@@ -334,31 +338,24 @@ pub fn execute(
 
     // ── Phase 2: Fetch all URLs and run scripts concurrently ────────────
     // (matching Scoop's async downloads in checkver.ps1 lines 110-248; each
-    // manifest gets a worker thread that either downloads its URL or runs
-    // its checkver.script — both report back over the channel as they finish)
-    // Session data was extracted before the scope because Session is !Sync.
-    let proxy_ref: Option<&str> = proxy.as_deref();
-    let ua_ref: &str = &user_agent;
-    let hosts_ref = &private_hosts;
-    // The network capability is shareable across worker threads (unlike the
-    // !Sync session), so tests can inject an in-memory fake here.
+    // manifest gets a concurrent task that either downloads its URL — 真
+    // async I/O via reqwest — or runs its checkver.script. Tasks yield in
+    // completion order via `buffer_unordered`, matching the original
+    // channel-based worker threads).
     let net = session.network();
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, CheckverFetch)>();
-    std::thread::scope(|s| {
-        for (i, item) in pending.iter().enumerate() {
-            let url = item.url.clone();
-            let script = item.script_text.clone();
-            let script_url = item.cv.url.clone();
-            let token = gh_token.clone();
-            let net = net.clone();
-            let tx = tx.clone();
-            s.spawn(move || {
-                // catch_unwind: a panicking worker must still send its message
-                // so the receiver loop below (which expects exactly one message
-                // per item) never deadlocks or panics on RecvError.
-                let is_script = script.is_some();
-                let fetch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if let Some(script) = script {
+    let fetch_results: Vec<(usize, CheckverFetch)> =
+        futures::stream::iter(pending.iter().enumerate())
+            .map(|(i, item)| {
+                let url = item.url.clone();
+                let script = item.script_text.clone();
+                let script_url = item.cv.url.clone();
+                let token = gh_token.clone();
+                let net = net.clone();
+                let proxy_ref = proxy.as_deref();
+                let ua_ref = &user_agent;
+                let hosts_ref = &private_hosts;
+                async move {
+                    let fetch = if let Some(script) = script {
                         // Script-based check: the script's stdout is the page
                         // (matching Scoop checkver.ps1 lines 298-301).
                         match run_checkver_script(
@@ -373,7 +370,8 @@ pub fn execute(
                         }
                     } else {
                         // PRIVATE_HOSTS entries matched against the URL here
-                        // (computed inside the closure so the HashMap is owned by the thread).
+                        // (computed inside the closure so the HashMap is owned
+                        // by the task).
                         let extra = hosts_ref.as_ref().and_then(|v| {
                             crate::internal::network::match_private_hosts(
                                 v.iter().map(|(p, h)| (p.as_str(), h.as_str())),
@@ -393,130 +391,105 @@ pub fn execute(
                         };
                         match net
                             .download(&url, &dl_opts)
+                            .await
                             .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
                         {
                             Ok(page) => CheckverFetch::Page(page),
                             Err(e) => CheckverFetch::DownloadError(e),
                         }
-                    }
-                }));
-                let _ = tx.send((
-                    i,
-                    fetch.unwrap_or_else(|_| {
-                        if is_script {
-                            CheckverFetch::ScriptError("thread panicked".to_string())
-                        } else {
-                            CheckverFetch::DownloadError("thread panicked".to_string())
-                        }
-                    }),
-                ));
-            });
-        }
-        drop(tx);
-
-        // ── Phase 3: Process each result as it completes ────────────────
-        // (matching Scoop's event loop in checkver.ps1 lines 257-419; both
-        // downloads and scripts run concurrently, so every completed item is
-        // reported immediately, in completion order)
-        for _ in 0..pending.len() {
-            let (idx, fetch) = rx.recv().unwrap();
-            let PendingItem {
-                stem,
-                path,
-                manifest,
-                current,
-                url: _,
-                github_mode,
-                effective_jsonpath,
-                effective_regex,
-                cv,
-                script_text: _,
-            } = &pending[idx];
-
-            let mut report = CheckverReport::new(stem.clone(), current.clone());
-
-            // Get the page content (download or script output), reporting
-            // failures immediately (matching Scoop's error handling)
-            let raw = match fetch {
-                CheckverFetch::Page(content) => content,
-                CheckverFetch::DownloadError(e) => {
-                    report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
-                    report.severity = ReportSeverity::Error;
-                    on_report(&report);
-                    continue;
+                    };
+                    (i, fetch)
                 }
-                CheckverFetch::ScriptNoVersion => {
-                    report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
-                    report.severity = ReportSeverity::Warn;
-                    on_report(&report);
-                    continue;
-                }
-                CheckverFetch::ScriptError(e) => {
-                    report.message =
-                        Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
-                    report.severity = ReportSeverity::Error;
-                    on_report(&report);
-                    continue;
-                }
-            };
+            })
+            .buffer_unordered(pending.len())
+            .collect()
+            .await;
 
-            // Extract version
-            let extract_result = extract_version(
-                &raw,
-                cv,
-                effective_jsonpath.as_deref(),
-                effective_regex.as_deref(),
-            );
+    // ── Phase 3: Process each result as it completes ────────────────
+    // (matching Scoop's event loop in checkver.ps1 lines 257-419; both
+    // downloads and scripts run concurrently, so every completed item is
+    // reported immediately, in completion order)
+    for (idx, fetch) in fetch_results {
+        let PendingItem {
+            stem,
+            path,
+            manifest,
+            current,
+            url: _,
+            github_mode,
+            effective_jsonpath,
+            effective_regex,
+            cv,
+            script_text: _,
+        } = &pending[idx];
 
-            // Auto-strip leading v/V prefix only for GitHub API JSONPath results
-            // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
-            let (mut ver, captures, named_captures) = match extract_result {
-                Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
-                None => {
-                    report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
-                    report.severity = ReportSeverity::Error;
-                    on_report(&report);
-                    continue;
-                }
-            };
+        let mut report = CheckverReport::new(stem.clone(), current.clone());
 
-            if *github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
-                ver = ver.trim_start_matches(['v', 'V']).to_string();
+        // Get the page content (download or script output), reporting
+        // failures immediately (matching Scoop's error handling)
+        let raw = match fetch {
+            CheckverFetch::Page(content) => content,
+            CheckverFetch::DownloadError(e) => {
+                report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
+                report.severity = ReportSeverity::Error;
+                on_report(&report);
+                continue;
             }
+            CheckverFetch::ScriptNoVersion => {
+                report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
+                report.severity = ReportSeverity::Warn;
+                on_report(&report);
+                continue;
+            }
+            CheckverFetch::ScriptError(e) => {
+                report.message = Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                report.severity = ReportSeverity::Error;
+                on_report(&report);
+                continue;
+            }
+        };
 
-            report.new_version = Some(ver.clone());
-            report.autoupdate_available = manifest.autoupdate().is_some()
-                && ver != report.current
-                && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
+        // Extract version
+        let extract_result = extract_version(
+            &raw,
+            cv,
+            effective_jsonpath.as_deref(),
+            effective_regex.as_deref(),
+        );
 
-            // ForceUpdate implies Update (matching Scoop behavior)
-            let do_update = options.update || options.force_update;
+        // Auto-strip leading v/V prefix only for GitHub API JSONPath results
+        // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
+        let (mut ver, captures, named_captures) = match extract_result {
+            Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
+            None => {
+                report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
+                report.severity = ReportSeverity::Error;
+                on_report(&report);
+                continue;
+            }
+        };
 
-            if ver == report.current {
-                // SkipUpdated: skip display (and update) for up-to-date manifests
-                if options.skip_updated && !options.force_update {
-                    continue;
-                }
-                if options.force_update {
-                    match apply_autoupdate(
-                        session,
-                        path,
-                        manifest,
-                        &ver,
-                        &captures,
-                        &named_captures,
-                    ) {
-                        Ok(()) => report.updated = true,
-                        Err(e) => {
-                            report.message = Some(
-                                rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string(),
-                            );
-                            report.severity = ReportSeverity::Error;
-                        }
-                    }
-                }
-            } else if do_update {
-                match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures) {
+        if *github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
+            ver = ver.trim_start_matches(['v', 'V']).to_string();
+        }
+
+        report.new_version = Some(ver.clone());
+        report.autoupdate_available = manifest.autoupdate().is_some()
+            && ver != report.current
+            && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
+
+        // ForceUpdate implies Update (matching Scoop behavior)
+        let do_update = options.update || options.force_update;
+
+        if ver == report.current {
+            // SkipUpdated: skip display (and update) for up-to-date manifests
+            if options.skip_updated && !options.force_update {
+                continue;
+            }
+            if options.force_update {
+                match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures)
+                    .await
+                {
                     Ok(()) => report.updated = true,
                     Err(e) => {
                         report.message =
@@ -525,9 +498,19 @@ pub fn execute(
                     }
                 }
             }
-            on_report(&report);
+        } else if do_update {
+            match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures).await
+            {
+                Ok(()) => report.updated = true,
+                Err(e) => {
+                    report.message =
+                        Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
+                }
+            }
         }
-    });
+        on_report(&report);
+    }
 
     Ok(())
 }
@@ -747,7 +730,7 @@ fn extract_named_captures(re: &Regex, caps: &regex::Captures<'_>) -> HashMap<Str
 /// checkver run; pass empty slices for a plain `version` substitution, which
 /// matches upstream `generate_user_manifest` calling `Invoke-AutoUpdate`
 /// with an empty `$CustomMatches`.
-pub(crate) fn apply_autoupdate(
+pub(crate) async fn apply_autoupdate(
     session: &Session,
     path: &PathBuf,
     manifest: &Manifest,
@@ -888,7 +871,7 @@ pub(crate) fn apply_autoupdate(
     if let Some(urls) = &au.url {
         let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
         let hashes =
-            download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir)?;
+            download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir).await?;
 
         root["url"] = manifest::json_str_array(&substituted);
         root["hash"] = manifest::json_str_array(&hashes);
@@ -905,7 +888,8 @@ pub(crate) fn apply_autoupdate(
             if let Some(urls) = &spec.url {
                 let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
                 let hashes =
-                    download_and_hash_multi(session, &substituted, arch_extractions, &tmp_dir)?;
+                    download_and_hash_multi(session, &substituted, arch_extractions, &tmp_dir)
+                        .await?;
 
                 let ptr = format!("/architecture/{}", arch_name);
 
@@ -1088,7 +1072,7 @@ fn extract_version_head_tail(version: &str) -> Option<(String, String)> {
 /// Extract a string from XML content using XPath.
 fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
     use sxd_document::parser;
-    use sxd_xpath::{evaluate_xpath, Value};
+    use sxd_xpath::{Value, evaluate_xpath};
 
     let doc = parser::parse(content).ok()?;
     let doc = doc.as_document();
@@ -1207,32 +1191,32 @@ mod tests {
 
     // ── apply_replace ────────────────────────────────────────────────────────
 
-    #[test]
-    fn apply_replace_no_pattern_returns_first_capture() {
+    #[tokio::test]
+    async fn apply_replace_no_pattern_returns_first_capture() {
         let caps = vec!["full_match".to_string(), "1.2.3".to_string()];
         assert_eq!(apply_replace(&caps, &HashMap::new(), None), "1.2.3");
     }
 
-    #[test]
-    fn apply_replace_no_pattern_falls_back_to_zeroth_when_no_groups() {
+    #[tokio::test]
+    async fn apply_replace_no_pattern_falls_back_to_zeroth_when_no_groups() {
         let caps = vec!["1.2.3".to_string()];
         assert_eq!(apply_replace(&caps, &HashMap::new(), None), "1.2.3");
     }
 
-    #[test]
-    fn apply_replace_empty_captures_returns_empty() {
+    #[tokio::test]
+    async fn apply_replace_empty_captures_returns_empty() {
         let caps: Vec<String> = vec![];
         assert_eq!(apply_replace(&caps, &HashMap::new(), None), "");
     }
 
-    #[test]
-    fn apply_replace_pattern_substitutes_dollar_index() {
+    #[tokio::test]
+    async fn apply_replace_pattern_substitutes_dollar_index() {
         let caps = vec!["full".to_string(), "1".to_string(), "2".to_string()];
         assert_eq!(apply_replace(&caps, &HashMap::new(), Some("$1.$2")), "1.2");
     }
 
-    #[test]
-    fn apply_replace_pattern_substitutes_zero() {
+    #[tokio::test]
+    async fn apply_replace_pattern_substitutes_zero() {
         let caps = vec!["fullmatch".to_string()];
         assert_eq!(
             apply_replace(&caps, &HashMap::new(), Some("v$0")),
@@ -1240,8 +1224,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_replace_pattern_substitutes_named_groups() {
+    #[tokio::test]
+    async fn apply_replace_pattern_substitutes_named_groups() {
         // tim: .NET named-group syntax `${main}.${patch}`
         let caps: Vec<String> = Vec::new();
         let named = HashMap::from([
@@ -1256,8 +1240,8 @@ mod tests {
 
     // ── is_github_checkver ───────────────────────────────────────────────────
 
-    #[test]
-    fn is_github_regex_match() {
+    #[tokio::test]
+    async fn is_github_regex_match() {
         let cv = Checkver {
             regex: Some(r"/releases/tag/v?([\d.]+)".to_string()),
             ..checkver_default()
@@ -1265,8 +1249,8 @@ mod tests {
         assert!(is_github_checkver(&cv));
     }
 
-    #[test]
-    fn is_github_url_match() {
+    #[tokio::test]
+    async fn is_github_url_match() {
         let cv = Checkver {
             url: Some("https://github.com/owner/repo/releases/latest".to_string()),
             ..checkver_default()
@@ -1274,8 +1258,8 @@ mod tests {
         assert!(is_github_checkver(&cv));
     }
 
-    #[test]
-    fn is_github_false_when_unrelated() {
+    #[tokio::test]
+    async fn is_github_false_when_unrelated() {
         let cv = Checkver {
             url: Some("https://example.com/latest.txt".to_string()),
             ..checkver_default()
@@ -1283,15 +1267,15 @@ mod tests {
         assert!(!is_github_checkver(&cv));
     }
 
-    #[test]
-    fn is_github_false_when_empty() {
+    #[tokio::test]
+    async fn is_github_false_when_empty() {
         assert!(!is_github_checkver(&checkver_default()));
     }
 
     // ── extract_version (regex) ──────────────────────────────────────────────
 
-    #[test]
-    fn extract_version_regex_basic() {
+    #[tokio::test]
+    async fn extract_version_regex_basic() {
         let cv = Checkver {
             regex: Some(r"version=([\d.]+)".to_string()),
             ..checkver_default()
@@ -1302,8 +1286,8 @@ mod tests {
         assert_eq!(result.unwrap().0, "1.2.3");
     }
 
-    #[test]
-    fn extract_version_regex_no_match_returns_none_if_content_empty() {
+    #[tokio::test]
+    async fn extract_version_regex_no_match_returns_none_if_content_empty() {
         let cv = Checkver {
             regex: Some(r"version=([\d.]+)".to_string()),
             ..checkver_default()
@@ -1312,8 +1296,8 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[test]
-    fn extract_version_regex_override_takes_precedence() {
+    #[tokio::test]
+    async fn extract_version_regex_override_takes_precedence() {
         let cv = Checkver {
             regex: Some(r"v(\d+)".to_string()),
             ..checkver_default()
@@ -1326,8 +1310,8 @@ mod tests {
 
     // ── extract_version (Scoop group-name semantics) ─────────────────────────
 
-    #[test]
-    fn extract_version_unnamed_group_beats_named_hash() {
+    #[tokio::test]
+    async fn extract_version_unnamed_group_beats_named_hash() {
         // we-meet: `(?<hash>...)` precedes the unnamed version group. Scoop
         // reads group name "1" = the first *unnamed* group (in .NET named
         // groups get negative numbers), so the version is extracted, not the
@@ -1476,11 +1460,10 @@ mod tests {
         assert_eq!(tail, "");
     }
 
-
     // ── end-to-end with an in-memory network fake ─────────────────────────
 
-    #[test]
-    fn execute_uses_injected_network_fake() {
+    #[tokio::test]
+    async fn execute_uses_injected_network_fake() {
         use crate::internal::network::{Network, RequestOptions};
         use crate::test_utils::{FakeNetwork, test_session, tmpdir};
         use std::sync::Arc;
@@ -1495,7 +1478,10 @@ mod tests {
         session.set_network(fake.clone()).unwrap();
 
         // sanity: the fake serves the canned page
-        let body = fake.download(url, &RequestOptions::default()).unwrap();
+        let body = fake
+            .download(url, &RequestOptions::default())
+            .await
+            .unwrap();
         assert_eq!(String::from_utf8(body).unwrap(), "version=2.0.0");
 
         // A bucket dir with one manifest whose checkver points at the URL.
@@ -1518,7 +1504,9 @@ mod tests {
         };
 
         let mut reports = Vec::new();
-        execute(opts, &session, |r| reports.push(r.clone())).unwrap();
+        execute(opts, &session, |r| reports.push(r.clone()))
+            .await
+            .unwrap();
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].stem, "app");

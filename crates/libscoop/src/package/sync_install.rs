@@ -7,16 +7,16 @@
 
 use tracing::debug;
 
-use crate::package::{download, manifest_source, operations, query, resolve, Package};
+use crate::package::{Package, download, manifest_source, operations, query, resolve};
 use crate::{
-    constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible, internal, persist, psmodule, shim,
-    shortcut, Error, Event, QueryOption, Session,
+    Error, Event, QueryOption, Session, constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible,
+    internal, persist, psmodule, shim, shortcut,
 };
 
-use super::{confirm_transaction, SyncOption, Transaction};
+use super::{SyncOption, Transaction, confirm_transaction};
 
 /// Sync operation: install and/or upgrade packages.
-pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
+pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let mut packages = vec![];
 
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
@@ -88,7 +88,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         let mut regular: Vec<&str> = Vec::new();
 
         for &query in queries {
-            match manifest_source::resolve_isolated_query(session, query) {
+            match manifest_source::resolve_isolated_query(session, query).await {
                 Ok(Some(p)) => {
                     if !isolated.contains(&p) {
                         isolated.push(p);
@@ -275,7 +275,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             let _ = tx.send(Event::PackageDownloadSizingStart);
         }
 
-        let download_size = set.calculate_download_size()?;
+        let download_size = set.calculate_download_size().await?;
         // Only a fully cache-hit set counts as offline. `estimated` means at
         // least one HEAD failed (size unknown) — treating that as offline
         // would silently turn a network failure into a bogus cache-miss
@@ -301,7 +301,8 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     // (used for the confirm prompt) — fragmented download and the progress
     // bar depend on it, so the same set must be handed to the downloader.
     let failed =
-        download::download_and_verify(&mut set, no_hash_check, ignore_failure, should_offline)?;
+        download::download_and_verify(&mut set, no_hash_check, ignore_failure, should_offline)
+            .await?;
 
     // Drop packages that failed to download or verify (IgnoreFailure mode).
     let packages = if failed.is_empty() {
@@ -613,7 +614,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                     return Err(Error::Custom(format!(
                         "could not write manifest to {:?}: {}",
                         manifest_dst, e
-                    )))
+                    )));
                 }
             },
             None => match std::fs::copy(pkg.manifest().path(), &manifest_dst) {
@@ -623,7 +624,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                         "could not copy manifest from {:?}: {}",
                         pkg.manifest().path(),
                         e
-                    )))
+                    )));
                 }
             },
         }
@@ -635,11 +636,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 .join("bucket")
                 .join(format!("{}.json", pkg.name()));
             let fallback = bucket_path.join(format!("{}.json", pkg.name()));
-            if primary.exists() {
-                primary
-            } else {
-                fallback
-            }
+            if primary.exists() { primary } else { fallback }
         };
         match std::fs::copy(&manifest_src, manifest_dst) {
             Ok(_) => {}
@@ -647,7 +644,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 return Err(Error::Custom(format!(
                     "could not copy manifest from {:?}: {}",
                     manifest_src, e
-                )))
+                )));
             }
         }
     }
@@ -688,8 +685,8 @@ mod tests {
     use super::*;
 
     /// Test that installer.file execution path works correctly.
-    #[test]
-    fn test_installer_file_execution() {
+    #[tokio::test]
+    async fn test_installer_file_execution() {
         let tmp = crate::test_utils::tmpdir("installer_file");
 
         // Test 1: capture exit code via cmd.exe /c
@@ -721,8 +718,8 @@ mod tests {
     }
 
     /// Test URL fragment rename: url#/installer.exe → copy directly as installer.exe
-    #[test]
-    fn test_url_fragment_rename() {
+    #[tokio::test]
+    async fn test_url_fragment_rename() {
         let tmp = crate::test_utils::tmpdir("fragment_rename");
 
         // Simulate cache file with hash-based name
@@ -746,8 +743,8 @@ mod tests {
     }
 
     /// Test URL without fragment: use original filename from URL path
-    #[test]
-    fn test_url_filename_without_fragment() {
+    #[tokio::test]
+    async fn test_url_filename_without_fragment() {
         let url = "https://example.com/dopus_patcher.exe";
         let filename = std::path::Path::new(url)
             .file_name()
@@ -763,12 +760,14 @@ mod tests {
 
     /// A named package that is not installed must fail fast instead of
     /// silently reporting "all apps are up to date".
-    #[test]
-    fn only_upgrade_missing_package_errors() {
+    #[tokio::test]
+    async fn only_upgrade_missing_package_errors() {
         let root = crate::test_utils::tmpdir("only_upgrade_missing");
         let session = crate::test_utils::test_session(&root);
 
-        let err = install(&session, &["ghost"], &[SyncOption::OnlyUpgrade]).unwrap_err();
+        let err = install(&session, &["ghost"], &[SyncOption::OnlyUpgrade])
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
 
         let _ = std::fs::remove_dir_all(&root);
@@ -776,15 +775,17 @@ mod tests {
 
     /// An installed package without a newer version must NOT be reported as
     /// missing — the Upgradable filter below silently skips it.
-    #[test]
-    fn only_upgrade_installed_without_upgrade_is_ok() {
+    #[tokio::test]
+    async fn only_upgrade_installed_without_upgrade_is_ok() {
         let root = crate::test_utils::tmpdir("only_upgrade_no_new");
         let session = crate::test_utils::test_session(&root);
 
         crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
 
         // No bucket manifest → nothing upgradable → Ok, no error raised.
-        install(&session, &["curl"], &[SyncOption::OnlyUpgrade]).unwrap();
+        install(&session, &["curl"], &[SyncOption::OnlyUpgrade])
+            .await
+            .unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -793,8 +794,8 @@ mod tests {
     /// reinstalled at its current version — the transaction must not be
     /// empty (a regression: the upgradable_version filter used to drop all
     /// Force packages, making `update --force` a silent no-op).
-    #[test]
-    fn only_upgrade_force_reinstalls_current_version() {
+    #[tokio::test]
+    async fn only_upgrade_force_reinstalls_current_version() {
         let root = crate::test_utils::tmpdir("only_upgrade_force");
         let session = crate::test_utils::test_session(&root);
 
@@ -806,6 +807,7 @@ mod tests {
             &["curl"],
             &[SyncOption::OnlyUpgrade, SyncOption::Force],
         )
+        .await
         .unwrap();
 
         // The reinstall committed: a version dir was created under apps/curl.
@@ -819,8 +821,8 @@ mod tests {
 
     /// With IgnoreFailure, a missing package is skipped (reported to stderr)
     /// instead of aborting the whole upgrade.
-    #[test]
-    fn only_upgrade_ignore_failure_skips_missing() {
+    #[tokio::test]
+    async fn only_upgrade_ignore_failure_skips_missing() {
         let root = crate::test_utils::tmpdir("only_upgrade_ignore");
         let session = crate::test_utils::test_session(&root);
 
@@ -832,6 +834,7 @@ mod tests {
             &["ghost", "curl"],
             &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailure],
         )
+        .await
         .unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
@@ -848,15 +851,17 @@ mod tests {
     /// A local-path manifest installs as an isolated package: `manifest.json`
     /// persists the raw source text and `install.json` records the source
     /// path with no bucket.
-    #[test]
-    fn install_local_path_manifest_is_isolated() {
+    #[tokio::test]
+    async fn install_local_path_manifest_is_isolated() {
         let root = crate::test_utils::tmpdir("install_local_path");
         let session = crate::test_utils::test_session(&root);
 
         let manifest_path = root.join("myapp.json");
         std::fs::write(&manifest_path, NO_DOWNLOAD_MANIFEST).unwrap();
 
-        install(&session, &[manifest_path.to_str().unwrap()], &[]).unwrap();
+        install(&session, &[manifest_path.to_str().unwrap()], &[])
+            .await
+            .unwrap();
 
         let app_dir = root.join("apps").join("myapp");
         let meta_dir = app_dir.join("current");
@@ -886,8 +891,8 @@ mod tests {
 
     /// An `app@version` query where the version matches the resolved
     /// manifest installs that manifest as an isolated package.
-    #[test]
-    fn install_version_matching_manifest_is_isolated() {
+    #[tokio::test]
+    async fn install_version_matching_manifest_is_isolated() {
         let root = crate::test_utils::tmpdir("install_version_match");
         let session = crate::test_utils::test_session(&root);
 
@@ -899,6 +904,7 @@ mod tests {
             &[&format!("{}@1.0.0", manifest_path.display())],
             &[],
         )
+        .await
         .unwrap();
 
         let meta_dir = root.join("apps").join("myapp").join("current");
@@ -910,8 +916,8 @@ mod tests {
 
     /// A `name@version` query without autoupdate capability fails with the
     /// upstream error instead of installing the wrong version.
-    #[test]
-    fn install_version_without_autoupdate_errors() {
+    #[tokio::test]
+    async fn install_version_without_autoupdate_errors() {
         let root = crate::test_utils::tmpdir("install_version_no_au");
         let session = crate::test_utils::test_session(&root);
 
@@ -923,6 +929,7 @@ mod tests {
             &[&format!("{}@2.0.0", manifest_path.display())],
             &[],
         )
+        .await
         .unwrap_err();
         assert!(
             err.to_string()
@@ -938,13 +945,13 @@ mod tests {
 
     /// `hok install Obsidian` must resolve the lowercase `obsidian` manifest,
     /// mirroring Scoop's case-insensitive package lookup (Windows FS).
-    #[test]
-    fn install_query_is_case_insensitive() {
+    #[tokio::test]
+    async fn install_query_is_case_insensitive() {
         let root = crate::test_utils::tmpdir("install_case_insensitive");
         let session = crate::test_utils::test_session(&root);
         crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
 
-        install(&session, &["Obsidian"], &[]).unwrap();
+        install(&session, &["Obsidian"], &[]).await.unwrap();
 
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");
@@ -958,13 +965,13 @@ mod tests {
 
     /// Bucket prefix matching is case-insensitive too: `Main/Obsidian` finds
     /// the `main` bucket's `obsidian` manifest.
-    #[test]
-    fn install_query_bucket_prefix_is_case_insensitive() {
+    #[tokio::test]
+    async fn install_query_bucket_prefix_is_case_insensitive() {
         let root = crate::test_utils::tmpdir("install_bucket_case");
         let session = crate::test_utils::test_session(&root);
         crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
 
-        install(&session, &["Main/Obsidian"], &[]).unwrap();
+        install(&session, &["Main/Obsidian"], &[]).await.unwrap();
 
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");

@@ -44,7 +44,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     };
 
     let handle = crate::eventloop::run_event_loop_default(session);
-    let result = package::download::download_apps(session, &queries, &opts);
+    let result = package::download::download_apps(session, &queries, &opts).await;
     handle.join().unwrap();
     result?;
 
