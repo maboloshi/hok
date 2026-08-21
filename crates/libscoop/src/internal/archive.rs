@@ -590,7 +590,13 @@ fn extract_zip_mt(
                             break;
                         }
                     };
-                    let name = entry.name().to_string();
+                    // Windows-created zips (e.g. croc's release) sometimes
+                    // use backslash separators; normalize to `/` so directory
+                    // detection (`ends_with('/')`), strip_dir and path-join all
+                    // see consistent separators. Writing an entry that still
+                    // ends in `\` would fail on Windows (path treated as a
+                    // directory).
+                    let name = entry.name().replace('\\', "/");
                     if name.ends_with('/') {
                         continue;
                     }
@@ -1428,6 +1434,46 @@ mod tests {
         zip.start_file("root/sub/deep.txt", opts).unwrap();
         zip.write_all(b"Deep content").unwrap();
         zip.finish().unwrap();
+    }
+
+    /// Windows-created zips sometimes use backslash separators in entry
+    /// names (e.g. croc's release archive: `src\\codephrase\\`). The
+    /// extractor must normalize `\\` to `/` so directory entries are
+    /// recognised and files land under the same joined paths — without the
+    /// fix a directory entry ending in `\\` is treated as a file and written
+    /// to an illegal trailing-backslash path (os error 3 on Windows).
+    #[test]
+    fn test_extract_zip_backslash_separators() {
+        use zip::write::FileOptions;
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+
+        let dir = tmpdir("extract_zip_backslash");
+        let archive_path = dir.join("backslash.zip");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> =
+            FileOptions::default().compression_method(CompressionMethod::Stored);
+        // Entry names use backslashes exactly as croc's release zip does.
+        zip.add_directory("src\\codephrase\\", opts).unwrap();
+        zip.start_file("src\\codephrase\\words.txt", opts).unwrap();
+        zip.write_all(b"word list").unwrap();
+        zip.start_file("croc.exe", opts).unwrap();
+        zip.write_all(b"PE bytes").unwrap();
+        zip.finish().unwrap();
+
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        extract(&archive_path, &dest, None, None, false, &None).unwrap();
+
+        // Files must be extracted (backslashes treated as separators).
+        assert!(dest.join("src/codephrase/words.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("src/codephrase/words.txt")).unwrap(),
+            "word list"
+        );
+        assert!(dest.join("croc.exe").exists());
     }
 
     /// `find_embedded_zip_start` locates a ZIP payload behind a PE/SFX stub:
