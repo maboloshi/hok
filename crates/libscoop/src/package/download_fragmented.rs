@@ -142,9 +142,9 @@ const MAX_CHUNK_ATTEMPTS: u32 = 3;
 /// don't retry in lockstep and hammer the server.
 const CHUNK_BACKOFF_BASE_MS: u64 = 500;
 
-/// Range-request errors are classified into retryable (Transient) and hard
-/// (Final) by the network layer; the retry loop here retries the former with
-/// exponential backoff and gives up on the latter.
+// Range-request errors are classified into retryable (Transient) and hard
+// (Final) by the network layer; the retry loop here retries the former with
+// exponential backoff and gives up on the latter.
 
 /// Download `[start, end]` of `url` into `dest`, retrying transient failures
 /// with exponential backoff (up to [`MAX_CHUNK_ATTEMPTS`] attempts).
@@ -231,10 +231,7 @@ fn try_download_range(
     // carries the status, Content-Range start offset and the requested slice;
     // retry / resume / validation logic all lives here (matching the previous
     // ureq implementation, just routed through the trait).
-    let resp = match net.range_get(url, start + resume_start, end, opts) {
-        Ok(resp) => resp,
-        Err(e) => return Err(e),
-    };
+    let resp = net.range_get(url, start + resume_start, end, opts)?;
 
     // Guard against 206 responses whose payload starts at a different offset
     // than requested (a broken server that returns `bytes=0-59` for a
@@ -505,7 +502,6 @@ pub(crate) mod test_server {
         let e: usize = e.parse().unwrap_or(total.saturating_sub(1));
         (s, e.min(total.saturating_sub(1)))
     }
-
 }
 #[cfg(test)]
 mod tests {
@@ -899,4 +895,61 @@ mod tests {
         // Concurrent chunk deltas aggregate to the full file size.
         assert_eq!(total.load(Ordering::Relaxed), 1000);
     }
+
+    #[test]
+    fn test_download_fragmented_offline_with_fake_network() {
+        use crate::test_utils::FakeNetwork;
+
+        let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let url = "https://fake.example.com/file.bin";
+        let fake = FakeNetwork::new();
+        fake.serve(url, data.clone());
+        let dir = crate::test_utils::tmpdir("fragmented_fake");
+        let part_dir = dir.join("file.bin.parts");
+        std::fs::create_dir_all(&part_dir).unwrap();
+        let opts = RequestOptions {
+            timeout_secs: 5,
+            ..RequestOptions::default()
+        };
+
+        let parts =
+            download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {}).unwrap();
+        assert_eq!(parts.len(), 4);
+        let mut file = Vec::new();
+        for p in &parts {
+            file.extend_from_slice(&std::fs::read(p).unwrap());
+        }
+        assert_eq!(file, data);
+
+        let ranges = fake.ranges.lock().unwrap();
+        assert_eq!(ranges.len(), 4, "ranges: {:?}", *ranges);
+        assert!(ranges.iter().all(|r| r.starts_with("bytes=")));
+    }
+
+
+    #[test]
+    fn test_download_range_retries_transient_offline() {
+        use crate::test_utils::FakeNetwork;
+
+        let data: Vec<u8> = (0..100u8).collect();
+        let url = "https://fake.example.com/file.bin";
+        let fake = FakeNetwork::new();
+        fake.serve(url, data.clone());
+        fake.range_behavior(1, 500, false, false, None);
+        let dest = crate::test_utils::tmpdir("download_range_retry_fake").join("part.0");
+        let opts = RequestOptions {
+            timeout_secs: 5,
+            ..RequestOptions::default()
+        };
+
+        download_range(&fake, url, 0, 99, &dest, &opts, &|_| {}).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+        let responses = fake.responses.lock().unwrap();
+        assert_eq!(*responses.last().unwrap(), 206);
+        assert!(responses[..responses.len() - 1]
+            .iter()
+            .all(|&s| s == 500));
+    }
+
 }

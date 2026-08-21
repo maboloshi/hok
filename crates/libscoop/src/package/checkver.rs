@@ -391,7 +391,8 @@ pub fn execute(
                             token: token.as_deref(),
                             extra_headers: extra_ref,
                         };
-                        match net.download(&url, &dl_opts)
+                        match net
+                            .download(&url, &dl_opts)
                             .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
                         {
                             Ok(page) => CheckverFetch::Page(page),
@@ -1473,5 +1474,60 @@ mod tests {
         let (head, tail) = result.unwrap();
         assert_eq!(head, "2.0.0");
         assert_eq!(tail, "");
+    }
+
+
+    // ── end-to-end with an in-memory network fake ─────────────────────────
+
+    #[test]
+    fn execute_uses_injected_network_fake() {
+        use crate::internal::network::{Network, RequestOptions};
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("checkver_fake");
+        let session = test_session(&root);
+
+        // Serve a canned page for the checkver URL so no real network is hit.
+        let url = "https://fake.example.com/latest.txt";
+        let fake = Arc::new(FakeNetwork::new());
+        fake.serve(url, b"version=2.0.0".to_vec());
+        session.set_network(fake.clone()).unwrap();
+
+        // sanity: the fake serves the canned page
+        let body = fake.download(url, &RequestOptions::default()).unwrap();
+        assert_eq!(String::from_utf8(body).unwrap(), "version=2.0.0");
+
+        // A bucket dir with one manifest whose checkver points at the URL.
+        let bucket_dir = root.join("bucket");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let manifest = format!(
+            r#"{{"version": "1.0.0", "homepage": "https://example.com",
+                "checkver": {{"url": "{url}", "regex": "version=([\\d.]+)"}}}}"#
+        );
+        std::fs::write(bucket_dir.join("app.json"), manifest).unwrap();
+
+        let opts = CheckverOptions {
+            dir: bucket_dir,
+            app: vec!["*".to_string()],
+            update: false,
+            force_update: false,
+            skip_updated: false,
+            version: None,
+            timeout: 10,
+        };
+
+        let mut reports = Vec::new();
+        execute(opts, &session, |r| reports.push(r.clone())).unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].stem, "app");
+        assert_eq!(reports[0].current, "1.0.0");
+        assert_eq!(
+            reports[0].new_version.as_deref(),
+            Some("2.0.0"),
+            "report: {:?}",
+            reports[0]
+        );
     }
 }

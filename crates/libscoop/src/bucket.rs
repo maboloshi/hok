@@ -606,4 +606,53 @@ mod tests {
         let priority = crate::constant::BUCKET_PRIORITY.to_vec();
         assert_eq!(known, priority, "priority must match known key order");
     }
+
+    #[test]
+    fn bucket_add_uses_injected_git_fake() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_add_fake_git");
+        let session = test_session(&root);
+        let fake = Arc::new(FakeGit::default());
+        session.set_git(fake.clone()).unwrap();
+
+        crate::bucket::add(&session, "extras", "https://example.com/extras.git").unwrap();
+
+        let clones = fake.clones.lock().unwrap();
+        assert_eq!(clones.len(), 1);
+        assert_eq!(clones[0].0, "https://example.com/extras.git");
+        assert!(
+            clones[0].1.to_string_lossy().ends_with("buckets\\extras"),
+            "clone path: {:?}",
+            clones[0].1
+        );
+    }
+
+    #[test]
+    fn bucket_update_uses_injected_git_fake() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_update_fake_git");
+        let session = test_session(&root);
+
+        // A real git repo with an origin remote so remote_url() reports it
+        // as updatable (the metadata read still uses real git); the update's
+        // pull itself goes through the injected fake, so no network is hit.
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://example.com/extras.git").unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        session.set_git(fake.clone()).unwrap();
+
+        crate::bucket::update(&session).unwrap();
+
+        let pulls = fake.pulls.lock().unwrap();
+        assert_eq!(pulls.len(), 1, "pulls: {:?}", *pulls);
+        assert_eq!(pulls[0], bucket_dir);
+    }
+
 }
