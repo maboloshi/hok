@@ -589,22 +589,22 @@ pub(crate) fn json_str_array(items: &[String]) -> serde_json::Value {
 //  Implementations for types
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Macro to generate architecture-specific fields.
+/// Macro to select an architecture-specific manifest field.
+///
+/// Pure: takes the (already fallback-resolved) architecture explicitly, so
+/// field selection is deterministic and independent of host state. The
+/// host-dependent resolution — runtime arch (Scoop's
+/// `Get-DefaultArchitecture`, honouring the `default_architecture` config
+/// override) plus the ARM64 fallback of `Get-SupportedArchitecture` (on
+/// ARM64 hosts whose manifest has no `arm64` field, Windows 11 → 64bit,
+/// Windows 10 → 32bit) — lives in [`Manifest::effective_arch`], applied by
+/// the plain `*()` accessors.
 macro_rules! arch_specific_field {
-    ($self:ident, $field:ident) => {{
+    ($self:ident, $field:ident, $arch:expr) => {{
         let mut ret = $self.inner.$field.as_ref();
 
         if let Some(arch) = $self.inner.architecture.as_ref() {
-            // Architecture is selected at runtime from the host OS (Scoop's
-            // `Get-DefaultArchitecture`, honouring the `default_architecture`
-            // config override), plus the ARM64 fallback of Scoop's
-            // `Get-SupportedArchitecture`: on ARM64 hosts whose manifest has
-            // no `arm64` field, Windows 11 → 64bit, Windows 10 → 32bit.
-            let current = crate::internal::arch::Arch::supported(
-                crate::internal::arch::Arch::current(),
-                arch.aarch64.is_none(),
-            );
-            match current {
+            match $arch {
                 crate::internal::arch::Arch::Ia32 => {
                     if let Some(ia32) = &arch.ia32 {
                         let $field = ia32.$field.as_ref();
@@ -635,23 +635,37 @@ macro_rules! arch_specific_field {
     }};
 }
 
-/// Generate an accessor method that reads a field via `arch_specific_field!`
-/// and applies `devectorize()`.
+/// Generate an accessor pair for an architecture-specific field: a pure
+/// `$pure(arch)` variant (deterministic, host-independent — pass the
+/// effective architecture explicitly) plus the plain `$name()` wrapper that
+/// resolves the host architecture via [`Manifest::effective_arch`].
+///
+/// Both read the field via `arch_specific_field!` and apply `devectorize()`.
 macro_rules! arch_accessor {
     // Standard pattern — wrapped in Option
-    ($(#[$doc:meta])* fn $name:ident() -> Option<$ret:ty>) => {
+    ($(#[$doc:meta])* fn $name:ident() -> Option<$ret:ty>, $pure:ident) => {
+        $(#[$doc])*
+        #[doc = "Pure variant: select the field for an explicit architecture."]
+        pub fn $pure(&self, arch: crate::internal::arch::Arch) -> Option<$ret> {
+            let ret = arch_specific_field!(self, $name, arch);
+            ret.map(|v| v.devectorize())
+        }
         $(#[$doc])*
         pub fn $name(&self) -> Option<$ret> {
-            let ret = arch_specific_field!(self, $name);
-            ret.map(|v| v.devectorize())
+            self.$pure(self.effective_arch())
         }
     };
     // With `unwrap_or_default` — return type is not Option-wrapped
-    ($(#[$doc:meta])* fn $name:ident() -> $ret:ty, unwrap_or_default) => {
+    ($(#[$doc:meta])* fn $name:ident() -> $ret:ty, unwrap_or_default, $pure:ident) => {
+        $(#[$doc])*
+        #[doc = "Pure variant: select the field for an explicit architecture."]
+        pub fn $pure(&self, arch: crate::internal::arch::Arch) -> $ret {
+            let ret = arch_specific_field!(self, $name, arch);
+            ret.map(|v| v.devectorize()).unwrap_or_default()
+        }
         $(#[$doc])*
         pub fn $name(&self) -> $ret {
-            let ret = arch_specific_field!(self, $name);
-            ret.map(|v| v.devectorize()).unwrap_or_default()
+            self.$pure(self.effective_arch())
         }
     };
 }
@@ -768,6 +782,34 @@ impl Manifest {
     pub fn raw(&self) -> Option<&str> {
         self.raw.as_deref()
     }
+
+    /// Whether this manifest provides an `arm64` architecture section.
+    ///
+    /// This is the condition that disables Scoop's
+    /// `Get-SupportedArchitecture` fallback: on an ARM64 host, an `arm64`
+    /// section is used as-is; without one, Windows 11 falls back to
+    /// `64bit` and Windows 10 to `32bit` (lib/manifest.ps1).
+    fn has_arm64(&self) -> bool {
+        self.inner
+            .architecture
+            .as_ref()
+            .is_some_and(|a| a.aarch64.is_some())
+    }
+
+    /// Resolve the effective architecture used for field selection: the
+    /// runtime-detected architecture (with the `default_architecture`
+    /// config override) plus Scoop's `Get-SupportedArchitecture` ARM64
+    /// fallback.
+    ///
+    /// Host-dependent (reads the process architecture and, on ARM64
+    /// hosts, the Windows build number) — the `*_for(arch)` accessors
+    /// themselves are pure and deterministic.
+    fn effective_arch(&self) -> crate::internal::arch::Arch {
+        crate::internal::arch::Arch::supported(
+            crate::internal::arch::Arch::current(),
+            self.has_arm64(),
+        )
+    }
     #[inline]
     pub fn version(&self) -> &str {
         // A manifest without `version` parses fine (upstream never
@@ -818,7 +860,7 @@ impl Manifest {
 
     arch_accessor! {
         /// Get `bin` field of this manifest.
-        fn bin() -> Option<Vec<Vec<&str>>>
+        fn bin() -> Option<Vec<Vec<&str>>>, bin_for
     }
 
     #[inline]
@@ -840,17 +882,25 @@ impl Manifest {
 
     arch_accessor! {
         /// Returns `env_add_path` defined in this manifest.
-        fn env_add_path() -> Option<Vec<&str>>
+        fn env_add_path() -> Option<Vec<&str>>, env_add_path_for
+    }
+
+    /// Pure variant: select `env_set` for an explicit architecture.
+    pub fn env_set_for(
+        &self,
+        arch: crate::internal::arch::Arch,
+    ) -> Option<&HashMap<String, String>> {
+        arch_specific_field!(self, env_set, arch)
     }
 
     /// Returns `env_set` defined in this manifest.
     pub fn env_set(&self) -> Option<&HashMap<String, String>> {
-        arch_specific_field!(self, env_set)
+        self.env_set_for(self.effective_arch())
     }
 
     arch_accessor! {
         /// Returns `extract_dir` defined in this manifest.
-        fn extract_dir() -> Option<Vec<&str>>
+        fn extract_dir() -> Option<Vec<&str>>, extract_dir_for
     }
 
     /// Returns `extract_to` defined in this manifest.
@@ -869,25 +919,35 @@ impl Manifest {
         self.inner.suggest.as_ref()
     }
 
-    arch_accessor! { fn pre_install() -> Option<Vec<&str>> }
+    arch_accessor! { fn pre_install() -> Option<Vec<&str>>, pre_install_for }
 
-    arch_accessor! { fn post_install() -> Option<Vec<&str>> }
+    arch_accessor! { fn post_install() -> Option<Vec<&str>>, post_install_for }
 
-    arch_accessor! { fn pre_uninstall() -> Option<Vec<&str>> }
+    arch_accessor! { fn pre_uninstall() -> Option<Vec<&str>>, pre_uninstall_for }
 
-    arch_accessor! { fn post_uninstall() -> Option<Vec<&str>> }
+    arch_accessor! { fn post_uninstall() -> Option<Vec<&str>>, post_uninstall_for }
 
     /// Returns `notes` defined in this manifest.
     pub fn notes(&self) -> Option<Vec<&str>> {
         self.inner.notes.as_ref().map(|v| v.devectorize())
     }
 
+    /// Pure variant: select `installer` for an explicit architecture.
+    pub fn installer_for(&self, arch: crate::internal::arch::Arch) -> Option<&Installer> {
+        arch_specific_field!(self, installer, arch)
+    }
+
     pub fn installer(&self) -> Option<&Installer> {
-        arch_specific_field!(self, installer)
+        self.installer_for(self.effective_arch())
+    }
+
+    /// Pure variant: select `uninstaller` for an explicit architecture.
+    pub fn uninstaller_for(&self, arch: crate::internal::arch::Arch) -> Option<&Uninstaller> {
+        arch_specific_field!(self, uninstaller, arch)
     }
 
     pub fn uninstaller(&self) -> Option<&Uninstaller> {
-        arch_specific_field!(self, uninstaller)
+        self.uninstaller_for(self.effective_arch())
     }
 
     /// Returns `persist` defined in this manifest.
@@ -902,13 +962,18 @@ impl Manifest {
         self.inner.psmodule.as_ref()
     }
 
-    pub fn shortcuts(&self) -> Option<Vec<Vec<&str>>> {
-        let ret = arch_specific_field!(self, shortcuts);
+    /// Pure variant: select `shortcuts` for an explicit architecture.
+    pub fn shortcuts_for(&self, arch: crate::internal::arch::Arch) -> Option<Vec<Vec<&str>>> {
+        let ret = arch_specific_field!(self, shortcuts, arch);
         ret.map(|v| {
             v.iter()
                 .map(|v| v.iter().map(|s| s.as_str()).collect())
                 .collect()
         })
+    }
+
+    pub fn shortcuts(&self) -> Option<Vec<Vec<&str>>> {
+        self.shortcuts_for(self.effective_arch())
     }
 
     arch_accessor! {
@@ -917,7 +982,7 @@ impl Manifest {
         /// - For `amd64` return "64bit" urls if available else noarch urls;
         /// - For `ia32` return "32bit" urls if available else noarch urls;
         /// - For `aarch64` return "arm64" urls if available else noarch urls.
-        fn url() -> Vec<&str>, unwrap_or_default
+        fn url() -> Vec<&str>, unwrap_or_default, url_for
     }
 
     /// Collect ALL URLs from this manifest (noarch + all architectures).
@@ -1025,7 +1090,7 @@ impl Manifest {
         /// - For `amd64` return "64bit" hashes if available else noarch hashes;
         /// - For `ia32` return "32bit" hashes if available else noarch hashes;
         /// - For `aarch64` return "arm64" hashes if available else noarch hashes.
-        fn hash() -> Vec<&HashString>, unwrap_or_default
+        fn hash() -> Vec<&HashString>, unwrap_or_default, hash_for
     }
 
     /// Returns the dependencies of this manifest.
@@ -1041,6 +1106,12 @@ impl Manifest {
     ///
     /// [`depends`]: #method.depends
     pub(crate) fn dependencies(&self) -> Vec<String> {
+        self.dependencies_for(self.effective_arch())
+    }
+
+    /// Pure variant of [`Manifest::dependencies`]: dependency resolution
+    /// for an explicit architecture (deterministic, host-independent).
+    pub(crate) fn dependencies_for(&self, arch: crate::internal::arch::Arch) -> Vec<String> {
         let mut deps = HashSet::new();
 
         if let Some(raw_depends) = self.depends() {
@@ -1059,11 +1130,13 @@ impl Manifest {
         //   `lessmsi` is always appended when triggered.
         // - The archive-URL check is an approximation of Scoop's
         //   `Test-7zipRequirement` pattern.
-        let urls = self.url();
+        let urls = self.url_for(arch);
         let hook_scripts = [
-            self.pre_install(),
-            self.post_install(),
-            self.installer().map(|i| i.script()).unwrap_or_default(),
+            self.pre_install_for(arch),
+            self.post_install_for(arch),
+            self.installer_for(arch)
+                .map(|i| i.script())
+                .unwrap_or_default(),
         ];
         let script = hook_scripts
             .into_iter()
@@ -1347,6 +1420,144 @@ mod tests {
 
     fn manifest_from(json: &str) -> Manifest {
         Manifest::from_json("test-pkg", json).unwrap()
+    }
+
+    // ── arch-specific field selection (pure `*_for(arch)`) ────────────────
+
+    #[test]
+    fn arch_specific_url_selection_is_deterministic() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": {
+                    "32bit": { "url": "https://example.com/x86.zip" },
+                    "64bit": { "url": "https://example.com/x64.zip" },
+                    "arm64": { "url": "https://example.com/arm.zip" }
+                }
+            }"#,
+        );
+        // Pure selection: deterministic per architecture, no host state.
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Amd64),
+            vec!["https://example.com/x64.zip"]
+        );
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Ia32),
+            vec!["https://example.com/x86.zip"]
+        );
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Aarch64),
+            vec!["https://example.com/arm.zip"]
+        );
+        // Missing section falls back to noarch.
+        let m2 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": { "64bit": { "url": "https://example.com/x64.zip" } }
+            }"#,
+        );
+        assert_eq!(
+            m2.url_for(crate::internal::arch::Arch::Ia32),
+            vec!["https://example.com/noarch.zip"]
+        );
+        // Hashes follow the same per-arch selection.
+        assert_eq!(m.hash_for(crate::internal::arch::Arch::Amd64).len(), 1);
+    }
+
+    #[test]
+    fn arch_specific_bin_selection_via_pure_variant() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "architecture": {
+                    "32bit": { "bin": [["x86.exe", "app"]] },
+                    "64bit": { "bin": [["x64.exe", "app"]] }
+                }
+            }"#,
+        );
+        assert_eq!(
+            m.bin_for(crate::internal::arch::Arch::Amd64),
+            Some(vec![vec!["x64.exe", "app"]])
+        );
+        assert_eq!(
+            m.bin_for(crate::internal::arch::Arch::Ia32),
+            Some(vec![vec!["x86.exe", "app"]])
+        );
+    }
+
+    #[test]
+    fn arm64_fallback_respects_manifest_arm64_presence() {
+        // Regression: `Arch::supported` was previously fed `aarch64.is_none()`
+        // — inverted — applying Scoop's Get-SupportedArchitecture fallback
+        // exactly when the manifest *had* an arm64 section and skipping it
+        // when it did not. The trigger is the *presence* of an arm64 section
+        // (lib/manifest.ps1): only ARM64 hosts without one fall back
+        // (Windows 11 → 64bit, Windows 10 → 32bit).
+        let with_arm64 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": {
+                    "64bit": { "url": "https://example.com/x64.zip" },
+                    "arm64": { "url": "https://example.com/arm.zip" }
+                }
+            }"#,
+        );
+        assert!(with_arm64.has_arm64(), "arm64 section present");
+        // ARM64 host + arm64 section → arm64 urls, never the x64 fallback.
+        let arch = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            with_arm64.has_arm64(),
+            22631,
+        );
+        assert_eq!(arch, crate::internal::arch::Arch::Aarch64);
+        assert_eq!(
+            with_arm64.url_for(arch),
+            vec!["https://example.com/arm.zip"]
+        );
+
+        let without_arm64 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": { "64bit": { "url": "https://example.com/x64.zip" } }
+            }"#,
+        );
+        assert!(!without_arm64.has_arm64(), "no arm64 section");
+        // ARM64 host + no arm64 section → Windows 11 falls back to 64bit.
+        let win11 = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            without_arm64.has_arm64(),
+            22631,
+        );
+        assert_eq!(win11, crate::internal::arch::Arch::Amd64);
+        assert_eq!(
+            without_arm64.url_for(win11),
+            vec!["https://example.com/x64.zip"]
+        );
+        // Windows 10 falls back to 32bit (noarch here: no 32bit section).
+        let win10 = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            without_arm64.has_arm64(),
+            19045,
+        );
+        assert_eq!(win10, crate::internal::arch::Arch::Ia32);
     }
 
     // ── json_str_array ──────────────────────────────────────────────────────
