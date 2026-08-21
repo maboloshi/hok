@@ -27,24 +27,25 @@
 //!   synchronous (unlike the async [`Event`][1] bus), so commands that do not
 //!   run an event loop (e.g. `ci-auto-pr`, `cache`, `cleanup`) can still
 //!   emit output safely.
-//! - **Config borrowing**: `config()` returns a `Ref<Config>` (immutable);
-//!   `config_mut()` (crate-internal) returns a `RefMut<Config>` and fails
-//!   with `ConfigInUse` if the config is already borrowed.
+//! - **Config borrowing**: `config()` returns a read guard (immutable);
+//!   `config_mut()` (crate-internal) returns a write guard and fails
+//!   with `ConfigInUse` if the config is already locked for writing.
 //!
 //! [1]: crate::Event
 //!
 //! # Thread safety
 //!
-//! `Session` is `Sync + Send` because all mutable fields use either
-//! `RefCell` (config) with runtime borrow-checking, `Cell` (global flag)
-//! for `Copy` types, or `OnceCell` (event bus, user agent) for write-once.
-//! Callers must ensure `config_mut()` is not called while `config()` is
-//! held on the same thread.
+//! `Session` is `Sync + Send`: the config is guarded by a `RwLock`,
+//! the global flag is an `AtomicBool`, and write-once slots (event bus,
+//! user agent, output sink, infra capabilities) use `OnceLock` — so a
+//! `Session` can be shared across threads and tokio tasks. Callers must
+//! not call `config_mut()` while a `config()` guard is still held
+//! (it fails with `ConfigInUse`).
 
 use flume::{Receiver, Sender};
-use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -67,13 +68,13 @@ pub struct Session {
     /// [`Config`][1] for the session
     ///
     /// [1]: crate::config::Config
-    config: RefCell<Config>,
+    config: RwLock<Config>,
 
     /// Full duplex channel for event transmission back and forth
-    event_bus: OnceCell<EventBus>,
+    event_bus: OnceLock<EventBus>,
 
     /// User agent for the session
-    pub(crate) user_agent: OnceCell<String>,
+    pub(crate) user_agent: OnceLock<String>,
 
     /// Structured output sink injected by the frontend
     ///
@@ -81,19 +82,19 @@ pub struct Session {
     /// manually (see below).
     ///
     /// [1]: crate::output::OutputSink
-    output: OnceCell<OutputSink>,
+    output: OnceLock<OutputSink>,
 
     /// Whether operations should target the global Scoop root.
-    global: Cell<bool>,
+    global: AtomicBool,
 
     /// Injectable network capability, defaulting to the real implementation.
-    network: OnceCell<Arc<dyn Network + Send + Sync>>,
+    network: OnceLock<Arc<dyn Network + Send + Sync>>,
 
     /// Injectable git capability, defaulting to the real implementation.
-    git: OnceCell<Arc<dyn Git + Send + Sync>>,
+    git: OnceLock<Arc<dyn Git + Send + Sync>>,
 
     /// Injectable archive capability, defaulting to the real implementation.
-    archive: OnceCell<Arc<dyn Archive + Send + Sync>>,
+    archive: OnceLock<Arc<dyn Archive + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -142,30 +143,30 @@ impl Session {
             info!("config loaded from {}", config.path.display());
             apply_default_architecture(&config);
             let session = Session {
-                config: RefCell::new(config),
-                event_bus: OnceCell::new(),
-                user_agent: OnceCell::new(),
-                output: OnceCell::new(),
-                global: Cell::new(false),
-                network: OnceCell::new(),
-                git: OnceCell::new(),
-                archive: OnceCell::new(),
+                config: RwLock::new(config),
+                event_bus: OnceLock::new(),
+                user_agent: OnceLock::new(),
+                output: OnceLock::new(),
+                global: AtomicBool::new(false),
+                network: OnceLock::new(),
+                git: OnceLock::new(),
+                archive: OnceLock::new(),
             };
             let _ = session.event_bus();
             return session;
         }
 
         // Config loading failed, create a new default config and return.
-        let config = RefCell::new(crate::config::init_default());
+        let config = RwLock::new(crate::config::init_default());
         let session = Session {
             config,
-            event_bus: OnceCell::new(),
-            user_agent: OnceCell::new(),
-            output: OnceCell::new(),
-            global: Cell::new(false),
-            network: OnceCell::new(),
-            git: OnceCell::new(),
-            archive: OnceCell::new(),
+            event_bus: OnceLock::new(),
+            user_agent: OnceLock::new(),
+            output: OnceLock::new(),
+            global: AtomicBool::new(false),
+            network: OnceLock::new(),
+            git: OnceLock::new(),
+            archive: OnceLock::new(),
         };
         // Initialize event bus and emit fallback warning
         let _ = session.event_bus();
@@ -189,21 +190,21 @@ impl Session {
     where
         P: AsRef<Path>,
     {
-        let config = RefCell::new(ConfigBuilder::new().path(config_path).load()?);
+        let config = RwLock::new(ConfigBuilder::new().path(config_path).load()?);
 
         // Apply the `default_architecture` config as the process-wide
         // architecture override (Scoop's `Get-DefaultArchitecture` config path).
-        apply_default_architecture(&config.borrow());
+        apply_default_architecture(&config.read().unwrap_or_else(|e| e.into_inner()));
 
         Ok(Session {
             config,
-            event_bus: OnceCell::new(),
-            user_agent: OnceCell::new(),
-            output: OnceCell::new(),
-            global: Cell::new(false),
-            network: OnceCell::new(),
-            git: OnceCell::new(),
-            archive: OnceCell::new(),
+            event_bus: OnceLock::new(),
+            user_agent: OnceLock::new(),
+            output: OnceLock::new(),
+            global: AtomicBool::new(false),
+            network: OnceLock::new(),
+            git: OnceLock::new(),
+            archive: OnceLock::new(),
         })
     }
 
@@ -215,8 +216,8 @@ impl Session {
     /// will internally alter the config, before the reference is dropped.
     ///
     /// [1]: crate::config::list
-    pub fn config(&self) -> Ref<'_, Config> {
-        self.config.borrow()
+    pub fn config(&self) -> std::sync::RwLockReadGuard<'_, Config> {
+        self.config.read().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Check whether the current process has administrator privileges.
@@ -229,12 +230,12 @@ impl Session {
 
     /// Set whether operations should target the global Scoop root.
     pub fn set_global(&self, global: bool) {
-        self.global.set(global);
+        self.global.store(global, Ordering::Relaxed);
     }
 
     /// Check whether operations should target the global Scoop root.
     pub fn is_global(&self) -> bool {
-        self.global.get()
+        self.global.load(Ordering::Relaxed)
     }
 
     /// Get the effective root path based on the global flag.
@@ -259,7 +260,7 @@ impl Session {
     /// ```
     pub fn effective_root_path(&self) -> std::path::PathBuf {
         let config = self.config();
-        if self.global.get() {
+        if self.global.load(Ordering::Relaxed) {
             config.global_path().to_path_buf()
         } else {
             config.root_path().to_path_buf()
@@ -387,8 +388,8 @@ impl Session {
     /// This method is only directly accessible from within the crate itself.
     /// It maybe indirectly used by other public available APIs to (indirectly)
     /// mutate the config. See [`Session::config`] for more details.
-    pub(crate) fn config_mut(&self) -> Fallible<RefMut<'_, Config>> {
-        self.config.try_borrow_mut().map_err(|_| Error::ConfigInUse)
+    pub(crate) fn config_mut(&self) -> Fallible<std::sync::RwLockWriteGuard<'_, Config>> {
+        self.config.try_write().map_err(|_| Error::ConfigInUse)
     }
 
     /// Get the event bus for the session.
@@ -539,6 +540,16 @@ fn apply_default_architecture(config: &Config) {
 mod tests {
     use super::*;
     use crate::test_utils;
+
+    // Lock in that Session is shareable across threads/tokio tasks
+    // (the refactor that replaced RefCell/Cell/OnceCell with
+    // RwLock/AtomicBool/OnceLock).
+    fn assert_sync_send<T: Sync + Send>() {}
+
+    #[test]
+    fn session_is_sync_send() {
+        assert_sync_send::<Session>();
+    }
 
     #[test]
     fn current_dir_name_defaults_to_current() {

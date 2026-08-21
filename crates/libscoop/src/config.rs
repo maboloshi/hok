@@ -25,7 +25,7 @@
 //! # Thread safety
 //!
 //! `Config` is typically accessed via `Session::config()` which returns a
-//! `Ref<Config>`. For mutation, `Session::config_mut()` provides `RefMut`.
+//! read guard. For mutation, `Session::config_mut()` provides a write guard.
 //! Both enforce Rust's borrowing rules at runtime.
 
 use std::collections::HashMap;
