@@ -49,7 +49,7 @@
 | **压缩 — C++ 后端** | `unrar` | RARLab 官方库，RAR 无纯 Rust 替代 |
 | **压缩 — 外部进程** | 7z.exe（运行时降级） | 兜底 LZH / ISO 等罕见格式 |
 | **Windows 专用** | `junction`, `winreg`, `innospect`, `shortcuts-rs` | Win32 API 的 Rust 封装 |
-| **网络** | `ureq` | 比 `reqwest` 轻量，纯 Rust |
+| **网络（异步）** | `reqwest` (rustls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；GitHub / VirusTotal 同步 API 仍用 `ureq` |
 | **Git** | `git2` | libgit2 C 绑定（试过 `gix`，依赖树更大） |
 | **SQLite 缓存** | `rusqlite` (bundled) | 兼容 Scoop，无纯 Rust SQLite 替代 |
 | **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |
@@ -196,6 +196,16 @@ hok 内嵌了 **10KB** 的 `#![no_std]` 原生 exe shim，完全符合 [Scoop Sh
 | C# (上游) | 107.3 ms | +77 ms | 14 KB |
 
 hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig/C++ 处于同一量级。关键优化：`AttachConsole` 避免 GUI 子系统创建新控制台（节省约 400ms），`CreateJobObject` 确保子进程树清理。
+
+### 架构演进与本次重构的意义
+
+2026-08 起本分支进行了一次系统性重构（edition 2024 全量升级 + 架构演进）。目标：在保持行为等价的前提下，把「功能面领先」的 hok 进一步做到「工程面扎实」——通过领域纯化与单测离线化保障正确性、通过异步并发兑现性能、通过安全纪律与基准护栏防回归。
+
+- **Edition 2024 全量升级** —— workspace 全部 crate 迁移到 2024 edition；`unsafe extern` 在每一处 FFI 边界显式标注，`unsafe` 在安全 crate 全量 deny，仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块豁免（审计清单见 `docs/unsafe-audit.md`）。
+- **分层单向依赖** —— CLI（hok）→ 门面（libscoop）→ 领域服务 → 核心 `package/` 逻辑 → `internal/` 工具。领域类型（`Package` / `Manifest` / `Version` / `Config`）**纯化**：零 I/O、零 async、零框架依赖，可确定性单测。
+- **基础设施 trait 化** —— `Network` / `Git` / `Archive` 抽成 trait + 内存 fake，下载 / checkver / bucket / 解压整条流水线可离线单测，不依赖真实网络与磁盘。
+- **真异步网络** —— CLI 跑在 tokio runtime 上；`Network` trait 基于 **`reqwest`（rustls）** async 化，checkver 用 `buffer_unordered` 并发、分片下载并行、bucket 更新用 `tokio::spawn`；本地快操作（`list` / `search` / `status` / `which` / `config` / `cat`）保持同步。
+- **护栏** —— `unsafe_code = deny`、criterion 纯函数微基准、可复现的 hok-vs-Scoop 行为/性能基准（`scripts/benchmark_vs_scoop.ps1`）。
 
 ### 设计原则
 

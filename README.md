@@ -165,12 +165,35 @@ cargo bench   # guardrail micro-benchmarks over libscoop pure functions
 
 This fork maintains a strong focus on dependency hygiene. Notable improvements over upstream:
 
-- **Removed heavy dependencies**: `chrono → time` (via a `jiff` intermediate step), `curl-static → ureq`, `futures` runtime, `sysinfo`, `once_cell`, `remove_dir_all`
+- **Removed heavy dependencies**: `chrono → time` (via a `jiff` intermediate step), `curl-static → ureq → reqwest` (the async refactor), `futures` runtime, `sysinfo`, `once_cell`, `remove_dir_all`
 - **Eliminated duplicate crate versions**: `unarc-rs` replaced (removed `sevenz-rust2 v0.20` + `zip v8` duplicates), `thiserror v1+v2` unified, `md-5/sha1/sha2 v0.10+v0.11` unified
 - **Code deduplication**: Macroized repetitive accessor patterns (×16), extracted shared helpers (×5), consolidated 4 benchmark files into 1
 - **Zero external C build dependencies for decompression**: All archive formats (7z, zip, tar, gz, bz2, xz, zst) handled by pure Rust crates; RAR via `unrar` (C++ unrar library); LZH/ISO via 7z.exe fallback
 - **`unsafe_code = deny` guardrail**: `unsafe` is denied crate-wide across the safe crates; the only exceptions are the `no_std` Win32 shim (`hok-shim`) and the small FFI modules (`libscoop::internal::os`, `libscoop::permission`). Every `unsafe` is audited and classified in the (working-tree) `docs/unsafe-audit.md`.
 - **criterion guardrail benchmarks**: `cargo bench` runs micro-benchmarks over the key pure functions (`compare_versions`, glob, hashing, manifest parsing, URL helpers) to catch refactor regressions.
+
+## Architecture
+
+This fork has been through a systematic refactor (edition 2024 + architecture
+evolution), and these are the design points behind it:
+
+- **Edition 2024 workspace** — every crate is on edition 2024; `unsafe extern`
+  is now explicit at each FFI boundary, and `unsafe` is denied crate-wide except
+  for the `no_std` shim (`hok-shim`) and the small Win32 FFI modules.
+- **Layered, one-way dependencies** — CLI (`hok`) → facade (`libscoop`) →
+  domain services → core `package/` logic → `internal/` utilities. The domain
+  types (`Package` / `Manifest` / `Version` / `Config`) are **pure**: zero I/O,
+  zero async, zero framework deps, so they are deterministic to unit-test.
+- **Infra as traits** — `Network`, `Git` and `Archive` are abstracted behind
+  traits with in-memory fakes, so the download / checkver / bucket / extract
+  pipeline is unit-testable offline without touching real network or disk.
+- **Truly async operations** — the CLI runs on a tokio runtime; the `Network`
+  trait is async over **`reqwest`** (rustls), so checkver fans out with
+  `buffer_unordered`, fragmented downloads run their parts in parallel, and
+  bucket updates use `tokio::spawn`. Local fast operations (`list`, `search`,
+  `status`, `which`, `config`, `cat`) stay synchronous.
+- **Guardrails** — `unsafe_code = deny`, criterion micro-benchmarks over the
+  pure functions, and a reproducible hok-vs-Scoop behavior/perf benchmark.
 
 ## Performance
 
