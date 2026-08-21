@@ -102,3 +102,21 @@ pub mod os {
 pub mod string {
     pub use crate::internal::string::{glob_to_regex, matches_any_glob};
 }
+
+/// Public URL helpers (thin facade over [`internal::url`]).
+///
+/// Pure string functions for extracting filenames, decoding percent-encoding,
+/// and detecting GitHub / SourceForge URLs.
+pub mod url {
+    pub use crate::internal::url::{
+        basename, decoded, github_owner_repo, remote_filename, strip_url_query, url_filename,
+        url_remote_filename,
+    };
+}
+
+/// Public hash helpers (thin facade over [`internal::hash`]).
+///
+/// MD5 / SHA1 / SHA256 / SHA512 computation via [`ChecksumBuilder`] / [`Checksum`].
+pub mod hash {
+    pub use crate::internal::hash::{format_hash_value, Checksum, ChecksumBuilder};
+}

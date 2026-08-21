@@ -92,3 +92,12 @@ unsafe_code = "deny"
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
+
+[dev-dependencies]
+# Guardrail benchmarks for the key pure functions (phase 5). Dev-only — never
+# affects release builds. `cargo bench` runs them.
+criterion = "0.5"
+
+[[bench]]
+name = "pure_functions"
+harness = false
