@@ -225,6 +225,51 @@ pub fn head_commit_time<P: AsRef<Path>>(path: P) -> Option<i64> {
     Some(commit.time().seconds())
 }
 
+// ---------------------------------------------------------------------------
+// Infra trait (git capability)
+// ---------------------------------------------------------------------------
+
+/// The git capability of a session (clone/pull/inspect a bucket repo).
+///
+/// The default implementation ([`RealGit`]) wraps the free functions above
+/// verbatim; tests inject an in-memory fake via [`Session::set_git`] to avoid
+/// touching real repositories. Lives in the tool layer (no domain-service
+/// dependency).
+pub trait Git {
+    /// Clone a remote repository into `path`.
+    fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()>;
+
+    /// Update a bucket repo with `git pull` semantics.
+    fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()>;
+
+    /// Get the URL of a remote in a repository.
+    fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>>;
+
+    /// Get the HEAD commit author time (Unix seconds) of a repository.
+    fn head_commit_time(&self, path: &Path) -> Option<i64>;
+}
+
+/// Default git implementation wrapping the free functions above.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealGit;
+
+impl Git for RealGit {
+    fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()> {
+        clone_repo(remote_url, path, proxy)
+    }
+
+    fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()> {
+        pull(path, proxy)
+    }
+
+    fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>> {
+        remote_url_of(repo_path, remote)
+    }
+
+    fn head_commit_time(&self, path: &Path) -> Option<i64> {
+        head_commit_time(path)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

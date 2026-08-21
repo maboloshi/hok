@@ -79,6 +79,11 @@ pub enum Error {
     #[error("Output sink already set")]
     OutputAlreadySet,
 
+    /// Thrown when trying to inject an infra implementation (network / git /
+    /// archive) into a session more than once.
+    #[error("Infra implementation already set")]
+    InfraAlreadySet,
+
     /// Hash mismatch error
     #[error("{0}")]
     HashMismatch(HashMismatchContext),
@@ -190,6 +195,7 @@ impl Error {
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
             Error::UserAgentAlreadySet => "error.user_agent_already_set",
             Error::OutputAlreadySet => "error.output_already_set",
+            Error::InfraAlreadySet => "error.infra_already_set",
             Error::HashMismatch(_) => "error.hash_mismatch",
             Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
             Error::InvalidAnswer => "error.invalid_answer",
@@ -302,6 +308,10 @@ mod tests {
         assert_eq!(
             Error::OutputAlreadySet.error_key(),
             "error.output_already_set"
+        );
+        assert_eq!(
+            Error::InfraAlreadySet.error_key(),
+            "error.infra_already_set"
         );
     }
 }

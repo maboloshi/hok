@@ -44,12 +44,16 @@
 use flume::{Receiver, Sender};
 use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::{
     config::{possible_config_paths, Config, ConfigBuilder},
     error::{Error, Fallible},
     event::{Event, EventBus},
+    internal::archive::{Archive, RealArchive},
+    internal::git::{Git, RealGit},
+    internal::network::{Network, RealNetwork},
     output::{OutputHandle, OutputSink},
 };
 
@@ -81,6 +85,15 @@ pub struct Session {
 
     /// Whether operations should target the global Scoop root.
     global: Cell<bool>,
+
+    /// Injectable network capability, defaulting to the real implementation.
+    network: OnceCell<Arc<dyn Network + Send + Sync>>,
+
+    /// Injectable git capability, defaulting to the real implementation.
+    git: OnceCell<Arc<dyn Git + Send + Sync>>,
+
+    /// Injectable archive capability, defaulting to the real implementation.
+    archive: OnceCell<Arc<dyn Archive + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -91,6 +104,9 @@ impl std::fmt::Debug for Session {
             .field("user_agent", &self.user_agent)
             .field("output", &"<sink>")
             .field("global", &self.global)
+            .field("network", &"<infra>")
+            .field("git", &"<infra>")
+            .field("archive", &"<infra>")
             .finish()
     }
 }
@@ -131,6 +147,9 @@ impl Session {
                 user_agent: OnceCell::new(),
                 output: OnceCell::new(),
                 global: Cell::new(false),
+                network: OnceCell::new(),
+                git: OnceCell::new(),
+                archive: OnceCell::new(),
             };
             let _ = session.event_bus();
             return session;
@@ -144,6 +163,9 @@ impl Session {
             user_agent: OnceCell::new(),
             output: OnceCell::new(),
             global: Cell::new(false),
+            network: OnceCell::new(),
+            git: OnceCell::new(),
+            archive: OnceCell::new(),
         };
         // Initialize event bus and emit fallback warning
         let _ = session.event_bus();
@@ -179,6 +201,9 @@ impl Session {
             user_agent: OnceCell::new(),
             output: OnceCell::new(),
             global: Cell::new(false),
+            network: OnceCell::new(),
+            git: OnceCell::new(),
+            archive: OnceCell::new(),
         })
     }
 
@@ -435,6 +460,55 @@ impl Session {
     /// [1]: crate::output::Output
     pub fn output(&self) -> OutputHandle<'_> {
         OutputHandle::new(self.output.get())
+    }
+
+    /// Get the session's network capability.
+    ///
+    /// Defaults to the real HTTP implementation; tests inject an in-memory
+    /// fake via [`Session::set_network`] to avoid touching the network.
+    /// Returns a cloneable [`Arc`] so worker threads can share it (a session
+    /// itself is `!Sync`).
+    pub fn network(&self) -> Arc<dyn Network + Send + Sync> {
+        self.network.get_or_init(|| Arc::new(RealNetwork)).clone()
+    }
+
+    /// Inject a custom network implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
+    pub fn set_network(&self, net: Box<dyn Network + Send + Sync>) -> Fallible<()> {
+        self.network.set(Arc::from(net)).map_err(|_| Error::InfraAlreadySet)
+    }
+
+    /// Get the session's git capability (default: real `git2`-based).
+    pub fn git(&self) -> Arc<dyn Git + Send + Sync> {
+        self.git.get_or_init(|| Arc::new(RealGit)).clone()
+    }
+
+    /// Inject a custom git implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
+    pub fn set_git(&self, git: Box<dyn Git + Send + Sync>) -> Fallible<()> {
+        self.git.set(Arc::from(git)).map_err(|_| Error::InfraAlreadySet)
+    }
+
+    /// Get the session's archive capability (default: real extractors).
+    pub fn archive(&self) -> Arc<dyn Archive + Send + Sync> {
+        self.archive.get_or_init(|| Arc::new(RealArchive)).clone()
+    }
+
+    /// Inject a custom archive implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InfraAlreadySet`] if one has already been injected.
+    pub fn set_archive(&self, archive: Box<dyn Archive + Send + Sync>) -> Fallible<()> {
+        self.archive
+            .set(Arc::from(archive))
+            .map_err(|_| Error::InfraAlreadySet)
     }
 
     /// Apply a CLI `-a/--arch` value as the process-wide architecture

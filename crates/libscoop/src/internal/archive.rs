@@ -1203,6 +1203,61 @@ fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Infra trait (archive capability)
+// ---------------------------------------------------------------------------
+
+/// The archive-extraction capability of a session.
+///
+/// The default implementation ([`RealArchive`]) wraps the free functions
+/// above verbatim; tests inject an in-memory fake via [`Session::set_archive`]
+/// to avoid touching real archive files. Lives in the tool layer. The
+/// progress callback (`emitter`) semantics are preserved exactly.
+pub trait Archive {
+    /// Detect the archive format from a filename extension.
+    fn detect_format(&self, filename: &str) -> Option<&'static str>;
+
+    /// Extract an archive file to a destination directory.
+    fn extract(
+        &self,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        extract_to: Option<&[&str]>,
+        innosetup: bool,
+        emitter: &Option<Sender<Event>>,
+    ) -> Fallible<()>;
+}
+
+/// Default archive implementation wrapping the free functions above.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealArchive;
+
+impl Archive for RealArchive {
+    fn detect_format(&self, filename: &str) -> Option<&'static str> {
+        detect_format(filename)
+    }
+
+    fn extract(
+        &self,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        extract_to: Option<&[&str]>,
+        innosetup: bool,
+        emitter: &Option<Sender<Event>>,
+    ) -> Fallible<()> {
+        extract(
+            cache_path,
+            dest_dir,
+            extract_dir,
+            extract_to,
+            innosetup,
+            emitter,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
