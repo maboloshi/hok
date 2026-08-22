@@ -79,8 +79,8 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
                 .filter_map(|de| {
                     if let Ok(entry) = de {
                         let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-                        if is_file {
-                            if let Ok(item) = CacheFile::from(entry.path()) {
+                        if is_file
+                            && let Ok(item) = CacheFile::from(entry.path()) {
                                 if !is_wildcard_query {
                                     let matched = item
                                         .package_name()
@@ -95,7 +95,6 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
 
                                 return Some(item);
                             }
-                        }
                     }
                     None
                 })
@@ -149,15 +148,14 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
         query => {
             let files = list(session, query)?;
             for f in files.into_iter() {
-                if let Err(e) = std::fs::remove_file(f.path()) {
-                    if e.kind() != std::io::ErrorKind::NotFound {
+                if let Err(e) = std::fs::remove_file(f.path())
+                    && e.kind() != std::io::ErrorKind::NotFound {
                         session.output().error(format!(
                             "failed to remove cache '{}': {}",
                             f.path().display(),
                             e
                         ));
                     }
-                }
             }
             Ok(())
         }

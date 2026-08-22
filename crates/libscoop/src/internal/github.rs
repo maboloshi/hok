@@ -272,18 +272,18 @@ pub async fn graphql_commit_push(
         ))
     })?;
 
-    if let Some(errors) = value["errors"].as_array() {
-        if !errors.is_empty() {
-            let msgs: Vec<String> = errors
-                .iter()
-                .filter_map(|e| e["message"].as_str())
-                .map(|s| s.to_string())
-                .collect();
-            return Err(crate::Error::Custom(format!(
-                "GraphQL error(s): {}",
-                msgs.join("; ")
-            )));
-        }
+    if let Some(errors) = value["errors"].as_array()
+        && !errors.is_empty()
+    {
+        let msgs: Vec<String> = errors
+            .iter()
+            .filter_map(|e| e["message"].as_str())
+            .map(|s| s.to_string())
+            .collect();
+        return Err(crate::Error::Custom(format!(
+            "GraphQL error(s): {}",
+            msgs.join("; ")
+        )));
     }
 
     let commit_url = value["data"]["createCommitOnBranch"]["commit"]["url"]

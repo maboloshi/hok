@@ -43,14 +43,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let mut input = String::new();
             std::io::stdin().read_line(&mut input).unwrap();
             let parsed = input.trim().parse::<usize>();
-            if let Ok(num) = parsed {
-                if num < result.len() {
+            if let Ok(num) = parsed
+                && num < result.len() {
                     let package = &result[num];
                     let url = package.homepage();
                     libscoop::os::open_url(url)?;
                     return Ok(());
                 }
-            }
             output::err(rust_i18n::t!("cmd.home_invalid"));
         }
     }

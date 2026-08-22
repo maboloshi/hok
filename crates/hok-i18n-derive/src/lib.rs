@@ -15,8 +15,8 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
 
     // ── Extract global arg names from Cli struct ──────────────────────────
     let mut global_args: Vec<String> = vec![];
-    if let Data::Struct(ref ds) = input.data {
-        if let Fields::Named(ref nf) = ds.fields {
+    if let Data::Struct(ref ds) = input.data
+        && let Fields::Named(ref nf) = ds.fields {
             for field in &nf.named {
                 let name = match &field.ident {
                     Some(i) => i.to_string(),
@@ -28,7 +28,6 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
                 global_args.push(name);
             }
         }
-    }
     // Always-patched auto-generated / flattened args
     for extra in &["verbose", "quiet"] {
         if !global_args.contains(&extra.to_string()) {

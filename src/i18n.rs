@@ -87,25 +87,21 @@ pub fn detect_language_choice_from_args() -> LanguageChoice {
         }
         match arg.as_str() {
             "--lang" | "-L" => {
-                if let Some(value) = args.next() {
-                    if let Some(choice) = parse_choice(&value) {
+                if let Some(value) = args.next()
+                    && let Some(choice) = parse_choice(&value) {
                         return choice;
                     }
-                }
             }
             _ => {
-                if let Some(value) = arg.strip_prefix("--lang=") {
-                    if let Some(choice) = parse_choice(value) {
+                if let Some(value) = arg.strip_prefix("--lang=")
+                    && let Some(choice) = parse_choice(value) {
                         return choice;
                     }
-                }
-                if let Some(val) = arg.strip_prefix("-L") {
-                    if !val.is_empty() {
-                        if let Some(choice) = parse_choice(val) {
+                if let Some(val) = arg.strip_prefix("-L")
+                    && !val.is_empty()
+                        && let Some(choice) = parse_choice(val) {
                             return choice;
                         }
-                    }
-                }
             }
         }
     }

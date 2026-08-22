@@ -1073,14 +1073,13 @@ impl Manifest {
                 ("32bit", &arch.ia32),
                 ("arm64", &arch.aarch64),
             ] {
-                if let Some(spec) = spec_opt {
-                    if let Some(ref h) = spec.hash {
+                if let Some(spec) = spec_opt
+                    && let Some(ref h) = spec.hash {
                         let count = h.devectorize().len();
                         if count > 0 {
                             segments.push((format!("/architecture/{arch_name}/hash"), count));
                         }
                     }
-                }
             }
         }
         segments

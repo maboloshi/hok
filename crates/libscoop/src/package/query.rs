@@ -87,8 +87,8 @@ pub fn query_installed(
                             return None;
                         }
 
-                        if let Ok(manifest) = parse_file(manifest_path) {
-                            if let Ok(install_info) = parse_install_info(&install_info_path) {
+                        if let Ok(manifest) = parse_file(manifest_path)
+                            && let Ok(install_info) = parse_install_info(&install_info_path) {
                                 // Noted that packages installed via URLs don't have
                                 // bucket info in install info file. We mark them as
                                 // isolated packages and use `ISOLATED_PACKAGE_BUCKET`
@@ -135,7 +135,6 @@ pub fn query_installed(
 
                                 return Some(package);
                             }
-                        }
                     }
                     None
                 })
@@ -153,12 +152,11 @@ pub(crate) fn query_synced(
     options: &[QueryOption],
 ) -> Fallible<Vec<Package>> {
     // Fast path: use SQLite cache when enabled
-    if session.config().use_sqlite_cache() {
-        if let Ok(packages) = query_synced_cached(session, queries, options) {
+    if session.config().use_sqlite_cache()
+        && let Ok(packages) = query_synced_cached(session, queries, options) {
             return Ok(packages);
         }
         // Fall through to file-based on cache error
-    }
 
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();

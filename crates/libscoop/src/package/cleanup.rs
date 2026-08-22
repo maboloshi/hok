@@ -30,11 +30,10 @@ pub fn cleanup(
         let mut all = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&apps_dir) {
             for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    if let Some(name) = entry.file_name().to_str() {
+                if entry.file_type().is_ok_and(|t| t.is_dir())
+                    && let Some(name) = entry.file_name().to_str() {
                         all.push(name.to_owned());
                     }
-                }
             }
         }
         all

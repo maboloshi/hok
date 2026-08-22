@@ -119,11 +119,10 @@ pub fn run_event_loop(
                             Ok(0) | Err(_) => break 0,
                             Ok(_) => {}
                         }
-                        if let Ok(num) = input.trim().parse::<usize>() {
-                            if num < pkgs.len() {
+                        if let Ok(num) = input.trim().parse::<usize>()
+                            && num < pkgs.len() {
                                 break num;
                             }
-                        }
                     };
                     let _ = std::io::stdout().execute(cursor::Hide);
                     let _ = tx.send(Event::PromptPackageCandidateResult(index));

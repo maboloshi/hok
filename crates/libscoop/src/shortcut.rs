@@ -108,13 +108,12 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 let conflicts_other = owner
                     .as_deref()
                     .is_some_and(|o| !o.eq_ignore_ascii_case(package.name()));
-                if conflicts_other {
-                    if let Some(tx) = session.emitter() {
+                if conflicts_other
+                    && let Some(tx) = session.emitter() {
                         let _ = tx.send(Event::PackageShortcutConflict(
                             link_path.to_string_lossy().into_owned(),
                         ));
                     }
-                }
             }
 
             create_shortcut(&target_str, &link_path, args, icon)?;

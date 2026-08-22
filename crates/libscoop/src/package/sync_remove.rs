@@ -301,11 +301,10 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
 
     // Remove the app dir only when it is empty (Scoop: `if (!(Get-ChildItem
     // $appDir)) { Remove-Item $appdir }`).
-    if let Ok(mut entries) = std::fs::read_dir(&app_dir) {
-        if entries.next().is_none() {
+    if let Ok(mut entries) = std::fs::read_dir(&app_dir)
+        && entries.next().is_none() {
             internal::fs::remove_dir(&app_dir)?;
         }
-    }
 
     if purge {
         persist::purge(session, package.name())?;

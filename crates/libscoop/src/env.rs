@@ -302,17 +302,15 @@ pub fn ensure_install_dir_not_in_path(
         internal::env::set("PATH", Some(&updated), scope)?;
     }
 
-    if !session.is_global() {
-        if let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global) {
-            if let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p)) {
+    if !session.is_global()
+        && let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global)
+            && let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p)) {
                 session.output().warn(format!(
                     "Installer added '{}' to system path. You might want to remove this manually \
                      (requires admin permission).",
                     p.display()
                 ));
             }
-        }
-    }
 
     Ok(())
 }

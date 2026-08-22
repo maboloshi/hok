@@ -52,11 +52,10 @@ pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
     if let Ok(manifest) = parse_file(pkg_dir.join("current").join("manifest.json")) {
         let version = manifest.version().to_owned();
         if version == "nightly" {
-            if let Ok(target) = std::fs::read_link(pkg_dir.join("current")) {
-                if let Some(name) = target.file_name().and_then(|s| s.to_str()) {
+            if let Ok(target) = std::fs::read_link(pkg_dir.join("current"))
+                && let Some(name) = target.file_name().and_then(|s| s.to_str()) {
                     return Some(name.to_owned());
                 }
-            }
         } else {
             return Some(version);
         }

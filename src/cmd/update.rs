@@ -109,14 +109,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 /// Update all buckets with simple inline status.
 async fn update_buckets(session: &Session, force: bool) -> Result<()> {
     // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
-    if !force {
-        if let Some(remaining) = session.config().update_cooldown_remaining() {
+    if !force
+        && let Some(remaining) = session.config().update_cooldown_remaining() {
             output::status(format!(
                 "Buckets recently updated. Next update allowed in ~{remaining}s. Use --force to update now."
             ));
             return Ok(());
         }
-    }
 
     let rx = session.event_bus().receiver();
 

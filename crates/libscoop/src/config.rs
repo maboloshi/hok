@@ -103,8 +103,8 @@ impl ConfigBuilder {
         // First run: migrate the supported keys from Scoop's read-only file
         // into a new hok config file, then use only that from now on.
         // Unsupported Scoop keys are dropped by deserialization.
-        if let Some(scoop_path) = &self.scoop_path {
-            if let Ok(value) = read_json_file(scoop_path) {
+        if let Some(scoop_path) = &self.scoop_path
+            && let Ok(value) = read_json_file(scoop_path) {
                 let inner: ConfigInner = serde_json::from_value(value)?;
                 internal::fs::write_json(&self.path, &inner)?;
                 return Ok(Config {
@@ -112,7 +112,6 @@ impl ConfigBuilder {
                     inner,
                 });
             }
-        }
 
         // Neither file exists: report the missing hok config file.
         Err(std::io::Error::new(
@@ -784,8 +783,8 @@ pub(crate) fn write(config: &Config) -> Fallible<()> {
 pub(crate) fn possible_config_paths() -> Vec<PathBuf> {
     let mut ret = vec![];
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Ok(metadata) = std::fs::symlink_metadata(&exe_path) {
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Ok(metadata) = std::fs::symlink_metadata(&exe_path) {
             let is_symlink = metadata.is_symlink();
             let mut path = exe_path.clone();
 
@@ -828,7 +827,6 @@ pub(crate) fn possible_config_paths() -> Vec<PathBuf> {
                 }
             }
         }
-    }
 
     // 3) config.json located in the XDG_CONFIG_HOME directory, i.e.,
     // `~/.config/scoop/config.json`

@@ -258,8 +258,8 @@ fn extract_pseudo_7z(
             // PE-prefixed 7z SFX: search for embedded 7z data. The magic
             // search is bounded to PE files (a 7z SFX stub is always MZ);
             // the zip probe below has no such constraint.
-            if file_data.starts_with(b"MZ") {
-                if let Some(pos) = file_data
+            if file_data.starts_with(b"MZ")
+                && let Some(pos) = file_data
                     .windows(MAGIC_7Z.len())
                     .position(|w| w == MAGIC_7Z)
                 {
@@ -278,14 +278,12 @@ fn extract_pseudo_7z(
                         );
                     }
                 }
-            }
             // ZIP SFX / plain-zip-misnamed-.7z: locate the EOCD, slice from
             // the zip start, extract with the zip crate.
-            if let Some(zip_start) = find_embedded_zip_start(&file_data) {
-                if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
+            if let Some(zip_start) = find_embedded_zip_start(&file_data)
+                && extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
                     return Ok(());
                 }
-            }
         }
         InstallerKind::Nsis if extract_nsis(src, dest, filter, emitter).is_ok() => {
             return Ok(());
@@ -383,11 +381,10 @@ fn extract_7z_entries_mt(
                             return Ok(true);
                         }
                         let name = entry.name();
-                        if let Some(f) = filter.as_deref() {
-                            if !f.iter().any(|d| name.starts_with(d)) {
+                        if let Some(f) = filter.as_deref()
+                            && !f.iter().any(|d| name.starts_with(d)) {
                                 return Ok(true);
                             }
-                        }
                         let n = file_idx.fetch_add(1, Ordering::Relaxed);
                         emit_extract_progress(&emitter, n, Some(total));
                         let target = strip_dir(name, filter_ref.as_deref())
@@ -600,11 +597,10 @@ fn extract_zip_mt(
                     if name.ends_with('/') {
                         continue;
                     }
-                    if let Some(f) = filter_ref.as_deref() {
-                        if !f.iter().any(|d| name.starts_with(d)) {
+                    if let Some(f) = filter_ref.as_deref()
+                        && !f.iter().any(|d| name.starts_with(d)) {
                             continue;
                         }
-                    }
                     let n = done.fetch_add(1, Ordering::Relaxed);
                     emit_extract_progress(&emitter, n, Some(total));
                     let target = strip_dir(&name, filter_ref.as_deref()).unwrap_or(name);
@@ -619,14 +615,12 @@ fn extract_zip_mt(
                         break;
                     }
                     let target_path = dest.join(&target);
-                    if let Some(parent) = target_path.parent() {
-                        if made_dirs.insert(parent.to_path_buf()) {
-                            if let Err(e) = crate::internal::fs::ensure_dir(parent) {
+                    if let Some(parent) = target_path.parent()
+                        && made_dirs.insert(parent.to_path_buf())
+                            && let Err(e) = crate::internal::fs::ensure_dir(parent) {
                                 errors.lock().unwrap().push(e.to_string());
                                 break;
                             }
-                        }
-                    }
                     let mut data = Vec::new();
                     if let Err(e) = entry.read_to_end(&mut data) {
                         errors
@@ -798,11 +792,10 @@ fn extract_tar(
         for (i, entry) in entries.enumerate() {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
-            if let Some(f) = filter {
-                if !f.iter().any(|d| path.starts_with(d)) {
+            if let Some(f) = filter
+                && !f.iter().any(|d| path.starts_with(d)) {
                     continue;
                 }
-            }
             emit_extract_progress(emitter, i, None);
             let target = strip_dir(&path, filter).unwrap_or(path);
             if Path::new(&target)
@@ -853,14 +846,13 @@ fn extract_rar(
         };
 
         let name = entry.entry().filename.to_string_lossy().to_string();
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
+        if let Some(f) = filter
+            && !f.iter().any(|d| name.starts_with(d)) {
                 archive = entry
                     .skip()
                     .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
                 continue;
             }
-        }
         emit_extract_progress(emitter, file_idx, None);
         file_idx += 1;
 
@@ -943,11 +935,9 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
                 .split('%')
                 .next()
                 .and_then(|s| s.parse::<u8>().ok())
-            {
-                if let Some(tx) = emitter {
+                && let Some(tx) = emitter {
                     let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
                 }
-            }
         }
     }
 
@@ -993,11 +983,10 @@ fn extract_innosetup(
         if name.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
+        if let Some(f) = filter
+            && !f.iter().any(|d| name.starts_with(d)) {
                 continue;
             }
-        }
         emit_extract_progress(emitter, i, None);
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
         if Path::new(&target)
@@ -1060,11 +1049,10 @@ fn extract_nsis(
         if rel.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| rel.starts_with(d)) {
+        if let Some(f) = filter
+            && !f.iter().any(|d| rel.starts_with(d)) {
                 continue;
             }
-        }
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
@@ -1101,11 +1089,10 @@ fn extract_nsis(
         if rel.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| rel.starts_with(d)) {
+        if let Some(f) = filter
+            && !f.iter().any(|d| rel.starts_with(d)) {
                 continue;
             }
-        }
         emit_extract_progress(emitter, i, None);
         let rel_slashes = rel.replace('\\', "/");
         let target = strip_dir(&rel_slashes, filter).unwrap_or(rel_slashes);

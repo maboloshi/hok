@@ -31,13 +31,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         let pkgs = package::query::query(session, queries, options, true)?;
 
         for pkg in &pkgs {
-            if let Some(shims) = pkg.shims() {
-                if shims.iter().any(|s| s == &command) {
+            if let Some(shims) = pkg.shims()
+                && shims.iter().any(|s| s == &command) {
                     let path = session.current_dir(pkg.name());
                     println!("{}", path.display());
                     found = true;
                 }
-            }
         }
     }
 

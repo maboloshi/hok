@@ -449,10 +449,10 @@ fn detect_changes(before: &HashMap<PathBuf, Vec<u8>>) -> Vec<PathBuf> {
 /// Resolve the repository NWO (`owner/name`) from the `GITHUB_REPOSITORY`
 /// environment variable (set by GitHub Actions) or from the git remote URL.
 fn resolve_repo_nwo() -> Result<String> {
-    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY") {
-        if !repo.is_empty() {
-            return Ok(repo);
-        }
+    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
+        && !repo.is_empty()
+    {
+        return Ok(repo);
     }
 
     let output = std::process::Command::new("git")
@@ -485,10 +485,10 @@ fn resolve_repo_nwo() -> Result<String> {
 /// Make `path` relative to the current working directory, returning the
 /// original path unchanged if stripping the prefix fails.
 fn repo_relative_path(path: &Path) -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(relative) = path.strip_prefix(&cwd) {
-            return relative.to_path_buf();
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(relative) = path.strip_prefix(&cwd)
+    {
+        return relative.to_path_buf();
     }
     path.to_path_buf()
 }

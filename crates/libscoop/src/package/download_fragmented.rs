@@ -138,12 +138,11 @@ fn merge_adjacent_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     ranges.sort();
     let mut merged: Vec<(u64, u64)> = Vec::new();
     for (s, e) in ranges {
-        if let Some(last) = merged.last_mut() {
-            if s <= last.1 + 1 {
+        if let Some(last) = merged.last_mut()
+            && s <= last.1 + 1 {
                 last.1 = last.1.max(e);
                 continue;
             }
-        }
         merged.push((s, e));
     }
     merged
@@ -420,8 +419,8 @@ pub(crate) mod test_server {
                         // overlaps `fail_range` answers `fail_status` for the
                         // first `attempts` such requests — used to exercise
                         // the serial fallback in `download_fragmented`.
-                        if let Some((fs, fe, attempts)) = fail_range {
-                            if s <= fe && fs <= e {
+                        if let Some((fs, fe, attempts)) = fail_range
+                            && s <= fe && fs <= e {
                                 let n = fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
                                 if n <= attempts {
                                     responses_h.lock().unwrap().push(fail_status);
@@ -433,7 +432,6 @@ pub(crate) mod test_server {
                                     continue;
                                 }
                             }
-                        }
 
                         // Simulate a server that reports a 206 but delivers
                         // only half the requested bytes (truncated body): the
