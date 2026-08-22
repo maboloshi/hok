@@ -28,12 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.120", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1.41"
-# ureq: default-features off so its gzip feature (flate2 with default
-# backend) does not pull miniz_oxide into the tree — without gzip, ureq
-# simply never sends `Accept-Encoding: gzip`, so servers return plain
-# responses. rustls (TLS) and json (API payloads) are kept.
-ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
-# Async HTTP client (phase 4): replaces ureq for the async `Network` impl.
+# Async HTTP client (phase 4): async `Network` impl + GitHub / VirusTotal APIs.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
 jsonpath-rust = "1.0"
 json5 = "0.4"

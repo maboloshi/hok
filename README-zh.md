@@ -49,7 +49,7 @@
 | **压缩 — C++ 后端** | `unrar` | RARLab 官方库，RAR 无纯 Rust 替代 |
 | **压缩 — 外部进程** | 7z.exe（运行时降级） | 兜底 LZH / ISO 等罕见格式 |
 | **Windows 专用** | `junction`, `winreg`, `innospect`, `shortcuts-rs` | Win32 API 的 Rust 封装 |
-| **网络（异步）** | `reqwest` (rustls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；GitHub / VirusTotal 同步 API 仍用 `ureq` |
+| **网络（异步）** | `reqwest` (rustls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；GitHub / VirusTotal API 也统一走 reqwest |
 | **Git** | `git2` | libgit2 C 绑定（试过 `gix`，依赖树更大） |
 | **SQLite 缓存** | `rusqlite` (bundled) | 兼容 Scoop，无纯 Rust SQLite 替代 |
 | **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |

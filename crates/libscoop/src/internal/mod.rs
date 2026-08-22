@@ -9,7 +9,7 @@
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
 //! - [`hash`] — Hash utilities (MD5/SHA1/SHA256/SHA512) via RustCrypto
-//! - [`network`] — HTTP networking via `ureq`
+//! - [`network`] — HTTP networking via `reqwest` (async)
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
 //! - [`pe`] — PE executable introspection (subsystem detection)

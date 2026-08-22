@@ -17,12 +17,13 @@
 //!
 //! # Notes
 //!
-//! - All requests have a 30-second timeout (60 seconds for GraphQL).
+//! - All requests are async (via `reqwest`) and have a 30-second timeout (60 seconds for GraphQL).
 //! - On HTTP 4xx/5xx responses, an error message with the status code is returned as [`crate::Error`].
 //! - Tokens are never logged (shown as `******` in logs).
 
 use crate::error::Fallible as Result;
 use base64::Engine as _;
+use reqwest::Method;
 
 // ---------------------------------------------------------------------------
 // REST helpers
@@ -37,46 +38,42 @@ use base64::Engine as _;
 ///
 /// Returns the parsed JSON response on success, or an error with the
 /// HTTP status and GitHub error message on failure.
-pub fn github_api_request(
+pub async fn github_api_request(
     query: &str,
     method: &str,
     body: Option<serde_json::Value>,
     token: &str,
 ) -> Result<serde_json::Value> {
     let url = format!("https://api.github.com/{}", query);
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
         .build()
-        .new_agent();
+        .map_err(|e| crate::Error::Custom(format!("GitHub client error: {}", e)))?;
 
-    let resp = if method == "GET" {
-        let req = agent
-            .get(&url)
-            .header("Authorization", &format!("Bearer {}", token))
-            .header("User-Agent", "hok")
-            .header("Accept", "application/vnd.github.v3+json");
-        req.call()
-    } else {
-        let req = agent
-            .post(&url)
-            .header("Authorization", &format!("Bearer {}", token))
-            .header("User-Agent", "hok")
-            .header("Accept", "application/vnd.github.v3+json");
-        // POST always sends a body; use empty object if none provided.
-        req.send_json(body.unwrap_or(serde_json::json!({})))
-    };
+    let http_method = Method::from_bytes(method.as_bytes())
+        .map_err(|e| crate::Error::Custom(format!("Invalid method {}: {}", method, e)))?;
 
-    let resp = match resp {
-        Ok(r) => r,
-        Err(e) => {
-            return Err(crate::Error::Custom(format!("GitHub API error: {}", e)));
-        }
-    };
+    let mut req = client
+        .request(http_method, &url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("User-Agent", "hok")
+        .header("Accept", "application/vnd.github.v3+json");
+
+    // POST always sends a body; use empty object if none provided.
+    if method == "POST" {
+        let payload = body.unwrap_or(serde_json::json!({}));
+        req = req.json(&payload);
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| crate::Error::Custom(format!("GitHub API error: {}", e)))?;
 
     let status = resp.status().as_u16();
     let body_str = resp
-        .into_body()
-        .read_to_string()
+        .text()
+        .await
         .map_err(|e| crate::Error::Custom(format!("Failed to read response body: {}", e)))?;
 
     let value: serde_json::Value = match serde_json::from_str(&body_str) {
@@ -108,9 +105,9 @@ pub fn github_api_request(
 }
 
 /// Get the commit SHA of a branch head via the GitHub Refs API.
-pub fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
+pub async fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
     let query = format!("repos/{}/git/refs/heads/{}", repo, branch);
-    let resp = github_api_request(&query, "GET", None, token)?;
+    let resp = github_api_request(&query, "GET", None, token).await?;
     let sha = resp["object"]["sha"]
         .as_str()
         .ok_or_else(|| crate::Error::Custom("unexpected ref response format".to_string()))?
@@ -120,9 +117,9 @@ pub fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
 
 /// Get the commit SHA of a branch head, returning `None` if the branch does
 /// not exist (HTTP 404), or an error for other failures.
-pub fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Result<Option<String>> {
+pub async fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Result<Option<String>> {
     let query = format!("repos/{}/git/refs/heads/{}", repo, branch);
-    match github_api_request(&query, "GET", None, token) {
+    match github_api_request(&query, "GET", None, token).await {
         Ok(resp) => {
             let sha = resp["object"]["sha"].as_str().map(|s| s.to_string());
             Ok(sha)
@@ -139,20 +136,20 @@ pub fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Result<Opt
 }
 
 /// Create a new remote branch by POSTing a ref to the Refs API.
-pub fn create_ref(repo: &str, branch: &str, sha: &str, token: &str) -> Result<()> {
+pub async fn create_ref(repo: &str, branch: &str, sha: &str, token: &str) -> Result<()> {
     let query = format!("repos/{}/git/refs", repo);
     let body = serde_json::json!({
         "ref": format!("refs/heads/{}", branch),
         "sha": sha,
     });
-    github_api_request(&query, "POST", Some(body), token)?;
+    github_api_request(&query, "POST", Some(body), token).await?;
     Ok(())
 }
 
 /// Open a pull request via the GitHub REST Pulls API.
 ///
 /// Returns the HTML URL of the created pull request.
-pub fn create_pull_request(
+pub async fn create_pull_request(
     upstream_repo: &str,
     upstream_branch: &str,
     head: &str,
@@ -167,7 +164,7 @@ pub fn create_pull_request(
         "head":  head,
         "base":  upstream_branch,
     });
-    let resp = github_api_request(&query, "POST", Some(request_body), token)?;
+    let resp = github_api_request(&query, "POST", Some(request_body), token).await?;
     let pr_url = resp["html_url"]
         .as_str()
         .ok_or_else(|| crate::Error::Custom("PR response missing html_url".to_string()))?
@@ -181,8 +178,8 @@ pub fn create_pull_request(
 
 /// Build a DCO (Developer Certificate of Origin) sign-off string for the
 /// authenticated user.
-pub fn set_dco_signature(token: &str) -> String {
-    let resp = github_api_request("user", "GET", None, token);
+pub async fn set_dco_signature(token: &str) -> String {
+    let resp = github_api_request("user", "GET", None, token).await;
     let login = resp
         .as_ref()
         .ok()
@@ -201,7 +198,7 @@ pub fn set_dco_signature(token: &str) -> String {
 /// `createCommitOnBranch` mutation — no local git binary required.
 ///
 /// Returns the HTML URL of the created commit.
-pub fn graphql_commit_push(
+pub async fn graphql_commit_push(
     repo: &str,
     branch: &str,
     file_path: &str,
@@ -248,21 +245,23 @@ pub fn graphql_commit_push(
         "variables": variables
     });
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
         .build()
-        .new_agent();
+        .map_err(|e| crate::Error::Custom(format!("GraphQL client error: {}", e)))?;
 
-    let resp = agent
+    let resp = client
         .post("https://api.github.com/graphql")
-        .header("Authorization", &format!("Bearer {}", token))
+        .header("Authorization", format!("Bearer {}", token))
         .header("User-Agent", "hok")
-        .send_json(&body)
+        .json(&body)
+        .send()
+        .await
         .map_err(|e| crate::Error::Custom(format!("GraphQL request failed: {}", e)))?;
 
     let body_str = resp
-        .into_body()
-        .read_to_string()
+        .text()
+        .await
         .map_err(|e| crate::Error::Custom(format!("Read GraphQL response failed: {}", e)))?;
 
     let value: serde_json::Value = serde_json::from_str(&body_str).map_err(|e| {

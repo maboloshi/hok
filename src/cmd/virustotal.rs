@@ -44,7 +44,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         print!("  {}: {} ... ", pkg.name(), url);
 
         if let Some(key) = &api_key {
-            match package::virustotal::check_url(url, key) {
+            match package::virustotal::check_url(url, key).await {
                 Ok(stats) => {
                     if stats.malicious > 0 {
                         output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));

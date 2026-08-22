@@ -245,7 +245,7 @@ pub async fn run_auto_pr(
                 .progress("Pushing", format!("{} ({})", app, version));
 
             let parent_sha =
-                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
+                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
                         session
@@ -255,7 +255,7 @@ pub async fn run_auto_pr(
                     }
                 };
 
-            let dco = github::set_dco_signature(&config.token);
+            let dco = github::set_dco_signature(&config.token).await;
 
             match github::graphql_commit_push(
                 &repo_nwo,
@@ -265,7 +265,9 @@ pub async fn run_auto_pr(
                 &dco,
                 &parent_sha,
                 &config.token,
-            ) {
+            )
+            .await
+            {
                 Ok(url) => {
                     session
                         .output()
@@ -284,7 +286,7 @@ pub async fn run_auto_pr(
 
             // Skip if the remote branch already exists
             if let Ok(Some(_)) =
-                github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token)
+                github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token).await
             {
                 session.output().warn(format!(
                     "{} ({}): branch already exists, skipping",
@@ -299,7 +301,7 @@ pub async fn run_auto_pr(
                 .progress("Creating", format!("{} ({})", app, version));
 
             let parent_sha =
-                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
+                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
                         session
@@ -309,7 +311,8 @@ pub async fn run_auto_pr(
                     }
                 };
 
-            if let Err(e) = github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token)
+            if let Err(e) =
+                github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token).await
             {
                 session
                     .output()
@@ -317,7 +320,7 @@ pub async fn run_auto_pr(
                 continue;
             }
 
-            let dco = github::set_dco_signature(&config.token);
+            let dco = github::set_dco_signature(&config.token).await;
 
             if let Err(e) = github::graphql_commit_push(
                 &repo_nwo,
@@ -327,7 +330,9 @@ pub async fn run_auto_pr(
                 &dco,
                 &parent_sha,
                 &config.token,
-            ) {
+            )
+            .await
+            {
                 session
                     .output()
                     .error(format!("{}: commit failed: {}", app, e));
@@ -352,7 +357,9 @@ pub async fn run_auto_pr(
                 &commit_msg,
                 &pr_body,
                 &config.token,
-            ) {
+            )
+            .await
+            {
                 Ok(pr_url) => {
                     session
                         .output()
