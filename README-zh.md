@@ -211,6 +211,8 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 - [用 Rust 写的 Scoop 再实现 — Chawye Hsu（原版博文）](./用%20Rust%20写的%20Scoop%20再实现%20-%20Chawye%20Hsu.md)
 - [更新日志](./CHANGELOG.md)
 - [命令列表（英文）](./README.md#commands)
+- [系统级回归矩阵](./docs/system-regression-matrix.md)
+- [回归执行报告模板](./docs/system-regression-report-template.md)
 
 ## License
 
