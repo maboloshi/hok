@@ -187,6 +187,7 @@ error:
   user_agent_already_set: "User agent already set"
   output_already_set: "Output sink already set"
   infra_already_set: "Infra implementation already set"
+  cancellation_token_already_set: "Cancellation token already set"
   hash_mismatch: "Hash mismatch"
   invalid_cache_file: "Invalid cache file"
   invalid_answer: "invalid answer"

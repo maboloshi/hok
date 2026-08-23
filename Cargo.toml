@@ -31,7 +31,9 @@ sys-locale = "0.3"
 # Async runtime for the CLI (phase 4: operations async-ification).
 # `rt-multi-thread` + `macros` for the blocking runtime host in `create_app()`;
 # `sync` for concurrency primitives used by concurrent commands.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+# Cooperative cancellation (P2): CancellationToken + Ctrl-C wiring in `create_app()`.
+tokio-util = { version = "0.7", features = ["rt"] }
 
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 

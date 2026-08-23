@@ -84,6 +84,11 @@ pub enum Error {
     #[error("Infra implementation already set")]
     InfraAlreadySet,
 
+    /// Thrown when trying to inject a cancellation token into a session more
+    /// than once.
+    #[error("Cancellation token already set")]
+    CancellationTokenAlreadySet,
+
     /// Hash mismatch error
     #[error("{0}")]
     HashMismatch(HashMismatchContext),
@@ -196,6 +201,7 @@ impl Error {
             Error::UserAgentAlreadySet => "error.user_agent_already_set",
             Error::OutputAlreadySet => "error.output_already_set",
             Error::InfraAlreadySet => "error.infra_already_set",
+            Error::CancellationTokenAlreadySet => "error.cancellation_token_already_set",
             Error::HashMismatch(_) => "error.hash_mismatch",
             Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
             Error::InvalidAnswer => "error.invalid_answer",

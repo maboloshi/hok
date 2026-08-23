@@ -20,6 +20,9 @@ time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-
 async-trait = "0.1"
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+# Cooperative cancellation (P2): CancellationToken threaded through downloads,
+# scripts and waits so Ctrl-C aborts cleanly (temp files, cursor, subprocesses).
+tokio-util = { version = "0.7", features = ["rt"] }
 git2 = "0.19.0"
 rayon = "1.7.0"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }

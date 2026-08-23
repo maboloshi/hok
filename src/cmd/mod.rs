@@ -183,7 +183,11 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
 }
 
 /// CLI entry point
-pub async fn start() -> Result<()> {
+///
+/// `cancellation` is the process-wide cooperative cancellation token (wired
+/// to Ctrl-C by `create_app`) — it is mounted on the session so long-running
+/// operations (downloads, scripts, waits) can abort cleanly.
+pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<()> {
     // Detect language before Cli::parse() so help text is rendered in the right language
     let preselected_language = i18n::detect_language_choice_from_args();
     i18n::init_language(preselected_language);
@@ -209,6 +213,9 @@ pub async fn start() -> Result<()> {
     crate::set_detail(args.detail);
 
     let session = Session::default();
+    // Mount the process-wide Ctrl-C cancellation token so long-running
+    // operations (downloads, scripts, waits) can abort cleanly on interrupt.
+    session.set_cancellation_token(cancellation)?;
     let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
     let _ = session.set_user_agent(&user_agent);
 

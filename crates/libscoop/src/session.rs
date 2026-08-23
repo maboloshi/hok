@@ -46,6 +46,7 @@ use flume::{Receiver, Sender};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -95,6 +96,12 @@ pub struct Session {
 
     /// Injectable archive capability, defaulting to the real implementation.
     archive: OnceLock<Arc<dyn Archive + Send + Sync>>,
+
+    /// Cooperative cancellation token (purity P2): wired to Ctrl-C by the CLI
+    /// entry point and checked by long-running operations (downloads, scripts,
+    /// waits) so an interrupt aborts cleanly (temp files, cursor, subprocess).
+    /// Defaults to a never-cancelled token when the frontend never sets one.
+    cancellation: OnceLock<CancellationToken>,
 }
 
 impl std::fmt::Debug for Session {
@@ -108,6 +115,7 @@ impl std::fmt::Debug for Session {
             .field("network", &"<infra>")
             .field("git", &"<infra>")
             .field("archive", &"<infra>")
+            .field("cancellation", &"<cancellation>")
             .finish()
     }
 }
@@ -151,6 +159,7 @@ impl Session {
                 network: OnceLock::new(),
                 git: OnceLock::new(),
                 archive: OnceLock::new(),
+                cancellation: OnceLock::new(),
             };
             let _ = session.event_bus();
             return session;
@@ -167,6 +176,7 @@ impl Session {
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
+            cancellation: OnceLock::new(),
         };
         // Initialize event bus and emit fallback warning
         let _ = session.event_bus();
@@ -205,6 +215,7 @@ impl Session {
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
+            cancellation: OnceLock::new(),
         })
     }
 
@@ -512,6 +523,20 @@ impl Session {
             .map_err(|_| Error::InfraAlreadySet)
     }
 
+    /// Get the session's cooperative cancellation token.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation
+            .get_or_init(CancellationToken::new)
+            .clone()
+    }
+
+    /// Inject a cooperative cancellation token (wired to Ctrl-C by the CLI).
+    pub fn set_cancellation_token(&self, token: CancellationToken) -> Fallible<()> {
+        self.cancellation
+            .set(token)
+            .map_err(|_| Error::CancellationTokenAlreadySet)
+    }
+
     /// Apply a CLI `-a/--arch` value as the process-wide architecture
     /// override (beats the `default_architecture` config, mirroring Scoop's
     /// `-a` flag parsed after session creation).
@@ -549,6 +574,30 @@ mod tests {
     #[test]
     fn session_is_sync_send() {
         assert_sync_send::<Session>();
+    }
+
+    #[test]
+    fn cancellation_token_defaults_to_never_cancelled() {
+        let root = test_utils::tmpdir("session_cancel_default");
+        let session = test_utils::test_session(&root);
+        assert!(!session.cancellation_token().is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_token_can_be_injected_and_cancelled() {
+        let root = test_utils::tmpdir("session_cancel_set");
+        let session = test_utils::test_session(&root);
+        let token = CancellationToken::new();
+        session.set_cancellation_token(token.clone()).unwrap();
+        // A second injection is rejected.
+        assert!(
+            session
+                .set_cancellation_token(CancellationToken::new())
+                .is_err()
+        );
+        assert!(!session.cancellation_token().is_cancelled());
+        token.cancel();
+        assert!(session.cancellation_token().is_cancelled());
     }
 
     #[test]

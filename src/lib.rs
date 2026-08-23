@@ -137,5 +137,20 @@ pub fn create_app() -> bool {
         .enable_all()
         .build()
         .expect("failed to build the tokio runtime");
-    runtime.block_on(cmd::start()).inspect_err(report).is_err()
+
+    // Cooperative cancellation (purity P2): a Ctrl-C (SIGINT) aborts the
+    // whole command through a CancellationToken shared by every long-running
+    // operation (downloads, scripts, waits), so temp files, subprocesses and
+    // the terminal cursor are cleaned up instead of the runtime just dying.
+    let token = tokio_util::sync::CancellationToken::new();
+    let cancel = token.clone();
+    tokio::spawn(async move {
+        // In a non-console/CI context ctrl_c() may fail to install a handler;
+        // that is fine — cancellation is a best-effort nicety, not a guard.
+        if tokio::signal::ctrl_c().await.is_ok() {
+            cancel.cancel();
+        }
+    });
+
+    runtime.block_on(cmd::start(token)).inspect_err(report).is_err()
 }
