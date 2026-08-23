@@ -130,17 +130,14 @@ fn render_checkver_report(report: &CheckverReport) {
     };
 
     if ver == &report.current {
-        output::status(format!("  {} ({})", report.stem, ver));
+        output::status_line(format!("  {} ({})", report.stem, ver));
         if report.updated {
             output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
         }
     } else {
-        output::status(format!(
-            "  {} ({} -> {})",
-            report.stem, report.current, ver
-        ));
+        output::status_line(format!("  {} ({} -> {})", report.stem, report.current, ver));
         if report.autoupdate_available {
-            output::status("    autoupdate available");
+            output::status_line("    autoupdate available");
         }
         if report.updated {
             output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));

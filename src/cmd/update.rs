@@ -111,7 +111,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
     // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
     if !force
         && let Some(remaining) = session.config().update_cooldown_remaining() {
-            output::status(format!(
+            output::status_line(format!(
                 "Buckets recently updated. Next update allowed in ~{remaining}s. Use --force to update now."
             ));
             return Ok(());
@@ -153,7 +153,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 
     // Refresh SQLite manifest cache with visible feedback
     if session.config().use_sqlite_cache() {
-        output::status(rust_i18n::t!("cmd.refresh_cache"));
+        output::status_line(rust_i18n::t!("cmd.refresh_cache"));
         package::manifest_cache::refresh(session);
         output::done(rust_i18n::t!("cmd.cache_done"));
     }

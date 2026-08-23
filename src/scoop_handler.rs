@@ -228,7 +228,7 @@ impl EventHandler for ScoopHandler {
 
             // --- Cache hit ---
             Event::PackageCacheHit(filename) => {
-                output::status(rust_i18n::t!("detail.loading_cache", filename = filename));
+                output::status_line(rust_i18n::t!("detail.loading_cache", filename = filename));
             }
 
             // --- Symlink operations ---

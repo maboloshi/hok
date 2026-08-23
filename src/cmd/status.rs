@@ -42,11 +42,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             line.push_str(" [held]");
         }
 
-        output::status(&line);
+        output::status_line(&line);
     }
 
     if packages.is_empty() {
-        output::status(rust_i18n::t!("cmd.no_apps"));
+        output::status_line(rust_i18n::t!("cmd.no_apps"));
     } else if args.all {
         if outdated == 0 {
             output::info(rust_i18n::t!("cmd.install_ok"));

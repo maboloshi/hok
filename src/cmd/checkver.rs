@@ -69,14 +69,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         };
 
         if ver == &r.current {
-            output::status(format!("  {} ({})", r.stem, ver));
+            output::status_line(format!("  {} ({})", r.stem, ver));
             if r.updated {
                 output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         } else {
-            output::status(format!("  {} ({} -> {})", r.stem, r.current, ver));
+            output::status_line(format!("  {} ({} -> {})", r.stem, r.current, ver));
             if r.autoupdate_available {
-                output::status("    autoupdate available");
+                output::status_line("    autoupdate available");
             }
             if r.updated {
                 output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
