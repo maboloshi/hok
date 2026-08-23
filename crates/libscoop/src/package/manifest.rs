@@ -2011,4 +2011,56 @@ mod tests {
         assert_eq!(es.get("FLAG").map(String::as_str), Some("true"));
         assert_eq!(es.get("NAME").map(String::as_str), Some("x"));
     }
+
+    #[test]
+    fn test_env_set_cookie_accept_explicit_null() {
+        // Upstream Scoop writes an explicit `null` for every unset optional
+        // field in its stored manifests (e.g. apps/<app>/current/manifest.json
+        // has "env_set": null / "cookie": null). deserialize_string_map must
+        // treat these as absent instead of failing the whole parse, otherwise
+        // such apps are silently dropped from list/status.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "env_set": null,
+                "cookie": null,
+                "architecture": {
+                    "64bit": {
+                        "url": "https://example.com/pkg-x64.zip",
+                        "env_set": null,
+                        "env_add_path": null,
+                        "bin": null
+                    }
+                }
+            }"#,
+        );
+        assert_eq!(m.version(), "1.0.0");
+        assert!(m.env_set().is_none(), "explicit null env_set should be absent");
+        assert!(m.cookie().is_none(), "explicit null cookie should be absent");
+        assert!(m.env_add_path().is_none());
+        assert!(m.bin().is_none());
+    }
+
+    #[test]
+    fn install_info_tolerates_unknown_fields() {
+        // Upstream Scoop and third-party tools may write non-standard
+        // fields (e.g. a `version` key) into install.json. InstallInfo
+        // has no deny_unknown_fields, so these must be ignored, not
+        // fail the parse — otherwise the app is dropped from listings.
+        let info: InstallInfo = serde_json::from_str(
+            r#"{
+                "architecture": "64bit",
+                "bucket": "main",
+                "hold": false,
+                "version": "11.2.5",
+                "some_future_key": { "nested": true }
+            }"#,
+        )
+        .expect("install_info with unknown fields must parse");
+        assert_eq!(info.bucket(), Some("main"));
+        assert_eq!(info.arch(), "64bit");
+    }
 }

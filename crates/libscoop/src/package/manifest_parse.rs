@@ -516,7 +516,13 @@ pub fn deserialize_string_map<'de, D>(
 where
     D: de::Deserializer<'de>,
 {
-    let map = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    // Upstream writes an explicit `null` for unset optional fields in stored
+    // manifests; `deserialize_with` bypasses the default null -> None coercion,
+    // so handle null here or the whole manifest parse fails.
+    let map = Option::<HashMap<String, serde_json::Value>>::deserialize(deserializer)?;
+    let Some(map) = map else {
+        return Ok(None);
+    };
     let out = map
         .into_iter()
         .map(|(k, v)| {
