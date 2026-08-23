@@ -367,7 +367,20 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
 /// `current\manifest.json` and `current\install.json` to exist, so a
 /// half-broken install (e.g. missing `install.json`) can still be reset.
 pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
-    let (pkg, pkg_dir, version_dir) = resolve_reset_target(session, name, target_version)?;
+    let (pkg, pkg_dir, version_dir) = match resolve_reset_target(session, name, target_version) {
+        Ok(r) => r,
+        // A broken/partial install (app dir exists but no usable current
+        // version) can't be reset — mirror Scoop (`scoop-reset.ps1` reports
+        // it as "isn't installed" and moves on). Warn so the user knows how
+        // to recover instead of hard-erroring.
+        Err(Error::PackageNotFound(_)) if session.app_dir(name).exists() => {
+            session.output().warn(format!(
+                "'{name}' is not installed correctly. Reinstall it or fix the manifest."
+            ));
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
     let version = pkg.installed_version().unwrap_or(pkg.version());
 
     // Check if the app is currently running before resetting (mirrors
@@ -678,5 +691,29 @@ mod tests {
             !pkg_dir.exists(),
             "app dir with only stray files should be removed"
         );
+    }
+
+    /// A broken/partial install (app dir exists but no usable current version)
+    /// cannot be reset — like Scoop it is reported and skipped, not a hard
+    /// error, and the broken dir is left untouched.
+    #[tokio::test]
+    async fn reset_broken_install_warns_and_returns_ok() {
+        let root = tmpdir("reset_broken_warn");
+        let session = test_session(&root);
+        let pkg_dir = root.join("apps").join("doubao");
+        // Version dir with a manifest but no install.json and no `current`:
+        // a broken install whose version cannot be resolved.
+        std::fs::create_dir_all(pkg_dir.join("1.0.0")).unwrap();
+        std::fs::write(
+            pkg_dir.join("1.0.0").join("manifest.json"),
+            mini_manifest("1.0.0"),
+        )
+        .unwrap();
+
+        // Must not hard-error: a broken install is reported and skipped.
+        reset(&session, "doubao", None).await.unwrap();
+
+        // reset must not remove the app dir.
+        assert!(pkg_dir.exists(), "reset must not remove the broken app dir");
     }
 }

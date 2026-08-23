@@ -29,7 +29,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         // scoop-reset.ps1 `installed_apps $false` + `installed_apps $true`).
         for global in [false, true] {
             session.set_global(global);
-            let pkgs = package::query::query_installed(session, &["*"], &[])?;
+            // `Broken` is included so a partial install shows up and is
+            // either repaired (if a version resolves) or reported as broken,
+            // mirroring Scoop's `installed_apps` (which lists every app dir).
+            let pkgs =
+                package::query::query_installed(session, &["*"], &[libscoop::QueryOption::Broken])?;
             for pkg in &pkgs {
                 if pkg.name() == "scoop" {
                     // Official scoop-reset.ps1 skips 'scoop' itself.
