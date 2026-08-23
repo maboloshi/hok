@@ -39,8 +39,10 @@ pub enum QueryOption {
 
     /// Include broken/partial installs (an install that failed before
     /// current/manifest.json were written) when querying installed
-    /// packages. Only list uses this; install/resolve/uninstall keep
-    /// their strict already-installed semantics without it.
+    /// packages. `list` surfaces them as install-failed; `uninstall` and
+    /// `reinstall` accept them so a broken install can be torn down or
+    /// recovered; `update` uses it to distinguish "broken, reinstall it"
+    /// from "not installed".
     Broken,
 }
 

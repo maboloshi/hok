@@ -64,12 +64,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let mut exact_queries = Vec::new();
 
     // Resolve queries to exact bucket-qualified names.
-    // Only installed packages (with install.json + manifest.json) are accepted.
+    // `Broken` is included so a partial/failed install (missing `current` or
+    // manifest.json/install.json) can be recovered: reinstall uninstalls the
+    // broken app dir then reinstalls from its bucket source — the recovery
+    // Scoop suggests with "Please reinstall it or fix the manifest.".
     for q in &args.package {
         match package::query::query(
             session,
             vec![q.as_str()],
-            vec![libscoop::QueryOption::Explicit],
+            vec![
+                libscoop::QueryOption::Explicit,
+                libscoop::QueryOption::Broken,
+            ],
             true,
         ) {
             Ok(pkgs) if !pkgs.is_empty() => {
