@@ -319,6 +319,7 @@ impl<'a> PackageSet<'a> {
                             chunk_count,
                             &part_dir,
                             &on_progress,
+                            &self.session.cancellation_token(),
                         )
                         .await
                         .map_err(crate::error::Error::Custom)?;

@@ -6,7 +6,9 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::internal::network::{Network, RangeError, RequestOptions};
@@ -22,6 +24,14 @@ use crate::internal::network::{Network, RangeError, RequestOptions};
 /// instead of failing the whole file. Every returned part is verified
 /// complete, and the ranges are checked to tile `[0, remote_size)` with no
 /// gaps or overlaps.
+///
+/// Cooperative cancellation (purity P2): when `token` is cancelled, all
+/// in-flight chunks and the serial fallback abort promptly, every part file is
+/// removed and an error is returned — no partial parts are left behind.
+// 8 args is deliberate (same shape as `run_hook`): the range-download
+// contract (net/url/opts/size/chunks/dir/progress) plus the cancellation
+// token — a struct would just move the same fields behind one indirection.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn download_fragmented(
     net: &(dyn Network + Sync),
     url: &str,
@@ -30,7 +40,13 @@ pub(crate) async fn download_fragmented(
     chunk_count: u64,
     part_dir: &std::path::Path,
     on_progress: &(dyn Fn(u64) + Sync),
+    token: &CancellationToken,
 ) -> Result<Vec<PathBuf>, String> {
+    // Cooperative cancellation: bail immediately (before creating any part
+    // file) when the token is already cancelled.
+    if token.is_cancelled() {
+        return Err("download cancelled".to_string());
+    }
     let chunk_size = remote_size / chunk_count;
     // (part path, start, end) for every range to verify — initially one entry
     // per chunk, extended with fallback ranges for failed chunks.
@@ -59,27 +75,55 @@ pub(crate) async fn download_fragmented(
 
     // Download all chunks concurrently (真 async I/O via reqwest; the futures
     // are non-Send so `buffer_unordered` runs them on the current task rather
-    // than `tokio::spawn`).
+    // than `tokio::spawn`). Each chunk races its download against the
+    // cancellation token so a Ctrl-C aborts in-flight chunks promptly.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_flag = cancelled.clone();
     use futures::StreamExt as _;
     let _: Vec<()> = futures::stream::iter(chunks)
         .map(|(start, end, part_path)| {
             let url = url.to_owned();
             let failed = failed_ranges.clone();
+            let cancelled = cancelled_flag.clone();
+            let token = token.clone();
             async move {
-                if let Err(e) =
-                    download_range(net, &url, start, end, &part_path, opts, on_progress).await
-                {
-                    debug!("chunk {}-{} failed: {}", start, end, e);
-                    // Drop the partial part so the fallback re-downloads the
-                    // whole range from scratch.
-                    let _ = std::fs::remove_file(&part_path);
-                    failed.lock().unwrap().push((start, end));
+                let outcome = tokio::select! {
+                    _ = token.cancelled() => {
+                        cancelled.store(true, Ordering::SeqCst);
+                        None
+                    }
+                    res = download_range(net, &url, start, end, &part_path, opts, on_progress) => {
+                        Some(res)
+                    }
+                };
+                match outcome {
+                    None => {
+                        // Cancelled: drop the partial part so nothing is left.
+                        let _ = std::fs::remove_file(&part_path);
+                    }
+                    Some(Err(e)) => {
+                        debug!("chunk {}-{} failed: {}", start, end, e);
+                        // Drop the partial part so the fallback re-downloads the
+                        // whole range from scratch.
+                        let _ = std::fs::remove_file(&part_path);
+                        failed.lock().unwrap().push((start, end));
+                    }
+                    Some(Ok(())) => {}
                 }
             }
         })
         .buffer_unordered(chunk_count as usize)
         .collect()
         .await;
+
+    // On cancellation, drop every remaining part (in-flight chunks already
+    // removed theirs) and bail — no partial parts may be left behind.
+    if cancelled.load(Ordering::SeqCst) || token.is_cancelled() {
+        for (part_path, _, _) in &parts {
+            let _ = std::fs::remove_file(part_path);
+        }
+        return Err("download cancelled".to_string());
+    }
 
     // Re-download failed ranges serially. The more chunks fail, the fewer
     // concurrent connections remain — degrading to a plain sequential
@@ -89,12 +133,16 @@ pub(crate) async fn download_fragmented(
         parts.retain(|(_, s, _)| !failed.iter().any(|(fs, _)| fs == s));
         for (idx, (s, e)) in merge_adjacent_ranges(failed).iter().enumerate() {
             let fb_path = part_dir.join(format!("fallback.{}", idx));
-            download_range(net, url, *s, *e, &fb_path, opts, on_progress)
-                .await
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&fb_path);
-                    format!("fallback download of {}-{} failed: {}", s, e, e)
-                })?;
+            let outcome = tokio::select! {
+                _ = token.cancelled() => Err("download cancelled".to_string()),
+                res = download_range(net, url, *s, *e, &fb_path, opts, on_progress) => {
+                    res.map_err(|e| format!("fallback download of {}-{} failed: {}", s, e, e))
+                }
+            };
+            if let Err(e) = outcome {
+                let _ = std::fs::remove_file(&fb_path);
+                return Err(e);
+            }
             parts.push((fb_path, *s, *e));
         }
     }
@@ -831,16 +879,34 @@ mod tests {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
-        let mut parts =
-            download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {}).await;
+        let mut parts = download_fragmented(
+            &RealNetwork,
+            &url,
+            &opts,
+            1000,
+            4,
+            &part_dir,
+            &|_| {},
+            &CancellationToken::new(),
+        )
+        .await;
         if parts.is_err() {
             // Retried once to tolerate the spurious pre-request connection
             // drop (see the retries test); failed parts were removed, so a
             // fresh run only re-downloads the failed range.
             let _ = std::fs::remove_dir_all(&part_dir);
             std::fs::create_dir_all(&part_dir).unwrap();
-            parts =
-                download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &|_| {}).await;
+            parts = download_fragmented(
+                &RealNetwork,
+                &url,
+                &opts,
+                1000,
+                4,
+                &part_dir,
+                &|_| {},
+                &CancellationToken::new(),
+            )
+            .await;
         }
         let parts = parts.unwrap();
 
@@ -910,9 +976,18 @@ mod tests {
         };
         let total = Arc::new(AtomicU64::new(0));
         let total_h = total.clone();
-        let parts = download_fragmented(&RealNetwork, &url, &opts, 1000, 4, &part_dir, &move |n| {
-            total_h.fetch_add(n, Ordering::Relaxed);
-        })
+        let parts = download_fragmented(
+            &RealNetwork,
+            &url,
+            &opts,
+            1000,
+            4,
+            &part_dir,
+            &move |n| {
+                total_h.fetch_add(n, Ordering::Relaxed);
+            },
+            &CancellationToken::new(),
+        )
         .await
         .unwrap();
 
@@ -938,9 +1013,18 @@ mod tests {
             ..RequestOptions::default()
         };
 
-        let parts = download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {})
-            .await
-            .unwrap();
+        let parts = download_fragmented(
+            &fake,
+            url,
+            &opts,
+            1000,
+            4,
+            &part_dir,
+            &|_| {},
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         assert_eq!(parts.len(), 4);
         let mut file = Vec::new();
         for p in &parts {
@@ -953,6 +1037,35 @@ mod tests {
         assert!(ranges.iter().all(|r| r.starts_with("bytes=")));
     }
 
+    #[tokio::test]
+    async fn test_download_fragmented_pre_cancelled_leaves_no_parts() {
+        use crate::test_utils::FakeNetwork;
+
+        let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let url = "https://fake.example.com/file.bin";
+        let fake = FakeNetwork::new();
+        fake.serve(url, data.clone());
+        let dir = crate::test_utils::tmpdir("fragmented_pre_cancelled");
+        let part_dir = dir.join("file.bin.parts");
+        std::fs::create_dir_all(&part_dir).unwrap();
+        let opts = RequestOptions {
+            timeout_secs: 5,
+            ..RequestOptions::default()
+        };
+
+        // A token cancelled before the download must abort immediately and
+        // leave no partial part files behind (cooperative-cleanup contract).
+        let token = CancellationToken::new();
+        token.cancel();
+        let result =
+            download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {}, &token).await;
+        assert!(result.is_err(), "pre-cancelled download should fail");
+        let leftovers: Vec<_> = std::fs::read_dir(&part_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(leftovers.is_empty(), "no partial parts may remain");
+    }
 
     #[tokio::test]
     async fn test_download_range_retries_transient_offline() {
