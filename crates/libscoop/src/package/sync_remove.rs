@@ -31,10 +31,17 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
     let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
 
     // Query target packages directly instead of scanning all installed.
-    // Dependency checking (below) does the full scan when needed.
+    // Dependency checking (below) does the full scan when needed. `Broken` is
+    // included so a partial/failed install (e.g. missing `current` junction or
+    // manifest) is still uninstallable — Scoop's `Confirm-InstallationStatus`
+    // only checks that `apps/<name>` exists, so it can be torn down too.
     let mut packages = vec![];
     for &name in queries {
-        let matched = query::query_installed(session, &[name], &[QueryOption::Explicit])?;
+        let matched = query::query_installed(
+            session,
+            &[name],
+            &[QueryOption::Explicit, QueryOption::Broken],
+        )?;
         if matched.is_empty() {
             if ignore_failure {
                 session.output().error(format!(
@@ -175,60 +182,71 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
         .or_else(|| package.installed_version().map(str::to_owned))
         .map(|v| app_dir.join(&v));
 
-    // Scripts run against the version dir (`$dir`), mirroring
-    // scoop-uninstall.ps1 (`$dir = versiondir $app $version $global`); with
-    // junctions the `current` junction resolves to it, and under `NO_JUNCTION`
-    // the version dir is used directly. Fall back to `current` only when no
-    // version could be resolved (broken install).
-    let fallback_dir = app_dir.join("current");
-    let script_dir = version_dir.as_deref().unwrap_or(&fallback_dir);
+    // A broken/partial install (e.g. install failed before `current` was
+    // linked, or `manifest.json`/`install.json` is missing) carries no
+    // reliable manifest or install state. Mirror Scoop: `Confirm-InstallationStatus`
+    // only checks that `apps/<name>` exists (so the app is still uninstallable),
+    // but scoop-uninstall.ps1 skips the whole `if ($version)` block — the
+    // pre_uninstall/uninstaller hooks and the shim/shortcut/env/psmodule cleanup —
+    // and only tears down the directories. The shim/shortcut/env/psmodule/persist
+    // helpers also `assert!(package.is_installed())`, which a broken package (no
+    // install state) would trip, so they are skipped here too.
+    if !package.is_install_failed() {
+        // Scripts run against the version dir (`$dir`), mirroring
+        // scoop-uninstall.ps1 (`$dir = versiondir $app $version $global`); with
+        // junctions the `current` junction resolves to it, and under
+        // `NO_JUNCTION` the version dir is used directly. Fall back to `current`
+        // only when no version could be resolved (broken install).
+        let fallback_dir = app_dir.join("current");
+        let script_dir = version_dir.as_deref().unwrap_or(&fallback_dir);
 
-    run_script(
-        session,
-        package,
-        script_dir,
-        None,
-        "pre_uninstall",
-        "uninstall",
-        package.manifest().pre_uninstall(),
-    )
-    .await?;
-
-    // Check if the app is currently running after running pre_uninstall
-    // (mirrors scoop-uninstall.ps1: pre_uninstall hook runs first, then
-    // test_running_process). An AppRunning error is handled by the caller
-    // (commit_remove) which skips this package and continues the batch.
-    check_not_running(session, package.name(), "uninstalling")?;
-
-    if let Some(uninstaller) = package.manifest().uninstaller() {
-        operations::run_hook(
+        run_script(
             session,
             package,
             script_dir,
-            "uninstaller",
+            None,
+            "pre_uninstall",
             "uninstall",
-            uninstaller.file(),
-            uninstaller.args(),
-            uninstaller.keep(),
-            uninstaller.script(),
+            package.manifest().pre_uninstall(),
         )
         .await?;
+
+        // Check if the app is currently running after running pre_uninstall
+        // (mirrors scoop-uninstall.ps1: pre_uninstall hook runs first, then
+        // test_running_process). An AppRunning error is handled by the caller
+        // (commit_remove) which skips this package and continues the batch.
+        check_not_running(session, package.name(), "uninstalling")?;
+
+        if let Some(uninstaller) = package.manifest().uninstaller() {
+            operations::run_hook(
+                session,
+                package,
+                script_dir,
+                "uninstaller",
+                "uninstall",
+                uninstaller.file(),
+                uninstaller.args(),
+                uninstaller.keep(),
+                uninstaller.script(),
+            )
+            .await?;
+        }
+
+        debug!(
+            "remove: {} - cleanup (shims/shortcuts/current/env/persist)",
+            package.name()
+        );
+        shim::remove(session, package)?;
+        shortcut::remove(session, package)?;
+
+        // Scoop order: `unlink_current` runs right after shims/shortcuts and
+        // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
+        // `env::remove` resolve their own paths, so they don't need the
+        // `$refdir` return value that upstream passes along.
+        operations::unlink_current(&app_dir, session.config().no_junction())?;
+        psmodule::remove(session, package)?;
+        env::remove(session, package)?;
     }
-
-    debug!(
-        "remove: {} - cleanup (shims/shortcuts/current/env/persist)",
-        package.name()
-    );
-    shim::remove(session, package)?;
-    shortcut::remove(session, package)?;
-
-    // Scoop order: `unlink_current` runs right after shims/shortcuts and
-    // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
-    // `env::remove` resolve their own paths, so they don't need the
-    // `$refdir` return value that upstream passes along.
-    operations::unlink_current(&app_dir, session.config().no_junction())?;
-    psmodule::remove(session, package)?;
-    env::remove(session, package)?;
 
     // Remove the current version directory: unlink persist links first,
     // then delete (Scoop order: `unlink_persist_data $manifest $dir` +
@@ -236,7 +254,12 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
     // uninstaller removed it), keep going like upstream does. Skipped when
     // no current version could be resolved (broken install).
     if let Some(version_dir) = &version_dir {
-        persist::unlink(session, package, version_dir)?;
+        // persist::unlink asserts the package is installed; a broken package
+        // has no persist metadata anyway, so skip it (Scoop's
+        // unlink_persist_data is a no-op for a placeholder manifest too).
+        if !package.is_install_failed() {
+            persist::unlink(session, package, version_dir)?;
+        }
         match internal::fs::remove_dir(version_dir) {
             Ok(()) => {}
             Err(_e) if !version_dir.exists() => {}
@@ -277,8 +300,22 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
                 package.name(),
                 name
             );
-            persist::unlink(session, package, &old_dir)?;
-            match internal::fs::remove_dir(&old_dir) {
+            // Only unlink persist links for a healthy install; persist::unlink
+            // asserts the package is installed (a broken one has no persist
+            // metadata to unlink anyway).
+            if !package.is_install_failed() {
+                persist::unlink(session, package, &old_dir)?;
+            }
+            // A broken install can leave stray files directly in the app dir
+            // (not in a version subdir); remove them like Scoop's `Remove-Item`.
+            let remove_one = || -> std::io::Result<()> {
+                if old_dir.is_dir() {
+                    internal::fs::remove_dir(&old_dir)
+                } else {
+                    std::fs::remove_file(&old_dir)
+                }
+            };
+            match remove_one() {
                 Ok(()) => {}
                 Err(_e) if !old_dir.exists() => {}
                 Err(e) => {
@@ -577,5 +614,69 @@ mod tests {
         assert!(matches!(err, Error::Custom(_)));
         let err = resolve_reset_target(&session, "app", Some("1.0.0\\..\\..")).unwrap_err();
         assert!(matches!(err, Error::Custom(_)));
+    }
+
+    /// The broken-install uninstall case: `apps/<name>` exists but has no
+    /// usable `current` junction (install failed), so `query_installed` would
+    /// otherwise skip it and `remove` reported "package not found". With
+    /// `QueryOption::Broken` the placeholder package is found and the app dir
+    /// is torn down.
+    #[tokio::test]
+    async fn remove_uninstalls_broken_install_with_version_dir() {
+        let root = tmpdir("remove_broken_version");
+        let session = test_session(&root);
+        let pkg_dir = root.join("apps").join("doubao");
+        // Version dir with metadata but no `current` junction: broken.
+        std::fs::create_dir_all(pkg_dir.join("1.0.0")).unwrap();
+        std::fs::write(
+            pkg_dir.join("1.0.0").join("manifest.json"),
+            mini_manifest("1.0.0"),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg_dir.join("1.0.0").join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "main"}"#,
+        )
+        .unwrap();
+
+        remove(
+            &session,
+            &["doubao"],
+            &[SyncOption::Remove, SyncOption::AssumeYes],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !pkg_dir.exists(),
+            "broken install app dir should be removed"
+        );
+    }
+
+    /// The degenerate broken-install case: `apps/<name>` exists but contains
+    /// neither `manifest.json` nor `install.json` (nor a version dir) — only
+    /// stray leftover files. Scoop still uninstalls it
+    /// (`Confirm-InstallationStatus` only checks the app dir exists), so hok
+    /// must too.
+    #[tokio::test]
+    async fn remove_uninstalls_broken_install_with_stray_files_only() {
+        let root = tmpdir("remove_broken_stray");
+        let session = test_session(&root);
+        let pkg_dir = root.join("apps").join("doubao");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("partial-download.bin"), b"junk").unwrap();
+
+        remove(
+            &session,
+            &["doubao"],
+            &[SyncOption::Remove, SyncOption::AssumeYes],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !pkg_dir.exists(),
+            "app dir with only stray files should be removed"
+        );
     }
 }
