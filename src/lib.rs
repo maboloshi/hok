@@ -128,16 +128,7 @@ fn report(err: &anyhow::Error) {
     }
 }
 
-pub fn create_app() -> bool {
-    // Async runtime host for the whole CLI (phase 4: operations
-    // async-ification). Commands run as async tasks; a multi-thread runtime
-    // lets concurrent commands (checkver/checkup/download, later install/
-    // upgrade) interleave their I/O on worker threads.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("failed to build the tokio runtime");
-
+pub async fn create_app() -> bool {
     // Cooperative cancellation (purity P2): a Ctrl-C (SIGINT) aborts the
     // whole command through a CancellationToken shared by every long-running
     // operation (downloads, scripts, waits), so temp files, subprocesses and
@@ -152,5 +143,9 @@ pub fn create_app() -> bool {
         }
     });
 
-    runtime.block_on(cmd::start(token)).inspect_err(report).is_err()
+    // The multi-thread runtime is provided by #[tokio::main] (rt-multi-thread
+    // + macros) in bin/hok.rs, so the CLI runs as an async entry point with
+    // no manual Runtime/block_on — concurrent commands (checkver/checkup/
+    // download, later install/upgrade) interleave their I/O on worker threads.
+    cmd::start(token).await.inspect_err(report).is_err()
 }

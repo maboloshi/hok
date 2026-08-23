@@ -29,7 +29,7 @@ rust-i18n = "3.1.5"
 sys-locale = "0.3"
 
 # Async runtime for the CLI (phase 4: operations async-ification).
-# `rt-multi-thread` + `macros` for the blocking runtime host in `create_app()`;
+# `rt-multi-thread` + `macros` for the #[tokio::main] async entry point in `bin/hok.rs`;
 # `sync` for concurrency primitives used by concurrent commands.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 # Cooperative cancellation (P2): CancellationToken + Ctrl-C wiring in `create_app()`.
