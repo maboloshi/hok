@@ -36,6 +36,12 @@ pub enum QueryOption {
     /// Like `Upgradable` but does NOT exclude packages that are already
     /// at the latest version.
     UpgradableCheck,
+
+    /// Include broken/partial installs (an install that failed before
+    /// current/manifest.json were written) when querying installed
+    /// packages. Only list uses this; install/resolve/uninstall keep
+    /// their strict already-installed semantics without it.
+    Broken,
 }
 
 /// A trait represents a matcher that can be used to do string matching.

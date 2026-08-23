@@ -70,6 +70,8 @@ cmd:
   list_header_source: "Source"
   list_header_info: "Info"
   list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable"
+  list_install_failed: "Install failed"
+  list_bucket_removed: "Source bucket removed"
   no_aliases: "No aliases configured."
   alias_add_usage: "Usage: hok alias add <name> <command>"
   alias_added: "alias added: %{name} -> %{value}"

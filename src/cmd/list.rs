@@ -29,7 +29,7 @@ pub struct Args {
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    let mut options = vec![QueryOption::UpgradableCheck];
+    let mut options = vec![QueryOption::UpgradableCheck, QueryOption::Broken];
 
     if args.explicit {
         options.push(QueryOption::Explicit);
@@ -87,6 +87,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 shown += 1;
 
                 let mut info = Vec::new();
+                if pkg.is_install_failed() {
+                    info.push(rust_i18n::t!("cmd.list_install_failed").to_string());
+                }
+                if pkg.is_bucket_removed() {
+                    info.push(rust_i18n::t!("cmd.list_bucket_removed").to_string());
+                }
                 if held {
                     info.push("held".to_string());
                     shown_held += 1;

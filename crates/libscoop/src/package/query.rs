@@ -34,7 +34,7 @@ use super::install_state::{
     select_current_version,
 };
 use super::query_matcher::{build_matchers, manifest_matches, name_prefiltered_out, QueryOption};
-use super::{manifest_cache, InstallState, InstallStateInstalled, Package};
+use super::{manifest_cache, InstallState, InstallStateInstalled, Manifest, Package};
 
 /// Search installed packages.
 pub fn query_installed(
@@ -66,11 +66,26 @@ pub fn query_installed(
                         let name = filename.to_str()?;
                         // The name `scoop` is reserved for Scoop, ignore it
                         let is_scoop = name == "scoop";
+                        let include_broken = options.contains(&QueryOption::Broken);
+
+                        if !is_dir || is_scoop {
+                            return None;
+                        }
+
+                        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
+                            return None;
+                        }
+
                         let pkg_dir = apps_dir.join(name);
                         let meta_dir = if no_junction {
                             match select_current_version(&pkg_dir) {
                                 Some(v) => pkg_dir.join(v),
-                                None => return None,
+                                None => {
+                                    if include_broken {
+                                        return broken_package(name, &pkg_dir);
+                                    }
+                                    return None;
+                                }
                             }
                         } else {
                             pkg_dir.join("current")
@@ -79,11 +94,10 @@ pub fn query_installed(
                         let install_info_path = meta_dir.join("install.json");
                         let is_not_broken = manifest_path.exists() && install_info_path.exists();
 
-                        if !is_dir || is_scoop || !is_not_broken {
-                            return None;
-                        }
-
-                        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
+                        if !is_not_broken {
+                            if include_broken {
+                                return broken_package(name, &pkg_dir);
+                            }
                             return None;
                         }
 
@@ -121,6 +135,13 @@ pub fn query_installed(
                                 let package = Package::from(name, bucket, manifest);
                                 package.fill_install_state(state.clone());
 
+                                // Mark when the origin bucket no longer exists.
+                                if bucket != ISOLATED_PACKAGE_BUCKET
+                                    && !internal_bucket_dir(&root_path, bucket).exists()
+                                {
+                                    package.mark_bucket_removed();
+                                }
+
                                 if !maybe_fill_upgradable(
                                     &root_path,
                                     &package,
@@ -134,6 +155,9 @@ pub fn query_installed(
                                 }
 
                                 return Some(package);
+                            } else if include_broken {
+                                // manifest/install exist but failed to parse.
+                                return broken_package(name, &pkg_dir);
                             }
                     }
                     None
@@ -143,6 +167,52 @@ pub fn query_installed(
     }
 
     Ok(ret)
+}
+
+
+/// Build a placeholder package for a broken/partial install so `list` can
+/// surface it as "Install failed" instead of silently dropping it.
+///
+/// Version and bucket are best-effort: the version directory name is used
+/// as the version when resolvable, and the bucket is read from any
+/// `install.json` found under `current/` (or the resolved version dir).
+fn broken_package(name: &str, pkg_dir: &std::path::Path) -> Option<Package> {
+    let current = select_current_version(pkg_dir);
+    let version = current.clone().unwrap_or_default();
+
+    // Best-effort bucket: prefer the resolved version dir, then `current`,
+    // then any versioned subdirectory with a readable install.json.
+    let mut candidates = Vec::new();
+    if let Some(v) = current {
+        candidates.push(pkg_dir.join(v));
+    }
+    candidates.push(pkg_dir.join("current"));
+    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
+        for entry in entries.flatten() {
+            if entry.path() == pkg_dir.join("current") {
+                continue;
+            }
+            candidates.push(entry.path());
+        }
+    }
+    let bucket = candidates
+        .into_iter()
+        .find_map(|dir| parse_install_info(&dir.join("install.json")).ok())
+        .and_then(|info| info.bucket().map(|b| b.to_owned()))
+        .unwrap_or_else(|| ISOLATED_PACKAGE_BUCKET.to_owned());
+
+    // A minimal manifest carrying the (best-effort) version.
+    let json = format!(r#"{{"version": "{}"}}"#, version);
+    let manifest = Manifest::from_json(name, &json).ok()?;
+
+    let package = Package::from(name, &bucket, manifest);
+    package.mark_install_failed();
+    Some(package)
+}
+
+/// The `<root>/buckets/<name>` directory (user-level root).
+fn internal_bucket_dir(root: &std::path::Path, name: &str) -> std::path::PathBuf {
+    crate::internal::path::bucket_dir(root, name)
 }
 
 /// Search available packages.

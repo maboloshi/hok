@@ -70,6 +70,8 @@ cmd:
   list_header_source: "源"
   list_header_info: "状态"
   list_summary: "已安装 %{count} 个，锁定 %{held} 个，可更新 %{upgradable} 个"
+  list_install_failed: "安装失败"
+  list_bucket_removed: "源仓库已移除"
   no_aliases: "没有配置别名。"
   alias_add_usage: "用法: hok alias add <名称> <命令>"
   alias_added: "别名已添加: %{name} -> %{value}"
