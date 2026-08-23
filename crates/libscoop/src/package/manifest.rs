@@ -1373,6 +1373,23 @@ pub struct InstallInfo {
 }
 
 impl InstallInfo {
+    /// Construct install metadata for writing `install.json`, mirroring
+    /// upstream `save_install_info` (lib/install.ps1:73): null-valued
+    /// `bucket`/`url` are omitted on serialization (`skip_serializing_if`),
+    /// so bucket installs carry no `url` and isolated installs no `bucket`.
+    pub(crate) fn new(
+        architecture: String,
+        bucket: Option<String>,
+        url: Option<String>,
+    ) -> InstallInfo {
+        InstallInfo {
+            architecture,
+            bucket,
+            hold: None,
+            url,
+        }
+    }
+
     #[inline]
     pub fn bucket(&self) -> Option<&str> {
         self.bucket.as_deref()

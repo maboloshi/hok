@@ -7,7 +7,7 @@
 
 use tracing::debug;
 
-use crate::package::{Package, download, manifest_source, operations, query, resolve};
+use crate::package::{InstallInfo, Package, download, manifest_source, operations, query, resolve};
 use crate::{
     Error, Event, QueryOption, Session, constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible,
     internal, persist, psmodule, shim, shortcut,
@@ -662,25 +662,26 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     //  lib/install.ps1:73; the architecture is the *selected* one, i.e.
     //  after the `default_architecture` config and `-a/--arch` overrides)
     let arch = crate::internal::arch::Arch::current().name();
-    // Isolated installs record the manifest source (URL / local path /
-    // generated workspace file) as `url`, mirroring upstream
-    // `save_install_info`; bucket installs keep the download URL.
-    let install_url = if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
-        Some(pkg.manifest().path().display().to_string())
-    } else {
-        pkg.download_urls().first().map(|s| s.to_string())
-    };
-    let install_info = serde_json::json!({
-        "architecture": arch,
-        "url": install_url,
-        // Isolated installs carry no bucket (upstream `save_install_info`
-        // drops null values; readers fall back to `ISOLATED_PACKAGE_BUCKET`).
-        "bucket": if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
-            serde_json::Value::Null
+    // `url`/`bucket` mirror upstream `save_install_info` (lib/install.ps1:73):
+    // isolated installs record the manifest *source* as `url` (no bucket);
+    // bucket installs record the bucket (no `url`). Null-valued fields are
+    // omitted on serialization (InstallInfo `skip_serializing_if`), exactly
+    // like Scoop's null-key stripping — writing the download URL here would
+    // otherwise make original Scoop's `manifest()` try to `ConvertFrom-Json`
+    // the artifact (lib/manifest.ps1: `if ($url) { url_manifest $url }`).
+    let install_info = InstallInfo::new(
+        arch.to_owned(),
+        if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+            None
         } else {
-            serde_json::json!(pkg.bucket())
+            Some(pkg.bucket().to_owned())
         },
-    });
+        if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+            Some(pkg.manifest().path().display().to_string())
+        } else {
+            None
+        },
+    );
     if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
         return Err(Error::Custom(format!("install.json write: {}", e)));
     }
@@ -983,6 +984,32 @@ mod tests {
 
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A bucket install records no `url` key in install.json — upstream
+    /// `save_install_info` (lib/install.ps1:73) strips null-valued keys, so
+    /// the byte output matches Scoop (`{"architecture","bucket"}`), and
+    /// Scoop's `manifest()` won't try to `ConvertFrom-Json` an artifact URL.
+    #[tokio::test]
+    async fn install_from_bucket_writes_null_url() {
+        let root = crate::test_utils::tmpdir("install_bucket_null_url");
+        let session = crate::test_utils::test_session(&root);
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        install(&session, &["obsidian"], &[]).await.unwrap();
+
+        let install_info: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("apps/obsidian/current/install.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            install_info.get("url").is_none(),
+            "bucket installs must not record a url key (Scoop strips nulls): {}",
+            install_info
+        );
+        assert_eq!(install_info["bucket"], "main", "bucket is recorded");
 
         let _ = std::fs::remove_dir_all(&root);
     }
