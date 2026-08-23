@@ -55,6 +55,10 @@ pub struct RequestOptions<'a> {
     pub cookies: Option<&'a HashMap<String, String>>,
     pub token: Option<&'a str>,
     pub extra_headers: Option<&'a HashMap<String, String>>,
+    /// Resume a partial single-stream download from this byte offset via a
+    /// `Range: bytes={range_start}-` request (0 = fresh download). Used by the
+    /// single-stream path so an interrupted `.download` resumes next run.
+    pub range_start: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -374,20 +378,38 @@ impl Network for RealNetwork {
         on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<(), String> {
         let client = build_client(opts)?;
-        let req = apply_headers(client.get(url), opts);
+        let mut req = apply_headers(client.get(url), opts);
+        // Resume from `range_start` (byte 0 = fresh). The Range infra mirrors
+        // the fragmented `range_get` path.
+        if opts.range_start > 0 {
+            req = req.header(RANGE, format!("bytes={}-", opts.range_start));
+        }
 
         let resp = req
             .send()
             .await
             .map_err(|e| format!("download failed: {e}"))?;
         let resp = resp.error_for_status().map_err(|e| e.to_string())?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dest)
-            .map_err(|e| e.to_string())?;
+
+        // Resume only when the server honored the Range request (206). If it
+        // ignored it and returned the whole body (200), rewrite from byte 0 —
+        // appending a full body to the partial file would corrupt it.
+        let resume = opts.range_start > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let mut file = if resume {
+            OpenOptions::new().create(true).append(true).open(dest)
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(dest)
+        }
+        .map_err(|e| e.to_string())?;
+
         let mut stream = resp.bytes_stream();
-        let mut dlnow = 0u64;
+        // Absolute progress: start from the resumed offset so the caller's
+        // progress bar reflects the real total, not just the transferred tail.
+        let mut dlnow = if resume { opts.range_start } else { 0 };
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| format!("read failed: {e}"))?;
             file.write_all(&chunk)

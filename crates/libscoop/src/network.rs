@@ -55,6 +55,7 @@ pub async fn head_url(
         cookies,
         extra_headers: extra_headers.as_ref(),
         token: None,
+        range_start: 0,
     };
     session.network().head(url, &opts).await
 }
@@ -126,6 +127,7 @@ pub async fn download_page(
         cookies: None,
         extra_headers: extra_headers.as_ref(),
         token,
+        range_start: 0,
     };
     let data = session
         .network()

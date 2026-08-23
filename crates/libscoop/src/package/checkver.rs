@@ -392,6 +392,7 @@ pub async fn execute(
                             cookies: None,
                             token: token.as_deref(),
                             extra_headers: extra_ref,
+                            range_start: 0,
                         };
                         match net
                             .download(&url, &dl_opts)

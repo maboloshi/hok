@@ -254,19 +254,38 @@ impl Network for FakeNetwork {
     async fn download_stream(
         &self,
         url: &str,
-        _opts: &RequestOptions,
+        opts: &RequestOptions,
         dest: &Path,
         on_progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<(), String> {
-        self.ranges.lock().unwrap().push(String::new());
         let body = self
             .body(url)
             .ok_or_else(|| format!("no canned body for {url}"))?;
+        let resume = opts.range_start as usize;
+        self.ranges.lock().unwrap().push(if resume > 0 {
+            format!("bytes={resume}-")
+        } else {
+            String::new()
+        });
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(dest, &body).map_err(|e| e.to_string())?;
-        on_progress(body.len() as u64);
+        // Mirror the real client: append the tail when resuming, otherwise
+        // (re)write the whole body.
+        let slice = if resume < body.len() {
+            &body[resume..]
+        } else {
+            &[]
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+            .map_err(|e| e.to_string())?;
+        use std::io::Write as _;
+        file.write_all(slice).map_err(|e| e.to_string())?;
+        let total = dest.metadata().map(|m| m.len()).unwrap_or(0);
+        on_progress(total);
         Ok(())
     }
 }

@@ -1073,6 +1073,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_download_stream_resumes_from_partial() {
+        // Single-stream resume: a Range request from the existing `.download`
+        // size appends only the tail, and the progress reports the absolute
+        // total (40 resumed + 60 transferred = 100).
+        let data: Vec<u8> = (0..100u8).collect();
+        let server = spawn_range_server(data.clone(), 0, 500, false, false, None);
+        let dir = crate::test_utils::tmpdir("stream_resume_real");
+        let dest = dir.join("file.bin.download");
+        std::fs::write(&dest, &data[..40]).unwrap();
+
+        let url = format!("http://{}/file.bin", server.addr);
+        let opts = RequestOptions {
+            timeout_secs: 5,
+            range_start: 40,
+            ..RequestOptions::default()
+        };
+        let mut reported = 0u64;
+        RealNetwork
+            .download_stream(&url, &opts, &dest, &mut |n| reported = n)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+        assert_eq!(reported, 100, "progress reports the absolute total");
+    }
+
+    #[tokio::test]
     async fn test_download_range_retries_transient_offline() {
         use crate::test_utils::FakeNetwork;
 

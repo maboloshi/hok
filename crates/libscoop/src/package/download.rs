@@ -326,54 +326,94 @@ impl<'a> PackageSet<'a> {
 
                         chunk_file_map.insert(path, (part_paths, ident.clone()));
                     } else {
-                        // Single download
+                        // Single download (with resume for known-size files).
                         let path = cache_root.join(filename);
                         let tmp = cache_root.join(format!("{}.download", filename));
                         let _ = std::fs::remove_file(&path);
-                        let _ = std::fs::remove_file(&tmp);
 
-                        let fname = filename.to_owned();
-                        let url_str = dlinfo.url.to_owned();
-                        let dlinfo_total = dlinfo.remote_size;
-
-                        // Stream the whole body through the network capability
-                        // (reports cumulative bytes written via on_progress).
-                        let mut on_progress = |dlnow: u64| {
-                            if let Some(tx) = &emitter {
-                                let ctx = PackageDownloadProgressContext {
-                                    ident: ident.clone(),
-                                    url: url_str.clone(),
-                                    filename: fname.clone(),
-                                    dltotal: dlinfo_total,
-                                    dlnow,
-                                };
-                                let _ = tx.send(Event::PackageDownloadProgress(ctx));
-                            }
+                        // Resume support: when the total size is known (not
+                        // estimated) and a partial `.download` already exists,
+                        // resume from its current size via a Range request
+                        // instead of re-downloading from scratch.
+                        let known_total = dlinfo.remote_size > 0 && !dlinfo.estimated;
+                        let existing_len = tmp.metadata().map(|m| m.len()).unwrap_or(0);
+                        let resume_from = if known_total {
+                            existing_len.min(dlinfo.remote_size)
+                        } else {
+                            0
                         };
-                        // Race the stream against cooperative Ctrl-C
-                        // cancellation; on cancel the partial `.download` tmp
-                        // file is removed so nothing is left behind.
-                        let cancel = self.session.cancellation_token();
-                        tokio::select! {
-                            _ = cancel.cancelled() => {
-                                let _ = std::fs::remove_file(&tmp);
-                                return Err(crate::error::Error::Custom(
-                                    "download cancelled".to_owned(),
-                                ));
-                            }
-                            res = net.download_stream(
-                                &url_str,
-                                &file_opts,
-                                &tmp,
-                                &mut on_progress,
-                            ) => {
-                                res.map_err(|e| {
-                                    crate::error::Error::Custom(e.to_string())
-                                })?
-                            }
-                        }
 
-                        filepaths.push((tmp, path, ident.clone()));
+                        // A `.download` already at the full size needs no
+                        // network transfer — promote it straight to the cache.
+                        if known_total && existing_len == dlinfo.remote_size {
+                            filepaths.push((tmp, path, ident.clone()));
+                        } else {
+                            // Fresh start: drop any stale partial.
+                            if resume_from == 0 {
+                                let _ = std::fs::remove_file(&tmp);
+                            }
+
+                            let fname = filename.to_owned();
+                            let url_str = dlinfo.url.to_owned();
+                            let dlinfo_total = dlinfo.remote_size;
+
+                            // Stream the body (from `resume_from` when
+                            // resuming) through the network capability
+                            // (reports cumulative bytes via on_progress).
+                            let mut on_progress = |dlnow: u64| {
+                                if let Some(tx) = &emitter {
+                                    let ctx = PackageDownloadProgressContext {
+                                        ident: ident.clone(),
+                                        url: url_str.clone(),
+                                        filename: fname.clone(),
+                                        dltotal: dlinfo_total,
+                                        dlnow,
+                                    };
+                                    let _ = tx.send(Event::PackageDownloadProgress(ctx));
+                                }
+                            };
+
+                            let resumable_opts = internal::network::RequestOptions {
+                                range_start: resume_from,
+                                ..file_opts.clone()
+                            };
+                            // Race the stream against cooperative Ctrl-C
+                            // cancellation; on cancel the partial `.download`
+                            // file is kept so the next run resumes from here.
+                            let cancel = self.session.cancellation_token();
+                            tokio::select! {
+                                _ = cancel.cancelled() => {
+                                    return Err(crate::error::Error::Custom(
+                                        "download cancelled".to_owned(),
+                                    ));
+                                }
+                                res = net.download_stream(
+                                    &url_str,
+                                    &resumable_opts,
+                                    &tmp,
+                                    &mut on_progress,
+                                ) => {
+                                    res.map_err(|e| {
+                                        crate::error::Error::Custom(e.to_string())
+                                    })?;
+                                    // A resumed download must reach the full
+                                    // size — a short 206 would leave a corrupt
+                                    // part that must not be promoted to cache.
+                                    if resume_from > 0
+                                        && tmp.metadata().map(|m| m.len()).unwrap_or(0)
+                                            != dlinfo.remote_size
+                                    {
+                                        return Err(crate::error::Error::Custom(format!(
+                                            "short resumed download: {} != {} bytes",
+                                            tmp.display(),
+                                            dlinfo.remote_size
+                                        )));
+                                    }
+                                }
+                            }
+
+                            filepaths.push((tmp, path, ident.clone()));
+                        }
                     }
                     Ok(())
                 }
