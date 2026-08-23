@@ -1,0 +1,262 @@
+//! i18n consistency safety net (Plan A)
+//!
+//! Compile-time reconciliation of three invariants to prevent drift between
+//! the translation files and the source code:
+//! 1. en.yml and zh.yml must have exactly the same leaf keys (a missing
+//!    translation or a dropped key fails the test);
+//! 2. every literal t!("key") used in the source must exist in both en and zh
+//!    (a typo or a missing key fails the test);
+//! 3. dead keys (defined in the yml but never referenced from the source)
+//!    are reported as warnings without blocking the build -- because some keys
+//!    are referenced indirectly through variables or through an Error's
+//!    Display impl, which a literal scan cannot statically prove dead.
+//!
+//! Design trade-offs:
+//! - Pure std implementation (no regex dependency); self-contained and fast;
+//! - Only **leaf keys** (keys with a value or a block scalar) are reconciled;
+//!   intermediate namespace keys (with no translation value) are skipped;
+//! - Block scalar (|- / >) content lines are not treated as keys.
+//!
+//! Run: cargo test -p hok --test i18n_keys (also covered by a full cargo test).
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
+
+/// Extract all leaf key paths (e.g. output.done) from YAML source.
+/// Handles 2-space indentation, block scalars (|/>), ignores comments and
+/// blank lines.
+fn extract_leaf_keys(src: &str) -> BTreeSet<String> {
+    let mut leaves = BTreeSet::new();
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut in_block: Option<usize> = None;
+
+    for raw in src.split('\n') {
+        let raw = raw.trim_end_matches('\r');
+        // Skip block-scalar content lines (more indented than the block key).
+        if let Some(block_indent) = in_block {
+            let indent = leading_spaces(raw);
+            if raw.trim().is_empty() {
+                continue;
+            }
+            if indent > block_indent {
+                continue;
+            }
+            in_block = None;
+        }
+
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(colon_idx) = raw.find(':') else {
+            continue;
+        };
+        let name = raw[..colon_idx].trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+        {
+            continue;
+        }
+        let indent = leading_spaces(raw);
+        while stack.last().map(|(i, _)| *i >= indent).unwrap_or(false) {
+            stack.pop();
+        }
+        let rest = raw[colon_idx + 1..].trim();
+        let is_block = rest.starts_with('|') || rest.starts_with('>');
+        stack.push((indent, name.to_string()));
+        if !rest.is_empty() {
+            leaves.insert(
+                stack
+                    .iter()
+                    .map(|(_, n)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
+        }
+        if is_block {
+            in_block = Some(indent);
+        }
+    }
+    leaves
+}
+
+fn leading_spaces(s: &str) -> usize {
+    s.len() - s.trim_start_matches(' ').len()
+}
+
+fn collect_rs_files(dir: &Path, out: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect_rs_files(&p, out);
+            } else if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+}
+
+/// Strip comments (//, ///, //!, /* */) from Rust source.
+/// Note: **string literals are preserved** -- the t!("key") key lives inside
+/// a string, so it must not be stripped.
+fn strip_comments(src: &str) -> Vec<char> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    while i < chars.len() {
+        if in_line_comment {
+            if chars[i] == '\n' {
+                in_line_comment = false;
+                out.push('\n');
+            }
+            i += 1;
+            continue;
+        }
+        if in_block_comment {
+            if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                in_block_comment = false;
+                i += 2;
+            } else {
+                if chars[i] == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Collect literal t!("key") keys from comment-free code.
+fn scan_literal_t_keys(src: &str) -> BTreeSet<String> {
+    let code = strip_comments(src);
+    let mut keys = BTreeSet::new();
+    let mut i = 0;
+    while i < code.len() {
+        let Some(pos) = find_macro_call(&code, i) else {
+            break;
+        };
+        let quote = code[pos..].iter().position(|&c| c == '"');
+        let Some(q) = quote else {
+            i = pos + 2;
+            continue;
+        };
+        let ks = pos + q + 1;
+        let ke = code[ks..].iter().position(|&c| c == '"');
+        let Some(e) = ke else {
+            i = pos + 2;
+            continue;
+        };
+        let key: String = code[ks..ks + e].iter().collect();
+        if !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
+        {
+            keys.insert(key);
+        }
+        i = ks + e + 1;
+    }
+    keys
+}
+
+/// Find the next t! macro name from `from` (must be preceded by a
+/// non-identifier boundary).
+fn find_macro_call(src: &[char], from: usize) -> Option<usize> {
+    let mut search_from = from;
+    loop {
+        let idx = src[search_from..]
+            .iter()
+            .position(|&c| c == 't')
+            .map(|p| p + search_from)?;
+        if idx + 1 < src.len() && src[idx + 1] == '!' {
+            let preceded_ok =
+                idx == 0 || !(src[idx - 1].is_ascii_alphanumeric() || src[idx - 1] == '_');
+            if preceded_ok {
+                return Some(idx);
+            }
+        }
+        search_from = idx + 1;
+    }
+}
+
+fn run_consistency() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let locales = Path::new(manifest_dir).join("locales");
+    let en_src = fs::read_to_string(locales.join("en.yml")).expect("failed to read locales/en.yml");
+    let zh_src = fs::read_to_string(locales.join("zh.yml")).expect("failed to read locales/zh.yml");
+    let en_keys = extract_leaf_keys(&en_src);
+    let zh_keys = extract_leaf_keys(&zh_src);
+
+    // Invariant 1: en/zh leaf keys must match exactly
+    let only_en: Vec<_> = en_keys.difference(&zh_keys).collect();
+    let only_zh: Vec<_> = zh_keys.difference(&en_keys).collect();
+    assert!(
+        only_en.is_empty() && only_zh.is_empty(),
+        "en/zh key mismatch\n  only en: {only_en:?}\n  only zh: {only_zh:?}"
+    );
+
+    // Invariant 2: every literal t! key in the source must exist in en and zh
+    let mut src_files = Vec::new();
+    collect_rs_files(&Path::new(manifest_dir).join("src"), &mut src_files);
+    collect_rs_files(
+        &Path::new(manifest_dir).join("crates/libscoop/src"),
+        &mut src_files,
+    );
+    let mut used_keys = BTreeSet::new();
+    for f in &src_files {
+        if let Ok(src) = fs::read_to_string(f) {
+            used_keys.extend(scan_literal_t_keys(&src));
+        }
+    }
+    let missing_en: Vec<_> = used_keys.difference(&en_keys).collect();
+    let missing_zh: Vec<_> = used_keys.difference(&zh_keys).collect();
+    assert!(
+        missing_en.is_empty(),
+        "keys used in source but missing from en.yml: {missing_en:?}"
+    );
+    assert!(
+        missing_zh.is_empty(),
+        "keys used in source but missing from zh.yml: {missing_zh:?}"
+    );
+
+    // Invariant 3 (soft): dead-key warning, does not block
+    let dead: Vec<_> = en_keys
+        .iter()
+        .filter(|k| !k.starts_with("cli_help.") && !used_keys.contains(*k))
+        .collect();
+    if !dead.is_empty() {
+        eprintln!(
+            "[i18n warning] {} yml keys never referenced by a literal in the source \
+             (may be used via a variable/Display; please confirm manually):",
+            dead.len()
+        );
+        for k in &dead {
+            eprintln!("  - {k}");
+        }
+    }
+}
+
+#[test]
+fn i18n_consistency() {
+    run_consistency();
+}
