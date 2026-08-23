@@ -1,44 +1,45 @@
 //! Unified event loop for package sync operations.
 //!
-//! Spawns a dedicated thread to receive events from libscoop's event bus
-//! while the main thread runs the sync operation. Download progress bars,
-//! cursor management, and interactive prompts are handled here; all other
-//! event rendering is delegated to an [`EventHandler`].
+//! Spawns a tokio task to receive events from libscoop's event bus while the
+//! calling async task runs the sync operation. Download progress bars, cursor
+//! management, and interactive prompts are handled here; all other event
+//! rendering is delegated to an EventHandler.
 //!
 //! # Design
 //!
-//! - **Separation of concerns**: The loop handles only UI‑critical interactions
+//! - **Separation of concerns**: The loop handles only UI-critical interactions
 //!   (progress bars, confirmations, candidate selection). All other events are
-//!   forwarded to a user‑provided [`EventHandler`] trait object.
-//! - **Non‑blocking**: Runs in a dedicated thread, so the sync operation
-//!   (e.g. `package_sync`) can proceed concurrently.
-//! - **Cursor safety**: Uses [`CursorGuard`] (RAII) to hide the cursor during
-//!   progress updates and restore it on panic or normal exit.
+//!   forwarded to a user-provided EventHandler trait object.
+//! - **Non-blocking**: Runs as a tokio task on the multi-thread runtime, so
+//!   the sync operation (e.g. package_sync) can proceed concurrently without
+//!   occupying a dedicated OS thread.
+//! - **Cursor safety**: Uses CursorGuard (RAII) to hide the cursor during
+//!   progress updates and restore it on panic, cancellation or normal exit.
 //!
 //! # Extending the Event Loop
 //!
 //! - **To add new interactive logic** (e.g., a new user prompt) **for all commands**:
-//!   add a new match arm in `run_event_loop` for the corresponding [`Event`] variant.
-//!   Remember to temporarily show the cursor (`cursor::Show`) before reading input.
+//!   add a new match arm in run_event_loop for the corresponding Event variant.
+//!   Remember to temporarily show the cursor (cursor::Show) before reading input.
 //! - **To customise output for existing events** (e.g., log formatting) **without
-//!   changing interactive behaviour**: implement a custom [`EventHandler`] and pass
-//!   it to `run_event_loop` instead of using `run_event_loop_default`.
-//! - **To change global defaults** (progress bars, auto‑confirm): modify
-//!   [`EventLoopConfig`] or `run_event_loop_default` as needed.
+//!   changing interactive behaviour**: implement a custom EventHandler and pass
+//!   it to run_event_loop instead of using run_event_loop_default.
+//! - **To change global defaults** (progress bars, auto-confirm): modify
+//!   EventLoopConfig or run_event_loop_default as needed.
 //!
 //! # Important Notes
 //!
 //! - Always use `continue` after processing an event if you **do not** want the
-//!   event to be passed to the [`EventHandler`] as well.
-//! - Avoid long‑running operations inside match arms; they block the event loop.
-//!   Offload heavy work to separate threads if necessary.
-//! - When sending responses back to `libscoop` via `tx.send()`, ignore potential
-//!   errors (the receiver may have closed) – use `let _ = tx.send(...)`.
-//! - If you add new fields to [`EventLoopConfig`], ensure all callers (like `update`,
-//!   `remove` commands) set them or rely on `Default`.
-//!
-//! For detailed examples, see the documentation of [`EventHandler`] and the
-//! implementations in the `scoop_handler` module.
+//!   event to be passed to the EventHandler as well.
+//! - Avoid long-running operations inside match arms; they block the event
+//!   loop. Offload heavy work with spawn_blocking where needed.
+//! - When sending responses back to libscoop via tx.send().await, ignore
+//!   potential errors (the receiver may have closed) — use let _ = ... .
+//! - Blocking stdin reads must not run directly in the async task (they would
+//!   occupy a runtime worker thread); they are wrapped in
+//!   tokio::task::spawn_blocking.
+//! - If you add new fields to EventLoopConfig, ensure all callers (like update,
+//!   remove commands) set them or rely on Default.
 
 use crate::{cui, format, output};
 use crossterm::{cursor, ExecutableCommand};
@@ -68,22 +69,37 @@ impl Drop for CursorGuard {
 
 /// Run the unified event loop for a package sync operation.
 ///
-/// Spawns a dedicated thread to process events while the current thread
-/// calls `package::sync::sync` (or equivalent).
+/// Spawns a tokio task to process events while the calling async task calls
+/// package::sync::sync (or equivalent).
 ///
-/// The `handler` is called for each event to render output.
+/// The handler is called for each event to render output.
 pub fn run_event_loop(
     session: &Session,
     config: EventLoopConfig,
     mut handler: Box<dyn EventHandler>,
-) -> std::thread::JoinHandle<()> {
-    let rx = session.event_bus().receiver();
+) -> tokio::task::JoinHandle<()> {
+    // The outbound receiver is single-consumer (tokio::sync::mpsc), so it is
+    // handed out exactly once here and moved into the task.
+    let mut rx = session
+        .event_bus()
+        .receiver()
+        .expect("event bus outbound receiver already taken");
     let tx = session.event_bus().sender();
     let mut dlprogress = Some(cui::MultiProgressUI::new());
 
-    std::thread::spawn(move || {
+    tokio::spawn(async move {
         let _guard = CursorGuard::hide();
-        while let Ok(event) = rx.recv() {
+        // tokio::select! is the orchestration point between the backend event
+        // stream and (in the prompt arms below) the frontend's stdin input.
+        loop {
+            let event = tokio::select! {
+                biased;
+                maybe = rx.recv() => match maybe {
+                    Some(e) => e,
+                    // The session dropped its outbound sender: stop.
+                    None => break,
+                },
+            };
             match event {
                 // Download progress — update progress bars (handled here)
                 Event::PackageDownloadProgress(ref ctx) => {
@@ -107,32 +123,37 @@ pub fn run_event_loop(
                     for (i, pkg) in pkgs.iter().enumerate() {
                         println!("  {}: {}", i, pkg);
                     }
+                    let pkgs_len = pkgs.len();
 
                     let _ = std::io::stdout().execute(cursor::Show);
-                    let index = loop {
-                        output::prompt(rust_i18n::t!("output.select_prompt"));
-                        std::io::stdout().flush().unwrap();
-                        let mut input = String::new();
-                        // EOF/read error (piped/no input): fall back to the
-                        // first candidate instead of spinning forever.
-                        match std::io::stdin().read_line(&mut input) {
-                            Ok(0) | Err(_) => break 0,
-                            Ok(_) => {}
-                        }
-                        if let Ok(num) = input.trim().parse::<usize>()
-                            && num < pkgs.len() {
-                                break num;
+                    let index = tokio::task::spawn_blocking(move || {
+                        loop {
+                            output::prompt(rust_i18n::t!("output.select_prompt"));
+                            std::io::stdout().flush().unwrap();
+                            let mut input = String::new();
+                            // EOF/read error (piped/no input): fall back to the
+                            // first candidate instead of spinning forever.
+                            match std::io::stdin().read_line(&mut input) {
+                                Ok(0) | Err(_) => break 0,
+                                Ok(_) => {}
                             }
-                    };
+                            if let Ok(num) = input.trim().parse::<usize>()
+                                && num < pkgs_len {
+                                    break num;
+                                }
+                        }
+                    })
+                    .await
+                    .unwrap_or(0);
                     let _ = std::io::stdout().execute(cursor::Hide);
-                    let _ = tx.send(Event::PromptPackageCandidateResult(index));
+                    let _ = tx.send(Event::PromptPackageCandidateResult(index)).await;
                     continue;
                 }
 
                 // Interactive prompt: confirm the transaction
                 Event::PromptTransactionNeedConfirm(ref transaction) => {
                     if config.auto_confirm {
-                        let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true));
+                        let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true)).await;
                         continue;
                     }
 
@@ -213,8 +234,9 @@ pub fn run_event_loop(
                     }
 
                     let _ = std::io::stdout().execute(cursor::Show);
-                    let answer = output::prompt_yes_no();
-                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer));
+                    let answer =
+                        tokio::task::spawn_blocking(output::prompt_yes_no).await.unwrap_or(false);
+                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer)).await;
                     let _ = std::io::stdout().execute(cursor::Hide);
                     continue;
                 }
@@ -240,7 +262,7 @@ pub fn run_event_loop(
 }
 
 /// Convenience helper: runs the event loop with a default Scoop-style handler.
-pub fn run_event_loop_default(session: &Session) -> std::thread::JoinHandle<()> {
+pub fn run_event_loop_default(session: &Session) -> tokio::task::JoinHandle<()> {
     run_event_loop(
         session,
         EventLoopConfig::default(),

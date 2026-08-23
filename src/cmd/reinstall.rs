@@ -156,7 +156,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 async fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let handle = eventloop::run_event_loop_default(session);
     package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
-    handle.join().unwrap();
+    handle.await.unwrap();
     Ok(())
 }
 
@@ -169,6 +169,6 @@ async fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -
         Box::new(crate::scoop_handler::ScoopHandler::new()),
     );
     package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
-    handle.join().unwrap();
+    handle.await.unwrap();
     Ok(())
 }

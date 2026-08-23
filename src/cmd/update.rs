@@ -117,10 +117,13 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
             return Ok(());
         }
 
-    let rx = session.event_bus().receiver();
+    let mut rx = session
+        .event_bus()
+        .receiver()
+        .expect("event bus outbound receiver already taken");
 
-    let handle = std::thread::spawn(move || {
-        while let Ok(event) = rx.recv() {
+    let handle = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
             match event {
                 Event::BucketUpdateProgress(ctx) => {
                     if ctx.state().started() {
@@ -139,7 +142,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 
     output::header(rust_i18n::t!("cmd.header_buckets"));
     bucket::update(session).await?;
-    handle.join().unwrap();
+    handle.await.unwrap();
 
     // Refresh SQLite manifest cache with visible feedback
     if session.config().use_sqlite_cache() {
@@ -202,7 +205,7 @@ pub async fn execute_upgrade(
     let handle = crate::eventloop::run_event_loop_default(session);
 
     let sync_result = package::sync::sync(session, queries, options).await;
-    handle.join().unwrap();
+    handle.await.unwrap();
     // A declined confirmation is not a failure: exit 0 without ok_all.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
         return Ok(());
