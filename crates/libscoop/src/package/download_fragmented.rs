@@ -26,8 +26,10 @@ use crate::internal::network::{Network, RangeError, RequestOptions};
 /// gaps or overlaps.
 ///
 /// Cooperative cancellation (purity P2): when `token` is cancelled, all
-/// in-flight chunks and the serial fallback abort promptly, every part file is
-/// removed and an error is returned — no partial parts are left behind.
+/// in-flight chunks and the serial fallback abort promptly and an error is
+/// returned. In-flight / partial part files are deliberately left in place so
+/// a later run resumes where the download stopped — matching the cross-run
+/// resume contract that keeps `.parts` between invocations.
 // 8 args is deliberate (same shape as `run_hook`): the range-download
 // contract (net/url/opts/size/chunks/dir/progress) plus the cancellation
 // token — a struct would just move the same fields behind one indirection.
@@ -97,10 +99,9 @@ pub(crate) async fn download_fragmented(
                     }
                 };
                 match outcome {
-                    None => {
-                        // Cancelled: drop the partial part so nothing is left.
-                        let _ = std::fs::remove_file(&part_path);
-                    }
+                    // Cancelled: leave the (possibly partial) part file in
+                    // place so the next run resumes from where it stopped.
+                    None => {}
                     Some(Err(e)) => {
                         debug!("chunk {}-{} failed: {}", start, end, e);
                         // Drop the partial part so the fallback re-downloads the
@@ -116,12 +117,10 @@ pub(crate) async fn download_fragmented(
         .collect()
         .await;
 
-    // On cancellation, drop every remaining part (in-flight chunks already
-    // removed theirs) and bail — no partial parts may be left behind.
+    // On cancellation, bail and leave the remaining part files in place so
+    // the next run resumes from where the download stopped. Deleting them
+    // would throw away the cross-run resume state.
     if cancelled.load(Ordering::SeqCst) || token.is_cancelled() {
-        for (part_path, _, _) in &parts {
-            let _ = std::fs::remove_file(part_path);
-        }
         return Err("download cancelled".to_string());
     }
 
@@ -140,7 +139,11 @@ pub(crate) async fn download_fragmented(
                 }
             };
             if let Err(e) = outcome {
-                let _ = std::fs::remove_file(&fb_path);
+                // On cancellation keep the partial fallback part for resume;
+                // on a genuine failure drop it so a re-run restarts the range.
+                if !token.is_cancelled() {
+                    let _ = std::fs::remove_file(&fb_path);
+                }
                 return Err(e);
             }
             parts.push((fb_path, *s, *e));
@@ -1038,33 +1041,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_download_fragmented_pre_cancelled_leaves_no_parts() {
+    async fn test_download_fragmented_cancellation_preserves_resume_parts() {
         use crate::test_utils::FakeNetwork;
 
         let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
         let url = "https://fake.example.com/file.bin";
         let fake = FakeNetwork::new();
         fake.serve(url, data.clone());
-        let dir = crate::test_utils::tmpdir("fragmented_pre_cancelled");
+        let dir = crate::test_utils::tmpdir("fragmented_cancel_resume");
         let part_dir = dir.join("file.bin.parts");
         std::fs::create_dir_all(&part_dir).unwrap();
+        // Simulate a previously-downloaded chunk (cross-run resume state). A
+        // cancelled run must NOT delete it, or the next invocation would
+        // re-download the whole file instead of resuming.
+        let resume_part = part_dir.join("part.0");
+        std::fs::write(&resume_part, vec![0u8; 250]).unwrap();
         let opts = RequestOptions {
             timeout_secs: 5,
             ..RequestOptions::default()
         };
 
-        // A token cancelled before the download must abort immediately and
-        // leave no partial part files behind (cooperative-cleanup contract).
         let token = CancellationToken::new();
         token.cancel();
         let result =
             download_fragmented(&fake, url, &opts, 1000, 4, &part_dir, &|_| {}, &token).await;
         assert!(result.is_err(), "pre-cancelled download should fail");
-        let leftovers: Vec<_> = std::fs::read_dir(&part_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
-        assert!(leftovers.is_empty(), "no partial parts may remain");
+        assert!(
+            resume_part.exists(),
+            "cancellation must preserve the resume part for the next run"
+        );
     }
 
     #[tokio::test]
