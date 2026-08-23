@@ -137,7 +137,7 @@ $fname = '{fname}'
         .env("version", &version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str());
 
-    let status = ps.status().map_err(|e| {
+    let mut child = ps.spawn().map_err(|e| {
         Error::Custom(format!(
             "failed to run {} script for '{}': {}",
             stage,
@@ -145,6 +145,42 @@ $fname = '{fname}'
             e
         ))
     })?;
+
+    // Cooperative Ctrl-C cancellation: a cancelled token kills the child so
+    // no stray powershell lingers. There is deliberately no hard timeout here
+    // — Scoop install scripts may legitimately run for minutes, so adding one
+    // would change observable behavior.
+    let token = session.cancellation_token();
+    let status = loop {
+        if token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Custom(format!(
+                "{} script for '{}' cancelled",
+                stage,
+                package.name()
+            )));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                // Async sleep so the runtime is not blocked; race it against
+                // cancellation so a Ctrl-C is noticed promptly.
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                }
+            }
+            Err(e) => {
+                return Err(Error::Custom(format!(
+                    "failed to wait for {} script for '{}': {}",
+                    stage,
+                    package.name(),
+                    e
+                )));
+            }
+        }
+    };
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);

@@ -20,6 +20,7 @@
 
 use crate::internal::url;
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     Manifest, Session,
@@ -341,6 +342,7 @@ pub async fn execute(
     // completion order via `buffer_unordered`, matching the original
     // channel-based worker threads).
     let net = session.network();
+    let cancel = session.cancellation_token();
     let fetch_results: Vec<(usize, CheckverFetch)> =
         futures::stream::iter(pending.iter().enumerate())
             .map(|(i, item)| {
@@ -349,6 +351,7 @@ pub async fn execute(
                 let script_url = item.cv.url.clone();
                 let token = gh_token.clone();
                 let net = net.clone();
+                let cancel = cancel.clone();
                 let proxy_ref = proxy.as_deref();
                 let ua_ref = &user_agent;
                 let hosts_ref = &private_hosts;
@@ -361,7 +364,10 @@ pub async fn execute(
                             script_url.as_deref(),
                             proxy_ref,
                             timeout,
-                        ) {
+                            &cancel,
+                        )
+                        .await
+                        {
                             Ok(Some(page)) => CheckverFetch::Page(page),
                             Ok(None) => CheckverFetch::ScriptNoVersion,
                             Err(e) => CheckverFetch::ScriptError(e.to_string()),
@@ -1090,14 +1096,20 @@ fn extract_xpath(content: &str, xpath_expr: &str) -> Option<String> {
 ///
 /// This runs entirely off the `Session` (pure `ps_command()` invocation), so
 /// it can be executed from a worker thread alongside the downloads.
-fn run_checkver_script(
+async fn run_checkver_script(
     script: &str,
     url: Option<&str>,
     proxy: Option<&str>,
     timeout_secs: u64,
+    token: &CancellationToken,
 ) -> Result<Option<String>> {
     use std::io::Read;
     use std::time::Duration;
+
+    // Cooperative cancellation: bail before spawning when already cancelled.
+    if token.is_cancelled() {
+        return Err(crate::Error::Custom("checkver script cancelled".to_owned()));
+    }
 
     let mut cmd = crate::internal::os::ps_command();
     cmd.arg("-Command")
@@ -1119,10 +1131,16 @@ fn run_checkver_script(
         .spawn()
         .map_err(|e| crate::Error::Custom(format!("spawn powershell: {}", e)))?;
 
-    // Wait with timeout
+    // Wait with a timeout, racing cooperative Ctrl-C cancellation. Both
+    // timeouts and cancellation kill the child so no stray powershell lingers.
     let start = std::time::Instant::now();
     let deadline = Duration::from_secs(timeout_secs);
     loop {
+        if token.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(crate::Error::Custom("checkver script cancelled".to_owned()));
+        }
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {
@@ -1134,7 +1152,12 @@ fn run_checkver_script(
                         timeout_secs
                     )));
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                // Async sleep so the runtime is not blocked; race it against
+                // cancellation so a Ctrl-C is noticed promptly.
+                tokio::select! {
+                    _ = token.cancelled() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
             }
             Err(e) => return Err(crate::Error::Custom(format!("wait: {}", e))),
         }
@@ -1186,6 +1209,20 @@ mod tests {
     async fn apply_replace_no_pattern_returns_first_capture() {
         let caps = vec!["full_match".to_string(), "1.2.3".to_string()];
         assert_eq!(apply_replace(&caps, &HashMap::new(), None), "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn run_checkver_script_pre_cancelled_bails_without_spawning() {
+        let token = CancellationToken::new();
+        token.cancel();
+        // A pre-cancelled token must abort the script check immediately (the
+        // early-cancellation guard fires before the child is ever spawned).
+        let result = run_checkver_script("Start-Sleep -Seconds 60", None, None, 120, &token).await;
+        let err = result.expect_err("pre-cancelled script check should fail");
+        assert!(
+            err.to_string().contains("cancelled"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
