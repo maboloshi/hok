@@ -14,8 +14,10 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::Write;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 use tracing::warn;
 
@@ -268,6 +270,14 @@ impl std::fmt::Display for RangeError {
     }
 }
 
+/// An async download-progress callback: invoked with cumulative bytes
+/// written, returning a boxed future the caller awaits. Boxed (rather than
+/// `AsyncFnMut`, which is not dyn-compatible) so the [`Network`] trait can
+/// hold it as a trait object; returning a future lets the caller
+/// `send().await` on the event bus for backpressure (no dropped events).
+pub(crate) type ProgressCallback<'a> =
+    dyn FnMut(u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send;
+
 /// The HTTP networking capability of a session.
 ///
 /// The default implementation ([`RealNetwork`]) wraps the free functions in
@@ -294,13 +304,14 @@ pub trait Network: Send + Sync {
     ) -> Result<RangeResponse, RangeError>;
 
     /// Download a URL to `dest` in a streaming loop, reporting cumulative
-    /// bytes written through `on_progress`.
+    /// bytes written through `on_progress` (an async callback so callers can
+    /// `send().await` on the event bus for backpressure — no dropped events).
     async fn download_stream(
         &self,
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut (dyn FnMut(u64) + Send),
+        on_progress: &mut ProgressCallback<'_>,
     ) -> Result<(), String>;
 }
 
@@ -375,7 +386,7 @@ impl Network for RealNetwork {
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut (dyn FnMut(u64) + Send),
+        on_progress: &mut ProgressCallback<'_>,
     ) -> Result<(), String> {
         let client = build_client(opts)?;
         let mut req = apply_headers(client.get(url), opts);
@@ -415,7 +426,7 @@ impl Network for RealNetwork {
             file.write_all(&chunk)
                 .map_err(|e| format!("write failed: {e}"))?;
             dlnow += chunk.len() as u64;
-            on_progress(dlnow);
+            on_progress(dlnow).await;
         }
         Ok(())
     }

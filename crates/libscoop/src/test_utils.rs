@@ -85,7 +85,9 @@ pub fn mark_installed(
 
 use crate::error::{Error, Fallible};
 use crate::internal::git::Git;
-use crate::internal::network::{HeadResult, Network, RangeError, RangeResponse, RequestOptions};
+use crate::internal::network::{
+    HeadResult, Network, ProgressCallback, RangeError, RangeResponse, RequestOptions,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -256,7 +258,7 @@ impl Network for FakeNetwork {
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
-        on_progress: &mut (dyn FnMut(u64) + Send),
+        on_progress: &mut ProgressCallback<'_>,
     ) -> Result<(), String> {
         let body = self
             .body(url)
@@ -285,7 +287,7 @@ impl Network for FakeNetwork {
         use std::io::Write as _;
         file.write_all(slice).map_err(|e| e.to_string())?;
         let total = dest.metadata().map(|m| m.len()).unwrap_or(0);
-        on_progress(total);
+        on_progress(total).await;
         Ok(())
     }
 }

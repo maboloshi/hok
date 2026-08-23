@@ -12,11 +12,15 @@ use std::cell::OnceCell;
 use std::{
     collections::HashMap,
     fs::File,
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        Mutex,
     },
+    time::{Duration, Instant},
 };
 use tracing::debug;
 
@@ -292,6 +296,8 @@ impl<'a> PackageSet<'a> {
                         // the progress event matches the single-stream path.
                         let progress_total = Arc::new(AtomicU64::new(0));
                         let progress_total_h = progress_total.clone();
+                        let throttle = Arc::new(ProgressThrottle::new());
+                        let throttle_h = throttle.clone();
                         let emitter_h = emitter.clone();
                         let ident_h = ident.clone();
                         let filename_h = filename.to_owned();
@@ -299,7 +305,14 @@ impl<'a> PackageSet<'a> {
                         let on_progress = move |delta: u64| {
                             let dlnow =
                                 progress_total_h.fetch_add(delta, Ordering::Relaxed) + delta;
-                            if let Some(tx) = &emitter_h {
+                            // Throttle to one event per 100 ms so a slow event
+                            // loop cannot back up the bounded channel (aligned
+                            // with rake's THROTTLE_DURATION); force the final
+                            // event so the bar reaches 100%.
+                            let force = dlnow >= dlinfo.remote_size;
+                            if throttle_h.should_report(force)
+                                && let Some(tx) = &emitter_h
+                            {
                                 let _ = tx.try_send(Event::PackageDownloadProgress(
                                     PackageDownloadProgressContext {
                                         ident: ident_h.clone(),
@@ -360,17 +373,46 @@ impl<'a> PackageSet<'a> {
                             // Stream the body (from `resume_from` when
                             // resuming) through the network capability
                             // (reports cumulative bytes via on_progress).
-                            let mut on_progress = |dlnow: u64| {
-                                if let Some(tx) = &emitter {
-                                    let ctx = PackageDownloadProgressContext {
-                                        ident: ident.clone(),
-                                        url: url_str.clone(),
-                                        filename: fname.clone(),
-                                        dltotal: dlinfo_total,
-                                        dlnow,
-                                    };
-                                    let _ = tx.try_send(Event::PackageDownloadProgress(ctx));
-                                }
+                            let throttle = Arc::new(ProgressThrottle::new());
+                            let throttle_h = throttle.clone();
+                            let emitter_h = emitter.clone();
+                            let ident_h = ident.clone();
+                            let url_h = url_str.clone();
+                            let fname_h = fname.clone();
+                            let mut on_progress = move |dlnow: u64| -> Pin<
+                                Box<dyn Future<Output = ()> + Send>,
+                            > {
+                                // Clone per call: the future is `move` so it
+                                // must own its captures.
+                                let throttle = throttle_h.clone();
+                                let tx = emitter_h.clone();
+                                let ident = ident_h.clone();
+                                let url = url_h.clone();
+                                let filename = fname_h.clone();
+                                let total = dlinfo_total;
+                                Box::pin(async move {
+                                    // Throttle to one event per 100 ms
+                                    // (aligned with rake's THROTTLE_DURATION);
+                                    // force the final event so the bar
+                                    // reaches 100%.
+                                    let force = dlnow >= total;
+                                    if throttle.should_report(force)
+                                        && let Some(tx) = &tx
+                                    {
+                                        let ctx = PackageDownloadProgressContext {
+                                            ident,
+                                            url,
+                                            filename,
+                                            dltotal: total,
+                                            dlnow,
+                                        };
+                                        // `send().await` gives backpressure:
+                                        // a slow event loop cannot silently
+                                        // drop progress (throttled events are
+                                        // always delivered).
+                                        let _ = tx.send(Event::PackageDownloadProgress(ctx)).await;
+                                    }
+                                })
                             };
 
                             let resumable_opts = internal::network::RequestOptions {
@@ -581,6 +623,51 @@ impl<'a> PackageSet<'a> {
     }
 }
 
+// ─── Progress throttle ─────────────────────────────────────────────────────
+
+/// Minimum interval between two download progress events.
+///
+/// Aligned with rake's `THROTTLE_DURATION` (100 ms): download progress can
+/// otherwise fire far faster than the event loop consumes, and the bounded
+/// `tokio::sync::mpsc` bus drops `try_send` events when it fills, making the
+/// progress bar jump. Throttling to one event per interval bounds the event
+/// rate so the bar updates smoothly and `send().await` backpressure is cheap.
+const PROGRESS_THROTTLE: Duration = Duration::from_millis(100);
+
+/// Throttle download-progress events to at most one per [`PROGRESS_THROTTLE`].
+///
+/// `Sync` (via `Mutex`) so a single shared throttle can be handed to the
+/// concurrent fragmented-download chunk tasks.
+#[derive(Debug, Default)]
+pub(crate) struct ProgressThrottle {
+    last: Mutex<Option<Instant>>,
+}
+
+impl ProgressThrottle {
+    /// Create a fresh throttle (the first report always passes).
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether a progress event should be emitted now: true when at least
+    /// [`PROGRESS_THROTTLE`] has elapsed since the previous report (or on the
+    /// first call). `force` bypasses the throttle so the final event (bytes
+    /// reaching the total) is always delivered — otherwise the bar could sit
+    /// below 100% until the download-done event. Updates the timestamp when
+    /// it reports (forced or not).
+    pub(crate) fn should_report(&self, force: bool) -> bool {
+        let now = Instant::now();
+        let mut last = self.last.lock().unwrap();
+        match *last {
+            Some(prev) if !force && now.duration_since(prev) < PROGRESS_THROTTLE => false,
+            _ => {
+                *last = Some(now);
+                true
+            }
+        }
+    }
+}
+
 // ─── Progress context ───────────────────────────────────────────────────────
 
 /// Progress context for package download.
@@ -643,5 +730,37 @@ mod tests {
         let chunk_size = size / chunks;
         assert_eq!(chunk_size, 1);
         assert_eq!(size - 1, 0);
+    }
+
+    #[test]
+    fn test_progress_throttle_first_always_reports() {
+        let t = super::ProgressThrottle::new();
+        assert!(t.should_report(false), "first report must pass");
+    }
+
+    #[test]
+    fn test_progress_throttle_blocks_rapid_reports() {
+        let t = super::ProgressThrottle::new();
+        assert!(t.should_report(false));
+        // Immediate second report within the 100 ms window is throttled.
+        assert!(!t.should_report(false));
+    }
+
+    #[test]
+    fn test_progress_throttle_force_bypasses_window() {
+        let t = super::ProgressThrottle::new();
+        assert!(t.should_report(false));
+        // `force` bypasses the throttle so the final event always lands.
+        assert!(t.should_report(true));
+    }
+
+    #[test]
+    fn test_progress_throttle_reports_after_interval() {
+        let t = super::ProgressThrottle::new();
+        assert!(t.should_report(false));
+        assert!(!t.should_report(false));
+        // Past the throttle interval the throttle re-opens.
+        std::thread::sleep(std::time::Duration::from_millis(110));
+        assert!(t.should_report(false));
     }
 }

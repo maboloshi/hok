@@ -1089,13 +1089,23 @@ mod tests {
             range_start: 40,
             ..RequestOptions::default()
         };
-        let mut reported = 0u64;
+        let reported = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let reported_h = reported.clone();
         RealNetwork
-            .download_stream(&url, &opts, &dest, &mut |n| reported = n)
+            .download_stream(&url, &opts, &dest, &mut move |n| {
+                let reported = reported_h.clone();
+                Box::pin(async move {
+                    reported.store(n, std::sync::atomic::Ordering::Relaxed);
+                })
+            })
             .await
             .unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), data);
-        assert_eq!(reported, 100, "progress reports the absolute total");
+        assert_eq!(
+            reported.load(std::sync::atomic::Ordering::Relaxed),
+            100,
+            "progress reports the absolute total"
+        );
     }
 
     #[tokio::test]
