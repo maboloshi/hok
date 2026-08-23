@@ -476,7 +476,7 @@ pub async fn update(session: &Session) -> Fallible<()> {
 
     if buckets.is_empty() {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(crate::Event::BucketUpdateDone);
+            let _ = tx.send(crate::Event::BucketUpdateDone).await;
         }
 
         return Ok(());
@@ -510,20 +510,22 @@ pub async fn update(session: &Session) -> Fallible<()> {
                 let mut ctx = BucketUpdateProgressContext::new(name.as_str());
 
                 if let Some(tx) = emitter.clone() {
-                    let _ = tx.send(crate::Event::BucketUpdateProgress(ctx.clone()));
+                    let _ = tx
+                        .send(crate::Event::BucketUpdateProgress(ctx.clone()))
+                        .await;
                 }
 
                 match git.pull(&repo, proxy.as_deref()).await {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
-                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx));
+                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
                         }
                     }
                     Err(err) => {
                         if let Some(tx) = emitter {
                             ctx.set_failed(err.to_string().as_str());
-                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx));
+                            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
                         }
                     }
                 };
@@ -546,7 +548,7 @@ pub async fn update(session: &Session) -> Fallible<()> {
     }
 
     if let Some(tx) = emitter {
-        let _ = tx.send(crate::Event::BucketUpdateDone);
+        let _ = tx.send(crate::Event::BucketUpdateDone).await;
     }
 
     Ok(())
