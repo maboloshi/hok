@@ -20,6 +20,7 @@
 //! - `MultiProgressUI::update()` can be called from any thread; `indicatif`
 //!   handles internal synchronisation.
 
+use crossterm::style::Stylize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 
@@ -88,5 +89,62 @@ impl MultiProgressUI {
                 );
                 bar
             });
+    }
+}
+
+/// Spinner rows for a concurrent bucket sync.
+///
+/// Buckets pull concurrently (`bucket::update` spawns one task per bucket), so
+/// each bucket gets its own spinner row that finishes in place. A plain inline
+/// status/done pair would interleave the "Updating..."/"updated." lines when
+/// buckets complete out of order; per-row spinners keep each bucket result
+/// on its own line regardless of completion order.
+pub struct BucketUpdateUI {
+    mp: MultiProgress,
+    bars: HashMap<String, ProgressBar>,
+}
+
+impl BucketUpdateUI {
+    pub fn new() -> BucketUpdateUI {
+        BucketUpdateUI {
+            mp: MultiProgress::new(),
+            bars: HashMap::new(),
+        }
+    }
+
+    /// Start a spinner row for the named bucket.
+    pub fn start(&mut self, name: &str) {
+        let bar = self.mp.add(ProgressBar::new_spinner());
+        bar.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+        );
+        bar.set_message(name.to_owned());
+        bar.enable_steady_tick(std::time::Duration::from_millis(80));
+        self.bars.insert(name.to_owned(), bar);
+    }
+
+    /// Finish the named bucket spinner with a success marker.
+    pub fn succeed(&mut self, name: &str) {
+        if let Some(bar) = self.bars.remove(name) {
+            bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            bar.finish_with_message(format!("{} {}", "✓".green(), name));
+        }
+    }
+
+    /// Finish the named bucket spinner with a failure marker and message.
+    pub fn fail(&mut self, name: &str, msg: &str) {
+        if let Some(bar) = self.bars.remove(name) {
+            bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            bar.finish_with_message(format!("{} {} ({})", "✗".red(), name, msg));
+        }
+    }
+
+    /// Finish and clear any spinner rows still running.
+    pub fn finish_all(&mut self) {
+        for (_, bar) in self.bars.drain() {
+            bar.finish_and_clear();
+        }
     }
 }

@@ -4,7 +4,7 @@ use clap::{ArgAction, Parser};
 use libscoop::{bucket, package, Event, Session, SyncOption};
 
 use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
-use crate::{output, Result};
+use crate::{Result, cui, output};
 
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
 ///
@@ -123,21 +123,28 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
         .expect("event bus outbound receiver already taken");
 
     let handle = tokio::spawn(async move {
+        // Buckets pull concurrently (bucket::update spawns one task per
+        // bucket), so each bucket gets its own spinner row that finishes in
+        // place — an inline status/done pair would interleave the
+        // "Updating..."/"updated." lines when buckets finish out of order.
+        let mut ui = cui::BucketUpdateUI::new();
         while let Some(event) = rx.recv().await {
             match event {
                 Event::BucketUpdateProgress(ctx) => {
+                    let name = ctx.name();
                     if ctx.state().started() {
-                        output::status(format!("Updating '{}'...", ctx.name()));
+                        ui.start(name);
                     } else if ctx.state().succeeded() {
-                        output::done(format!("'{}' updated.", ctx.name()));
+                        ui.succeed(name);
                     } else if let Some(err) = ctx.state().failed() {
-                        output::err(format!("'{}' failed: {}", ctx.name(), err));
+                        ui.fail(name, err);
                     }
                 }
                 Event::BucketUpdateDone => break,
                 _ => {}
             }
         }
+        ui.finish_all();
     });
 
     output::header(rust_i18n::t!("cmd.header_buckets"));
