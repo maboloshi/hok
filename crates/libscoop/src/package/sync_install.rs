@@ -39,6 +39,20 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
             }
             let matched = query::query_installed(session, &[q], &[])?;
             if matched.is_empty() {
+                // A broken/partial install (app dir exists but `current`/
+                // manifest/install are missing) cannot be updated — mirror
+                // Scoop (`scoop-update.ps1`: `app_status.installed` is false
+                // for a broken install, so it is skipped with the message
+                // "Please reinstall it or fix the manifest." instead of being
+                // updated). Warn and skip rather than hard-erroring, so the
+                // user is told how to recover.
+                let broken = query::query_installed(session, &[q], &[QueryOption::Broken])?;
+                if !broken.is_empty() {
+                    session.output().warn(format!(
+                        "'{q}' is not installed correctly. Reinstall it or fix the manifest."
+                    ));
+                    continue;
+                }
                 if ignore_failure {
                     session.output().error(format!(
                         "failed to resolve '{}': {}",
@@ -845,6 +859,39 @@ mod tests {
         )
         .await
         .unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A broken/partial install (app dir exists, no usable `current`) cannot
+    /// be updated — mirror Scoop (`scoop-update.ps1` skips it with "Please
+    /// reinstall it or fix the manifest.") so it must not hard-error as
+    /// "not found", and the broken dir must be left untouched.
+    #[tokio::test]
+    async fn only_upgrade_broken_install_warns_and_skips() {
+        let root = crate::test_utils::tmpdir("only_upgrade_broken");
+        let session = crate::test_utils::test_session(&root);
+        let pkg_dir = root.join("apps").join("doubao");
+        // Version dir with metadata but no `current` junction: broken.
+        std::fs::create_dir_all(pkg_dir.join("1.0.0")).unwrap();
+        std::fs::write(pkg_dir.join("1.0.0").join("manifest.json"), TEST_MANIFEST).unwrap();
+        std::fs::write(
+            pkg_dir.join("1.0.0").join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "main"}"#,
+        )
+        .unwrap();
+
+        // Must not hard-error: a broken install is skipped with a warning,
+        // not treated as "package not found".
+        install(&session, &["doubao"], &[SyncOption::OnlyUpgrade])
+            .await
+            .unwrap();
+
+        // update must not modify the broken app dir.
+        assert!(
+            pkg_dir.exists(),
+            "update must not remove the broken app dir"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
