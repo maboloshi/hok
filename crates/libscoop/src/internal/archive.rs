@@ -1236,14 +1236,34 @@ impl Archive for RealArchive {
         innosetup: bool,
         emitter: &Option<Sender<Event>>,
     ) -> Fallible<()> {
-        extract(
-            cache_path,
-            dest_dir,
-            extract_dir,
-            extract_to,
-            innosetup,
-            emitter,
-        )
+        // Extraction (7z/zip/tar/rar decoding + disk writes) is CPU/IO
+        // intensive and blocking: offload it to the tokio blocking pool so a
+        // long extract never occupies a runtime worker thread. The emitter
+        // (a flume `Sender`) is `Send`, so progress events stay in-band and
+        // keep firing from inside the blocking closure.
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let extract_to = extract_to.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let extract_to = extract_to
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract(
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                extract_to.as_deref(),
+                innosetup,
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract task panicked: {}", e)))?
     }
 }
 

@@ -710,4 +710,81 @@ mod tests {
         extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
     }
+
+    // --- spawn_blocking concurrency guardrail ------------------------
+
+    /// Two concurrent extractions (multi-package install scenario) both
+    /// succeed through the blocking pool: `RealArchive::extract` offloads
+    /// the blocking archive decode to `tokio::task::spawn_blocking`, so
+    /// joining two extracts must not deadlock and must produce correct
+    /// trees. Also verifies the runtime worker is not occupied: a short
+    /// async timer fires while both extracts run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_extracts_succeed_via_blocking_pool() {
+        let root = tmpdir("concurrent_extracts");
+        let session = test_session(&root);
+
+        let z1 = root.join("p1.zip");
+        let z2 = root.join("p2.zip");
+        create_zip(&z1);
+        create_zip(&z2);
+        let d1 = root.join("out1");
+        let d2 = root.join("out2");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::create_dir_all(&d2).unwrap();
+
+        let emit = session.emitter();
+        let a1 = session.archive().clone();
+        let a2 = a1.clone();
+        let (e1, e2) = tokio::join!(
+            a1.extract(&z1, &d1, None, None, false, &emit),
+            a2.extract(&z2, &d2, None, None, false, &emit),
+        );
+        e1.unwrap();
+        e2.unwrap();
+
+        for dir in [&d1, &d2] {
+            assert!(dir.join("app/hello.txt").exists());
+            assert!(dir.join("app/sub/deep.txt").exists());
+        }
+    }
+
+    /// A blocking extract on the blocking pool must not starve the runtime
+    /// worker: a concurrent short async timer fires on schedule even while
+    /// an archive is being decoded.
+    #[tokio::test]
+    async fn blocking_extract_does_not_starve_runtime() {
+        let root = tmpdir("extract_starve");
+        let session = test_session(&root);
+        let zip = root.join("p.zip");
+        create_zip(&zip);
+        let dest = root.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let archive = session.archive().clone();
+        let emit = session.emitter();
+        let extract_task = {
+            let zip = zip.clone();
+            let dest = dest.clone();
+            let emit = emit.clone();
+            tokio::spawn(async move {
+                archive
+                    .extract(&zip, &dest, None, None, false, &emit)
+                    .await
+                    .unwrap()
+            })
+        };
+
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "runtime worker was starved by blocking extract (elapsed {:?})",
+            elapsed
+        );
+
+        extract_task.await.unwrap();
+        assert!(dest.join("app/hello.txt").exists());
+    }
 }

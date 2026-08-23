@@ -256,11 +256,26 @@ pub struct RealGit;
 #[async_trait::async_trait]
 impl Git for RealGit {
     async fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()> {
-        clone_repo(remote_url, path, proxy)
+        // git2 (libgit2) is a blocking library: run the whole clone on the
+        // tokio blocking pool so concurrent operations (parallel bucket
+        // clones) never occupy a runtime worker thread. The closure needs
+        // owned `static + Send` values, so the borrowed args are copied.
+        let remote_url = remote_url.to_owned();
+        let path = path.to_owned();
+        let proxy = proxy.map(|s| s.to_owned());
+        tokio::task::spawn_blocking(move || clone_repo(remote_url, path, proxy))
+            .await
+            .map_err(|e| Error::Custom(format!("git clone task panicked: {}", e)))?
     }
 
     async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()> {
-        pull(path, proxy)
+        // Same blocking-pool offload as clone_repo: git2 pull (fetch + merge)
+        // is blocking I/O. Each bucket pull runs on the blocking pool.
+        let path = path.to_owned();
+        let proxy = proxy.map(|s| s.to_owned());
+        tokio::task::spawn_blocking(move || pull(path, proxy))
+            .await
+            .map_err(|e| Error::Custom(format!("git pull task panicked: {}", e)))?
     }
 
     fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>> {
@@ -457,6 +472,87 @@ mod tests {
         assert!(content.contains("<<<<<<<"));
         assert!(content.contains(">>>>>>>"));
 
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    // --- spawn_blocking concurrency guardrails ------------------------
+
+    /// Two concurrent pulls (the parallel-bucket-update scenario) both
+    /// succeed via the blocking pool. `RealGit::pull` offloads git2 to
+    /// `tokio::task::spawn_blocking`, so joining two pulls must not deadlock
+    /// and must produce the correct fast-forward result for both repos.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_pulls_succeed_via_blocking_pool() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        let clone2_dir = temp_dir("clone2");
+        clone_repo(origin_dir.to_str().unwrap(), &clone2_dir, None).unwrap();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+
+        let git = RealGit;
+        let d1 = clone_dir;
+        let d2 = clone2_dir;
+        // Isolate clone2 from the user global core.autocrlf (like setup()
+        // does for clone1) so the fast-forward checks out LF files as LF.
+        // clone2 was cloned while the global autocrlf=true was in effect, so
+        // its worktree a.txt is CRLF; flipping the repo config to false would
+        // otherwise make libgit2 see that CRLF file as locally modified. A
+        // fresh `checkout_head` re-checks out the worktree under the new
+        // config (LF), leaving it clean for the fast-forward status check.
+        // FORCE is required: the default (SAFE) strategy would refuse to
+        // overwrite the CRLF worktree file (it looks locally modified).
+        let repo = Repository::open(&d2).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.autocrlf", false)
+            .unwrap();
+        let mut co = git2::build::CheckoutBuilder::new();
+        co.force();
+        repo.checkout_head(Some(&mut co)).unwrap();
+
+        let (r1, r2) = tokio::join!(git.pull(&d1, None), git.pull(&d2, None));
+        r1.unwrap();
+        r2.unwrap();
+
+        for dir in [&d1, &d2] {
+            let repo = Repository::open(dir).unwrap();
+            let head = repo.head().unwrap().peel_to_commit().unwrap();
+            let origin_head = origin.head().unwrap().peel_to_commit().unwrap();
+            assert_eq!(head.id(), origin_head.id());
+            assert_eq!(
+                std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+                "base\nremote\n"
+            );
+            cleanup(dir);
+        }
+        cleanup(&origin_dir);
+    }
+
+    /// A slow blocking pull (git2 on the blocking pool) must not occupy the
+    /// runtime worker: a concurrent short async timer fires on schedule.
+    /// Before the spawn_blocking offload, the pull blocked the worker and the
+    /// timer was delayed until the pull finished.
+    #[tokio::test]
+    async fn blocking_pull_does_not_starve_runtime() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+        let git = RealGit;
+
+        let pull_task = {
+            let dir = clone_dir.clone();
+            tokio::spawn(async move { git.pull(&dir, None).await.unwrap() })
+        };
+
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "runtime worker was starved by blocking pull (elapsed {:?})",
+            elapsed
+        );
+
+        pull_task.await.unwrap();
         cleanup(&origin_dir);
         cleanup(&clone_dir);
     }
