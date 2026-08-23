@@ -69,7 +69,7 @@ pub async fn extract_archives(
             let src = cache_path.join(filename);
             if src.exists() {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractStart(format!(
+                    let _ = tx.try_send(Event::PackageExtractStart(format!(
                         "{}/{}",
                         pkg.name(),
                         filename
@@ -88,7 +88,7 @@ pub async fn extract_archives(
                     )
                     .await?;
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractDone);
+                    let _ = tx.try_send(Event::PackageExtractDone);
                 }
             }
         }

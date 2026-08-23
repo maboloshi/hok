@@ -356,24 +356,20 @@ impl Default for Transaction {
 ///
 /// Returns `Ok(true)` if confirmed, `Ok(false)` if rejected or no emitter is
 /// available (the channel sender is dropped before the response arrives).
-fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible<bool> {
+async fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible<bool> {
     let tx = match session.emitter() {
         Some(tx) => tx,
         None => return Ok(true),
     };
 
     if tx
-        .send(Event::PromptTransactionNeedConfirm(transaction.clone()))
+        .try_send(Event::PromptTransactionNeedConfirm(transaction.clone()))
         .is_err()
     {
         return Ok(true);
     }
 
-    let rx = session
-        .receiver()
-        .ok_or_else(|| Error::Custom("event bus not initialized".to_owned()))?;
-
-    while let Ok(event) = rx.recv() {
+    while let Some(event) = session.receive_response().await {
         if let Event::PromptTransactionNeedConfirmResult(ret) = event {
             return Ok(ret);
         }
@@ -409,7 +405,7 @@ pub async fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption
         .collect::<Vec<_>>();
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveStart);
+        let _ = tx.try_send(Event::PackageResolveStart);
     }
 
     let is_op_remove = options.contains(&SyncOption::Remove);
@@ -423,8 +419,8 @@ pub async fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption
     // a declined confirmation) — so the event loop breaks and the CLI's
     // handle.join() cannot hang.
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveDone);
-        let _ = tx.send(Event::PackageSyncDone);
+        let _ = tx.try_send(Event::PackageResolveDone);
+        let _ = tx.try_send(Event::PackageSyncDone);
     }
 
     result?;
@@ -437,30 +433,35 @@ mod tests {
     use super::*;
 
     /// Helper to create a session with an active event bus for confirm tests.
-    fn setup_confirm_test() -> (Session, flume::Sender<Event>, flume::Receiver<Event>) {
+    fn setup_confirm_test() -> (
+        Session,
+        tokio::sync::mpsc::Sender<Event>,
+        tokio::sync::mpsc::Receiver<Event>,
+    ) {
         let session = Session::new();
         let bus = session.event_bus();
         let frontend_tx = bus.sender(); // outer_tx → session.inner_rx
-        let frontend_rx = bus.receiver(); // outer_rx ← session.inner_tx
+        let frontend_rx = bus.receiver().expect("fresh event bus receiver"); // outer_rx ← session.inner_tx
         (session, frontend_tx, frontend_rx)
     }
 
     /// Test that confirm_transaction returns true when the frontend accepts.
-    #[test]
-    fn test_confirm_transaction_accepted() {
-        let (session, frontend_tx, frontend_rx) = setup_confirm_test();
+    #[tokio::test]
+    async fn test_confirm_transaction_accepted() {
+        let (session, frontend_tx, mut frontend_rx) = setup_confirm_test();
 
         // Pre-send the acceptance response (buffered channel)
         frontend_tx
             .send(Event::PromptTransactionNeedConfirmResult(true))
+            .await
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).unwrap();
+        let result = confirm_transaction(&session, &transaction).await.unwrap();
         assert!(result, "should return true when frontend accepts");
 
         // Verify the request was actually emitted
-        let request = frontend_rx.recv().unwrap();
+        let request = frontend_rx.recv().await.unwrap();
         assert!(
             matches!(request, Event::PromptTransactionNeedConfirm(_)),
             "should have emitted PromptTransactionNeedConfirm"
@@ -468,17 +469,18 @@ mod tests {
     }
 
     /// Test that confirm_transaction returns false when the frontend rejects.
-    #[test]
-    fn test_confirm_transaction_rejected() {
+    #[tokio::test]
+    async fn test_confirm_transaction_rejected() {
         let (session, frontend_tx, _frontend_rx) = setup_confirm_test();
 
         // Pre-send the rejection response
         frontend_tx
             .send(Event::PromptTransactionNeedConfirmResult(false))
+            .await
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).unwrap();
+        let result = confirm_transaction(&session, &transaction).await.unwrap();
         assert!(!result, "should return false when frontend rejects");
     }
 }

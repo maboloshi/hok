@@ -39,7 +39,7 @@ pub(crate) fn verify_downloads(
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageIntegrityCheckStart);
+        let _ = tx.try_send(Event::PackageIntegrityCheckStart);
     }
 
     let config = session.config();
@@ -87,7 +87,7 @@ pub(crate) fn verify_downloads(
 
                 if let Some(tx) = session.emitter() {
                     let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
-                    let _ = tx.send(Event::PackageIntegrityCheckProgress(progress));
+                    let _ = tx.try_send(Event::PackageIntegrityCheckProgress(progress));
                 }
 
                 let mut file = std::fs::File::open(&path)?;
@@ -129,7 +129,7 @@ pub(crate) fn verify_downloads(
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageIntegrityCheckDone);
+        let _ = tx.try_send(Event::PackageIntegrityCheckDone);
     }
 
     Ok(failed)
@@ -157,14 +157,14 @@ pub(crate) async fn download_and_verify(
 
     if !offline {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadStart);
+            let _ = tx.try_send(Event::PackageDownloadStart);
         }
 
         set.set_ignore_failure(ignore_failure);
         failed = set.download().await?.into_iter().collect();
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadDone);
+            let _ = tx.try_send(Event::PackageDownloadDone);
         }
     }
 

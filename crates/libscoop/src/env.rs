@@ -69,7 +69,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         let mut paths = internal::env::get_path_like_env(&env_path_name, scope)?;
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathAddStart);
+            let _ = tx.try_send(Event::PackageEnvPathAddStart);
         }
 
         let add_paths = env_add_path
@@ -107,7 +107,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         internal::env::set(&env_path_name, Some(&updated), scope)?;
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathAddDone);
+            let _ = tx.try_send(Event::PackageEnvPathAddDone);
         }
     }
 
@@ -115,7 +115,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     if let Some(env_set) = package.manifest().env_set() {
         require_env_privileges(session, package)?;
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarSetStart);
+            let _ = tx.try_send(Event::PackageEnvVarSetStart);
         }
 
         for (key, value) in env_set {
@@ -124,7 +124,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarSetDone);
+            let _ = tx.try_send(Event::PackageEnvVarSetDone);
         }
     }
 
@@ -178,7 +178,7 @@ fn remove_impl(
         let app_path = session.app_dir(package.name());
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathRemoveStart);
+            let _ = tx.try_send(Event::PackageEnvPathRemoveStart);
         }
 
         let env_add_path = env_add_path
@@ -222,7 +222,7 @@ fn remove_impl(
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathRemoveDone);
+            let _ = tx.try_send(Event::PackageEnvPathRemoveDone);
         }
     }
 
@@ -230,7 +230,7 @@ fn remove_impl(
     if let Some(env_set) = manifest.env_set() {
         require_env_privileges(session, package)?;
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarRemoveStart);
+            let _ = tx.try_send(Event::PackageEnvVarRemoveStart);
         }
 
         let keys = env_set.keys();
@@ -239,7 +239,7 @@ fn remove_impl(
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarRemoveDone);
+            let _ = tx.try_send(Event::PackageEnvVarRemoveDone);
         }
     }
 

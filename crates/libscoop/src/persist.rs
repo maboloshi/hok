@@ -141,12 +141,12 @@ pub fn unlink(session: &Session, package: &Package, version_dir: &Path) -> Falli
 pub fn purge(session: &Session, pkg_name: &str) -> Fallible<()> {
     debug!("persist: purging data for {}", pkg_name);
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePersistPurgeStart);
+        let _ = tx.try_send(Event::PackagePersistPurgeStart);
     }
     let persist_dir = session.persist_dir(pkg_name);
     internal::fs::remove_dir(persist_dir)?;
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePersistPurgeDone);
+        let _ = tx.try_send(Event::PackagePersistPurgeDone);
     }
     Ok(())
 }

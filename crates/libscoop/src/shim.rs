@@ -133,7 +133,7 @@ fn handle_existing_shim(session: &Session, path: &Path, pkg_name: &str) -> Falli
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageShimConflict(
+        let _ = tx.try_send(Event::PackageShimConflict(
             path.to_string_lossy().into_owned(),
         ));
     }
@@ -284,7 +284,7 @@ fn write_exe_shim(
     std::fs::write(&shim_meta, meta_content.as_bytes())?;
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageShimAddProgress(
+        let _ = tx.try_send(Event::PackageShimAddProgress(
             shim_exe.file_name().unwrap().to_string_lossy().to_string(),
         ));
     }
@@ -350,7 +350,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         let version_dir = session.current_dir_name(&version);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShimAddStart(pkg_name.to_owned()));
+            let _ = tx.try_send(Event::PackageShimAddStart(pkg_name.to_owned()));
         }
 
         for def in bins.into_iter().filter(|d| !d.is_empty()) {
@@ -367,7 +367,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShimAddDone);
+            let _ = tx.try_send(Event::PackageShimAddDone);
         }
     }
 
@@ -454,7 +454,7 @@ fn write_shim(
 
                 if let Some(tx) = session.emitter() {
                     let name = full_path.file_name().unwrap().to_string_lossy().to_string();
-                    let _ = tx.send(Event::PackageShimAddProgress(name));
+                    let _ = tx.try_send(Event::PackageShimAddProgress(name));
                 }
             }
             Ok(())
@@ -594,7 +594,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
             .collect::<Vec<_>>();
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShimRemoveStart);
+            let _ = tx.try_send(Event::PackageShimRemoveStart);
         }
 
         for shim in bins.into_iter().filter(|d| !d.is_empty()).map(Shim::new) {
@@ -620,7 +620,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShimRemoveDone);
+            let _ = tx.try_send(Event::PackageShimRemoveDone);
         }
     }
 
@@ -657,7 +657,7 @@ fn remove_shim_variant(
         if alt_path.exists() {
             if let Some(tx) = session.emitter() {
                 let shim_name = alt_path.file_name().unwrap().to_string_lossy().to_string();
-                let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
+                let _ = tx.try_send(Event::PackageShimRemoveProgress(shim_name));
             }
             std::fs::remove_file(&alt_path)?;
             return Ok(true);
@@ -669,7 +669,7 @@ fn remove_shim_variant(
     }
     if let Some(tx) = session.emitter() {
         let shim_name = shim_path.file_name().unwrap().to_string_lossy().to_string();
-        let _ = tx.send(Event::PackageShimRemoveProgress(shim_name));
+        let _ = tx.try_send(Event::PackageShimRemoveProgress(shim_name));
     }
     std::fs::remove_file(&shim_path)?;
 
@@ -702,7 +702,7 @@ fn remove_shim_variant(
             if exe_path.exists() {
                 if let Some(tx) = session.emitter() {
                     let exe_name = exe_path.file_name().unwrap().to_string_lossy().to_string();
-                    let _ = tx.send(Event::PackageShimRemoveProgress(exe_name));
+                    let _ = tx.try_send(Event::PackageShimRemoveProgress(exe_name));
                 }
                 std::fs::remove_file(&exe_path)?;
             }
@@ -784,10 +784,14 @@ mod tests {
         }));
     }
 
-    fn conflict_count(rx: &flume::Receiver<Event>) -> usize {
-        rx.try_iter()
-            .filter(|e| matches!(e, Event::PackageShimConflict(_)))
-            .count()
+    fn conflict_count(rx: &mut tokio::sync::mpsc::Receiver<Event>) -> usize {
+        let mut count = 0;
+        while let Ok(e) = rx.try_recv() {
+            if matches!(e, Event::PackageShimConflict(_)) {
+                count += 1;
+            }
+        }
+        count
     }
 
     #[test]
@@ -991,7 +995,7 @@ mod tests {
     fn test_add_same_package_update_overwrites_silently() {
         let root = test_utils::tmpdir("shim_add_update");
         let session = test_utils::test_session(&root);
-        let rx = session.event_bus().receiver();
+        let mut rx = session.event_bus().receiver().unwrap();
         let pkg = make_package("foo", r#"[["main.exe", "foo"]]"#);
 
         add(&session, &pkg).unwrap();
@@ -1001,14 +1005,14 @@ mod tests {
         assert!(shims.join("foo.shim").exists());
         // no backup was created, no conflict was warned
         assert!(!shims.join("foo.shim.foo").exists());
-        assert_eq!(conflict_count(&rx), 0);
+        assert_eq!(conflict_count(&mut rx), 0);
     }
 
     #[test]
     fn test_add_other_package_renames_and_warns() {
         let root = test_utils::tmpdir("shim_add_conflict");
         let session = test_utils::test_session(&root);
-        let rx = session.event_bus().receiver();
+        let mut rx = session.event_bus().receiver().unwrap();
         add(&session, &make_package("git", r#"[["git.exe", "git"]]"#)).unwrap();
         add(&session, &make_package("bgit", r#"[["bgit.exe", "git"]]"#)).unwrap();
 
@@ -1022,14 +1026,14 @@ mod tests {
             meta.contains(r"apps\bgit\current\bgit.exe"),
             "unexpected meta: {meta}"
         );
-        assert_eq!(conflict_count(&rx), 1);
+        assert_eq!(conflict_count(&mut rx), 1);
     }
 
     #[test]
     fn test_add_unknown_owner_warns_and_overwrites() {
         let root = test_utils::tmpdir("shim_add_unknown");
         let session = test_utils::test_session(&root);
-        let rx = session.event_bus().receiver();
+        let mut rx = session.event_bus().receiver().unwrap();
         let shims = root.join("shims");
         std::fs::create_dir_all(&shims).unwrap();
         std::fs::write(shims.join("foo.shim"), "not a scoop shim at all").unwrap();
@@ -1043,14 +1047,14 @@ mod tests {
         );
         // unknown owner -> warned, but no rename (upstream also fails to rename)
         assert!(!shims.join("foo.shim.foo").exists());
-        assert_eq!(conflict_count(&rx), 1);
+        assert_eq!(conflict_count(&mut rx), 1);
     }
 
     #[test]
     fn test_add_script_shim_conflict_renames_all_files() {
         let root = test_utils::tmpdir("shim_add_ps_conflict");
         let session = test_utils::test_session(&root);
-        let rx = session.event_bus().receiver();
+        let mut rx = session.event_bus().receiver().unwrap();
         add(
             &session,
             &make_package("alpha", r#"[["tool.ps1", "tool"]]"#),
@@ -1070,7 +1074,7 @@ mod tests {
         assert!(shims.join("tool.alpha").exists(), "sh backup missing");
         // ...and the new files point at the overwriting package
         assert!(shims.join("tool.cmd").exists());
-        assert_eq!(conflict_count(&rx), 3);
+        assert_eq!(conflict_count(&mut rx), 3);
     }
 
     #[test]

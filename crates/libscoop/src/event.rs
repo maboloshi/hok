@@ -5,7 +5,8 @@
 //!
 //! # Design
 //!
-//! - **Full-duplex channel**: The event bus wraps two `flume` channels:
+//! - **Full-duplex channel**: The event bus wraps two `tokio::sync::mpsc`
+//!   channels:
 //!   - *Outbound* (`inner_tx` → `outer_rx`): Session backend → frontend.
 //!     Events flow *out* of the session to the caller (e.g. progress, prompts).
 //!   - *Inbound* (`outer_tx` → `inner_rx`): Frontend → session backend.
@@ -34,7 +35,7 @@
 //! variant and use the inbound channel (`EventBus::sender()`) to send it
 //! back.
 
-use flume::{bounded, Receiver, Sender};
+use tokio::sync::mpsc;
 
 use crate::{
     bucket::BucketUpdateProgressContext,
@@ -46,49 +47,67 @@ use crate::{
 #[derive(Debug)]
 pub struct EventBus {
     // Outbound channel, used to send events out from the session
-    inner_tx: Sender<Event>,
-    outer_rx: Receiver<Event>,
+    inner_tx: mpsc::Sender<Event>,
+    // The outbound receiver is a single-consumer tokio::sync::mpsc
+    // receiver (a single-consumer channel), so it is stored in a
+    // Mutex<Option<_>> and handed out exactly once — to the event loop task
+    // (or a test that drains it) — via EventBus::receiver().
+    outer_rx: std::sync::Mutex<Option<mpsc::Receiver<Event>>>,
 
     // Inbound channel, used to receive events from outside
-    outer_tx: Sender<Event>,
-    inner_rx: Receiver<Event>,
+    outer_tx: mpsc::Sender<Event>,
+    // The inbound receiver is consumed sequentially by the backend while it
+    // awaits prompt responses (confirm_transaction, select_candidate), so it
+    // lives in a tokio::sync::Mutex and is awaited in place.
+    inner_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Event>>>,
 }
 
 impl EventBus {
     /// Create a new event bus.
     pub fn new() -> EventBus {
-        let (inner_tx, outer_rx) = bounded(EVENT_BUS_CAPACITY);
-        let (outer_tx, inner_rx) = bounded(EVENT_BUS_CAPACITY);
+        let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
+        let (outer_tx, inner_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
         Self {
             inner_tx,
-            outer_rx,
+            outer_rx: std::sync::Mutex::new(Some(outer_rx)),
             outer_tx,
-            inner_rx,
+            inner_rx: tokio::sync::Mutex::new(Some(inner_rx)),
         }
     }
 
     /// Get the sender of the event bus.
     ///
     /// This sender is used to send events into the session.
-    pub fn sender(&self) -> Sender<Event> {
+    pub fn sender(&self) -> mpsc::Sender<Event> {
         self.outer_tx.clone()
     }
 
     /// Get the receiver of the event bus.
     ///
-    /// This receiver is used to receive events from the session.
-    pub fn receiver(&self) -> Receiver<Event> {
-        self.outer_rx.clone()
+    /// This receiver is used to receive events from the session. Because a
+    /// tokio::sync::mpsc receiver is single-consumer, it can only be obtained
+    /// once per bus — the event loop (or a test) is its sole owner.
+    ///
+    /// Returns None if it has already been taken.
+    pub fn receiver(&self) -> Option<mpsc::Receiver<Event>> {
+        self.outer_rx.lock().unwrap().take()
     }
 
     /// Get the outbound sender of the event bus.
-    pub(crate) fn inner_sender(&self) -> Sender<Event> {
+    pub(crate) fn inner_sender(&self) -> mpsc::Sender<Event> {
         self.inner_tx.clone()
     }
 
-    /// Get the inbound receiver of the event bus.
-    pub(crate) fn inner_receiver(&self) -> &Receiver<Event> {
-        &self.inner_rx
+    /// Await the next inbound (frontend → backend) event.
+    ///
+    /// Used by the backend to wait for a response to a prompt it emitted on
+    /// the outbound channel. Returns None when the channel is closed.
+    pub(crate) async fn receive_response(&self) -> Option<Event> {
+        let mut guard = self.inner_rx.lock().await;
+        match guard.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => None,
+        }
     }
 }
 

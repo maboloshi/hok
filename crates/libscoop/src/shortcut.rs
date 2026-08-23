@@ -69,7 +69,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         let version_dir = session.current_dir_name(&version);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShortcutAddStart);
+            let _ = tx.try_send(Event::PackageShortcutAddStart);
         }
 
         for shortcut in shortcuts {
@@ -110,7 +110,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                     .is_some_and(|o| !o.eq_ignore_ascii_case(package.name()));
                 if conflicts_other
                     && let Some(tx) = session.emitter() {
-                        let _ = tx.send(Event::PackageShortcutConflict(
+                        let _ = tx.try_send(Event::PackageShortcutConflict(
                             link_path.to_string_lossy().into_owned(),
                         ));
                     }
@@ -120,12 +120,12 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
 
             if let Some(tx) = session.emitter() {
                 let name = link_path.file_name().unwrap().to_str().unwrap().to_owned();
-                let _ = tx.send(Event::PackageShortcutAddProgress(name));
+                let _ = tx.try_send(Event::PackageShortcutAddProgress(name));
             }
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShortcutAddDone);
+            let _ = tx.try_send(Event::PackageShortcutAddDone);
         }
     }
 
@@ -250,7 +250,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 
     if let Some(shortcuts) = package.manifest().shortcuts() {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShortcutRemoveStart);
+            let _ = tx.try_send(Event::PackageShortcutRemoveStart);
         }
 
         for shortcut in shortcuts {
@@ -261,14 +261,14 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 
             if let Some(tx) = session.emitter() {
                 let shortcut_name = path.file_name().unwrap().to_str().unwrap().to_owned();
-                let _ = tx.send(Event::PackageShortcutRemoveProgress(shortcut_name));
+                let _ = tx.try_send(Event::PackageShortcutRemoveProgress(shortcut_name));
             }
 
             if path.exists() {
                 std::fs::remove_file(&path)?;
             } else {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageShortcutNotFound(
+                    let _ = tx.try_send(Event::PackageShortcutNotFound(
                         path.to_string_lossy().into_owned(),
                     ));
                 }
@@ -276,7 +276,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageShortcutRemoveDone);
+            let _ = tx.try_send(Event::PackageShortcutRemoveDone);
         }
     }
     Ok(())

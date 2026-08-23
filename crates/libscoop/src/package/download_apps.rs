@@ -78,7 +78,7 @@ pub async fn download_apps(
         // Nothing resolved — still end the event loop, or the CLI's
         // handle.join() would hang forever waiting for DownloadDone.
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::DownloadDone);
+            let _ = tx.try_send(Event::DownloadDone);
         }
         return Ok(());
     }
@@ -120,7 +120,7 @@ pub async fn download_apps(
     // Always end the event loop — including error paths (set creation,
     // sizing, verify) — or the CLI's handle.join() hangs forever.
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::DownloadDone);
+        let _ = tx.try_send(Event::DownloadDone);
     }
 
     result?;

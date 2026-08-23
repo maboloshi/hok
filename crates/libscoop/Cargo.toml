@@ -14,7 +14,6 @@ readme = "README.md"
 [dependencies]
 # curl = { version = "0.4", features = ["static-curl"] }
 dirs = "5.0.1"
-flume = "0.10"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
 # Phase 4 (方案 B): async traits + reqwest (真 async I/O) + concurrency.
 async-trait = "0.1"

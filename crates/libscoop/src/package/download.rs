@@ -232,7 +232,7 @@ impl<'a> PackageSet<'a> {
             if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
                 if let Some(tx) = self.session.emitter() {
                     for filename in cache.inner.keys() {
-                        let _ = tx.send(Event::PackageCacheHit(filename.clone()));
+                        let _ = tx.try_send(Event::PackageCacheHit(filename.clone()));
                     }
                 }
                 continue;
@@ -300,7 +300,7 @@ impl<'a> PackageSet<'a> {
                             let dlnow =
                                 progress_total_h.fetch_add(delta, Ordering::Relaxed) + delta;
                             if let Some(tx) = &emitter_h {
-                                let _ = tx.send(Event::PackageDownloadProgress(
+                                let _ = tx.try_send(Event::PackageDownloadProgress(
                                     PackageDownloadProgressContext {
                                         ident: ident_h.clone(),
                                         url: url_h.clone(),
@@ -369,7 +369,7 @@ impl<'a> PackageSet<'a> {
                                         dltotal: dlinfo_total,
                                         dlnow,
                                     };
-                                    let _ = tx.send(Event::PackageDownloadProgress(ctx));
+                                    let _ = tx.try_send(Event::PackageDownloadProgress(ctx));
                                 }
                             };
 

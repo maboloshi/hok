@@ -42,7 +42,7 @@
 //! not call `config_mut()` while a `config()` guard is still held
 //! (it fails with `ConfigInUse`).
 
-use flume::{Receiver, Sender};
+use tokio::sync::mpsc;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -181,7 +181,7 @@ impl Session {
         // Initialize event bus and emit fallback warning
         let _ = session.event_bus();
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::ConfigLoadFallback);
+            let _ = tx.try_send(Event::ConfigLoadFallback);
         }
         session
     }
@@ -418,13 +418,16 @@ impl Session {
     }
 
     /// Get an outbound sender to emit events.
-    pub(crate) fn emitter(&self) -> Option<Sender<Event>> {
+    pub(crate) fn emitter(&self) -> Option<mpsc::Sender<Event>> {
         self.event_bus.get().map(|bus| bus.inner_sender())
     }
 
-    /// Get an inbound receiver to reveive events.
-    pub(crate) fn receiver(&self) -> Option<&Receiver<Event>> {
-        self.event_bus.get().map(|bus| bus.inner_receiver())
+    /// Await the next inbound (frontend → backend) event.
+    ///
+    /// Used to wait for the response to a prompt emitted on the outbound
+    /// channel (e.g. a transaction confirmation or candidate selection).
+    pub(crate) async fn receive_response(&self) -> Option<Event> {
+        self.event_bus().receive_response().await
     }
 
     /// Set the user agent for the session.

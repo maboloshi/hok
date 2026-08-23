@@ -24,7 +24,7 @@ use std::sync::Arc;
 use crate::error::Fallible;
 use crate::event::Event;
 use crate::Error;
-use flume::Sender;
+use tokio::sync::mpsc;
 
 /// Detect archive format from filename extension.
 ///
@@ -82,7 +82,7 @@ pub fn extract(
     extract_dir: Option<&[&str]>,
     extract_to: Option<&[&str]>,
     innosetup: bool,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     // Compute effective extract_to path (join all subdirs components)
     let effective_dest = match extract_to {
@@ -213,7 +213,7 @@ fn extract_pseudo_7z(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     // Read the whole file into memory once: block-parallel decoding shares
     // this buffer across worker threads. A plain 7z archive starts at
@@ -312,7 +312,7 @@ fn extract_7z_entries_mt(
     start: usize,
     dest: PathBuf,
     filter: Option<Vec<String>>,
-    emitter: Option<Sender<Event>>,
+    emitter: Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use sevenz_rust2::{Archive, BlockDecoder, Password};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -502,7 +502,7 @@ fn extract_zip(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let source = Arc::new(ZipSource::File(src.to_path_buf()));
     let total = source.len()?;
@@ -528,7 +528,7 @@ fn extract_zip_mt(
     total: usize,
     dest: PathBuf,
     filter: Option<Vec<String>>,
-    emitter: Option<Sender<Event>>,
+    emitter: Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -750,7 +750,7 @@ fn extract_zip_embedded(
     start: usize,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let source = Arc::new(ZipSource::Memory { data, start });
     let total = source.len()?;
@@ -770,7 +770,7 @@ fn extract_tar(
     dest: &Path,
     filter: Option<&[&str]>,
     compression: Option<Compression>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use tar::Archive as TarArchive;
 
@@ -829,7 +829,7 @@ fn extract_rar(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use unrar::Archive;
 
@@ -886,7 +886,7 @@ fn extract_rar(
 
 // ─── Fallback: call external 7z.exe for ISO ─────────────────────────
 
-fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>) -> Fallible<()> {
+fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<mpsc::Sender<Event>>) -> Fallible<()> {
     // Look for 7z.exe in PATH or in Scoop's shims directory
     let path_env = std::env::var("SCOOP").unwrap_or_default();
     let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
@@ -936,7 +936,7 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
                 .next()
                 .and_then(|s| s.parse::<u8>().ok())
                 && let Some(tx) = emitter {
-                    let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
+                    let _ = tx.try_send(Event::PackageExtractProgress(format!("7z {}%", pct)));
                 }
         }
     }
@@ -960,7 +960,7 @@ fn extract_innosetup(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
@@ -1015,7 +1015,7 @@ fn extract_nsis(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
@@ -1126,7 +1126,7 @@ fn extract_nsis(
 /// thousands of files (e.g. git's mingw64 tzdata) don't flood the event bus
 /// and terminal with per-file redraws. Formats without a known total emit
 /// nothing (Start/Done feedback is enough).
-fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Option<usize>) {
+fn emit_extract_progress(emitter: &Option<mpsc::Sender<Event>>, i: usize, total: Option<usize>) {
     const THROTTLE: usize = 50;
     let Some(total) = total else {
         return;
@@ -1135,7 +1135,7 @@ fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Optio
         return;
     }
     if let Some(tx) = emitter {
-        let _ = tx.send(Event::PackageExtractProgress(format!(
+        let _ = tx.try_send(Event::PackageExtractProgress(format!(
             "{}/{}",
             i + 1,
             total
@@ -1213,7 +1213,7 @@ pub trait Archive: Send + Sync {
         extract_dir: Option<&[&str]>,
         extract_to: Option<&[&str]>,
         innosetup: bool,
-        emitter: &Option<Sender<Event>>,
+        emitter: &Option<mpsc::Sender<Event>>,
     ) -> Fallible<()>;
 }
 
@@ -1234,12 +1234,12 @@ impl Archive for RealArchive {
         extract_dir: Option<&[&str]>,
         extract_to: Option<&[&str]>,
         innosetup: bool,
-        emitter: &Option<Sender<Event>>,
+        emitter: &Option<mpsc::Sender<Event>>,
     ) -> Fallible<()> {
         // Extraction (7z/zip/tar/rar decoding + disk writes) is CPU/IO
         // intensive and blocking: offload it to the tokio blocking pool so a
         // long extract never occupies a runtime worker thread. The emitter
-        // (a flume `Sender`) is `Send`, so progress events stay in-band and
+        // (a tokio `Sender`) is `Send`, so progress events stay in-band and
         // keep firing from inside the blocking closure.
         let cache_path = cache_path.to_owned();
         let dest_dir = dest_dir.to_owned();
@@ -1811,12 +1811,19 @@ mod tests {
             let dest = dir.join(if with_progress { "out_p" } else { "out_n" });
             std::fs::create_dir_all(&dest).unwrap();
             let tx = if with_progress {
-                let (tx, rx) = flume::unbounded();
+                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                 std::thread::spawn(move || {
-                    while let Ok(ev) = rx.recv() {
-                        if let Event::PackageExtractProgress(ctx) = ev {
-                            print!("\r\x1b[2K  {ctx}");
-                            let _ = std::io::stdout().flush();
+                    loop {
+                        match rx.try_recv() {
+                            Ok(Event::PackageExtractProgress(ctx)) => {
+                                print!("\r\x1b[2K  {ctx}");
+                                let _ = std::io::stdout().flush();
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
                         }
                     }
                 });

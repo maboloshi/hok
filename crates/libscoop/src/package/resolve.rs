@@ -34,7 +34,7 @@ use crate::{
 /// When `ignore_failure` is enabled, a package whose dependencies cannot be
 /// resolved (missing dependency or undecidable multi-candidate) is dropped from
 /// the list and reported to stderr, so the remaining packages still proceed.
-pub(crate) fn resolve_dependencies(
+pub(crate) async fn resolve_dependencies(
     session: &Session,
     packages: &mut Vec<Package>,
     ignore_failure: bool,
@@ -119,7 +119,7 @@ pub(crate) fn resolve_dependencies(
                             if !installed_candidate.is_empty() {
                                 matched = installed_candidate;
                             } else {
-                                match select_candidate(session, &mut matched, assume_yes) {
+                                match select_candidate(session, &mut matched, assume_yes).await {
                                     Ok(()) => {}
                                     Err(e) => {
                                         if ignore_failure {
@@ -214,7 +214,7 @@ pub(crate) fn resolve_dependencies(
 }
 
 /// Select one from multiple package candidates, interactively if possible.
-pub(crate) fn select_candidate(
+pub(crate) async fn select_candidate(
     session: &Session,
     candidates: &mut Vec<Package>,
     assume_yes: bool,
@@ -238,14 +238,10 @@ pub(crate) fn select_candidate(
         let question = candidates.iter().map(|p| p.ident()).collect::<Vec<_>>();
 
         if tx
-            .send(event::Event::PromptPackageCandidate(question))
+            .try_send(event::Event::PromptPackageCandidate(question))
             .is_ok()
         {
-            // The unwrap is safe here because we have obtained the outbound tx,
-            // so the inbound rx must be available.
-            let rx = session.receiver().unwrap();
-
-            while let Ok(answer) = rx.recv() {
+            while let Some(answer) = session.receive_response().await {
                 if let event::Event::PromptPackageCandidateResult(idx) = answer {
                     // bounds check
                     if idx < candidates.len() {
@@ -431,14 +427,14 @@ mod tests {
 
     // ── resolve_dependencies ──────────────────────────────────────────────────
 
-    #[test]
-    fn resolve_orders_dependencies_first() {
+    #[tokio::test]
+    async fn resolve_orders_dependencies_first() {
         let (session, root) = setup("order");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -448,36 +444,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_no_deps_is_identity() {
+    #[tokio::test]
+    async fn resolve_no_deps_is_identity() {
         let (session, _root) = setup("no_deps");
 
         let mut packages = vec![pkg("main", "solo", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["solo"]);
     }
 
-    #[test]
-    fn resolve_missing_dependency_errors() {
+    #[tokio::test]
+    async fn resolve_missing_dependency_errors() {
         let (session, root) = setup("missing_dep");
         write_manifest(&root.0, "main", "a", &["ghost"]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false).await.unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
     }
 
-    #[test]
-    fn resolve_missing_dependency_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_missing_dependency_skipped_with_ignore() {
         let (session, root) = setup("missing_dep_ignored");
         write_manifest(&root.0, "main", "a", &["ghost"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -487,8 +483,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_transitive_dependents_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_transitive_dependents_skipped_with_ignore() {
         let (session, root) = setup("missing_dep_transitive");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &["ghost"]);
@@ -496,7 +492,7 @@ mod tests {
         // a → b → ghost: b cannot be resolved, so a must be dropped too,
         // otherwise a would be committed with a missing dependency.
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert!(
@@ -505,8 +501,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_bucket_qualified_dep_not_collapsed_with_ignore() {
+    #[tokio::test]
+    async fn resolve_bucket_qualified_dep_not_collapsed_with_ignore() {
         let (session, root) = setup("bucket_qualified_ignore");
         // main/b fails (bad dep); c depends on alt/b explicitly. Even though
         // alt/b can't co-exist with main/b in the list (packages are deduped
@@ -518,7 +514,7 @@ mod tests {
         write_manifest(&root.0, "main", "c", &["alt/b"]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "c", &["alt/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
 
         let idents = packages.iter().map(|p| p.ident()).collect::<Vec<_>>();
         assert_eq!(
@@ -528,15 +524,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_multilevel_dependencies_expanded() {
+    #[tokio::test]
+    async fn resolve_multilevel_dependencies_expanded() {
         let (session, root) = setup("multilevel");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &["main/c"]);
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -546,21 +542,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_duplicate_inputs_deduped() {
+    #[tokio::test]
+    async fn resolve_duplicate_inputs_deduped() {
         let (session, root) = setup("dedup");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["b", "a"], "no duplicates, deps first");
     }
 
-    #[test]
-    fn resolve_multiple_candidates_prefers_installed() {
+    #[tokio::test]
+    async fn resolve_multiple_candidates_prefers_installed() {
         let (session, root) = setup("multi_installed");
         // Same package name in two buckets
         write_manifest(&root.0, "main", "a", &[]);
@@ -570,7 +566,7 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
@@ -578,21 +574,21 @@ mod tests {
         assert_eq!(buckets, vec!["alt", "main"], "installed candidate wins");
     }
 
-    #[test]
-    fn resolve_multiple_candidates_without_emitter_errors() {
+    #[tokio::test]
+    async fn resolve_multiple_candidates_without_emitter_errors() {
         let (session, root) = setup("multi_no_emitter");
         write_manifest(&root.0, "main", "a", &[]);
         write_manifest(&root.0, "alt", "a", &[]);
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false).await.unwrap_err();
 
         assert!(matches!(err, Error::PackageMultipleCandidates(name) if name == "a"));
     }
 
-    #[test]
-    fn resolve_multiple_candidates_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_multiple_candidates_skipped_with_ignore() {
         let (session, root) = setup("multi_no_emitter_ignored");
         write_manifest(&root.0, "main", "a", &[]);
         write_manifest(&root.0, "alt", "a", &[]);
@@ -600,7 +596,7 @@ mod tests {
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "b", &["a"]), pkg("main", "c", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -612,8 +608,8 @@ mod tests {
 
     // ── resolve_cascade ───────────────────────────────────────────────────────
 
-    #[test]
-    fn cascade_appends_unneeded_dependency() {
+    #[tokio::test]
+    async fn cascade_appends_unneeded_dependency() {
         let (session, root) = setup("cascade_unneeded");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, false);
@@ -626,8 +622,8 @@ mod tests {
         assert_eq!(names, vec!["a", "b"]);
     }
 
-    #[test]
-    fn cascade_keeps_dependency_needed_by_others() {
+    #[tokio::test]
+    async fn cascade_keeps_dependency_needed_by_others() {
         let (session, root) = setup("cascade_needed");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         // c depends on b (read from its installed manifest.json)
@@ -643,8 +639,8 @@ mod tests {
         assert_eq!(names, vec!["a"], "b is still needed by c");
     }
 
-    #[test]
-    fn cascade_held_dependency_blocks_without_escape() {
+    #[tokio::test]
+    async fn cascade_held_dependency_blocks_without_escape() {
         let (session, root) = setup("cascade_held");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
@@ -655,8 +651,8 @@ mod tests {
         assert!(matches!(err, Error::PackageCascadeRemoveHold(name) if name == "b"));
     }
 
-    #[test]
-    fn cascade_held_dependency_removed_when_escaping() {
+    #[tokio::test]
+    async fn cascade_held_dependency_removed_when_escaping() {
         let (session, root) = setup("cascade_escape");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);

@@ -164,7 +164,9 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                         session,
                         &mut matched,
                         options.contains(&SyncOption::AssumeYes),
-                    ) {
+                    )
+                    .await
+                    {
                         if ignore_failure {
                             session
                                 .output()
@@ -197,7 +199,8 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
             &mut packages,
             ignore_failure,
             options.contains(&SyncOption::AssumeYes),
-        )?;
+        )
+        .await?;
     }
 
     let (installed, installable): (Vec<_>, Vec<_>) =
@@ -236,7 +239,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
             // Emit PackageHeld for each held package
             for p in &held {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageHeld {
+                    let _ = tx.try_send(Event::PackageHeld {
                         name: p.name().to_string(),
                         version: p.version().to_string(),
                     });
@@ -272,7 +275,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
     if !offline {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadSizingStart);
+            let _ = tx.try_send(Event::PackageDownloadSizingStart);
         }
 
         let download_size = set.calculate_download_size().await?;
@@ -284,11 +287,11 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         transaction.set_download_size(download_size);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadSizingDone);
+            let _ = tx.try_send(Event::PackageDownloadSizingDone);
         }
     }
 
-    if !assume_yes && !confirm_transaction(session, &transaction)? {
+    if !assume_yes && !confirm_transaction(session, &transaction).await? {
         // User declined: not an error, but not a success either — callers
         // exit 0 without the "Everything is ok!" message.
         return Err(Error::UserAborted);
@@ -442,12 +445,12 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     if let Some(tx) = session.emitter() {
         let old_ver = pkg.installed_version().unwrap_or_default().to_owned();
         let new_ver = pkg.version().to_owned();
-        let _ = tx.send(Event::PackageVersionKnown {
+        let _ = tx.try_send(Event::PackageVersionKnown {
             name: pkg.name().to_owned(),
             old_version: old_ver,
             new_version: new_ver,
         });
-        let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitStart(pkg.name().to_owned()));
     }
 
     // 1. extract/copy downloaded files
@@ -573,7 +576,7 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitDone(pkg.name().to_owned()));
     }
 
     // Emit post-install notes if the manifest has them.
@@ -588,7 +591,7 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             .collect::<Vec<_>>()
             .join("\n");
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageNotes(notes_text));
+            let _ = tx.try_send(Event::PackageNotes(notes_text));
         }
     }
 

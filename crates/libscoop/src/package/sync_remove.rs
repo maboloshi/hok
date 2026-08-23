@@ -108,7 +108,7 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
     transaction.set_remove(packages);
 
     let assume_yes = options.contains(&SyncOption::AssumeYes);
-    if !assume_yes && !confirm_transaction(session, &transaction)? {
+    if !assume_yes && !confirm_transaction(session, &transaction).await? {
         // User declined: exit 0 but no success message (see sync_install).
         return Err(Error::UserAborted);
     }
@@ -159,7 +159,7 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
     debug!("remove: {} - starting", package.name());
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageCommitStart(package.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitStart(package.name().to_owned()));
     }
 
     let app_dir = session.app_dir(package.name());
@@ -311,7 +311,7 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageCommitDone(package.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitDone(package.name().to_owned()));
     }
 
     Ok(())

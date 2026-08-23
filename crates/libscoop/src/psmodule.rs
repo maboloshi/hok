@@ -36,14 +36,14 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let module_name = psmodule.name();
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePsModuleAddStart(module_name.to_owned()));
+        let _ = tx.try_send(Event::PackagePsModuleAddStart(module_name.to_owned()));
     }
 
     link_module(session, package)?;
     ensure_in_psmodulepath(session)?;
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePsModuleAddDone);
+        let _ = tx.try_send(Event::PackagePsModuleAddDone);
     }
     Ok(())
 }
@@ -121,7 +121,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         let mut psmodule_path = session.modules_dir();
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePsModuleRemoveStart(
+            let _ = tx.try_send(Event::PackagePsModuleRemoveStart(
                 psmodule.name().to_owned(),
             ));
         }
@@ -130,7 +130,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         let _ = std::fs::remove_dir(psmodule_path);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePsModuleRemoveDone);
+            let _ = tx.try_send(Event::PackagePsModuleRemoveDone);
         }
     }
     Ok(())
