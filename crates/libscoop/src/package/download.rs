@@ -350,9 +350,28 @@ impl<'a> PackageSet<'a> {
                                 let _ = tx.send(Event::PackageDownloadProgress(ctx));
                             }
                         };
-                        net.download_stream(&url_str, &file_opts, &tmp, &mut on_progress)
-                            .await
-                            .map_err(|e| crate::error::Error::Custom(e.to_string()))?;
+                        // Race the stream against cooperative Ctrl-C
+                        // cancellation; on cancel the partial `.download` tmp
+                        // file is removed so nothing is left behind.
+                        let cancel = self.session.cancellation_token();
+                        tokio::select! {
+                            _ = cancel.cancelled() => {
+                                let _ = std::fs::remove_file(&tmp);
+                                return Err(crate::error::Error::Custom(
+                                    "download cancelled".to_owned(),
+                                ));
+                            }
+                            res = net.download_stream(
+                                &url_str,
+                                &file_opts,
+                                &tmp,
+                                &mut on_progress,
+                            ) => {
+                                res.map_err(|e| {
+                                    crate::error::Error::Custom(e.to_string())
+                                })?
+                            }
+                        }
 
                         filepaths.push((tmp, path, ident.clone()));
                     }
