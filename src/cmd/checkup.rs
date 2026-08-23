@@ -24,7 +24,7 @@ pub async fn execute(_: Args, session: &Session) -> Result<()> {
             output::named(issue.name.as_str(), &issue.message);
         }
         output::warn(format!("{} issue(s) found.", issues.len()));
-        output::status_line(rust_i18n::t!("cmd.run_reset"));
+        output::status(rust_i18n::t!("cmd.run_reset"));
     }
 
     Ok(())

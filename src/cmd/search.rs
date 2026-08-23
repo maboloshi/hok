@@ -72,7 +72,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             line.push_str(format!("\n  {shims}").as_str());
         }
 
-        output::status_line(&line);
+        output::status(&line);
     }
     Ok(())
 }

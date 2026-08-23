@@ -149,7 +149,7 @@ fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Sessi
             if ver.is_current {
                 output::named(ver.version.as_str(), "(current)");
             } else {
-                output::status_line(&ver.version);
+                output::status(&ver.version);
             }
         }
     }
