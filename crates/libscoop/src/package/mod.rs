@@ -523,6 +523,12 @@ impl Package {
         self.bucket_removed.get().copied().unwrap_or(false)
     }
 
+    /// Whether this installed package is isolated (installed from a URL or
+    /// local path, not managed by any synced bucket).
+    pub fn is_isolated(&self) -> bool {
+        self.bucket() == ISOLATED_PACKAGE_BUCKET
+    }
+
     pub(crate) fn mark_install_failed(&self) {
         let _ = self.install_failed.set(true);
     }

@@ -79,6 +79,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let mut shown = 0u32;
             let mut shown_held = 0u32;
             let mut shown_upgradable = 0u32;
+            let mut shown_broken = 0u32;
+            let mut shown_orphaned = 0u32;
+            let mut shown_isolated = 0u32;
             for pkg in &packages {
                 let held = pkg.is_held();
                 if args.held && !held {
@@ -89,9 +92,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 let mut info = Vec::new();
                 if pkg.is_install_failed() {
                     info.push(rust_i18n::t!("cmd.list_install_failed").to_string());
+                    shown_broken += 1;
                 }
                 if pkg.is_bucket_removed() {
                     info.push(rust_i18n::t!("cmd.list_bucket_removed").to_string());
+                    shown_orphaned += 1;
+                }
+                if pkg.is_isolated() {
+                    shown_isolated += 1;
                 }
                 if held {
                     info.push("held".to_string());
@@ -128,6 +136,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 count = shown,
                 held = shown_held,
                 upgradable = shown_upgradable,
+                broken = shown_broken,
+                orphaned = shown_orphaned,
+                isolated = shown_isolated,
             ));
 
             Ok(())

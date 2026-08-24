@@ -66,7 +66,11 @@ pub fn query_installed(
                         let name = filename.to_str()?;
                         // The name `scoop` is reserved for Scoop, ignore it
                         let is_scoop = name == "scoop";
-                        let include_broken = options.contains(&QueryOption::Broken);
+                        // Broken installs cannot be upgraded, so under the
+                        // `--upgradable` filter (QueryOption::Upgradable) they are
+                        // excluded instead of surfacing alongside upgradable ones.
+                        let include_broken = options.contains(&QueryOption::Broken)
+                            && !options.contains(&QueryOption::Upgradable);
 
                         if !is_dir || is_scoop {
                             return None;

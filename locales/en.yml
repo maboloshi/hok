@@ -69,7 +69,7 @@ cmd:
   list_header_version: "Version"
   list_header_source: "Source"
   list_header_info: "Info"
-  list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable"
+  list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable, %{broken} broken, %{orphaned} orphaned, %{isolated} isolated"
   list_install_failed: "Install failed"
   list_bucket_removed: "Source bucket removed"
   no_aliases: "No aliases configured."
