@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use syn::{parse_macro_input, Data, DeriveInput, Fields, Item, Meta, MetaList};
+use syn::{Data, DeriveInput, Fields, Item, Meta, MetaList, Type, parse_macro_input};
 
 #[proc_macro_derive(I18nHelp)]
 pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
@@ -57,7 +57,16 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
     let mut cmds: Vec<(String, bool, String, String)> = vec![];
     for var in &cmd_enum.variants {
         let p = var.ident.to_string();
-        let fn_ = to_file_name(&p);
+        // The subcommand's module/file name comes from its single `Args`
+        // field type path (e.g. `CiAutoPr(auto_pr::Args)` -> `auto_pr`), which is
+        // authoritative: the variant ident is not always a match (e.g. the
+        // `ci-auto-pr` command lives in `auto_pr.rs`).
+        let module = extract_module(&var.fields);
+        let fn_ = if module.is_empty() {
+            to_file_name(&p)
+        } else {
+            module
+        };
         let yk = if hok_root.join(format!("src/cmd/{}.rs", fn_)).exists() {
             fn_.clone()
         } else {
@@ -251,6 +260,21 @@ fn to_file_name(s: &str) -> String {
         r.push(c.to_ascii_lowercase());
     }
     r
+}
+
+/// Extract the module name from a `Name::Args`-shaped variant field type
+/// (e.g. `auto_pr::Args` -> `auto_pr`); returns empty when the variant has no
+/// such field, in which case the caller falls back to the variant ident.
+fn extract_module(fields: &Fields) -> String {
+    if let Fields::Unnamed(u) = fields
+        && let Some(first) = u.unnamed.first()
+        && let Type::Path(tp) = &first.ty
+        && let Some(seg) = tp.path.segments.first()
+    {
+        seg.ident.to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn extract_field_names(fields: &Fields) -> Vec<String> {

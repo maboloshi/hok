@@ -561,7 +561,7 @@ cli_help:
       app: 要检查的包名称
   which:
     about: 显示命令的 shim 位置
-  ciautopr:
+  auto_pr:
     about: "通过 GitHub API 自动更新 manifest 并创建 Pull-Request（零外部二进制，CI 模式）"
     args:
       dir: 要扫描 manifest 的 bucket 目录
@@ -573,6 +573,8 @@ cli_help:
       skip_updated: 跳过已是最新的 manifest
       special: "强制更新指定的特殊雪花 app（逗号分隔）"
       token: "GitHub Token（默认从 GITHUB_TOKEN 环境变量读取）"
+      app_slug: "GitHub App 的 slug（例如 `my-bot`）；当令牌是 GitHub App 安装令牌时，用于为对应的 bot 用户生成 DCO 签名"
+      verbose: 显示每个 manifest 的 checkver 详情（找到的版本、更新、错误）
 
 # 命令别名（用于 shell 补全）
 cli_alias:

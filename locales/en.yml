@@ -568,7 +568,7 @@ cli_help:
       app: Package name(s) to check
   which:
     about: Show the shim location(s) of a command
-  ciautopr:
+  auto_pr:
     about: "Auto-update manifests and create pull-requests via GitHub API (zero external binary, CI mode)"
     args:
       dir: Bucket directory to scan for manifests
@@ -580,6 +580,8 @@ cli_help:
       skip_updated: Skip manifests that are already up-to-date
       special: Force update on these special snowflakes (comma-separated)
       token: "GitHub Token (default from GITHUB_TOKEN env var)"
+      app_slug: "GitHub App slug (e.g. `my-bot`); used to generate the DCO sign-off for the corresponding bot user when the token is a GitHub App installation token"
+      verbose: Show per-manifest checkver details (versions found, updates, errors)
 
 # Command aliases (for shell completions)
 cli_alias:
