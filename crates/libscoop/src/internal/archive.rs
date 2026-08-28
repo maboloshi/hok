@@ -62,6 +62,9 @@ pub(crate) fn detect_format(filename: &str) -> Option<&'static str> {
     if filename.ends_with(".iso") {
         return Some("iso");
     }
+    if filename.ends_with(".msi") {
+        return Some("msi");
+    }
     None
 }
 
@@ -132,6 +135,7 @@ pub fn extract(
             emitter,
         ),
         "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
+        "msi" => extract_msi(cache_path, &effective_dest, extract_dir, emitter),
         "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
         _ => Err(Error::ExtractionFailed(format!(
             "unsupported format: {}",
@@ -954,7 +958,146 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<mpsc::Sender<Ev
     Ok(())
 }
 
-// ─── Inno Setup extraction via innospect ─────────────────────────────
+// ─── MSI extraction via lessmsi ───────────────────────────────
+
+/// Extract a Windows Installer (`.msi`) archive via the external `lessmsi`
+/// utility, which hok installs as the `lessmsi` helper dependency whenever the
+/// manifest URL ends in `.msi` (see `manifest::Manifest::dependencies`).
+///
+/// Mirrors official Scoop's `Expand-MsiArchive`. lessmsi extracts in place
+/// into `dest` and always wraps the payload in a `SourceDir` folder, so the
+/// manifest's `extract_dir` subtree (or `SourceDir` itself) is then moved up
+/// into `dest` and the now-empty wrapper is removed. Extraction happens in
+/// place — no temporary staging directory and no double copy.
+///
+/// The trailing separator on the target argument is what tells lessmsi to treat
+/// it as an extraction directory rather than a filename filter.
+fn extract_msi(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    // Resolve lessmsi.exe from Scoop's shims or PATH, like `extract_with_7z_exe`.
+    let path_env = std::env::var("SCOOP").unwrap_or_default();
+    let shims_lessmsi = Path::new(&path_env).join("shims").join("lessmsi.exe");
+    let exe = if shims_lessmsi.exists() {
+        shims_lessmsi
+    } else {
+        PathBuf::from("lessmsi.exe")
+    };
+
+    // The trailing separator signals an extraction directory to lessmsi.
+    let target = format!("{}{}", dest.display(), std::path::MAIN_SEPARATOR);
+
+    let mut child = Command::new(&exe)
+        .arg("x")
+        .arg(src)
+        .arg(&target)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            Error::ExtractionFailed(format!(
+                "failed to launch lessmsi.exe (install 'lessmsi' via hok first): {}",
+                e
+            ))
+        })?;
+
+    // Parse `n/total filename` progress lines from stdout, like the 7z path.
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| Error::ExtractionFailed(format!("read lessmsi progress: {}", e)))?;
+            if n == 0 {
+                break;
+            }
+            // lessmsi reports `n/total filename`, so compute a percentage.
+            if let Some(part) = line.split_whitespace().next()
+                && let Some((n, t)) = part.split_once('/')
+                && let (Ok(n), Ok(t)) = (n.trim().parse::<f64>(), t.trim().parse::<f64>())
+                && t > 0.0
+                && let Some(tx) = emitter
+            {
+                let pct = (n / t * 100.0).round() as u8;
+                let _ = tx.try_send(Event::PackageExtractProgress(format!("msi {}%", pct)));
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| Error::ExtractionFailed(format!("failed to wait for lessmsi.exe: {}", e)))?;
+    if !status.success() {
+        return Err(Error::ExtractionFailed(format!(
+            "lessmsi.exe exited with code {:?}",
+            status.code()
+        )));
+    }
+
+    // Promote the extracted `SourceDir` payload into `dest`.
+    promote_msi_content(dest, extract_dir)
+}
+
+/// Promote a lessmsi/msiexec `SourceDir` payload up into `dest`, mirroring
+/// Scoop's `movedir` (`robocopy <from> <to> /e /move`).
+///
+/// lessmsi wraps the payload in `SourceDir`, so the manifest's `extract_dir`
+/// subtree (`SourceDir/<extract_dir>`, falling back to `<extract_dir>` or
+/// `SourceDir`) is promoted into `dest` and the now-empty `SourceDir` wrapper
+/// is removed. Promotion happens in place — no temporary staging directory.
+fn promote_msi_content(dest: &Path, extract_dir: Option<&[&str]>) -> Fallible<()> {
+    let source_dir = dest.join("SourceDir");
+    let mut content_root: PathBuf = if let Some(dirs) = extract_dir {
+        match dirs.iter().find(|d| !d.is_empty()) {
+            Some(dir) => {
+                let in_source = source_dir.join(dir);
+                if in_source.exists() {
+                    in_source
+                } else {
+                    dest.join(dir)
+                }
+            }
+            None => source_dir.clone(),
+        }
+    } else {
+        source_dir.clone()
+    };
+    if !content_root.exists() && source_dir.exists() {
+        content_root = source_dir.clone();
+    }
+
+    if content_root != dest && content_root.exists() {
+        // Same volume, so a plain `rename` moves whole trees atomically.
+        let entries = std::fs::read_dir(&content_root)
+            .map_err(|e| Error::ExtractionFailed(format!("read msi source: {}", e)))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| Error::ExtractionFailed(format!("read msi entry: {}", e)))?;
+            let dst = dest.join(entry.file_name());
+            let _ = std::fs::remove_file(&dst);
+            let _ = crate::internal::fs::remove_dir(&dst);
+            std::fs::rename(entry.path(), dst).map_err(|e| {
+                Error::ExtractionFailed(format!(
+                    "move msi entry '{}': {}",
+                    entry.path().display(),
+                    e
+                ))
+            })?;
+        }
+    }
+
+    // Remove the now-empty `SourceDir` wrapper (and any empty extract_dir dir).
+    if source_dir.exists() {
+        let _ = crate::internal::fs::remove_dir(&source_dir);
+    }
+    Ok(())
+}
 
 fn extract_innosetup(
     src: &Path,
@@ -1307,6 +1450,7 @@ mod tests {
         assert_eq!(detect_format("foo.rar"), Some("rar"));
         assert_eq!(detect_format("foo.lzh"), Some("lzh"));
         assert_eq!(detect_format("foo.iso"), Some("iso"));
+        assert_eq!(detect_format("foo.msi"), Some("msi"));
         assert_eq!(detect_format("foo.zst"), Some("zst"));
         assert_eq!(detect_format("foo.exe"), None);
         assert_eq!(detect_format(""), None);
@@ -1685,6 +1829,42 @@ mod tests {
             std::fs::read_to_string(dest.join("deep.txt")).unwrap(),
             "Deep content"
         );
+    }
+
+    /// `promote_msi_content` strips the `SourceDir` wrapper (lessmsi/msiexec
+    /// always produce it) and the manifest's `extract_dir` prefix, moving the
+    /// payload up into `dest` exactly as Scoop's `Expand-MsiArchive` +
+    /// `movedir` do.
+    #[test]
+    fn test_promote_msi_content_strips_extract_dir() {
+        let dir = tmpdir("msi_promote");
+        let dest = dir.join("out");
+        std::fs::create_dir_all(dest.join("SourceDir/LLVM/bin")).unwrap();
+        std::fs::create_dir_all(dest.join("SourceDir/LLVM/lib")).unwrap();
+        std::fs::write(dest.join("SourceDir/LLVM/bin/llvm.exe"), b"PE").unwrap();
+        std::fs::write(dest.join("SourceDir/LLVM/lib/llvm.lib"), b"LIB").unwrap();
+
+        promote_msi_content(&dest, Some(&["LLVM"])).unwrap();
+
+        // Payload promoted to the app root, prefix stripped.
+        assert!(dest.join("bin/llvm.exe").exists());
+        assert!(dest.join("lib/llvm.lib").exists());
+        // SourceDir wrapper removed.
+        assert!(!dest.join("SourceDir").exists());
+    }
+
+    /// Without an `extract_dir`, the whole `SourceDir` payload is promoted.
+    #[test]
+    fn test_promote_msi_content_no_extract_dir() {
+        let dir = tmpdir("msi_promote_all");
+        let dest = dir.join("out");
+        std::fs::create_dir_all(dest.join("SourceDir/tools")).unwrap();
+        std::fs::write(dest.join("SourceDir/tools/app.exe"), b"PE").unwrap();
+
+        promote_msi_content(&dest, None).unwrap();
+
+        assert!(dest.join("tools/app.exe").exists());
+        assert!(!dest.join("SourceDir").exists());
     }
 
     #[test]
