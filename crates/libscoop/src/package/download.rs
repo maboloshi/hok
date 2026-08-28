@@ -60,7 +60,7 @@ struct FileDownloadInfo<'a> {
     estimated: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CacheMaybeValid {
     Full,
     Partial,
@@ -77,7 +77,13 @@ impl PackageCache<'_> {
     fn update_valid_state(&mut self) {
         let mut cnt = 0;
         for cache in self.inner.values() {
-            if cache.local_size == cache.remote_size {
+            // Only a file that actually exists locally (local_size > 0) and
+            // matches the server size counts as a valid cache entry. A missing
+            // local file must not compare equal to an unknown (0) remote size:
+            // the equality 0 == 0 previously marked the package as fully
+            // cached and skipped its download, then hash verification failed
+            // with "file not found".
+            if cache.local_size > 0 && cache.local_size == cache.remote_size {
                 cnt += 1;
             }
         }
@@ -762,5 +768,89 @@ mod tests {
         // Past the throttle interval the throttle re-opens.
         std::thread::sleep(std::time::Duration::from_millis(110));
         assert!(t.should_report(false));
+    }
+
+    #[test]
+    fn test_update_valid_state_missing_file_with_unknown_size_is_not_cached() {
+        // Regression: a package whose cache file is missing (local_size 0) and
+        // whose remote size is unknown (0, e.g. a failed HEAD request) must NOT
+        // be treated as fully cached. Previously local_size == remote_size
+        // evaluated 0 == 0, marking the package Full so download skipped it
+        // (emitting a cache-hit event), and hash verification then failed with
+        // "file not found".
+        use super::{CacheMaybeValid, FileDownloadInfo, PackageCache};
+        use std::collections::HashMap;
+
+        let pkg = crate::package::Package::from(
+            "app",
+            "test",
+            crate::package::manifest::Manifest::from_json(
+                "app",
+                r#"{"version": "2.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let mut pc = PackageCache {
+            package: &pkg,
+            valid: CacheMaybeValid::None,
+            inner: HashMap::new(),
+        };
+        pc.inner.insert(
+            "app#2.0.0#abc123.7z".to_owned(),
+            FileDownloadInfo {
+                url: "https://example.com/app.7z",
+                local_size: 0,
+                remote_size: 0,
+                estimated: true,
+            },
+        );
+        pc.update_valid_state();
+        assert_eq!(pc.valid, CacheMaybeValid::None);
+    }
+
+    #[test]
+    fn test_update_valid_state_full_only_for_present_matching_file() {
+        use super::{CacheMaybeValid, FileDownloadInfo, PackageCache};
+        use std::collections::HashMap;
+
+        let pkg = crate::package::Package::from(
+            "app",
+            "test",
+            crate::package::manifest::Manifest::from_json(
+                "app",
+                r#"{"version": "2.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let mut pc = PackageCache {
+            package: &pkg,
+            valid: CacheMaybeValid::None,
+            inner: HashMap::new(),
+        };
+        // A present local file matching the remote size is a valid cache entry.
+        pc.inner.insert(
+            "app#2.0.0#abc123.7z".to_owned(),
+            FileDownloadInfo {
+                url: "https://example.com/app.7z",
+                local_size: 100,
+                remote_size: 100,
+                estimated: false,
+            },
+        );
+        pc.update_valid_state();
+        assert_eq!(pc.valid, CacheMaybeValid::Full);
+
+        // A present local file whose size differs from the remote is invalid.
+        pc.inner.insert(
+            "app#2.0.0#abc123.7z".to_owned(),
+            FileDownloadInfo {
+                url: "https://example.com/app.7z",
+                local_size: 50,
+                remote_size: 100,
+                estimated: false,
+            },
+        );
+        pc.update_valid_state();
+        assert_eq!(pc.valid, CacheMaybeValid::None);
     }
 }
