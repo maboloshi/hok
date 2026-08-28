@@ -46,8 +46,11 @@ use crate::{
 /// Event bus for event transmission.
 #[derive(Debug)]
 pub struct EventBus {
-    // Outbound channel, used to send events out from the session
-    inner_tx: mpsc::Sender<Event>,
+    // Outbound channel, used to send events out from the session. Wrapped in a
+    // Mutex so the outbound channel can be recreated when a new event loop
+    // takes the receiver (reinstall runs two sync transactions back-to-back
+    // in one session; the tokio::sync::mpsc receiver is single-consumer).
+    inner_tx: std::sync::Mutex<mpsc::Sender<Event>>,
     // The outbound receiver is a single-consumer tokio::sync::mpsc
     // receiver (a single-consumer channel), so it is stored in a
     // Mutex<Option<_>> and handed out exactly once — to the event loop task
@@ -68,7 +71,7 @@ impl EventBus {
         let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
         let (outer_tx, inner_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
         Self {
-            inner_tx,
+            inner_tx: std::sync::Mutex::new(inner_tx),
             outer_rx: std::sync::Mutex::new(Some(outer_rx)),
             outer_tx,
             inner_rx: tokio::sync::Mutex::new(Some(inner_rx)),
@@ -86,16 +89,28 @@ impl EventBus {
     ///
     /// This receiver is used to receive events from the session. Because a
     /// tokio::sync::mpsc receiver is single-consumer, it can only be obtained
-    /// once per bus — the event loop (or a test) is its sole owner.
+    /// once per outbound channel — the event loop (or a test) is its sole owner.
     ///
-    /// Returns None if it has already been taken.
+    /// If the receiver was already taken, a fresh outbound channel is created
+    /// and returned so a new event loop can run (e.g. reinstall runs a remove
+    /// and an install transaction back-to-back in one session).
     pub fn receiver(&self) -> Option<mpsc::Receiver<Event>> {
-        self.outer_rx.lock().unwrap().take()
+        let mut guard = self.outer_rx.lock().unwrap();
+        if let Some(rx) = guard.take() {
+            return Some(rx);
+        }
+        // Already taken: recreate the outbound channel for the next phase
+        // (reinstall runs remove + install in one session; the previous
+        // event loop has finished by the time the next phase runs).
+        let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
+        *self.inner_tx.lock().unwrap() = inner_tx;
+        *guard = Some(outer_rx);
+        guard.take()
     }
 
     /// Get the outbound sender of the event bus.
     pub(crate) fn inner_sender(&self) -> mpsc::Sender<Event> {
-        self.inner_tx.clone()
+        self.inner_tx.lock().unwrap().clone()
     }
 
     /// Await the next inbound (frontend → backend) event.
