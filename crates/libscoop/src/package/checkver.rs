@@ -722,6 +722,22 @@ fn extract_named_captures(re: &Regex, caps: &regex::Captures<'_>) -> HashMap<Str
     named
 }
 
+/// Build the autoupdate variable name for a named capture group, matching
+/// Scoop's Get-VersionSubstitution (autoupdate.ps1): a group (?<hash>...)
+/// becomes $matchHash via '$match' + ToTitleCase(name), NOT $hash.
+fn match_var_for_group(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => {
+            let mut s = String::new();
+            s.extend(first.to_uppercase());
+            s.push_str(&name[first.len_utf8()..].to_lowercase());
+            s
+        }
+        None => name.to_string(),
+    }
+}
+
 // ─── Autoupdate ────────────────────────────────────────────────────────────
 
 /// Apply autoupdate: substitute variables, download files, compute/extract
@@ -789,9 +805,13 @@ pub(crate) async fn apply_autoupdate(
     for (i, cap) in captures.iter().enumerate().skip(1) {
         vars.push((format!("$match{}", i), cap.clone()));
     }
-    // Named capture groups (Scoop $matchesHashtable, checkver.ps1 lines 361-362)
-    // Named groups like `(?<version>...)` create `$version` variables
+    // Named capture groups (Scoop $matchesHashtable, checkver.ps1 lines 361-362).
+    // Scoop maps each named group `(?<foo>...)` to `$match<Foo>` via
+    // `'$match' + ToTitleCase(name)` in Get-VersionSubstitution (autoupdate.ps1),
+    // so a group `(?<hash>...)` becomes `$matchHash` (NOT `$hash`). Keep the
+    // bare `$<name>` alias too for backward compatibility.
     for (name, val) in named_captures {
+        vars.push((format!("$match{}", match_var_for_group(name)), val.clone()));
         vars.push((format!("${}", name), val.clone()));
     }
     // Scoop: $matchHead/$matchTail are derived from the version string,
@@ -1487,6 +1507,23 @@ mod tests {
         let (head, tail) = result.unwrap();
         assert_eq!(head, "2.0.0");
         assert_eq!(tail, "");
+    }
+
+    // ── match_var_for_group (Scoop $match<Name> autoupdate vars) ───────────
+
+    #[test]
+    fn match_var_for_group_title_cases_name() {
+        // we-meet: `(?<hash>...)` must yield `$matchHash` (Scoop autoupdate.ps1
+        // `'$match' + ToTitleCase(name)`), so URLs using $matchHash resolve.
+        assert_eq!(match_var_for_group("hash"), "Hash");
+        assert_eq!(match_var_for_group("version"), "Version");
+        assert_eq!(match_var_for_group("tag"), "Tag");
+        assert_eq!(match_var_for_group("matchHead"), "Matchhead");
+    }
+
+    #[test]
+    fn match_var_for_group_empty_name() {
+        assert_eq!(match_var_for_group(""), "");
     }
 
     // ── end-to-end with an in-memory network fake ─────────────────────────
