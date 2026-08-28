@@ -95,7 +95,7 @@ pub fn extract(
     crate::internal::fs::ensure_dir(&effective_dest)?;
 
     if innosetup {
-        return extract_innosetup(cache_path, &effective_dest, extract_dir, emitter);
+        return extract_innosetup_or_fallback(cache_path, &effective_dest, extract_dir, emitter);
     }
 
     let filename = cache_path.file_name().unwrap_or_default().to_string_lossy();
@@ -1152,6 +1152,39 @@ fn extract_innosetup(
     Ok(())
 }
 
+/// Extract a manifest innosetup:true installer.
+///
+/// The pure-Rust innospect path is the primary route for genuine Inno Setup.
+/// Some installers (notably electron-builder NSIS) are also flagged
+/// innosetup:true, so if innospect rejects the file as not-Inno, fall back to
+/// the installer classifier (extract_pseudo_7z) which handles NSIS via the
+/// nsis crate, 7z SFX / zip SFX, and finally external 7z.exe.
+fn extract_innosetup_or_fallback(
+    src: &Path,
+    dest: &Path,
+    filter: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    // Sniff the bytes once to pick Inno vs fallback. Genuine Inno is then
+    // extracted by extract_innosetup; a rejection falls through to the
+    // classifier (both re-read the file — acceptable for installer files).
+    let data = match std::fs::read(src) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(Error::ExtractionFailed(format!(
+                "cannot read {}: {}",
+                src.display(),
+                e
+            )));
+        }
+    };
+    if matches!(innospect::InnoInstaller::from_bytes(&data), Ok(_)) {
+        extract_innosetup(src, dest, filter, emitter)
+    } else {
+        extract_pseudo_7z(src, dest, filter, emitter)
+    }
+}
+
 // ─── NSIS extraction via the nsis crate ──────────────────────────────
 
 fn extract_nsis(
@@ -1942,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn test_innosetup_not_implemented() {
+    fn test_innosetup_falls_back_for_non_innosetup_file() {
         let dir = tmpdir("innosetup_notimpl");
         let archive_path = dir.join("setup.exe");
         std::fs::write(&archive_path, b"dummy exe").unwrap();
@@ -1950,16 +1983,13 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
+        // `innosetup: true` on a non-InnoSetup file: innospect rejects it, then
+        // the installer classifier / external 7z fallback also fails. Extraction
+        // must still error with ExtractionFailed.
         let result = extract(&archive_path, &dest, None, None, true, &None);
-        // Should fail to parse as Inno Setup (not a valid PE/Inno installer)
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::ExtractionFailed(msg) => {
-                assert!(
-                    msg.contains("innospect") || msg.contains("parse"),
-                    "unexpected error: {msg}"
-                );
-            }
+            Error::ExtractionFailed(_) => {}
             _ => panic!("expected ExtractionFailed error"),
         }
     }

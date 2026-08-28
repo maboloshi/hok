@@ -36,6 +36,12 @@ pub async fn extract_archives(
     // The archive decision is delegated to `internal::archive::detect_format`
     // (the single source of truth) — this also covers `.tar.bz`, `.lzma`,
     // `.iso`, etc. that a hand-maintained extension list would drift from.
+    //
+    // `detect_format` does not recognize `.exe`, so a manifest that marks its
+    // installer with top-level `innosetup: true` (and no `Expand-InnoArchive`
+    // script) would otherwise be copied, never decompressed. Route those
+    // installer files to `extract` explicitly.
+    let innosetup = pkg.manifest().innosetup();
     let archives: Vec<usize> = files
         .iter()
         .enumerate()
@@ -47,7 +53,8 @@ pub async fn extract_archives(
             let stripped = internal::url::strip_url_query(url);
             let target_name = stripped.rsplit('/').next().unwrap_or(f);
 
-            if session.archive().detect_format(target_name).is_some() {
+            let is_installer = innosetup && target_name.to_ascii_lowercase().ends_with(".exe");
+            if session.archive().detect_format(target_name).is_some() || is_installer {
                 Some(idx)
             } else {
                 None
