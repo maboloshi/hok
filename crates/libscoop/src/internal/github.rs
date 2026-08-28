@@ -176,22 +176,50 @@ pub async fn create_pull_request(
 // GraphQL helpers
 // ---------------------------------------------------------------------------
 
-/// Build a DCO (Developer Certificate of Origin) sign-off string for the
-/// authenticated user.
-pub async fn set_dco_signature(token: &str) -> String {
-    let resp = github_api_request("user", "GET", None, token).await;
-    let login = resp
-        .as_ref()
-        .ok()
-        .and_then(|r| r["login"].as_str())
-        .unwrap_or("github-actions")
-        .to_string();
-    let id: u64 = resp
-        .as_ref()
-        .ok()
-        .and_then(|r| r["id"].as_u64())
-        .unwrap_or(41898282);
+/// Build a DCO (Developer Certificate of Origin) sign-off string.
+///
+/// Resolution order:
+/// 1. If `app_slug` is provided, resolve the corresponding bot user via
+///    `GET /users/{app_slug}[bot]`.
+/// 2. Otherwise (or if step 1 fails), resolve the authenticated user via
+///    `GET /user`.
+/// 3. Fall back to `github-actions[bot]` if all lookups fail, so the pipeline
+///    never aborts when the token lacks permission to read user info.
+pub async fn set_dco_signature(token: &str, app_slug: Option<&str>) -> String {
+    let user_info = match app_slug {
+        Some(slug) => {
+            let bot_username = format!("{}[bot]", slug);
+            match get_user_by_username(&bot_username, token).await {
+                Some(info) => Some(info),
+                None => get_authenticated_user(token).await,
+            }
+        }
+        None => get_authenticated_user(token).await,
+    };
+
+    let (login, id) = user_info.unwrap_or_else(|| ("github-actions[bot]".to_string(), 41898282));
     format!("Signed-off-by: {login} <{id}+{login}@users.noreply.github.com>")
+}
+
+/// Fetch a user by username, returning `(login, id)` on success.
+async fn get_user_by_username(username: &str, token: &str) -> Option<(String, u64)> {
+    let query = format!("users/{}", username);
+    let resp = github_api_request(&query, "GET", None, token).await;
+    user_info_from(&resp)
+}
+
+/// Fetch the currently authenticated user, returning `(login, id)` on success.
+async fn get_authenticated_user(token: &str) -> Option<(String, u64)> {
+    let resp = github_api_request("user", "GET", None, token).await;
+    user_info_from(&resp)
+}
+
+/// Extract `(login, id)` from a GitHub user JSON response.
+fn user_info_from(resp: &Result<serde_json::Value>) -> Option<(String, u64)> {
+    let resp = resp.as_ref().ok()?;
+    let login = resp["login"].as_str()?;
+    let id = resp["id"].as_u64()?;
+    Some((login.to_string(), id))
 }
 
 /// Commit a single file to a remote branch using GitHub's GraphQL

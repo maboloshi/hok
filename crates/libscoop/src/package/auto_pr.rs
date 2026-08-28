@@ -55,6 +55,10 @@ pub struct AutoPrConfig {
     pub skip_updated: bool,
     /// Additional manifests to force-update even if already up-to-date.
     pub special: Vec<String>,
+    /// GitHub App slug (e.g. `my-bot`); when set, the DCO sign-off is
+    /// generated for the corresponding bot user (`my-bot[bot]`) instead
+    /// of the authenticated user.
+    pub app_slug: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +259,7 @@ pub async fn run_auto_pr(
                     }
                 };
 
-            let dco = github::set_dco_signature(&config.token).await;
+            let dco = github::set_dco_signature(&config.token, config.app_slug.as_deref()).await;
 
             match github::graphql_commit_push(
                 &repo_nwo,
@@ -320,7 +324,7 @@ pub async fn run_auto_pr(
                 continue;
             }
 
-            let dco = github::set_dco_signature(&config.token).await;
+            let dco = github::set_dco_signature(&config.token, config.app_slug.as_deref()).await;
 
             if let Err(e) = github::graphql_commit_push(
                 &repo_nwo,

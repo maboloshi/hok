@@ -54,6 +54,12 @@ pub struct Args {
     #[arg(short = 'T', long)]
     pub(crate) token: Option<String>,
 
+    /// GitHub App slug (e.g. `my-bot`); used to generate the DCO
+    /// sign-off for the corresponding bot user when the token is a GitHub App
+    /// installation token
+    #[arg(long)]
+    pub(crate) app_slug: Option<String>,
+
     /// Show per-manifest checkver details (versions found, updates, errors)
     #[arg(short = 'v', long, action = clap::ArgAction::Count)]
     pub(crate) verbose: u8,
@@ -96,6 +102,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         message: args.message,
         skip_updated: args.skip_updated,
         special,
+        app_slug: args
+            .app_slug
+            .or_else(|| std::env::var("GITHUB_APP_SLUG").ok()),
     };
 
     // Presentation is a CLI concern: with `-v`, stream the per-manifest
