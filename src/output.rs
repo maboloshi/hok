@@ -25,7 +25,9 @@
 //! # Primitives
 //!
 //! - header: section heading.
+//! - commit_header: per-package commit header (k/N) pkg [: old -> new].
 //! - action: per-package counting line (k/N) verb pkg.
+//! - closure_done / closure_fail: per-package success/failure closure.
 //! - done / ok: success markers.
 //! - info / warn / err: side notes and prefixes.
 //! - field / named / change: structured label/value lines.
@@ -83,28 +85,54 @@ pub fn done(msg: impl AsRef<str>) {
     println!("  {} {}", "✓".green(), msg.as_ref().green());
 }
 
-/// Per-package success closure: `(k/N) ✓ pkg`.
+/// Per-package commit header: `(k/N) name` with an optional `: old -> new`
+/// version change.
 ///
-/// Renders the counting counter (dark grey), a green check, and the
-/// package name in white bold — the per-package closure of the commit
-/// phase, giving `(k/N) ✓ pkg` for grep-able pipe output.
-pub fn closure_done(index: usize, total: usize, pkg: impl AsRef<str>) {
-    println!(
-        "  {} {} {}",
-        format!("({k}/{n})", k = index, n = total).dark_grey(),
-        "✓".green(),
-        pkg.as_ref().white().bold()
-    );
+/// The counting counter (dark grey) anchors the package in the commit
+/// sequence; the name is white bold; versions green; the arrow blue. When
+/// `old` and `new` are both empty (e.g. uninstall, which has no version
+/// change) it renders just `(k/N) name`.
+pub fn commit_header(
+    index: usize,
+    total: usize,
+    pkg: impl AsRef<str>,
+    old: impl AsRef<str>,
+    new: impl AsRef<str>,
+) {
+    let counter = format!("({index}/{total})").dark_grey();
+    let name = pkg.as_ref().white().bold();
+    if new.as_ref().is_empty() {
+        println!("{counter} {name}");
+    } else if old.as_ref().is_empty() {
+        // Fresh install: `(k/N) name: new`.
+        println!("{counter} {name}: {}", new.as_ref().green());
+    } else {
+        // Upgrade: `(k/N) name: old -> new`.
+        println!(
+            "{counter} {name}: {} {} {}",
+            old.as_ref().green(),
+            "->".blue(),
+            new.as_ref().green()
+        );
+    }
 }
 
-/// Per-package failure closure: `(k/N) ✗ pkg (err)`.
+/// Per-package success closure: `  ✓ pkg` (green check + white bold name).
+///
+/// The bare closure of the commit phase — the counter lives on the header
+/// rendered by [`commit_header`], so this line stays `✓ pkg` for grep-able
+/// pipe output.
+pub fn closure_done(pkg: impl AsRef<str>) {
+    println!("{} {}", "✓".green(), pkg.as_ref().white().bold());
+}
+
+/// Per-package failure closure: `  ✗ pkg (err)`.
 ///
 /// Like [`closure_done`] but with a red bold cross and the error message
 /// in red — the failure counterpart of the per-package commit closure.
-pub fn closure_fail(index: usize, total: usize, pkg: impl AsRef<str>, err: impl AsRef<str>) {
+pub fn closure_fail(pkg: impl AsRef<str>, err: impl AsRef<str>) {
     println!(
-        "  {} {} {} ({})",
-        format!("({k}/{n})", k = index, n = total).dark_grey(),
+        "{} {} ({})",
         "✗".red().bold(),
         pkg.as_ref().white().bold(),
         err.as_ref().red()

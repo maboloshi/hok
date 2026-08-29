@@ -156,6 +156,10 @@ pub enum Event {
     BucketUpdateDone,
 
     /// Package has started to be committed.
+    ///
+    /// Carries the version change (`old_version` -> `new_version`) so the
+    /// frontend can render the per-package commit header; both are empty for
+    /// operations with no version transition (e.g. uninstall).
     PackageCommitStart {
         /// Package name.
         name: String,
@@ -163,6 +167,10 @@ pub enum Event {
         index: usize,
         /// Total packages in the commit sequence.
         total: usize,
+        /// Currently installed version, or empty if new install.
+        old_version: String,
+        /// Version to be installed.
+        new_version: String,
     },
 
     /// Package has been committed successfully.
@@ -326,16 +334,6 @@ pub enum Event {
 
     /// PowerShell script emitted output (stdout line).
     ScriptOutput(String),
-
-    /// Version information for a resolved package (old -> new).
-    PackageVersionKnown {
-        /// Package name
-        name: String,
-        /// Currently installed version, or empty if new install
-        old_version: String,
-        /// Version to be installed
-        new_version: String,
-    },
 
     /// A download was satisfied from local cache.
     PackageCacheHit(String),

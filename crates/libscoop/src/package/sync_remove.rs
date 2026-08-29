@@ -187,6 +187,8 @@ async fn commit_one_remove(
             name: package.name().to_owned(),
             index,
             total,
+            old_version: String::new(),
+            new_version: String::new(),
         });
     }
 

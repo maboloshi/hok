@@ -80,25 +80,31 @@ impl EventHandler for ScoopHandler {
                 let _ = std::io::stdout().flush();
             }
             Event::PackageExtractDone => {
-                self.extracting = None;
+                // The extract progress line is redrawn with `\r` and never
+                // carries a trailing newline; terminate it here so the next
+                // output (closure or an interleaved tracing line under -vvv)
+                // starts on a fresh row instead of gluing onto the counter.
+                if self.extracting.take().is_some() {
+                    println!();
+                }
             }
 
             // --- Commit (install/update/uninstall) ---
-            // Per-package counting + closure: `PackageCommitStart` anchors
-            // the header, `PackageCommitDone` / `PackageCommitFailed` close it
-            // with a `(k/N) ✓ pkg` / `(k/N) ✗ pkg (err)` line. Intermediate
-            // sub-steps are routed to the tracing log channel (see the rest
-            // of this handler), keeping stdout minimal and constant.
-            Event::PackageCommitStart { .. } => {}
-            Event::PackageCommitDone { name, index, total } => {
-                output::closure_done(*index, *total, name)
-            }
-            Event::PackageCommitFailed {
+            // Per-package counting + closure: `PackageCommitStart` anchors the
+            // counter header (carrying the version change), and
+            // `PackageCommitDone` / `PackageCommitFailed` close it with a bare
+            // `✓ pkg` / `✗ pkg (err)` line. Intermediate sub-steps are routed
+            // to the tracing log channel (see the rest of this handler),
+            // keeping stdout minimal and constant.
+            Event::PackageCommitStart {
                 name,
                 index,
                 total,
-                error,
-            } => output::closure_fail(*index, *total, name, error),
+                old_version,
+                new_version,
+            } => output::commit_header(*index, *total, name, old_version, new_version),
+            Event::PackageCommitDone { name, .. } => output::closure_done(name),
+            Event::PackageCommitFailed { name, error, .. } => output::closure_fail(name, error),
 
             // --- Shim operations ---
             Event::PackageShimRemoveStart => {}
@@ -214,19 +220,6 @@ impl EventHandler for ScoopHandler {
             // --- Post-install notes ---
             Event::PackageNotes(note) => {
                 output::info(note);
-            }
-
-            // --- Version info ---
-            Event::PackageVersionKnown {
-                name,
-                old_version,
-                new_version,
-            } => {
-                if old_version.is_empty() {
-                    output::info(format!("{}: {}", name, new_version));
-                } else {
-                    output::info(format!("{}: {} -> {}", name, old_version, new_version));
-                }
             }
 
             // --- Cache hit ---

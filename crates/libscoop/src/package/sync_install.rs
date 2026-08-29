@@ -475,15 +475,12 @@ async fn commit_one_install(
     if let Some(tx) = session.emitter() {
         let old_ver = pkg.installed_version().unwrap_or_default().to_owned();
         let new_ver = pkg.version().to_owned();
-        let _ = tx.try_send(Event::PackageVersionKnown {
-            name: pkg.name().to_owned(),
-            old_version: old_ver,
-            new_version: new_ver,
-        });
         let _ = tx.try_send(Event::PackageCommitStart {
             name: pkg.name().to_owned(),
             index,
             total,
+            old_version: old_ver,
+            new_version: new_ver,
         });
     }
 
@@ -1120,7 +1117,9 @@ mod tests {
         let mut dones = vec![];
         while let Some(event) = frontend_rx.recv().await {
             match event {
-                Event::PackageCommitStart { name, index, total } => {
+                Event::PackageCommitStart {
+                    name, index, total, ..
+                } => {
                     starts.push((name, index, total));
                 }
                 Event::PackageCommitDone { name, index, total } => {
