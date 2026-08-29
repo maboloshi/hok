@@ -24,8 +24,8 @@
 //! - **To customise output for existing events** (e.g., log formatting) **without
 //!   changing interactive behaviour**: implement a custom EventHandler and pass
 //!   it to run_event_loop instead of using run_event_loop_default.
-//! - **To change global defaults** (progress bars, auto-confirm): modify
-//!   EventLoopConfig or run_event_loop_default as needed.
+//! - **To change global defaults** (progress bars): modify
+//!   run_event_loop_default as needed.
 //!
 //! # Important Notes
 //!
@@ -38,20 +38,11 @@
 //! - Blocking stdin reads must not run directly in the async task (they would
 //!   occupy a runtime worker thread); they are wrapped in
 //!   tokio::task::spawn_blocking.
-//! - If you add new fields to EventLoopConfig, ensure all callers (like update,
-//!   remove commands) set them or rely on Default.
 
 use crate::{cui, format, output};
-use crossterm::{cursor, ExecutableCommand};
+use crossterm::{ExecutableCommand, cursor};
 use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
-
-/// Controls event loop behavior.
-#[derive(Default)]
-pub struct EventLoopConfig {
-    /// Auto-confirm transaction prompts (for reinstall).
-    pub auto_confirm: bool,
-}
 
 /// RAII guard: hides cursor on construction, restores on drop.
 struct CursorGuard;
@@ -75,7 +66,6 @@ impl Drop for CursorGuard {
 /// The handler is called for each event to render output.
 pub fn run_event_loop(
     session: &Session,
-    config: EventLoopConfig,
     mut handler: Box<dyn EventHandler>,
 ) -> tokio::task::JoinHandle<()> {
     // The outbound receiver is single-consumer (tokio::sync::mpsc), so it is
@@ -138,9 +128,10 @@ pub fn run_event_loop(
                                 Ok(_) => {}
                             }
                             if let Ok(num) = input.trim().parse::<usize>()
-                                && num < pkgs_len {
-                                    break num;
-                                }
+                                && num < pkgs_len
+                            {
+                                break num;
+                            }
                         }
                     })
                     .await
@@ -152,11 +143,6 @@ pub fn run_event_loop(
 
                 // Interactive prompt: confirm the transaction
                 Event::PromptTransactionNeedConfirm(ref transaction) => {
-                    if config.auto_confirm {
-                        let _ = tx.send(Event::PromptTransactionNeedConfirmResult(true)).await;
-                        continue;
-                    }
-
                     if let Some(install) = transaction.install_view() {
                         output::header(rust_i18n::t!("cmd.header_installed"));
                         let out = install
@@ -234,9 +220,12 @@ pub fn run_event_loop(
                     }
 
                     let _ = std::io::stdout().execute(cursor::Show);
-                    let answer =
-                        tokio::task::spawn_blocking(output::prompt_yes_no).await.unwrap_or(false);
-                    let _ = tx.send(Event::PromptTransactionNeedConfirmResult(answer)).await;
+                    let answer = tokio::task::spawn_blocking(output::prompt_yes_no)
+                        .await
+                        .unwrap_or(false);
+                    let _ = tx
+                        .send(Event::PromptTransactionNeedConfirmResult(answer))
+                        .await;
                     let _ = std::io::stdout().execute(cursor::Hide);
                     continue;
                 }
@@ -263,9 +252,5 @@ pub fn run_event_loop(
 
 /// Convenience helper: runs the event loop with a default Scoop-style handler.
 pub fn run_event_loop_default(session: &Session) -> tokio::task::JoinHandle<()> {
-    run_event_loop(
-        session,
-        EventLoopConfig::default(),
-        Box::new(crate::scoop_handler::ScoopHandler::new()),
-    )
+    run_event_loop(session, Box::new(crate::scoop_handler::ScoopHandler::new()))
 }
