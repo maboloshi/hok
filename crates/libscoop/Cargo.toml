@@ -98,3 +98,7 @@ criterion = "0.5"
 [[bench]]
 name = "pure_functions"
 harness = false
+
+[[bench]]
+name = "event_emission"
+harness = false
