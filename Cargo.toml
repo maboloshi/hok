@@ -24,6 +24,7 @@ indicatif = "0.17.9"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
 serde_json = { version = "1.0.120", features = ["preserve_order"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = "0.1"
 
 rust-i18n = "3.1.5"
 sys-locale = "0.3"

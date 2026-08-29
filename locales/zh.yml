@@ -49,6 +49,8 @@ detail:
   creating_shortcut: "正在创建快捷方式: %{ctx}"
   removing_shim: "正在移除 shim: %{ctx}"
   removing_shortcut: "正在移除快捷方式: %{ctx}"
+  installing_psmodule: "正在安装 PS 模块: %{ctx}"
+  psmodule_installed: "PS 模块已安装"
   removing_psmodule: "正在移除 PS 模块: %{ctx}"
   loading_cache: "正在从缓存加载 %{filename}"
   unlinking: "正在移除链接 %{path}"

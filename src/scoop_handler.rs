@@ -1,17 +1,17 @@
-//! Scoop-style event handler.
+//! Default event handler for package sync operations.
 //!
-//! Renders events using Scoop's classic output style (step-by-step messages
-//! with "ok" / "done" indicators). This is the default handler.
+//! Renders coarse-grained events to stdout (phase headers, package notes,
+//! warnings, version info) using the single [`crate::output`] renderer.
+//! Granular sub-step details (shim/shortcut/env/persist/ps-module operations)
+//! are routed to the `tracing` log channel instead — visible only with
+//! `-v` / `-vv` / `-vvv` — keeping stdout minimal and constant.
 
 use libscoop::{Event, EventHandler};
 
 use crate::output;
 use std::io::Write;
 
-/// Scoop-style event handler.
-///
-/// Displays all sub-steps with status/done messages, matching
-/// Scoop's original CLI output style.
+/// Default event handler.
 pub struct ScoopHandler {
     /// The package currently being extracted (set by PackageExtractStart),
     /// shown alongside the throttled file counter on progress events.
@@ -25,25 +25,19 @@ impl EventHandler for ScoopHandler {
             Event::PackageResolveStart => {
                 output::status(rust_i18n::t!("status.resolving"));
             }
-            Event::PackageResolveDone => {
-                output::done(rust_i18n::t!("status.resolving_done"));
-            }
+            Event::PackageResolveDone => {}
 
             // --- Download sizing ---
             Event::PackageDownloadSizingStart => {
                 output::status(rust_i18n::t!("status.sizing"));
             }
-            Event::PackageDownloadSizingDone => {
-                output::done(rust_i18n::t!("status.sizing_done"));
-            }
+            Event::PackageDownloadSizingDone => {}
 
             // --- Download ---
             Event::PackageDownloadStart => {
                 output::status(rust_i18n::t!("status.downloading"));
             }
-            Event::PackageDownloadDone => {
-                output::done(rust_i18n::t!("status.downloading_done"));
-            }
+            Event::PackageDownloadDone => {}
 
             // --- Integrity check ---
             Event::PackageIntegrityCheckStart => {
@@ -52,9 +46,7 @@ impl EventHandler for ScoopHandler {
             Event::PackageIntegrityCheckProgress(ctx) => {
                 output::status(rust_i18n::t!("detail.checking_hash_item", ctx = ctx));
             }
-            Event::PackageIntegrityCheckDone => {
-                output::ok();
-            }
+            Event::PackageIntegrityCheckDone => {}
 
             // --- Extraction ---
             // Progress lines are redrawn in place with `\r`; clear the whole
@@ -89,35 +81,27 @@ impl EventHandler for ScoopHandler {
             }
             Event::PackageExtractDone => {
                 self.extracting = None;
-                println!();
-                output::detail(rust_i18n::t!("detail.extract_done"));
             }
 
             // --- Commit (install/update/uninstall) ---
-            Event::PackageCommitStart(ctx) => {
-                output::status(ctx);
-            }
-            Event::PackageCommitDone(ctx) => {
-                output::done(ctx);
-            }
+            Event::PackageCommitStart(_) => {}
+            Event::PackageCommitDone(_) => {}
 
             // --- Shim operations ---
             Event::PackageShimRemoveStart => {}
             Event::PackageShimRemoveProgress(ctx) => {
-                output::detail(rust_i18n::t!("detail.removing_shim", ctx = ctx));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_shim", ctx = ctx));
             }
             Event::PackageShimRemoveDone => {
-                output::detail(rust_i18n::t!("detail.shim_removed"));
+                tracing::debug!("{}", rust_i18n::t!("detail.shim_removed"));
             }
 
-            Event::PackageShimAddStart(ctx) => {
-                output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
-            }
+            Event::PackageShimAddStart(_) => {}
             Event::PackageShimAddProgress(ctx) => {
-                output::detail(rust_i18n::t!("detail.creating_shim", ctx = ctx));
+                tracing::debug!("{}", rust_i18n::t!("detail.creating_shim", ctx = ctx));
             }
             Event::PackageShimAddDone => {
-                output::detail(rust_i18n::t!("detail.shim_done"));
+                tracing::debug!("{}", rust_i18n::t!("detail.shim_done"));
             }
 
             // --- Shim warnings ---
@@ -128,18 +112,18 @@ impl EventHandler for ScoopHandler {
             // --- Shortcut operations ---
             Event::PackageShortcutRemoveStart => {}
             Event::PackageShortcutRemoveProgress(ctx) => {
-                output::detail(rust_i18n::t!("detail.removing_shortcut", ctx = ctx));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_shortcut", ctx = ctx));
             }
             Event::PackageShortcutRemoveDone => {
-                output::detail(rust_i18n::t!("detail.shortcut_removed"));
+                tracing::debug!("{}", rust_i18n::t!("detail.shortcut_removed"));
             }
 
             Event::PackageShortcutAddStart => {}
             Event::PackageShortcutAddProgress(ctx) => {
-                output::detail(rust_i18n::t!("detail.creating_shortcut", ctx = ctx));
+                tracing::debug!("{}", rust_i18n::t!("detail.creating_shortcut", ctx = ctx));
             }
             Event::PackageShortcutAddDone => {
-                output::detail(rust_i18n::t!("detail.shortcut_done"));
+                tracing::debug!("{}", rust_i18n::t!("detail.shortcut_done"));
             }
 
             // --- Shortcut warnings ---
@@ -157,45 +141,51 @@ impl EventHandler for ScoopHandler {
 
             // --- Environment operations ---
             Event::PackageEnvPathAddStart => {
-                output::detail(rust_i18n::t!("detail.adding_env_path"));
+                tracing::debug!("{}", rust_i18n::t!("detail.adding_env_path"));
             }
             Event::PackageEnvPathAddDone => {
-                output::detail(rust_i18n::t!("detail.env_path_added"));
+                tracing::debug!("{}", rust_i18n::t!("detail.env_path_added"));
             }
             Event::PackageEnvPathRemoveStart => {
-                output::detail(rust_i18n::t!("detail.removing_env_path"));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_env_path"));
             }
             Event::PackageEnvPathRemoveDone => {
-                output::detail(rust_i18n::t!("detail.env_path_removed"));
+                tracing::debug!("{}", rust_i18n::t!("detail.env_path_removed"));
             }
 
             Event::PackageEnvVarSetStart => {
-                output::detail(rust_i18n::t!("detail.setting_env_var"));
+                tracing::debug!("{}", rust_i18n::t!("detail.setting_env_var"));
             }
             Event::PackageEnvVarSetDone => {
-                output::detail(rust_i18n::t!("detail.env_var_set"));
+                tracing::debug!("{}", rust_i18n::t!("detail.env_var_set"));
             }
             Event::PackageEnvVarRemoveStart => {
-                output::detail(rust_i18n::t!("detail.removing_env_var"));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_env_var"));
             }
             Event::PackageEnvVarRemoveDone => {
-                output::detail(rust_i18n::t!("detail.env_var_removed"));
+                tracing::debug!("{}", rust_i18n::t!("detail.env_var_removed"));
             }
 
             // --- Persist ---
             Event::PackagePersistPurgeStart => {
-                output::detail(rust_i18n::t!("detail.removing_persist"));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_persist"));
             }
             Event::PackagePersistPurgeDone => {
-                output::detail(rust_i18n::t!("detail.persist_done"));
+                tracing::debug!("{}", rust_i18n::t!("detail.persist_done"));
             }
 
             // --- PS module ---
+            Event::PackagePsModuleAddStart(ctx) => {
+                tracing::debug!("{}", rust_i18n::t!("detail.installing_psmodule", ctx = ctx));
+            }
+            Event::PackagePsModuleAddDone => {
+                tracing::debug!("{}", rust_i18n::t!("detail.psmodule_installed"));
+            }
             Event::PackagePsModuleRemoveStart(ctx) => {
-                output::detail(rust_i18n::t!("detail.removing_psmodule", ctx = ctx));
+                tracing::debug!("{}", rust_i18n::t!("detail.removing_psmodule", ctx = ctx));
             }
             Event::PackagePsModuleRemoveDone => {
-                output::detail(rust_i18n::t!("detail.psmodule_removed"));
+                tracing::debug!("{}", rust_i18n::t!("detail.psmodule_removed"));
             }
 
             // --- PowerShell script output ---
@@ -233,10 +223,10 @@ impl EventHandler for ScoopHandler {
 
             // --- Symlink operations ---
             Event::PackageSymlinkRemove(path) => {
-                output::detail(rust_i18n::t!("detail.unlinking", path = path));
+                tracing::debug!("{}", rust_i18n::t!("detail.unlinking", path = path));
             }
             Event::PackageSymlinkCreate { from, to } => {
-                output::detail(rust_i18n::t!("detail.linking", from = from, to = to));
+                tracing::debug!("{}", rust_i18n::t!("detail.linking", from = from, to = to));
             }
 
             // --- Held package skipped ---

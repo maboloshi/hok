@@ -49,6 +49,8 @@ detail:
   creating_shortcut: "creating shortcut: %{ctx}"
   removing_shim: "removing shim: %{ctx}"
   removing_shortcut: "removing shortcut: %{ctx}"
+  installing_psmodule: "installing psmodule: %{ctx}"
+  psmodule_installed: "psmodule installed"
   removing_psmodule: "removing psmodule: %{ctx}"
   loading_cache: "Loading %{filename} from cache."
   unlinking: "Unlinking %{path}"
