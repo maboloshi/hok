@@ -84,8 +84,21 @@ impl EventHandler for ScoopHandler {
             }
 
             // --- Commit (install/update/uninstall) ---
-            Event::PackageCommitStart(_) => {}
-            Event::PackageCommitDone(_) => {}
+            // Per-package counting + closure: `PackageCommitStart` anchors
+            // the header, `PackageCommitDone` / `PackageCommitFailed` close it
+            // with a `(k/N) ✓ pkg` / `(k/N) ✗ pkg (err)` line. Intermediate
+            // sub-steps are routed to the tracing log channel (see the rest
+            // of this handler), keeping stdout minimal and constant.
+            Event::PackageCommitStart { .. } => {}
+            Event::PackageCommitDone { name, index, total } => {
+                output::closure_done(*index, *total, name)
+            }
+            Event::PackageCommitFailed {
+                name,
+                index,
+                total,
+                error,
+            } => output::closure_fail(*index, *total, name, error),
 
             // --- Shim operations ---
             Event::PackageShimRemoveStart => {}

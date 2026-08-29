@@ -138,8 +138,18 @@ async fn commit_remove(
     purge: bool,
     ignore_failure: bool,
 ) -> Fallible<()> {
-    for package in packages.iter() {
-        if let Err(e) = commit_one_remove(session, package, purge).await {
+    let total = packages.len();
+    for (i, package) in packages.iter().enumerate() {
+        let index = i + 1;
+        if let Err(e) = commit_one_remove(session, package, purge, index, total).await {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageCommitFailed {
+                    name: package.name().to_owned(),
+                    index,
+                    total,
+                    error: e.to_string(),
+                });
+            }
             if matches!(e, Error::AppRunning(_)) && ignore_failure {
                 // App is still running: skip this package and continue with
                 // the rest (its process-in-use failure is covered by
@@ -163,11 +173,21 @@ async fn commit_remove(
     Ok(())
 }
 
-async fn commit_one_remove(session: &Session, package: &Package, purge: bool) -> Fallible<()> {
+async fn commit_one_remove(
+    session: &Session,
+    package: &Package,
+    purge: bool,
+    index: usize,
+    total: usize,
+) -> Fallible<()> {
     debug!("remove: {} - starting", package.name());
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.try_send(Event::PackageCommitStart(package.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitStart {
+            name: package.name().to_owned(),
+            index,
+            total,
+        });
     }
 
     let app_dir = session.app_dir(package.name());
@@ -349,7 +369,11 @@ async fn commit_one_remove(session: &Session, package: &Package, purge: bool) ->
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.try_send(Event::PackageCommitDone(package.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitDone {
+            name: package.name().to_owned(),
+            index,
+            total,
+        });
     }
 
     Ok(())

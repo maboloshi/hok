@@ -428,8 +428,18 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
 async fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
-    for &pkg in packages.iter() {
-        if let Err(e) = commit_one_install(session, pkg).await {
+    let total = packages.len();
+    for (i, &pkg) in packages.iter().enumerate() {
+        let index = i + 1;
+        if let Err(e) = commit_one_install(session, pkg, index, total).await {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageCommitFailed {
+                    name: pkg.name().to_owned(),
+                    index,
+                    total,
+                    error: e.to_string(),
+                });
+            }
             let msg = format!("failed to install '{}': {}", pkg.name(), e);
             if ignore_failure {
                 session.output().error(msg);
@@ -441,7 +451,12 @@ async fn commit_install(session: &Session, packages: &[&Package], ignore_failure
     Ok(())
 }
 
-async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
+async fn commit_one_install(
+    session: &Session,
+    pkg: &Package,
+    index: usize,
+    total: usize,
+) -> Fallible<()> {
     // Extract config-derived values before the awaits so the config read guard
     // is dropped (a guard held across an await would block `config_mut()`).
     let no_junction = { let config = session.config(); config.no_junction() };
@@ -465,7 +480,11 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             old_version: old_ver,
             new_version: new_ver,
         });
-        let _ = tx.try_send(Event::PackageCommitStart(pkg.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitStart {
+            name: pkg.name().to_owned(),
+            index,
+            total,
+        });
     }
 
     // 1. extract/copy downloaded files
@@ -591,7 +610,11 @@ async fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.try_send(Event::PackageCommitDone(pkg.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitDone {
+            name: pkg.name().to_owned(),
+            index,
+            total,
+        });
     }
 
     // Emit post-install notes if the manifest has them.
@@ -1058,6 +1081,57 @@ mod tests {
             install_info
         );
         assert_eq!(install_info["bucket"], "main", "bucket is recorded");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── per-package counting closure (phase 3a) ─────────────────────────
+
+    /// A successful install emits a `PackageCommitStart`/`PackageCommitDone`
+    /// pair carrying the package's 1-based index and the commit total, so the
+    /// CLI can render a `(k/N)` per-package closure.
+    #[tokio::test]
+    async fn commit_emits_indexed_start_done() {
+        let root = crate::test_utils::tmpdir("commit_index_done");
+        let session = crate::test_utils::test_session(&root);
+
+        // Attach the frontend side of the event bus and pre-accept the
+        // confirmation so `install` does not block waiting for a response.
+        let bus = session.event_bus();
+        let frontend_tx = bus.sender();
+        let mut frontend_rx = bus.receiver().expect("fresh event bus receiver");
+        frontend_tx
+            .send(Event::PromptTransactionNeedConfirmResult(true))
+            .await
+            .unwrap();
+
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        // Use the `sync` shell (not bare `install`) so it emits the
+        // `PackageSyncDone` sentinel the drain loop below waits on.
+        super::super::sync(&session, vec!["obsidian"], vec![SyncOption::AssumeYes])
+            .await
+            .unwrap();
+
+        // Collect the per-package closure events with their counters. The
+        // outbound channel is held open by the session, so drain until the
+        // `PackageSyncDone` sentinel the sync shell always emits last.
+        let mut starts = vec![];
+        let mut dones = vec![];
+        while let Some(event) = frontend_rx.recv().await {
+            match event {
+                Event::PackageCommitStart { name, index, total } => {
+                    starts.push((name, index, total));
+                }
+                Event::PackageCommitDone { name, index, total } => {
+                    dones.push((name, index, total));
+                }
+                Event::PackageSyncDone => break,
+                _ => {}
+            }
+        }
+        assert_eq!(starts, vec![("obsidian".to_owned(), 1, 1)]);
+        assert_eq!(dones, vec![("obsidian".to_owned(), 1, 1)]);
 
         let _ = std::fs::remove_dir_all(&root);
     }

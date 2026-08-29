@@ -156,10 +156,36 @@ pub enum Event {
     BucketUpdateDone,
 
     /// Package has started to be committed.
-    PackageCommitStart(String),
+    PackageCommitStart {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+    },
 
-    /// Package has been committed.
-    PackageCommitDone(String),
+    /// Package has been committed successfully.
+    PackageCommitDone {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+    },
+
+    /// Package commit failed.
+    PackageCommitFailed {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+        /// The error that caused the commit to fail.
+        error: String,
+    },
 
     /// Calculating download size has started.
     PackageDownloadSizingStart,

@@ -83,6 +83,34 @@ pub fn done(msg: impl AsRef<str>) {
     println!("  {} {}", "✓".green(), msg.as_ref().green());
 }
 
+/// Per-package success closure: `(k/N) ✓ pkg`.
+///
+/// Renders the counting counter (dark grey), a green check, and the
+/// package name in white bold — the per-package closure of the commit
+/// phase, giving `(k/N) ✓ pkg` for grep-able pipe output.
+pub fn closure_done(index: usize, total: usize, pkg: impl AsRef<str>) {
+    println!(
+        "  {} {} {}",
+        format!("({k}/{n})", k = index, n = total).dark_grey(),
+        "✓".green(),
+        pkg.as_ref().white().bold()
+    );
+}
+
+/// Per-package failure closure: `(k/N) ✗ pkg (err)`.
+///
+/// Like [`closure_done`] but with a red bold cross and the error message
+/// in red — the failure counterpart of the per-package commit closure.
+pub fn closure_fail(index: usize, total: usize, pkg: impl AsRef<str>, err: impl AsRef<str>) {
+    println!(
+        "  {} {} {} ({})",
+        format!("({k}/{n})", k = index, n = total).dark_grey(),
+        "✗".red().bold(),
+        pkg.as_ref().white().bold(),
+        err.as_ref().red()
+    );
+}
+
 /// Print "ok".
 pub fn ok() {
     println!("  {}", rust_i18n::t!("output.ok").green());
