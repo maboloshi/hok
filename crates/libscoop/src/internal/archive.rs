@@ -1215,6 +1215,22 @@ fn extract_nsis(
     // installer's own destination path; `to_install_path()` renders it in
     // 7-Zip's form — `$INSTDIR\` prefix stripped, `$VAR` directories kept
     // literally (`$PLUGINSDIR\app-64.7z`), backslash separators.
+    // Collect each file's destination path and a zero-copy view of its payload
+    // in a single pass, then fan decompression + disk write out to worker
+    // threads. Non-solid installers (e.g. we-meet: 6206 files, ~536 MB of
+    // decompressed LZMA) hold every file in an independent stream, so the decode
+    // itself parallelizes; solid installers are already decoded once by the
+    // crate (payload is a slice of the solid buffer), so at least the writes go
+    // in parallel. Progress is throttled like the zip/7z paths.
+    let method = installer.compression();
+    let budget = installer.max_decompressed_size();
+    // Stored per file: destination path, payload offset+length within the
+    // source buffer (original file for non-solid, the crate's once-decoded
+    // solid buffer for solid), and whether the stream is compressed. Workers
+    // slice the shared source by these offsets — zero-copy, no upfront copy
+    // of ~500 MB of payloads.
+    let solid = installer.compression_mode() == nsis::decompress::CompressionMode::Solid;
+    let mut files: Vec<(String, usize, usize, bool)> = Vec::new();
     for result in installer.files() {
         let file =
             result.map_err(|e| Error::ExtractionFailed(format!("nsis file error: {}", e)))?;
@@ -1240,16 +1256,91 @@ fn extract_nsis(
         {
             return Err(Error::PathTraversalDetected(format!("nsis: {}", target)));
         }
-        let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
+        // Locate the payload within the shared source. Non-solid entries
+        // are stored at `data_block_offset` past the data block start in the
+        // original file; solid entries are offsets into the decompressed
+        // solid buffer. Either way the payload follows a 4-byte length prefix.
+        let base = if solid {
+            file.data_block_offset() as usize
+        } else {
+            installer
+                .data_block_offset()
+                .saturating_add(file.data_block_offset() as usize)
+        };
+        let payload_off = base + 4;
+        let payload_len = file.data().len();
+        files.push((target, payload_off, payload_len, file.is_compressed()));
+    }
+    let total = files.len();
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    let workers = total
+        .min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+        )
+        .max(1);
+    let next = AtomicUsize::new(0);
+    let errors = Mutex::new(Vec::<String>::new());
+    let next_ref = &next;
+    let errors_ref = &errors;
+    let files_ref = &files;
+    // Shared payload source: the original file bytes (non-solid) or the
+    // crate's once-decompressed solid buffer (solid). Immutable, so worker
+    // threads read it concurrently without contention.
+    let source: &[u8] = if solid { installer.solid_data() } else { &data };
+    let dest_buf = dest.to_path_buf();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let dest = dest_buf.clone();
+            scope.spawn(move || {
+                loop {
+                    let i = next_ref.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let (target, payload_off, payload_len, is_compressed) = &files_ref[i];
+                    // Decompress the (independent) stream. A stored entry just
+                    // copies its already-raw payload.
+                    let payload = source
+                        .get(*payload_off..*payload_off + *payload_len)
+                        .unwrap_or(&[]);
+                    let content: Vec<u8> = if *is_compressed {
+                        match nsis::decompress::decompress_block(
+                            payload,
+                            method,
+                            nsis::decompress::DecodeLimit::Capped(budget),
+                        ) {
+                            Ok(decoded) => decoded.data,
+                            Err(e) => {
+                                errors_ref.lock().unwrap().push(e.to_string());
+                                continue;
+                            }
+                        }
+                    } else {
+                        payload.to_vec()
+                    };
+                    let target_path = dest.join(target);
+                    if let Some(parent) = target_path.parent() {
+                        if let Err(e) = crate::internal::fs::ensure_dir(parent) {
+                            errors_ref.lock().unwrap().push(e.to_string());
+                            continue;
+                        }
+                    }
+                    if let Err(e) = std::fs::write(&target_path, &content) {
+                        errors_ref.lock().unwrap().push(e.to_string());
+                        continue;
+                    }
+                    emit_extract_progress(emitter, i, Some(total));
+                }
+            });
         }
-        let content = file
-            .decompress()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis decompress '{}': {}", rel, e)))?;
-        std::fs::write(&target_path, &content).map_err(|e| {
-            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
-        })?;
+    });
+
+    if let Some(e) = errors_ref.lock().unwrap().first() {
+        return Err(Error::ExtractionFailed(format!("nsis extract error: {}", e)));
     }
 
     // Uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
