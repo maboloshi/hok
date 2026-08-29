@@ -41,6 +41,7 @@
 
 use crate::{cui, format, output};
 use crossterm::{ExecutableCommand, cursor};
+use libscoop::package::sync::Transaction;
 use libscoop::{Event, EventHandler, Session};
 use std::io::Write;
 
@@ -136,92 +137,24 @@ pub fn run_event_loop(
                     continue;
                 }
 
-                // Interactive prompt: confirm the transaction
-                Event::PromptTransactionNeedConfirm(ref transaction) => {
-                    if let Some(install) = transaction.install_view() {
-                        output::header(rust_i18n::t!("cmd.header_installed"));
-                        let out = install
-                            .iter()
-                            .map(|p| format!("{}-{}", p.ident(), p.version()))
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        println!("  {}", out);
-                    }
-
-                    if let Some(upgrade) = transaction.upgrade_view() {
-                        if transaction.install_view().is_some() {
-                            println!();
-                        }
-                        output::header(rust_i18n::t!("cmd.header_upgraded"));
-                        let out = upgrade
-                            .iter()
-                            // With `--force` packages at their current version
-                            // (no upgradable reference) are reinstalled too, so
-                            // fall back to the current version for display.
-                            .map(|p| {
-                                format!(
-                                    "{}-{}",
-                                    p.ident(),
-                                    p.upgradable_version().unwrap_or(p.version())
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        println!("  {}", out);
-                    }
-
-                    if let Some(replace) = transaction.replace_view() {
-                        if transaction.install_view().is_some()
-                            || transaction.upgrade_view().is_some()
-                        {
-                            println!();
-                        }
-                        output::header(rust_i18n::t!("cmd.header_replaced"));
-                        let out = replace
-                            .iter()
-                            .map(|p| format!("{}/{}", p.bucket(), p.name()))
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        println!("  {}", out);
-                    }
-
-                    if let Some(remove) = transaction.remove_view() {
-                        if transaction.install_view().is_some()
-                            || transaction.upgrade_view().is_some()
-                            || transaction.replace_view().is_some()
-                        {
-                            println!();
-                        }
-                        output::header(rust_i18n::t!("cmd.header_removed"));
-                        let out = remove
-                            .iter()
-                            .map(|p| format!("{}-{}", p.ident(), p.version()))
-                            .collect::<Vec<_>>()
-                            .join("  ");
-                        println!("  {}", out);
-                    }
-
-                    if let Some(download_size) = transaction.download_size() {
-                        let out = format::humansize(download_size.total, true);
-                        if download_size.total > 0 {
-                            if download_size.estimated {
-                                println!("\nTotal download size: {out} (estimated)");
-                            } else {
-                                println!("\nTotal download size: {}", out);
-                            }
-                        } else {
-                            println!("\nNothing to download, all cached.");
-                        }
-                    }
-
-                    let _ = std::io::stdout().execute(cursor::Show);
-                    let answer = tokio::task::spawn_blocking(output::prompt_yes_no)
-                        .await
-                        .unwrap_or(false);
+                // Present the transaction: the plan always renders; the
+                // frontend only waits for a Y/n answer when the gate is enabled
+                // (see libscoop::package::sync::should_gate).
+                Event::PromptTransactionNeedConfirm { transaction, gate } => {
+                    print_transaction_plan(&transaction);
+                    let answer = if gate {
+                        let _ = std::io::stdout().execute(cursor::Show);
+                        let a = tokio::task::spawn_blocking(output::prompt_yes_no)
+                            .await
+                            .unwrap_or(false);
+                        let _ = std::io::stdout().execute(cursor::Hide);
+                        a
+                    } else {
+                        true
+                    };
                     let _ = tx
                         .send(Event::PromptTransactionNeedConfirmResult(answer))
                         .await;
-                    let _ = std::io::stdout().execute(cursor::Hide);
                     continue;
                 }
 
@@ -243,6 +176,87 @@ pub fn run_event_loop(
 
         handler.on_finished();
     })
+}
+
+/// Render the transaction plan block (installed / upgraded / replaced /
+/// removed lists + total download size). Always shown, regardless of whether
+/// the confirmation gate is enabled.
+fn print_transaction_plan(transaction: &Transaction) {
+    if let Some(install) = transaction.install_view() {
+        output::header(rust_i18n::t!("cmd.header_installed"));
+        let out = install
+            .iter()
+            .map(|p| format!("{}-{}", p.ident(), p.version()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  {}", out);
+    }
+
+    if let Some(upgrade) = transaction.upgrade_view() {
+        if transaction.install_view().is_some() {
+            println!();
+        }
+        output::header(rust_i18n::t!("cmd.header_upgraded"));
+        let out = upgrade
+            .iter()
+            // With `--force` packages at their current version
+            // (no upgradable reference) are reinstalled too, so
+            // fall back to the current version for display.
+            .map(|p| {
+                format!(
+                    "{}-{}",
+                    p.ident(),
+                    p.upgradable_version().unwrap_or(p.version())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  {}", out);
+    }
+
+    if let Some(replace) = transaction.replace_view() {
+        if transaction.install_view().is_some()
+            || transaction.upgrade_view().is_some()
+        {
+            println!();
+        }
+        output::header(rust_i18n::t!("cmd.header_replaced"));
+        let out = replace
+            .iter()
+            .map(|p| format!("{}/{}", p.bucket(), p.name()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  {}", out);
+    }
+
+    if let Some(remove) = transaction.remove_view() {
+        if transaction.install_view().is_some()
+            || transaction.upgrade_view().is_some()
+            || transaction.replace_view().is_some()
+        {
+            println!();
+        }
+        output::header(rust_i18n::t!("cmd.header_removed"));
+        let out = remove
+            .iter()
+            .map(|p| format!("{}-{}", p.ident(), p.version()))
+            .collect::<Vec<_>>()
+            .join("  ");
+        println!("  {}", out);
+    }
+
+    if let Some(download_size) = transaction.download_size() {
+        let out = format::humansize(download_size.total, true);
+        if download_size.total > 0 {
+            if download_size.estimated {
+                println!("\nTotal download size: {out} (estimated)");
+            } else {
+                println!("\nTotal download size: {}", out);
+            }
+        } else {
+            println!("\nNothing to download, all cached.");
+        }
+    }
 }
 
 /// Convenience helper: runs the event loop with a default Scoop-style handler.

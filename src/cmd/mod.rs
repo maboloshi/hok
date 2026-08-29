@@ -86,6 +86,10 @@ pub struct Cli {
     /// Disable colored output
     #[arg(global = true, long = "no-color", short = 'N')]
     pub no_color: bool,
+
+    /// Force the transaction confirmation gate, ignoring the `confirm` config
+    #[arg(global = true, long)]
+    pub confirm: bool,
 }
 
 #[derive(Subcommand)]
@@ -208,6 +212,8 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     setup_logger(args.verbose.tracing_level_filter())?;
 
     let session = Session::default();
+    // Force the confirmation gate for every sync command (`--confirm`).
+    session.set_force_confirm(args.confirm);
     // Mount the process-wide Ctrl-C cancellation token so long-running
     // operations (downloads, scripts, waits) can abort cleanly on interrupt.
     session.set_cancellation_token(cancellation)?;

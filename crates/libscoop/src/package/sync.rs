@@ -352,18 +352,52 @@ impl Default for Transaction {
     }
 }
 
+/// Unified confirmation-gate decision (three layers + built-in TTY rule).
+///
+/// The gate controls whether the frontend waits for an interactive Y/n answer:
+///
+/// - `-y/--yes` ([`SyncOption::AssumeYes`]): force off — never gate.
+/// - `tty == false` (non-interactive stdin): built-in "no gate".
+/// - `--confirm` (`Session::force_confirm`): force on.
+/// - `config.confirm`: global default (`false` → no gate unless forced).
+///
+/// The transaction *plan* is always rendered regardless of this decision; only
+/// the wait-for-answer is gated.
+pub(crate) fn should_gate(session: &Session, options: &[SyncOption], tty: bool) -> bool {
+    if options.contains(&SyncOption::AssumeYes) {
+        return false;
+    }
+    if !tty {
+        return false;
+    }
+    if session.force_confirm() {
+        return true;
+    }
+    session.config().confirm()
+}
+
 /// Send the transaction to the frontend for confirmation and wait for the result.
+///
+/// The plan is always rendered (the event is always sent); `gate` tells the
+/// frontend whether to wait for an interactive Y/n answer or auto-approve.
 ///
 /// Returns `Ok(true)` if confirmed, `Ok(false)` if rejected or no emitter is
 /// available (the channel sender is dropped before the response arrives).
-async fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible<bool> {
+async fn confirm_transaction(
+    session: &Session,
+    transaction: &Transaction,
+    gate: bool,
+) -> Fallible<bool> {
     let tx = match session.emitter() {
         Some(tx) => tx,
         None => return Ok(true),
     };
 
     if tx
-        .try_send(Event::PromptTransactionNeedConfirm(transaction.clone()))
+        .try_send(Event::PromptTransactionNeedConfirm {
+            transaction: transaction.clone(),
+            gate,
+        })
         .is_err()
     {
         return Ok(true);
@@ -457,14 +491,14 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).await.unwrap();
+        let result = confirm_transaction(&session, &transaction, true).await.unwrap();
         assert!(result, "should return true when frontend accepts");
 
-        // Verify the request was actually emitted
+        // Verify the request was actually emitted (with the gate flag)
         let request = frontend_rx.recv().await.unwrap();
         assert!(
-            matches!(request, Event::PromptTransactionNeedConfirm(_)),
-            "should have emitted PromptTransactionNeedConfirm"
+            matches!(request, Event::PromptTransactionNeedConfirm { gate: true, .. }),
+            "should have emitted a gated PromptTransactionNeedConfirm"
         );
     }
 
@@ -480,7 +514,48 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).await.unwrap();
+        let result = confirm_transaction(&session, &transaction, true).await.unwrap();
         assert!(!result, "should return false when frontend rejects");
+    }
+
+    // --- should_gate ---
+
+    /// `-y/--yes` force-off always wins, even on a TTY.
+    #[test]
+    fn should_gate_assume_yes() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(!should_gate(&session, &[SyncOption::AssumeYes], true));
+    }
+
+    /// Non-TTY stdin never gates, even with `--confirm` or `config.confirm`.
+    #[test]
+    fn should_gate_non_tty() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(!should_gate(&session, &[], false));
+    }
+
+    /// `--confirm` forces the gate on a TTY.
+    #[test]
+    fn should_gate_force_confirm() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(should_gate(&session, &[], true));
+    }
+
+    /// `config.confirm` enables the gate on a TTY; the default (`false`) does not.
+    #[test]
+    fn should_gate_config_confirm() {
+        let session = Session::new();
+        session
+            .config_mut()
+            .unwrap()
+            .set("confirm", "true")
+            .unwrap();
+        assert!(should_gate(&session, &[], true));
+
+        let default = Session::new();
+        assert!(!should_gate(&default, &[], true));
     }
 }

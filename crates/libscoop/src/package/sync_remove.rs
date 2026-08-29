@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use std::io::IsTerminal;
 use tracing::{debug, info};
 
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
@@ -22,7 +23,7 @@ use crate::{
 };
 
 use super::sync_install::check_not_running;
-use super::{SyncOption, Transaction, confirm_transaction};
+use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
 /// Sync operation: remove packages.
 pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
@@ -114,8 +115,8 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
 
     transaction.set_remove(packages);
 
-    let assume_yes = options.contains(&SyncOption::AssumeYes);
-    if !assume_yes && !confirm_transaction(session, &transaction).await? {
+    let gate = should_gate(session, options, std::io::stdin().is_terminal());
+    if !confirm_transaction(session, &transaction, gate).await? {
         // User declined: exit 0 but no success message (see sync_install).
         return Err(Error::UserAborted);
     }

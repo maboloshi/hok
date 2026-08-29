@@ -344,8 +344,18 @@ pub enum Event {
         version: String,
     },
 
-    /// Prompt the user to confirm the transaction.
-    PromptTransactionNeedConfirm(Transaction),
+    /// Present the transaction to the frontend for confirmation.
+    ///
+    /// The transaction plan is always rendered by the frontend; `gate` is
+    /// `true` only when the confirmation gate is enabled (and stdin is
+    /// interactive), so the frontend should wait for a Y/n answer instead of
+    /// auto-approving.
+    PromptTransactionNeedConfirm {
+        /// The transaction to present (and, when gated, confirm).
+        transaction: Transaction,
+        /// Whether the frontend should wait for an interactive Y/n answer.
+        gate: bool,
+    },
 
     /// Result of [`PromptTransactionNeedConfirm`][1].
     ///

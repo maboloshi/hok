@@ -5,6 +5,7 @@
 //! execution — split out of [`super`] (`sync.rs`). It is a private
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
+use std::io::IsTerminal;
 use tracing::debug;
 
 use crate::package::{InstallInfo, Package, download, manifest_source, operations, query, resolve};
@@ -13,7 +14,7 @@ use crate::{
     internal, persist, psmodule, shim, shortcut,
 };
 
-use super::{SyncOption, Transaction, confirm_transaction};
+use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
 /// Sync operation: install and/or upgrade packages.
 pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
@@ -283,7 +284,6 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
     let mut set = download::PackageSet::new(session, &packages, reuse_cache)?;
     set.set_ignore_failure(ignore_failure);
 
-    let assume_yes = options.contains(&SyncOption::AssumeYes);
     let offline = options.contains(&SyncOption::Offline);
     let mut should_offline = true;
 
@@ -305,7 +305,8 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         }
     }
 
-    if !assume_yes && !confirm_transaction(session, &transaction).await? {
+    let gate = should_gate(session, options, std::io::stdin().is_terminal());
+    if !confirm_transaction(session, &transaction, gate).await? {
         // User declined: not an error, but not a success either — callers
         // exit 0 without the "Everything is ok!" message.
         return Err(Error::UserAborted);

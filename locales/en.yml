@@ -225,7 +225,7 @@ cli_help:
   hok:
     about: "Hok is a CLI implementation of Scoop in Rust"
     args:
-      detail: "Show detailed operation information for debugging"
+      confirm: "Force the transaction confirmation gate, ignoring the confirm config"
       language: "Force CLI language (auto/en/zh)"
       no_color: "Disable colored output"
       verbose: "Increase logging verbosity"

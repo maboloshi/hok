@@ -242,7 +242,7 @@ impl EventHandler for ScoopHandler {
             Event::PackageSyncDone => {}
 
             // --- Interactive prompts (handled by event loop, not here) ---
-            Event::PromptPackageCandidate(_) | Event::PromptTransactionNeedConfirm(_) => {}
+            Event::PromptPackageCandidate(_) | Event::PromptTransactionNeedConfirm { .. } => {}
 
             // --- Download progress (handled by event loop, not here) ---
             Event::PackageDownloadProgress(_) => {}

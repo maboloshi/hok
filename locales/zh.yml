@@ -225,7 +225,7 @@ cli_help:
   hok:
     about: "Hok 是 Scoop 的 Rust 实现"
     args:
-      detail: "显示详细操作信息以便调试"
+      confirm: "强制开启事务确认闸门，忽略 confirm 配置"
       language: "强制 CLI 语言 (auto/en/zh)"
       no_color: "禁用彩色输出"
       verbose: "增加日志详细程度"
