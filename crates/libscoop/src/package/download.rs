@@ -595,20 +595,10 @@ impl<'a> PackageSet<'a> {
                 let code = result.status_code;
 
                 if code == 200 {
-                    // Get Content-Length via a dedicated HEAD (need the header).
-                    let cl_opts = internal::network::RequestOptions {
-                        proxy: proxy.as_deref(),
-                        timeout_secs: 30,
-                        cookies: cookie_map.as_ref(),
-                        ..internal::network::RequestOptions::default()
-                    };
-                    info.remote_size = self
-                        .session
-                        .network()
-                        .head(url, &cl_opts)
-                        .await
-                        .content_length
-                        .unwrap_or(0);
+                    // head() returns both the status code and Content-Length
+                    // in a single round trip; reusing it avoids a redundant
+                    // second HEAD request per URL.
+                    info.remote_size = result.content_length.unwrap_or(0);
                     if info.remote_size != info.local_size {
                         total += info.remote_size;
                     }
