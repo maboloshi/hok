@@ -88,6 +88,10 @@ pub struct Session {
     /// Whether operations should target the global Scoop root.
     global: AtomicBool,
 
+    /// Whether the user forced the transaction confirmation gate on
+    /// (`--confirm`); overrides the `confirm` config default.
+    force_confirm: AtomicBool,
+
     /// Injectable network capability, defaulting to the real implementation.
     network: OnceLock<Arc<dyn Network + Send + Sync>>,
 
@@ -156,6 +160,7 @@ impl Session {
                 user_agent: OnceLock::new(),
                 output: OnceLock::new(),
                 global: AtomicBool::new(false),
+                force_confirm: AtomicBool::new(false),
                 network: OnceLock::new(),
                 git: OnceLock::new(),
                 archive: OnceLock::new(),
@@ -173,6 +178,7 @@ impl Session {
             user_agent: OnceLock::new(),
             output: OnceLock::new(),
             global: AtomicBool::new(false),
+            force_confirm: AtomicBool::new(false),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -212,6 +218,7 @@ impl Session {
             user_agent: OnceLock::new(),
             output: OnceLock::new(),
             global: AtomicBool::new(false),
+            force_confirm: AtomicBool::new(false),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -247,6 +254,16 @@ impl Session {
     /// Check whether operations should target the global Scoop root.
     pub fn is_global(&self) -> bool {
         self.global.load(Ordering::Relaxed)
+    }
+
+    /// Force the transaction confirmation gate on (`--confirm`).
+    pub fn set_force_confirm(&self, force: bool) {
+        self.force_confirm.store(force, Ordering::Relaxed);
+    }
+
+    /// Whether the transaction confirmation gate was forced on by `--confirm`.
+    pub fn force_confirm(&self) -> bool {
+        self.force_confirm.load(Ordering::Relaxed)
     }
 
     /// Get the effective root path based on the global flag.

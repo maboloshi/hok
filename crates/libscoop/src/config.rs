@@ -206,6 +206,13 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     no_color: Option<bool>,
 
+    /// Whether to show the interactive transaction confirmation gate by
+    /// default (`false` — sync commands don't wait for Y/n unless `--confirm`
+    /// is given or this is `true`).
+    #[serde(alias = "confirm")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confirm: Option<bool>,
+
     /// The default architecture to use (Scoop's `default_architecture`
     /// config, see `Get-DefaultArchitecture`). When set, it overrides the
     /// runtime-detected host architecture for manifest field selection.
@@ -463,6 +470,12 @@ impl Config {
         self.no_color.unwrap_or(false)
     }
 
+    /// Get the `confirm` config (whether the transaction gate shows by default).
+    #[inline]
+    pub fn confirm(&self) -> bool {
+        self.confirm.unwrap_or(false)
+    }
+
     /// Returns the cooldown duration (in seconds) remaining before the next
     /// bucket update is allowed. Returns `None` if no last update recorded.
     /// The default cooldown is 15 minutes (900 seconds).
@@ -564,6 +577,13 @@ impl Config {
                     false => Some(value.to_string()),
                 }
             }
+            "confirm" => match is_unset {
+                true => self.inner.confirm = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.confirm = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "editor" => {
                 self.inner.editor = match is_unset {
                     true => None,
@@ -718,6 +738,7 @@ impl Default for Config {
             // default_cache_path: default::cache_path(),
             cache_path: default::cache_path(),
             cat_style: Default::default(),
+            confirm: Default::default(),
             editor: Default::default(),
             default_architecture: Default::default(),
             gh_token: Default::default(),
@@ -1054,6 +1075,11 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
         "false".into(),
     ]);
     rows.push([
+        "confirm".into(),
+        fmt_bool(config.confirm()).into(),
+        "false".into(),
+    ]);
+    rows.push([
         "no_junction".into(),
         fmt_bool(config.no_junction()).into(),
         "false".into(),
@@ -1381,6 +1407,7 @@ mod tests {
             "aria2-min-split-size",
             "cache_path",
             "cat_style",
+            "confirm",
             "default_architecture",
             "editor",
             "global_path",
