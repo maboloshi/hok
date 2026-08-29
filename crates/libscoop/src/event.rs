@@ -91,21 +91,34 @@ impl EventBus {
     /// tokio::sync::mpsc receiver is single-consumer, it can only be obtained
     /// once per outbound channel — the event loop (or a test) is its sole owner.
     ///
-    /// If the receiver was already taken, a fresh outbound channel is created
-    /// and returned so a new event loop can run (e.g. reinstall runs a remove
-    /// and an install transaction back-to-back in one session).
+    /// Returns `None` if the receiver was already taken. To run a *second*
+    /// event loop on the same session (e.g. reinstall runs a remove then an
+    /// install transaction back-to-back), call [`Self::reset_outbound`]
+    /// between the two phases so a fresh outbound channel is created.
     pub fn receiver(&self) -> Option<mpsc::Receiver<Event>> {
+        self.outer_rx.lock().unwrap().take()
+    }
+
+    /// Recreate the outbound channel so a new event loop can take the receiver.
+    ///
+    /// The outbound `tokio::sync::mpsc` receiver is single-consumer, so a
+    /// session's event loop (or test) owns it. A command that runs *two*
+    /// event loops on one session — reinstall runs a remove then an install
+    /// transaction back-to-back — must call this after the first event loop's
+    /// `JoinHandle` has completed (the previous loop has broken on its
+    /// `PackageSyncDone` and fully drained the old channel) and before
+    /// starting the next one.
+    ///
+    /// This is a no-op when the receiver has not been taken yet.
+    pub fn reset_outbound(&self) {
         let mut guard = self.outer_rx.lock().unwrap();
-        if let Some(rx) = guard.take() {
-            return Some(rx);
+        if guard.is_some() {
+            // Not taken yet (or already reset): nothing to recreate.
+            return;
         }
-        // Already taken: recreate the outbound channel for the next phase
-        // (reinstall runs remove + install in one session; the previous
-        // event loop has finished by the time the next phase runs).
         let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
         *self.inner_tx.lock().unwrap() = inner_tx;
         *guard = Some(outer_rx);
-        guard.take()
     }
 
     /// Get the outbound sender of the event bus.

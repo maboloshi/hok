@@ -1,10 +1,10 @@
 //! Reinstall a package.
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session, SyncOption};
+use libscoop::{Session, SyncOption, package};
 
-use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
-use crate::{eventloop, output, Result};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags, ensure_global};
+use crate::{Result, eventloop, output};
 
 /// Reinstall a package
 #[derive(Debug, Parser)]
@@ -139,10 +139,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Step 1: Uninstall
     let mut remove_opts = all_opts.clone();
     remove_opts.push(SyncOption::Remove);
-    run_remove(session, &queries, &remove_opts).await?;
+    run_sync_phase(session, &queries, &remove_opts).await?;
+
+    // The outbound receiver is single-consumer: after the remove phase's
+    // event loop has finished (broken on PackageSyncDone and drained), reset
+    // the bus so the install phase gets a fresh outbound channel.
+    session.event_bus().reset_outbound();
 
     // Step 2: Install
-    run_install(session, &queries, &all_opts).await?;
+    run_sync_phase(session, &queries, &all_opts).await?;
 
     // Re-hold packages that were held before
     if !held.is_empty() {
@@ -158,22 +163,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Uninstall phase.
-async fn run_remove(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
+/// Run one sync phase under an event loop on the session's event bus.
+///
+/// The outbound receiver is single-consumer: the first phase takes it, and
+/// before the second phase runs the bus must be reset explicitly (see the
+/// callers) so a fresh outbound channel is handed to the next event loop.
+async fn run_sync_phase(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
     let handle = eventloop::run_event_loop_default(session);
-    package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
-    handle.await.unwrap();
-    Ok(())
-}
-
-/// Install phase.
-async fn run_install(session: &Session, queries: &[&str], opts: &[SyncOption]) -> Result<()> {
-    let config = eventloop::EventLoopConfig { auto_confirm: true };
-    let handle = eventloop::run_event_loop(
-        session,
-        config,
-        Box::new(crate::scoop_handler::ScoopHandler::new()),
-    );
     package::sync::sync(session, queries.to_vec(), opts.to_vec()).await?;
     handle.await.unwrap();
     Ok(())
