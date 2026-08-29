@@ -1,10 +1,41 @@
 //! PowerShell script execution & installer-variable expansion primitives.
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
+use std::process::Stdio;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::package::Package;
-use crate::{error::Fallible, internal, Error, Session};
+use crate::{error::Fallible, internal, Error, Event, Session};
+
+/// Read a captured child pipe line by line (lossy UTF-8) and forward every
+/// non-empty line to the event bus as `ScriptOutput`, so the frontend renders
+/// script output with the same indentation as its own lines. Runs on a worker
+/// thread (see `run_script`) so a chatty script cannot deadlock the child
+/// against the wait loop on a full pipe buffer.
+fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender<Event>>) {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let cow = String::from_utf8_lossy(&buf);
+                let line = cow
+                    .trim_start_matches('\u{feff}')
+                    .trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(tx) = tx.as_ref() {
+                    let _ = tx.try_send(Event::ScriptOutput(line.to_owned()));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
 
 /// Execute a PowerShell script defined in a package manifest.
 ///
@@ -63,6 +94,11 @@ pub async fn run_script(
     const DECOMPRESS_PS1: &str = include_str!("../../../../../asset_scripts/decompress.ps1");
     let preamble = format!(
         r#"
+# Force UTF-8 so the captured stdout/stderr (re-emitted by run_script)
+# decodes correctly regardless of the console codepage.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # Hok embedded helpers (always available)
 {core}
 {decompress}
@@ -137,6 +173,11 @@ $fname = '{fname}'
         .env("version", &version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str());
 
+    // Pipe stdout/stderr so the script output is captured and re-emitted as
+    // `ScriptOutput` events — a bare inherited stdout would print at column 0
+    // and break the frontend's indented alignment.
+    ps.stdout(Stdio::piped()).stderr(Stdio::piped());
+
     let mut child = ps.spawn().map_err(|e| {
         Error::Custom(format!(
             "failed to run {} script for '{}': {}",
@@ -145,6 +186,29 @@ $fname = '{fname}'
             e
         ))
     })?;
+
+    // Drain the pipes on worker threads while the child runs; without this a
+    // chatty script could fill a pipe buffer and deadlock the child against
+    // our wait loop. Every non-empty line is forwarded as `ScriptOutput`.
+    let emitter = session.emitter();
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let out_reader = if let Some(out) = stdout.take() {
+        let tx = emitter.clone();
+        Some(std::thread::spawn(move || {
+            forward_script_pipe(BufReader::new(out), tx)
+        }))
+    } else {
+        None
+    };
+    let err_reader = if let Some(err) = stderr.take() {
+        let tx = emitter.clone();
+        Some(std::thread::spawn(move || {
+            forward_script_pipe(BufReader::new(err), tx)
+        }))
+    } else {
+        None
+    };
 
     // Cooperative Ctrl-C cancellation: a cancelled token kills the child so
     // no stray powershell lingers. There is deliberately no hard timeout here
@@ -181,6 +245,16 @@ $fname = '{fname}'
             }
         }
     };
+
+    // Child finished — join the readers so every captured `ScriptOutput` line
+    // is flushed into the event bus before the caller emits the next event
+    // (e.g. the package closure).
+    if let Some(t) = out_reader {
+        let _ = t.join();
+    }
+    if let Some(t) = err_reader {
+        let _ = t.join();
+    }
 
     if !status.success() {
         let code = status.code().unwrap_or(-1);
@@ -441,6 +515,58 @@ impl Drop for TempFileGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A script's stdout (here a Chinese Write-Host line) is captured and
+    /// re-emitted as ScriptOutput events, so the frontend renders it with
+    /// the same indentation as its own lines instead of a bare column-0 print.
+    /// Also guards the UTF-8 preamble setting so non-ASCII survives the pipe.
+    #[tokio::test]
+    async fn run_script_forwards_script_output() {
+        let root = crate::test_utils::tmpdir("script_output_forward");
+        let session = crate::test_utils::test_session(&root);
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let script = Some(vec!["Write-Host 'hello-世界'", "Write-Host 'done-ok'"]);
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            script,
+        )
+        .await
+        .unwrap();
+
+        let mut lines = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::ScriptOutput(line) = ev {
+                lines.push(line);
+            }
+        }
+        assert!(
+            lines.iter().any(|l| l.contains("hello-世界")),
+            "expected UTF-8 script output, got {:?}",
+            lines
+        );
+        assert!(lines.iter().any(|l| l.contains("done-ok")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// Test that TempFileGuard removes files on Drop.
     #[test]
