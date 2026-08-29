@@ -5,16 +5,18 @@
 //!
 //! # Design
 //!
-//! - **Lazy full scan**: Most packages have no dependencies, so a costly
-//!   full-bucket scan is only triggered when at least one package declares
-//!   dependencies. The scan queries all synced packages at once for
-//!   efficient subsequent lookups.
+//! - **Lazy per-query resolution**: Most packages have no dependencies, so
+//!   no scan happens unless a package declares (or implicitly pulls in) a
+//!   dependency. Each dependency query is resolved through a name-prefiltered
+//!   query (only matching manifests are parsed) instead of a full-bucket
+//!   wildcard scan, keeping resolution O(matches) rather than O(all
+//!   manifests). Results are cached per query for deps-of-deps.
 //! - **Unique ordering**: The output is guaranteed to have no duplicates
 //!   and is sorted so that dependencies appear before their dependents.
 //! - **Cycle detection**: The [`DepGraph`] detects cyclic dependencies
 //!   and returns a [`CyclicError`] if any are found.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     error::Fallible,
@@ -44,16 +46,16 @@ pub(crate) async fn resolve_dependencies(
     let mut to_resolve = packages.clone();
     let mut skipped: HashSet<String> = HashSet::new();
 
-    // Only query all packages when there are actual dependencies to resolve.
-    // Most packages have no deps, so this avoids a costly full scan.
-    let has_deps = packages.iter().any(|p| !p.dependencies().is_empty());
-    let synced = if has_deps {
-        // For performance reason, a wildcard query is done here to get all the
-        // available packages in one shot and then used for the following queries.
-        query::query_synced(session, &["*"], &[])?
-    } else {
-        Vec::new()
-    };
+    // Dependency queries are resolved through name-prefiltered query_synced
+    // calls (only manifests whose name matches the query are parsed) instead
+    // of a full-bucket wildcard scan. A wildcard scan is O(all manifests) and
+    // dominated by disk I/O plus per-package install-state probing - the slow
+    // path whenever a package pulls in an implicit installation helper (e.g.
+    // 7zip for a .7z URL, lessmsi / innounp for those installers).
+    // Results are cached per query so deps-of-deps don't re-scan. query_synced
+    // still fills install state for matched packages, preserving the
+    // installed-candidate preference below.
+    let mut query_cache: HashMap<String, Vec<Package>> = HashMap::new();
 
     loop {
         if to_resolve.is_empty() {
@@ -78,11 +80,16 @@ pub(crate) async fn resolve_dependencies(
                 let mut failed = false;
 
                 for query in queries {
-                    let mut matched = synced
-                        .iter()
-                        .filter(|p| p.matches_bucket_query(query))
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    let mut matched = if let Some(cached) = query_cache.get(query) {
+                        cached.clone()
+                    } else {
+                        let resolved = query::query_synced(session, &[query], &[])?
+                            .into_iter()
+                            .filter(|p| p.matches_bucket_query(query))
+                            .collect::<Vec<_>>();
+                        query_cache.insert(query.to_owned(), resolved.clone());
+                        resolved
+                    };
 
                     match matched.len() {
                         0 => {
