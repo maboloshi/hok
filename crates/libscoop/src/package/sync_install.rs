@@ -312,6 +312,15 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         return Err(Error::UserAborted);
     }
 
+    // The resolution/planning phase ends here: queries, dependency resolution,
+    // download sizing and user confirmation are done. Emit PackageResolveDone
+    // so the resolve phase is bounded before the download/commit phase (whose
+    // own status events take over the status line). sync() still re-sends it on
+    // error paths to keep the event loop from hanging.
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageResolveDone);
+    }
+
     // Idents of packages that failed to download / verify and must be
     // skipped. Only populated when IgnoreFailure is enabled.
     let no_hash_check = options.contains(&SyncOption::NoHashCheck);
