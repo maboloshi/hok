@@ -21,7 +21,7 @@
 //! resolution in [`install_state`]; this module holds the query walkers and
 //! the session-level operations built on them.
 
-use rayon::prelude::{ParallelBridge, ParallelIterator};
+use rayon::prelude::*;
 use std::path::Path;
 use tracing::debug;
 
@@ -293,10 +293,11 @@ pub(crate) fn query_synced(
 
 /// `query_synced` backed by the SQLite manifest cache.
 ///
-/// The cache supplies the package/bucket index (avoiding a full directory
-/// walk), but manifest contents are always re-read from disk
-/// ([`load_bucket_manifest`]) to avoid stale data after the user edits a
-/// manifest; the cached JSON is only a fallback when the file is gone.
+/// The cache supplies the package/bucket index and the stored manifest JSON,
+/// so queries avoid a full directory walk *and* re-reading every manifest file
+/// from disk (the dominant cost on large bucket sets). Manifests are served
+/// from the cache, which is refreshed on every `hok update`; reading the file
+/// (load_bucket_manifest) is a fallback when a cached entry fails to parse.
 /// Falls back silently if the cache is unavailable.
 fn query_synced_cached(
     session: &Session,
@@ -317,43 +318,43 @@ fn query_synced_cached(
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
 
-    let mut packages = Vec::new();
+    // Serve from the cache's stored manifest JSON, falling back to reading
+    // the file only when a cached entry fails to parse. The cache is
+    // (re)populated on every hok update, so within the normal workflow it is
+    // fresh; re-reading 20k+ manifest files from disk on every query was the
+    // dominant cost here. The scan is parallelized so per-package install-state
+    // probing overlaps across entries.
+    let packages = entries
+        .par_iter()
+        .filter_map(|entry| {
+            let name = &entry.name;
+            let bucket = &entry.bucket;
 
-    for entry in &entries {
-        let name = &entry.name;
-        let bucket = &entry.bucket;
+            if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
+                return None;
+            }
 
-        if name_prefiltered_out(name, is_wildcard_query, &matchers, options) {
-            continue;
-        }
+            let manifest = manifest_cache::entry_to_manifest(entry)
+                .or_else(|| load_bucket_manifest(&root_path, bucket, name))?;
 
-        // Prefer reading manifest files directly to avoid stale cache.
-        // Cache is populated once during bucket update, but the user
-        // may have edited the file since then.
-        let manifest = match load_bucket_manifest(&root_path, bucket, name)
-            .or_else(|| manifest_cache::entry_to_manifest(entry))
-        {
-            Some(m) => m,
-            None => continue,
-        };
+            if !manifest_matches(
+                name,
+                bucket,
+                &manifest,
+                is_wildcard_query,
+                is_explicit_mode,
+                &matchers,
+                options,
+            ) {
+                return None;
+            }
 
-        if !manifest_matches(
-            name,
-            bucket,
-            &manifest,
-            is_wildcard_query,
-            is_explicit_mode,
-            &matchers,
-            options,
-        ) {
-            continue;
-        }
+            let package = Package::from(name, bucket, manifest);
+            fill_install_state(&package, &apps_dir, name, no_junction);
 
-        let package = Package::from(name, bucket, manifest);
-        fill_install_state(&package, &apps_dir, name, no_junction);
-
-        packages.push(package);
-    }
+            Some(package)
+        })
+        .collect::<Vec<_>>();
 
     Ok(packages)
 }
