@@ -895,7 +895,11 @@ pub(crate) async fn apply_autoupdate(
             download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir).await?;
 
         root["url"] = manifest::json_str_array(&substituted);
-        root["hash"] = manifest::json_str_array(&hashes);
+        root["hash"] = manifest::update_hash_preserving_style(
+            root.get("hash").unwrap_or(&serde_json::Value::Null),
+            &hashes,
+            Some(&sub),
+        );
     }
 
     // ── Per-architecture URLs ──────────────────────────────────────────────
@@ -916,7 +920,9 @@ pub(crate) async fn apply_autoupdate(
 
                 if let Some(obj) = root.pointer_mut(&ptr) {
                     obj["url"] = manifest::json_str_array(&substituted);
-                    obj["hash"] = manifest::json_str_array(&hashes);
+                    let existing_hash = obj.get("hash").cloned().unwrap_or(serde_json::Value::Null);
+                    obj["hash"] =
+                        manifest::update_hash_preserving_style(&existing_hash, &hashes, Some(&sub));
                 }
             }
         }

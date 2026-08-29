@@ -542,6 +542,13 @@ mod tests {
     }
 
     #[test]
+    fn format_hash_sha512_prefix_added() {
+        let h = "c".repeat(128);
+        let result = format_hash(&h);
+        assert_eq!(result, Some(format!("sha512:{h}")));
+    }
+
+    #[test]
     fn format_hash_invalid_length_returns_none() {
         let result = format_hash("tooshort");
         assert!(result.is_none());

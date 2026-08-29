@@ -584,6 +584,101 @@ pub(crate) fn json_str_array(items: &[String]) -> serde_json::Value {
         )
     }
 }
+/// Update a manifest `hash` field while preserving its existing JSON shape,
+/// mirroring Scoop's `PropertyHelper` (lib/autoupdate.ps1).
+///
+/// This is the single hash *write-back* shared by both `checkver` (autoupdate)
+/// and `checkhashes` (`--update`). Only the write-back is shared — the two
+/// compute hashes differently, mirroring official Scoop:
+///
+/// - `checkhashes` is a verifier: it always downloads the real file and hashes
+///   it with the algorithm declared in the manifest hash (`bin/checkhashes.ps1`
+///   → `get_hash` → `Get-FileHash`). It has no extraction modes.
+/// - `checkver`/autoupdate discovers the hash for a *new* version without
+///   downloading the binary, so it uses the extraction modes in
+///   `get_hash_for_app` (extract/json/xpath/rdf/metalink/fosshub/sourceforge/
+///   github), falling back to download+compute.
+///
+/// Hence `sub` is `Some` only for checkver (substitute `$version`/`$baseurl`
+/// in object-form hash urls); checkhashes passes `None` (url left untouched).
+///
+/// - A bare string stays a bare string (growing into an array only when more
+///   hashes arrive than the field currently holds).
+/// - An array of strings stays an array of strings.
+/// - A `{ "url": ..., "hash": ... }` object (single or inside an array) keeps
+///   the object form: its `hash` member is refreshed with the new value at
+///   the matching index, and its `url` member is run through `sub` when
+///   given (variable substitution; `None` — e.g. from checkhashes — leaves
+///   the url untouched). This diverges from Scoop's `PropertyHelper`, which
+///   leaves such objects untouched; refreshing is required so the stored hash
+///   still matches the substituted URL/version after update.
+///
+/// When the incoming hash count exceeds the existing slots the field is
+/// rebuilt wholesale (`$Property = $Value` in Scoop), so a previously-single
+/// hash correctly grows into an array.
+pub(crate) fn update_hash_preserving_style(
+    existing: &serde_json::Value,
+    new_hashes: &[String],
+    sub: Option<&dyn Fn(&str) -> String>,
+) -> serde_json::Value {
+    let plain = json_str_array(new_hashes);
+    let existing_slots = match existing {
+        serde_json::Value::Array(a) => a.len(),
+        _ => 1,
+    };
+    let new_slots = match &plain {
+        serde_json::Value::Array(a) => a.len(),
+        _ => 1,
+    };
+    if existing_slots < new_slots {
+        return plain;
+    }
+    let new_elems: Vec<serde_json::Value> = if new_hashes.len() == 1 {
+        vec![serde_json::Value::String(new_hashes[0].clone())]
+    } else {
+        new_hashes
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect()
+    };
+    match existing {
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .enumerate()
+                .map(|(i, elem)| match elem {
+                    serde_json::Value::Object(map) => {
+                        // Preserve the {url, hash} object form and refresh members.
+                        let mut m = map.clone();
+                        if let Some(h) = new_elems.get(i).and_then(|v| v.as_str()) {
+                            m.insert("hash".to_string(), serde_json::Value::String(h.to_string()));
+                        }
+                        if let Some(u) = m.get("url").and_then(|v| v.as_str())
+                            && let Some(sub) = sub
+                        {
+                            m.insert("url".to_string(), serde_json::Value::String(sub(u)));
+                        }
+                        serde_json::Value::Object(m)
+                    }
+                    other => new_elems.get(i).cloned().unwrap_or_else(|| other.clone()),
+                })
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => {
+            // Single {url, hash} object form (not wrapped in an array).
+            let mut m = map.clone();
+            if let Some(h) = new_elems.first().and_then(|v| v.as_str()) {
+                m.insert("hash".to_string(), serde_json::Value::String(h.to_string()));
+            }
+            if let Some(u) = m.get("url").and_then(|v| v.as_str())
+                && let Some(sub) = sub
+            {
+                m.insert("url".to_string(), serde_json::Value::String(sub(u)));
+            }
+            serde_json::Value::Object(m)
+        }
+        _ => plain,
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //  Implementations for types
@@ -1580,6 +1675,125 @@ mod tests {
     fn json_str_array_empty_is_empty_array() {
         let v = json_str_array(&[]);
         assert_eq!(v, serde_json::json!([]));
+    }
+    // ── update_hash_preserving_style ────────────────────────────────────────
+
+    fn sub_noop(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn hash_preserves_bare_string_style() {
+        let existing = serde_json::json!("oldhash");
+        let v = update_hash_preserving_style(&existing, &["a".repeat(64)], Some(&sub_noop));
+        assert_eq!(
+            v,
+            serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn hash_preserves_string_array_style() {
+        let existing = serde_json::json!(["h1", "h2"]);
+        let v = update_hash_preserving_style(
+            &existing,
+            &["new1".to_string(), "new2".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(v, serde_json::json!(["new1", "new2"]));
+    }
+
+    #[test]
+    fn hash_preserves_object_array_style_and_refreshes_members() {
+        let existing = serde_json::json!([
+            { "url": "https://example.com/a.zip", "hash": "old-a" },
+            { "url": "https://example.com/b.zip", "hash": "old-b" }
+        ]);
+        let v = update_hash_preserving_style(
+            &existing,
+            &["new-a".to_string(), "new-b".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://example.com/a.zip", "hash": "new-a" },
+                { "url": "https://example.com/b.zip", "hash": "new-b" }
+            ])
+        );
+    }
+
+    #[test]
+    fn hash_preserves_object_array_style_and_substitutes_urls() {
+        let existing = serde_json::json!([
+            { "url": "$baseurl/a.zip", "hash": "old-a" }
+        ]);
+        let sub = |s: &str| s.replace("$baseurl", "https://cdn.example.com/2.0.0");
+        let v = update_hash_preserving_style(&existing, &["new-a".to_string()], Some(&sub));
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://cdn.example.com/2.0.0/a.zip", "hash": "new-a" }
+            ])
+        );
+    }
+
+    #[test]
+    fn hash_grows_bare_string_into_array_when_more_hashes() {
+        let existing = serde_json::json!("only");
+        let v = update_hash_preserving_style(
+            &existing,
+            &["h1".to_string(), "h2".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(v, serde_json::json!(["h1", "h2"]));
+    }
+
+    #[test]
+    fn hash_absent_becomes_plain_value() {
+        let existing = serde_json::Value::Null;
+        let v = update_hash_preserving_style(&existing, &["a".repeat(64)], Some(&sub_noop));
+        assert_eq!(
+            v,
+            serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn hash_preserves_single_object_form() {
+        // A lone {url, hash} object (not wrapped in an array) keeps its shape.
+        let existing = serde_json::json!({ "url": "$baseurl/a.zip", "hash": "old" });
+        let sub = |s: &str| s.replace("$baseurl", "https://cdn.example.com/2.0.0");
+        let v = update_hash_preserving_style(&existing, &["new-a".to_string()], Some(&sub));
+        assert_eq!(
+            v,
+            serde_json::json!({ "url": "https://cdn.example.com/2.0.0/a.zip", "hash": "new-a" })
+        );
+    }
+
+    #[test]
+    fn hash_preserves_algorithm_prefix_value() {
+        // A value that already carries an algorithm prefix (e.g. sha512:) is
+        // written through verbatim by the structure-preserving helper.
+        let new_hash = format!("sha512:{}", "a".repeat(128));
+        let existing = serde_json::json!("sha512:old");
+        let v = update_hash_preserving_style(&existing, &[new_hash.clone()], Some(&sub_noop));
+        assert_eq!(v, serde_json::Value::String(new_hash));
+    }
+
+    #[test]
+    fn hash_object_form_preserves_algorithm_prefix_value() {
+        let existing = serde_json::json!([
+            { "url": "https://example.com/a.zip", "hash": "sha1:old" }
+        ]);
+        let new_hash = format!("sha1:{}", "b".repeat(40));
+        let v = update_hash_preserving_style(&existing, &[new_hash.clone()], Some(&sub_noop));
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://example.com/a.zip", "hash": new_hash }
+            ])
+        );
     }
 
     #[test]

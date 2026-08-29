@@ -182,9 +182,9 @@ pub async fn execute(
                     .iter()
                     .map(|&idx| actual_hashes[idx].clone())
                     .collect();
-                let new_val = manifest::json_str_array(&new_hashes);
                 if let Some(obj) = root.pointer_mut(path_prefix) {
-                    *obj = new_val;
+                    let existing = obj.clone();
+                    *obj = manifest::update_hash_preserving_style(&existing, &new_hashes, None);
                 } else {
                     item.status = CheckHashesStatus::Failed;
                     item.messages
