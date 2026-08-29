@@ -1,5 +1,7 @@
 //! Fetch and update subscribed buckets, or upgrade installed package(s).
 
+use std::io::IsTerminal;
+
 use clap::{ArgAction, Parser};
 use libscoop::{bucket, package, Event, Session, SyncOption};
 
@@ -153,12 +155,29 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 
     // Refresh SQLite manifest cache with visible feedback
     if session.config().use_sqlite_cache() {
+        refresh_manifest_cache(session);
+    }
+
+    Ok(())
+}
+
+/// Refresh the SQLite manifest cache with a single-step spinner.
+///
+/// On a terminal the refresh spins (`cui::RowUI`, indicatif) and finishes in
+/// place as `✓ <cache_done>`; on a non-terminal (piped) it falls back to the
+/// plain `status`/`done` line pair, since indicatif's `MultiProgress` is
+/// hidden and renders nothing when the output is not a TTY.
+fn refresh_manifest_cache(session: &Session) {
+    if std::io::stdout().is_terminal() {
+        let mut ui = cui::RowUI::new();
+        ui.set_spin("manifest-cache", rust_i18n::t!("cmd.refresh_cache"));
+        package::manifest_cache::refresh(session);
+        ui.done_with("manifest-cache", rust_i18n::t!("cmd.cache_done"));
+    } else {
         output::status(rust_i18n::t!("cmd.refresh_cache"));
         package::manifest_cache::refresh(session);
         output::done(rust_i18n::t!("cmd.cache_done"));
     }
-
-    Ok(())
 }
 
 /// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.

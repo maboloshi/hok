@@ -66,14 +66,13 @@ impl RowUI {
     }
 
     /// Update (or lazily create) the spinner row `id` with a new message.
-    #[allow(dead_code)] // reserved for per-package spinner rows (phase ②③)
-    pub fn set_spin(&mut self, id: &str, msg: &str) {
+    pub fn set_spin(&mut self, id: &str, msg: impl AsRef<str>) {
         if let Some(bar) = self.bars.get(id) {
-            bar.set_message(msg.to_owned());
+            bar.set_message(msg.as_ref().to_owned());
         } else {
             self.start(id);
             if let Some(bar) = self.bars.get(id) {
-                bar.set_message(msg.to_owned());
+                bar.set_message(msg.as_ref().to_owned());
             }
         }
     }
@@ -134,10 +133,20 @@ impl RowUI {
 
     /// Close `id` with a success marker.
     pub fn done(&mut self, id: &str) {
+        let label = self
+            .labels
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| id.to_owned());
+        self.done_with(id, &label);
+    }
+
+    /// Close `id` with a custom success message.
+    pub fn done_with(&mut self, id: &str, msg: impl AsRef<str>) {
         if let Some(bar) = self.bars.remove(id) {
-            let label = self.labels.remove(id).unwrap_or_else(|| id.to_owned());
+            self.labels.remove(id);
             bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-            bar.finish_with_message(format!("{} {}", "✓".green(), label));
+            bar.finish_with_message(format!("{} {}", "✓".green(), msg.as_ref()));
         }
     }
 
