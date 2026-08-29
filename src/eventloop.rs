@@ -75,7 +75,7 @@ pub fn run_event_loop(
         .receiver()
         .expect("event bus outbound receiver already taken");
     let tx = session.event_bus().sender();
-    let mut dlprogress = Some(cui::MultiProgressUI::new());
+    let mut dlprogress = Some(cui::RowUI::new());
 
     tokio::spawn(async move {
         let _guard = CursorGuard::hide();
@@ -94,12 +94,7 @@ pub fn run_event_loop(
                 // Download progress — update progress bars (handled here)
                 Event::PackageDownloadProgress(ref ctx) => {
                     if let Some(ref mut dp) = dlprogress {
-                        dp.update(
-                            ctx.ident.to_owned(),
-                            ctx.url.to_owned(),
-                            ctx.dltotal,
-                            ctx.dlnow,
-                        );
+                        dp.set_bar(&ctx.ident, &ctx.url, ctx.dltotal, ctx.dlnow);
                     }
                     continue;
                 }

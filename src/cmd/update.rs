@@ -127,7 +127,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
         // bucket), so each bucket gets its own spinner row that finishes in
         // place — an inline status/done pair would interleave the
         // "Updating..."/"updated." lines when buckets finish out of order.
-        let mut ui = cui::BucketUpdateUI::new();
+        let mut ui = cui::RowUI::new();
         while let Some(event) = rx.recv().await {
             match event {
                 Event::BucketUpdateProgress(ctx) => {
@@ -135,7 +135,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
                     if ctx.state().started() {
                         ui.start(name);
                     } else if ctx.state().succeeded() {
-                        ui.succeed(name);
+                        ui.done(name);
                     } else if let Some(err) = ctx.state().failed() {
                         ui.fail(name, err);
                     }
