@@ -12,9 +12,6 @@
 //!   parses CLI arguments, initialises the [`Session`], and dispatches to the
 //!   appropriate command module. Core data structures and operations reside in
 //!   `libscoop`.
-//! - **Global detail mode**: The [`DETAIL_MODE`] atomic flag controls whether
-//!   extra operational detail is printed. It is set once at startup from the
-//!   `--detail` CLI flag and read by [`output::detail`] throughout.
 //! - **i18n-first**: Language detection happens before CLI parsing so that
 //!   help text is rendered in the correct language. See [`i18n`] module.
 //! - **Error reporting**: Library errors (`libscoop::Error`) are mapped to
@@ -41,7 +38,6 @@ use crossterm::{
     style::{Color, Print, SetForegroundColor},
     ExecutableCommand,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Display, io};
 
 rust_i18n::i18n!("locales");
@@ -63,16 +59,6 @@ mod i18n;
 mod scoop_handler;
 
 type Result<T> = anyhow::Result<T>;
-
-static DETAIL_MODE: AtomicBool = AtomicBool::new(false);
-
-pub fn set_detail(enabled: bool) {
-    DETAIL_MODE.store(enabled, Ordering::Relaxed);
-}
-
-pub fn is_detail() -> bool {
-    DETAIL_MODE.load(Ordering::Relaxed)
-}
 
 fn error<T: Display>(input: &T) -> io::Result<()> {
     let mut stderr = io::stderr();

@@ -1,50 +1,40 @@
-//! Unified CLI output with switchable style.
+//! Unified CLI output — a single renderer with one constant style.
 //!
-//! Supported styles:
-//! - `scoop`: Step-by-step "message... done." (Scoop original style, default)
-//! - `pacman`: Section headers with `::`, checkmark/icon prefixes
+//! Pretty stdout output is deliberately minimal and constant across all
+//! commands. Detailed, granular debugging is routed to the tracing log
+//! channel instead (driven by -v / -vv / -vvv), so stdout never grows a
+//! second, noisier path. There is no scoop/pacman dual style.
 //!
-//! Switch via: `hok config set output-style pacman`
+//! # Color semantics
 //!
-//! Both styles support colored output. Color can be disabled via
-//! `--no-color` flag, `NO_COLOR` environment variable, or config.
+//! | Semantic            | Style                        |
+//! |---------------------|------------------------------|
+//! | section header      | :: cyan bold                 |
+//! | package name        | white bold                   |
+//! | version             | green                        |
+//! | arrow               | blue                         |
+//! | success check       | green                        |
+//! | failure cross / err | red (bold)                   |
+//! | warning             | yellow                       |
+//! | counter (k/N)       | dark grey                    |
+//! | notes / status      | grey                         |
 //!
-//! # Function overview (Scoop / Pacman)
+//! Color can be disabled via --no-color, NO_COLOR, or config; crossterm
+//! also auto-disables it on non-TTY output.
 //!
-//! | Function    | Scoop mode                 | Pacman mode                      |
-//! |-------------|----------------------------|----------------------------------|
-//! | `header`    | `\nTitle`                  | `\n:: Title` (cyan :: bold)      |
-//! | `info`      | `  msg` (green)            | `  ✓ msg` (✓ bold, msg green)   |
-//! | `warn`      | `WARN msg` (yellow stderr) | `  ⚠ msg` (⚠ bold, msg yellow) |
-//! | `err`       | `ERROR msg` (red stderr)   | `  ✗ msg` (✗ bold, msg red)    |
-//! | `status`    | `  msg...` (inline flush)  | `  msg` (grey)                   |
-//! | `done`      | `  msg` (green)            | `  ✓ msg` (✓ bold, msg green)   |
-//! | `ok`        | `ok` (green)               | `  ok` (green)                   |
-//! | `detail`    | `  msg` (always visible)   | `  · msg` (· bold, only --detail)|
-//! | `field`     | `  label: value`           | `  label` (cyan bold) `value`    |
-//! | `named`     | `  name msg`               | `  name` (blue bold) `msg`       |
-//! | `change`    | `  label -> value`         | `  label` (blue bold) `value`    |
-//! | `progress`  | `  action target...` (flush)| same (Scoop-only style)         |
-//! | `prompt`    | `\nmsg ` (no newline)      | same                             |
+//! # Primitives
+//!
+//! - header: section heading.
+//! - action: per-package counting line (k/N) verb pkg.
+//! - done / ok: success markers.
+//! - info / warn / err: side notes and prefixes.
+//! - field / named / change: structured label/value lines.
 
 use crossterm::style::Stylize;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-const STYLE_SCOOP: u8 = 0;
-const STYLE_PACMAN: u8 = 1;
-
-static OUTPUT_STYLE: AtomicU8 = AtomicU8::new(STYLE_SCOOP);
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// Set output style by name ("scoop" or "pacman").
-pub fn set_style(name: &str) {
-    let val = match name {
-        "pacman" => STYLE_PACMAN,
-        _ => STYLE_SCOOP,
-    };
-    OUTPUT_STYLE.store(val, Ordering::Relaxed);
-}
 
 /// Enable or disable colored output.
 pub fn set_color_enabled(enabled: bool) {
@@ -53,116 +43,78 @@ pub fn set_color_enabled(enabled: bool) {
     crossterm::style::force_color_output(enabled);
 }
 
-fn is_scoop() -> bool {
-    OUTPUT_STYLE.load(Ordering::Relaxed) == STYLE_SCOOP
-}
-
-/// Section heading.
+/// Section heading: `:: resolving...` (cyan bold).
 pub fn header(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        println!("\n{}", m);
-    } else {
-        println!("\n{} {}", "::".dark_cyan().bold(), m.dark_cyan());
-    }
+    println!(
+        "\n{} {}",
+        "::".dark_cyan().bold(),
+        msg.as_ref().dark_cyan().bold()
+    );
 }
 
-/// Informational message.
+/// Informational side note (grey).
 pub fn info(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        println!("{}", m.green());
-    } else {
-        println!("  {} {}", "✓".dark_green().bold(), m.dark_green());
-    }
+    println!("{}", msg.as_ref().grey());
 }
 
-/// Warning message.
+/// Warning message (yellow, to stderr).
 pub fn warn(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        eprintln!("{} {m}", rust_i18n::t!("output.warn").yellow().bold());
-    } else {
-        println!("  {} {}", "⚠".dark_yellow().bold(), m.dark_yellow());
-    }
+    eprintln!("{} {m}", "WARN".yellow().bold(), m = msg.as_ref());
 }
 
-/// Error message to stderr.
+/// Error message (red bold, to stderr).
 pub fn err(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        eprintln!("{} {m}", rust_i18n::t!("output.error").red().bold());
-    } else {
-        eprintln!("  {} {}", "✗".dark_red().bold(), m.dark_red());
-    }
+    eprintln!("{} {m}", "ERROR".red().bold(), m = msg.as_ref());
 }
 
-/// Status/progress line (printed as-is, no trailing newline in scoop mode).
+/// Status/note line (grey), with a trailing ellipsis for live progress feel.
 pub fn status(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        println!("  {m}...");
-        let _ = std::io::stdout().flush();
-    } else {
-        println!("  {}", m.dark_grey());
-    }
+    println!("  {}...", msg.as_ref().grey());
+    let _ = std::io::stdout().flush();
 }
 
-/// Label-value pair.
+/// Label-value pair (label cyan bold).
 pub fn field(label: impl AsRef<str>, value: impl AsRef<str>) {
-    if is_scoop() {
-        println!("  {}: {}", label.as_ref().cyan(), value.as_ref());
-    } else {
-        println!("  {} {}", label.as_ref().dark_cyan().bold(), value.as_ref());
-    }
+    println!("  {} {}", label.as_ref().dark_cyan().bold(), value.as_ref());
 }
 
-/// Operation completed (paired with status in scoop mode: "... done.").
+/// Operation completed with a success marker: check msg (green).
 pub fn done(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        println!("  {}", m.green());
-    } else {
-        println!("  {} {}", "✓".dark_green().bold(), m.dark_green());
-    }
+    println!("  {} {}", "✓".green(), msg.as_ref().green());
 }
 
 /// Print "ok".
 pub fn ok() {
-    if is_scoop() {
-        println!("{}", rust_i18n::t!("output.ok").green());
-    } else {
-        println!("  {}", rust_i18n::t!("output.ok").dark_green());
-    }
+    println!("  {}", rust_i18n::t!("output.ok").green());
 }
 
-/// Named entity + message.
+/// Named entity + message (name white bold).
 pub fn named(name: impl AsRef<str>, msg: impl AsRef<str>) {
-    if is_scoop() {
-        println!("  {} {}", name.as_ref(), msg.as_ref());
-    } else {
-        println!("  {} {}", name.as_ref().dark_blue().bold(), msg.as_ref());
-    }
+    println!("  {} {}", name.as_ref().white().bold(), msg.as_ref());
 }
 
-/// Change indicator (label -> value).
+/// Change indicator `label -> value` (label blue bold, arrow blue, value green).
 pub fn change(label: impl AsRef<str>, _op: impl AsRef<str>, value: impl AsRef<str>) {
-    if is_scoop() {
-        println!("  {} -> {}", label.as_ref(), value.as_ref());
-    } else {
-        println!("  {} {}", label.as_ref().dark_blue().bold(), value.as_ref());
-    }
+    println!(
+        "  {} {} {}",
+        label.as_ref().dark_blue().bold(),
+        "->".blue(),
+        value.as_ref().green()
+    );
 }
 
-/// Detailed debug info (only shown with --detail flag in pacman mode;
-/// always shown as plain text in scoop mode for step visibility).
-pub fn detail(msg: impl AsRef<str>) {
-    let m = msg.as_ref();
-    if is_scoop() {
-        println!("  {m}");
-    } else if crate::is_detail() {
-        println!("  {} {}", rust_i18n::t!("output.detail_prefix").bold(), m);
-    }
+/// Per-package counting action line: `(k/N) verb pkg`.
+///
+/// The counter is dark grey; the package name is white bold so each line
+/// answers "which package + what action + result" in one readable row.
+#[allow(dead_code)] // reserved for the per-package counting rows (phases ②③)
+pub fn action(k: usize, n: usize, verb: impl AsRef<str>, pkg: impl AsRef<str>) {
+    println!(
+        "{}{} {}",
+        format!("({k}/{n})").dark_grey(),
+        verb.as_ref(),
+        pkg.as_ref().white().bold()
+    );
 }
 
 /// Prompt user to continue or not.

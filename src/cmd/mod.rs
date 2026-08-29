@@ -13,7 +13,7 @@
 //!   `Cli::parse()` so that help text appears in the correct language.
 //!   The [`I18nHelp`] derive macro patches the clap command tree.
 //! - **Config-driven initialisation**: After parsing, session config is
-//!   read to apply `output_style`, `language`, and `no_color` — the CLI
+//!   read to apply `language`, and `no_color` — the CLI
 //!   `--lang` / `--no-color` flags take precedence over config values.
 //! - **Double-pass language init**: First pass detects `--lang` from raw
 //!   args for help text; second pass (after parse) re-initialises if the
@@ -78,10 +78,6 @@ pub struct Cli {
     /// The verbosity level
     #[command(flatten)]
     verbose: Verbosity,
-
-    /// Show detailed operation information for debugging
-    #[arg(global = true, long)]
-    pub detail: bool,
 
     /// Force CLI language (auto/en/zh)
     #[arg(global = true, long = "lang", short = 'L', default_value_t = LanguageChoice::Auto, value_enum)]
@@ -209,8 +205,7 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
         i18n::init_language(args.language);
     }
 
-    setup_logger(args.verbose.tracing_level_filter(), args.detail)?;
-    crate::set_detail(args.detail);
+    setup_logger(args.verbose.tracing_level_filter())?;
 
     let session = Session::default();
     // Mount the process-wide Ctrl-C cancellation token so long-running
@@ -244,9 +239,6 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     // (e.g. `bucket update`), deadlocking or failing with `ConfigInUse`.
     let no_color = {
         let config = session.config();
-
-        // Set output style from config (default: scoop)
-        crate::output::set_style(config.output_style());
 
         // Apply language from config if --lang was not explicitly set
         if matches!(args.language, LanguageChoice::Auto) {
@@ -306,16 +298,9 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     }
 }
 
-fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
-    // When --detail is active, ensure at least DEBUG level (unless user set higher via -vv)
-    let effective_level = if detail {
-        level_filter.max(LevelFilter::DEBUG)
-    } else {
-        level_filter
-    };
-
-    // filter for low-level/depedency logs
-    let low_level_filter = match effective_level {
+fn setup_logger(level_filter: LevelFilter) -> Result<()> {
+    // filter for low-level/dependency logs
+    let low_level_filter = match level_filter {
         LevelFilter::OFF => LevelFilter::OFF,
         LevelFilter::ERROR => LevelFilter::ERROR,
         LevelFilter::WARN => LevelFilter::WARN,
@@ -325,7 +310,7 @@ fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
     };
 
     let mut layer_env_filter = EnvFilter::builder()
-        .with_default_directive(effective_level.into())
+        .with_default_directive(level_filter.into())
         .from_env()?;
 
     // The custom `HOK_LOG_LEVEL` environment variable was introduced to set the
