@@ -37,6 +37,66 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
     }
 }
 
+/// Apply a manifest's install-time environment to a child script process.
+///
+/// Mirrors Scoop's `env_add_path` + `env_set` hooks (lib/install.ps1:62-63),
+/// which run *just before* `post_install` (lib/install.ps1:69) and write into
+/// the current session so the script — and its own child processes — inherit
+/// them (e.g. a `post_install` running `initdb` reads `$env:PGDATA`).
+/// Only the child's environment is touched; the host process env is unchanged.
+///
+/// Only the `post_install` stage gets these, matching Scoop's ordering where
+/// `pre_install`/installer run before the env hooks.
+fn apply_install_env(
+    ps: &mut std::process::Command,
+    session: &Session,
+    package: &Package,
+    working_dir: &Path,
+    cmd: &str,
+) {
+    let manifest = package.manifest();
+    // env_set: set each declared variable on the child (Scoop's env_set also
+    // writes to the session env, `Set-Content env:$name`).
+    if let Some(env_set) = manifest.env_set() {
+        for (key, value) in env_set {
+            let expanded = expand_scoop_vars(&[value.as_str()], session, package, working_dir, cmd);
+            ps.env(key, &expanded[0]);
+        }
+    }
+    // env_add_path: prepend the bin dirs to the child PATH so post_install can
+    // invoke freshly-installed binaries by name (Scoop's Add-Path updates the
+    // session PATH). Only the child is affected — the host PATH is untouched.
+    if let Some(add_path) = manifest.env_add_path() {
+        let add_paths: Vec<String> = add_path
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                internal::path::normalize_path(working_dir.join(p))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        if !add_paths.is_empty() {
+            let mut parts: Vec<String> =
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+            // Prepend each path once, case-insensitively, keeping manifest
+            // order (mirrors Scoop's Add-Path current-session update).
+            for p in add_paths {
+                let lower = p.to_lowercase();
+                if parts.iter().any(|x| x.to_lowercase() == lower) {
+                    continue;
+                }
+                parts.insert(0, p);
+            }
+            if let Ok(path) = std::env::join_paths(parts) {
+                ps.env("PATH", path);
+            }
+        }
+    }
+}
+
 /// Execute a PowerShell script defined in a package manifest.
 ///
 /// `script_lines` is an array of PowerShell command lines that will be joined
@@ -52,6 +112,11 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
 /// - `SCOOP_PACKAGE_NAME` — the package name
 /// - `SCOOP_PACKAGE_VERSION` — the installed version
 /// - `version` — same as SCOOP_PACKAGE_VERSION (Scoop convention)
+///
+/// For the `post_install` stage only, the manifest's `env_set` variables and
+/// `env_add_path` directories are also applied to the child (see
+/// [`apply_install_env`]), mirroring Scoop's env hooks running right before
+/// post_install (lib/install.ps1:62-63,69).
 pub async fn run_script(
     session: &Session,
     package: &Package,
@@ -172,6 +237,15 @@ $fname = '{fname}'
         .env("SCOOP_PACKAGE_CMD", cmd)
         .env("version", &version)
         .env("HOK_EXTRACT_FILE", marker_path.as_os_str());
+
+    // The `post_install` stage runs after Scoop's `env_add_path` + `env_set`
+    // hooks (install.ps1:62-63,69), so hand it the manifest's install-time
+    // environment — post_install scripts (e.g. initdb reading `$env:PGDATA`)
+    // and their child processes inherit it. Other stages run before the env
+    // hooks in Scoop, so they do not.
+    if stage == "post_install" {
+        apply_install_env(&mut ps, session, package, working_dir, cmd);
+    }
 
     // Pipe stdout/stderr so the script output is captured and re-emitted as
     // `ScriptOutput` events — a bare inherited stdout would print at column 0
@@ -564,6 +638,112 @@ mod tests {
             lines
         );
         assert!(lines.iter().any(|l| l.contains("done-ok")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `post_install` stage inherits the manifest's `env_set` variables
+    /// and `env_add_path` directories (mirroring Scoop's env hooks running
+    /// right before post_install, install.ps1:62-63,69) — so a script like
+    /// initdb reading `$env:PGDATA` gets the data dir. Mirrors the
+    /// postgresql manifest's post_install initdb call.
+    #[tokio::test]
+    async fn post_install_inherits_env_set_and_add_path() {
+        let root = crate::test_utils::tmpdir("script_post_install_env");
+        let session = crate::test_utils::test_session(&root);
+        let working_dir = root.join("apps").join("test-pkg").join("1.0.0");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let manifest = crate::package::Manifest::from_json(
+            "test-pkg",
+            r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT",
+                "env_set": {"PGDATA_TEST": "$dir\\data"},
+                "env_add_path": ["bin"]}"#,
+        )
+        .unwrap();
+        let pkg = crate::package::Package::from("test-pkg", "main", manifest);
+
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "post_install",
+            "install",
+            Some(vec![
+                "Write-Host \"PGDATA=$env:PGDATA_TEST\"",
+                "Write-Host \"PATH=$env:PATH\"",
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let mut lines = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::ScriptOutput(line) = ev {
+                lines.push(line);
+            }
+        }
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains(&format!("PGDATA={}\\data", working_dir.to_string_lossy())),
+            "post_install must inherit env_set PGDATA_TEST, got: {joined}"
+        );
+        let bin = internal::path::normalize_path(working_dir.join("bin"))
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            joined.contains(&bin),
+            "post_install PATH must contain the env_add_path bin dir, got: {joined}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Stages that run *before* Scoop's env hooks (`pre_install`) must NOT see
+    /// `env_set` variables — only post_install gets the install-time env.
+    #[tokio::test]
+    async fn pre_install_does_not_inherit_env_set() {
+        let root = crate::test_utils::tmpdir("script_pre_install_env");
+        let session = crate::test_utils::test_session(&root);
+        let working_dir = root.join("apps").join("test-pkg").join("1.0.0");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let manifest = crate::package::Manifest::from_json(
+            "test-pkg",
+            r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT",
+                "env_set": {"PGDATA_TEST": "$dir\\data"}}"#,
+        )
+        .unwrap();
+        let pkg = crate::package::Package::from("test-pkg", "main", manifest);
+
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "pre_install",
+            "install",
+            Some(vec!["Write-Host \"PGDATA=[$env:PGDATA_TEST]\""]),
+        )
+        .await
+        .unwrap();
+
+        let mut lines = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::ScriptOutput(line) = ev {
+                lines.push(line);
+            }
+        }
+        assert!(
+            lines.iter().any(|l| l.contains("PGDATA=[]")),
+            "pre_install must not inherit env_set, got: {:?}",
+            lines
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
