@@ -30,8 +30,8 @@ use crate::{
 };
 
 use super::install_state::{
-    fill_install_state, load_bucket_manifest, maybe_fill_upgradable, parse_install_info,
-    select_current_version,
+    fill_install_state, load_bucket_manifest, manifest_unchanged, maybe_fill_upgradable,
+    parse_install_info, select_current_version,
 };
 use super::query_matcher::{build_matchers, manifest_matches, name_prefiltered_out, QueryOption};
 use super::{manifest_cache, InstallState, InstallStateInstalled, Manifest, Package};
@@ -295,9 +295,9 @@ pub(crate) fn query_synced(
 ///
 /// The cache supplies the package/bucket index and the stored manifest JSON,
 /// so queries avoid a full directory walk *and* re-reading every manifest file
-/// from disk (the dominant cost on large bucket sets). Manifests are served
-/// from the cache, which is refreshed on every `hok update`; reading the file
-/// (load_bucket_manifest) is a fallback when a cached entry fails to parse.
+/// from disk (the dominant cost on large bucket sets). A cheap size probe
+/// (manifest_unchanged) serves the cache when the on-disk file still matches;
+/// a hand-edited file (size differs) is re-read from disk so local edits win.
 /// Falls back silently if the cache is unavailable.
 fn query_synced_cached(
     session: &Session,
@@ -334,8 +334,17 @@ fn query_synced_cached(
                 return None;
             }
 
-            let manifest = manifest_cache::entry_to_manifest(entry)
-                .or_else(|| load_bucket_manifest(&root_path, bucket, name))?;
+            // Prefer the cache when the on-disk file is unchanged. If the user
+            // edited the manifest after the last update (size differs), read
+            // the local file so the edit is honored; the cache remains the
+            // fallback when the file is gone.
+            let manifest =
+                if manifest_unchanged(&root_path, bucket, name, entry.manifest_json.len()) {
+                    manifest_cache::entry_to_manifest(entry)
+                } else {
+                    load_bucket_manifest(&root_path, bucket, name)
+                }
+                .or_else(|| manifest_cache::entry_to_manifest(entry))?;
 
             if !manifest_matches(
                 name,

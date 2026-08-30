@@ -124,6 +124,30 @@ pub(crate) fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -
     parse_file(manifest_path).ok()
 }
 
+/// Cheap staleness probe: whether the on-disk manifest file still has the size
+/// it had when the SQLite cache was populated (`cached_size`). A size mismatch
+/// means the user edited the file after the last `hok update`, so the cache
+/// must not be used for it and the caller should read the file. Returns
+/// `false` when the file cannot be located or stat'ed, so the caller falls
+/// back to reading it (a gone file then becomes a cache-miss fallback).
+pub(crate) fn manifest_unchanged(
+    root_path: &Path,
+    bucket: &str,
+    name: &str,
+    cached_size: usize,
+) -> bool {
+    let bucket_path = crate::internal::path::bucket_dir(root_path, bucket);
+    let Ok(bucket) = Bucket::from(&bucket_path) else {
+        return false;
+    };
+    let Some(path) = bucket.path_of_manifest(name) else {
+        return false;
+    };
+    std::fs::metadata(&path)
+        .map(|m| m.len() == cached_size as u64)
+        .unwrap_or(false)
+}
+
 pub(crate) fn maybe_fill_upgradable(
     root_path: &Path,
     package: &Package,
