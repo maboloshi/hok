@@ -26,6 +26,27 @@ use crate::{
     Error, Session,
 };
 
+/// Names of the implicit installation helpers, mirroring Scoop's
+/// `Get-InstallationHelper` (lib/depends.ps1). A helper that is already
+/// installed is excluded from dependency resolution, so an app whose `.7z` URL
+/// implies `7zip` does not pull in a fresh resolution of an installed 7zip.
+const HELPERS: [&str; 4] = ["7zip", "lessmsi", "innounp", "dark"];
+
+/// Whether `name` is one of the implicit installation helpers AND is already
+/// installed. Only the helper names are ever checked; ordinary dependencies are
+/// unaffected.
+fn helper_installed(session: &Session, name: &str) -> bool {
+    if !HELPERS.contains(&name) {
+        return false;
+    }
+    super::install_state::load_install_state(
+        &session.apps_dir(),
+        name,
+        session.config().no_junction(),
+    )
+    .is_some()
+}
+
 /// Resolve dependencies of the given packages.
 ///
 /// # Note
@@ -71,7 +92,11 @@ pub(crate) async fn resolve_dependencies(
             }
 
             let mut resolved = vec![];
-            let deps = pkg.dependencies();
+            let mut deps = pkg.dependencies();
+            // Mirror Scoop's Get-InstallationHelper !$All: an implicit helper
+            // (7zip/lessmsi/innounp/dark) that is already installed is not a
+            // real dependency and is dropped from resolution.
+            deps.retain(|d| !helper_installed(session, d));
 
             if deps.is_empty() {
                 graph.register_node(pkg.name().to_owned());
@@ -83,7 +108,7 @@ pub(crate) async fn resolve_dependencies(
                     let mut matched = if let Some(cached) = query_cache.get(query) {
                         cached.clone()
                     } else {
-                        let resolved = query::query_synced(session, &[query], &[])?
+                        let resolved = query::query_synced_files(session, &[query], &[])?
                             .into_iter()
                             .filter(|p| p.matches_bucket_query(query))
                             .collect::<Vec<_>>();
@@ -448,6 +473,41 @@ mod tests {
             names,
             vec!["b", "a"],
             "dependency must come before dependent"
+        );
+    }
+
+    /// A `.7z` URL implies the `7zip` helper; when 7zip is already installed it
+    /// must be dropped from dependency resolution (Scoop Get-InstallationHelper
+    /// !$All), so the graph contains only the requested package.
+    #[tokio::test]
+    async fn resolve_excludes_installed_helper() {
+        let (session, root) = setup("helper_installed_excluded");
+        crate::test_utils::mark_installed(
+            &root.0,
+            "7zip",
+            "main",
+            "{\"version\":\"1.0.0\",\"homepage\":\"https://example.com\",\"license\":\"MIT\"}",
+            false,
+        );
+
+        let json = "{\"version\":\"1.0.0\",\"homepage\":\"https://example.com\",\"license\":\"MIT\",\"url\":\"https://example.com/app.7z\"}";
+        let manifest = crate::package::Manifest::from_json("app", json).unwrap();
+        let pkg = Package::from("app", "main", manifest);
+        assert!(
+            pkg.dependencies().contains(&"7zip".to_owned()),
+            "precondition: .7z URL implies the 7zip helper"
+        );
+
+        let mut packages = vec![pkg];
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
+
+        let names: Vec<_> = packages.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["app"], "installed helper must be dropped");
+        assert!(
+            !packages.iter().any(|p| p.name() == "7zip"),
+            "7zip must not be added to the resolution"
         );
     }
 
