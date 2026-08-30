@@ -220,6 +220,10 @@ fn internal_bucket_dir(root: &std::path::Path, name: &str) -> std::path::PathBuf
 }
 
 /// Search available packages.
+///
+/// Uses the SQLite manifest cache when enabled (the fast path for display
+/// queries such as search / list --available); falls back to reading the
+/// bucket files directly on a cache miss/error.
 pub(crate) fn query_synced(
     session: &Session,
     queries: &[&str],
@@ -227,11 +231,24 @@ pub(crate) fn query_synced(
 ) -> Fallible<Vec<Package>> {
     // Fast path: use SQLite cache when enabled
     if session.config().use_sqlite_cache()
-        && let Ok(packages) = query_synced_cached(session, queries, options) {
-            return Ok(packages);
-        }
-        // Fall through to file-based on cache error
+        && let Ok(packages) = query_synced_cached(session, queries, options)
+    {
+        return Ok(packages);
+    }
+    // Fall through to file-based on cache error
+    query_synced_files(session, queries, options)
+}
 
+/// Search available packages by reading manifests directly from the bucket
+/// files, bypassing the SQLite cache. Always fresh, never a stale cached
+/// manifest. Operation-class resolution (install / update, including
+/// dependency resolution) uses this so it never acts on stale data; the cache
+/// is reserved for display-only queries.
+pub(crate) fn query_synced_files(
+    session: &Session,
+    queries: &[&str],
+    options: &[QueryOption],
+) -> Fallible<Vec<Package>> {
     let is_explicit_mode = options.contains(&QueryOption::Explicit);
     let is_wildcard_query = queries.contains(&"*") || queries.is_empty();
     let buckets = crate::bucket::bucket_added(session)?;

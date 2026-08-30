@@ -123,10 +123,12 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         }
 
         // Regular bucket queries: exact-match against the synced scan.
+        // Operation-class: read manifests fresh from the bucket files (never
+        // the cache) so install acts on the authoritative, up-to-date manifest.
         let synced = if regular.is_empty() {
             vec![]
         } else {
-            query::query_synced(session, &regular, &[])?
+            query::query_synced_files(session, &regular, &[])?
         };
 
         for &query in &regular {
