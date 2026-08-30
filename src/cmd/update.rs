@@ -150,12 +150,14 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
     });
 
     output::header(rust_i18n::t!("cmd.header_buckets"));
-    bucket::update(session).await?;
+    let changes = bucket::update(session).await?;
     handle.await.unwrap();
 
-    // Refresh SQLite manifest cache with visible feedback
+    // Refresh SQLite manifest cache with visible feedback. `bucket::update`
+    // returns the manifest diff, so the cache is updated incrementally (only
+    // the changed manifests are re-parsed) instead of rebuilt in full.
     if session.config().use_sqlite_cache() {
-        refresh_manifest_cache(session);
+        refresh_manifest_cache(session, &changes);
     }
 
     Ok(())
@@ -167,15 +169,15 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 /// place as `✓ <cache_done>`; on a non-terminal (piped) it falls back to the
 /// plain `status`/`done` line pair, since indicatif's `MultiProgress` is
 /// hidden and renders nothing when the output is not a TTY.
-fn refresh_manifest_cache(session: &Session) {
+fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) {
     if std::io::stdout().is_terminal() {
         let mut ui = cui::RowUI::new();
         ui.set_spin("manifest-cache", rust_i18n::t!("cmd.refresh_cache"));
-        package::manifest_cache::refresh(session);
+        package::manifest_cache::refresh(session, changes);
         ui.done_with("manifest-cache", rust_i18n::t!("cmd.cache_done"));
     } else {
         output::status(rust_i18n::t!("cmd.refresh_cache"));
-        package::manifest_cache::refresh(session);
+        package::manifest_cache::refresh(session, changes);
         output::done(rust_i18n::t!("cmd.cache_done"));
     }
 }

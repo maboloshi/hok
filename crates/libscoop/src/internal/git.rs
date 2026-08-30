@@ -224,6 +224,61 @@ pub fn head_commit_time<P: AsRef<Path>>(path: P) -> Option<i64> {
     Some(commit.time().seconds())
 }
 
+/// Get the current HEAD commit id (hex) of a repository, or `None` if the
+/// repository is unavailable or has no commits.
+pub fn head_commit_id<P: AsRef<Path>>(path: P) -> Option<String> {
+    let repo = Repository::open(path.as_ref()).ok()?;
+    Some(repo.head().ok()?.target()?.to_string())
+}
+
+/// A manifest file that changed between two commits of a bucket repo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestDiffEntry {
+    /// Repo-relative path with `/` separators.
+    pub path: String,
+    /// True if the file was deleted by the update (no longer on disk).
+    pub deleted: bool,
+}
+
+/// List the manifest files whose content changed between `from_commit` and the
+/// current HEAD of the repository at `path`.
+///
+/// This backs the incremental SQLite manifest cache: after a bucket pull we
+/// only re-parse the manifests that actually changed instead of re-reading
+/// every manifest in the bucket. Added/modified/renamed files are reported with
+/// their new path; deleted files carry `deleted: true` (their content is gone).
+pub fn diff_manifest_changes<P: AsRef<Path>>(
+    path: P,
+    from_commit: &str,
+) -> Fallible<Vec<ManifestDiffEntry>> {
+    let repo = Repository::open(path.as_ref())?;
+    let from_tree = repo
+        .revparse_single(from_commit)?
+        .peel_to_commit()?
+        .tree()?;
+    let head_tree = repo.head()?.peel_to_commit()?.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&from_tree), Some(&head_tree), None)?;
+
+    let mut out = Vec::new();
+    for delta in diff.deltas() {
+        let deleted = matches!(delta.status(), git2::Delta::Deleted);
+        let candidate = if deleted {
+            delta.old_file().path()
+        } else {
+            delta.new_file().path()
+        };
+        let Some(p) = candidate else {
+            continue;
+        };
+        let s = p.to_string_lossy().into_owned();
+        // Only manifest JSON files; ignore e.g. a repo-level package.json.
+        if s.ends_with(".json") && !s.ends_with("package.json") {
+            out.push(ManifestDiffEntry { path: s, deleted });
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Infra trait (git capability)
 // ---------------------------------------------------------------------------
@@ -247,6 +302,18 @@ pub trait Git: Send + Sync {
 
     /// Get the HEAD commit author time (Unix seconds) of a repository.
     fn head_commit_time(&self, path: &Path) -> Option<i64>;
+
+    /// Get the current HEAD commit id (hex) of a repository, or `None` if it
+    /// has no commits.
+    fn head_commit_id(&self, path: &Path) -> Option<String>;
+
+    /// List manifest files changed between `from_commit` and HEAD of the repo
+    /// at `path` (see [`diff_manifest_changes`]).
+    fn diff_manifest_changes(
+        &self,
+        path: &Path,
+        from_commit: &str,
+    ) -> Fallible<Vec<ManifestDiffEntry>>;
 }
 
 /// Default git implementation wrapping the free functions above.
@@ -284,6 +351,18 @@ impl Git for RealGit {
 
     fn head_commit_time(&self, path: &Path) -> Option<i64> {
         head_commit_time(path)
+    }
+
+    fn head_commit_id(&self, path: &Path) -> Option<String> {
+        head_commit_id(path)
+    }
+
+    fn diff_manifest_changes(
+        &self,
+        path: &Path,
+        from_commit: &str,
+    ) -> Fallible<Vec<ManifestDiffEntry>> {
+        diff_manifest_changes(path, from_commit)
     }
 }
 #[cfg(test)]

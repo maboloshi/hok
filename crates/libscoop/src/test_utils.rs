@@ -84,7 +84,7 @@ pub fn mark_installed(
 // ─── In-memory network fake ────────────────────────────────────────────────
 
 use crate::error::{Error, Fallible};
-use crate::internal::git::Git;
+use crate::internal::git::{Git, ManifestDiffEntry};
 use crate::internal::network::{
     HeadResult, Network, ProgressCallback, RangeError, RangeResponse, RequestOptions,
 };
@@ -298,6 +298,8 @@ impl Network for FakeNetwork {
 ///
 /// Records `clone_repo` / `pull` calls instead of touching real repositories.
 /// `pull` is a no-op success unless [`FakeGit::fail_pull`] is set.
+/// `head_commit_id` / `diff_manifest_changes` are configurable so cache-tracking
+/// tests can script the manifest diff they expect after a pull.
 #[derive(Debug, Default)]
 pub struct FakeGit {
     /// Record of `(remote_url, path)` clone calls.
@@ -306,6 +308,10 @@ pub struct FakeGit {
     pub pulls: Mutex<Vec<std::path::PathBuf>>,
     /// When set, `pull` returns an error.
     pub fail_pull: AtomicBool,
+    /// Value returned by `head_commit_id` (per repo path).
+    pub head_ids: Mutex<HashMap<std::path::PathBuf, String>>,
+    /// Diff entries returned by `diff_manifest_changes` (per repo path).
+    pub diffs: Mutex<HashMap<std::path::PathBuf, Vec<ManifestDiffEntry>>>,
 }
 
 #[async_trait::async_trait]
@@ -337,5 +343,23 @@ impl Git for FakeGit {
 
     fn head_commit_time(&self, _path: &Path) -> Option<i64> {
         Some(0)
+    }
+
+    fn head_commit_id(&self, path: &Path) -> Option<String> {
+        self.head_ids.lock().unwrap().get(path).cloned()
+    }
+
+    fn diff_manifest_changes(
+        &self,
+        path: &Path,
+        _from_commit: &str,
+    ) -> Fallible<Vec<ManifestDiffEntry>> {
+        Ok(self
+            .diffs
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .unwrap_or_default())
     }
 }

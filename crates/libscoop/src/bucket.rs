@@ -471,16 +471,76 @@ pub fn list_known() -> Vec<(&'static str, &'static str)> {
 /// A [`ConfigInUse`][1] error will be returned if the config is borrowed elsewhere.
 ///
 /// [1]: crate::Error::ConfigInUse
-pub async fn update(session: &Session) -> Fallible<()> {
+/// Manifest changes to apply to the SQLite manifest cache after updating
+/// buckets, plus buckets that could not be cleanly diffed.
+///
+/// Produced by [`update`]. A consumer (the manifest-cache refresh) applies the
+/// upserts/deletes incrementally, or falls back to a full re-scan when
+/// [`UpdateChanges::full_scan`] is non-empty.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateChanges {
+    /// `(bucket, current manifest path)` for added / modified / renamed
+    /// manifests — these should be (re)inserted into the cache.
+    pub upsert: Vec<(String, std::path::PathBuf)>,
+    /// `(bucket, manifest name)` for deleted manifests — these rows should be
+    /// removed from the cache.
+    pub delete: Vec<(String, String)>,
+    /// Bucket names that were not cleanly diffed (no git remote, or the pull /
+    /// diff failed) — the cache must fall back to re-scanning these fully.
+    pub full_scan: Vec<String>,
+}
+
+/// Per-bucket outcome of a cache-tracking bucket update.
+enum BucketUpdateOutcome {
+    /// The bucket was pulled cleanly; re-insert these manifests and drop these
+    /// names.
+    Diff {
+        upsert: Vec<std::path::PathBuf>,
+        delete: Vec<String>,
+    },
+    /// The bucket could not be cleanly diffed — requires a full re-scan.
+    Full,
+    /// The bucket was pulled but no cache tracking was requested.
+    None,
+}
+
+/// Turn a repo-relative diff of manifest files into absolute upsert paths and
+/// deleted manifest names (basename without the `.json` extension).
+fn classify_diff(
+    repo: &std::path::Path,
+    entries: Vec<internal::git::ManifestDiffEntry>,
+) -> (Vec<std::path::PathBuf>, Vec<String>) {
+    let mut upsert = Vec::new();
+    let mut delete = Vec::new();
+    for e in entries {
+        if e.deleted {
+            let name = std::path::Path::new(&e.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            delete.push(name);
+        } else {
+            upsert.push(repo.join(&e.path));
+        }
+    }
+    (upsert, delete)
+}
+
+pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
     let buckets = bucket_added(session)?;
+    let mut changes = UpdateChanges::default();
 
     if buckets.is_empty() {
         if let Some(tx) = session.emitter() {
             let _ = tx.send(crate::Event::BucketUpdateDone).await;
         }
 
-        return Ok(());
+        return Ok(changes);
     }
+
+    // Only compute manifest diffs when the SQLite cache is enabled; otherwise
+    // the update has no cache consumer and the extra git reads are pure waste.
+    let track_cache = session.config().use_sqlite_cache();
 
     // Extract the proxy before the awaits; the config read guard is dropped
     // so a concurrent `config_mut()` is never blocked by the async pulls.
@@ -492,6 +552,14 @@ pub async fn update(session: &Session) -> Fallible<()> {
     // The git capability is shareable across update tasks; tests inject an
     // in-memory fake here.
     let git = session.git();
+
+    // Buckets without a remote are never pulled, so they can't be diffed —
+    // mark them for a full re-scan so the cache stays complete.
+    if track_cache {
+        for b in buckets.iter().filter(|b| b.remote_url().is_none()) {
+            changes.full_scan.push(b.name().to_owned());
+        }
+    }
 
     // Pull each bucket concurrently. git2 pulls are blocking, so each runs as
     // its own task on the runtime's worker pool (真 async orchestration; the
@@ -515,11 +583,40 @@ pub async fn update(session: &Session) -> Fallible<()> {
                         .await;
                 }
 
-                match git.pull(&repo, proxy.as_deref()).await {
+                // Capture the pre-pull HEAD so the working tree can be diffed
+                // against it afterwards (Scoop records `$previousCommit`).
+                //
+                // Note: on a no-op pull (already up to date) `old_head == new HEAD`, and
+                // `diff_manifest_changes` short-circuits identical trees to an empty diff, so
+                // we deliberately do NOT add an explicit `old_head == new_head` guard here — it
+                // would save ~nothing (the tree diff is already O(1) for equal trees) and would
+                // only duplicate the check `pull` already performs internally.
+                let old_head = if track_cache {
+                    git.head_commit_id(&repo)
+                } else {
+                    None
+                };
+
+                let outcome = match git.pull(&repo, proxy.as_deref()).await {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
                             let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
+                        }
+                        if track_cache {
+                            match old_head {
+                                Some(old) => match git.diff_manifest_changes(&repo, &old) {
+                                    Ok(entries) => {
+                                        let (upsert, delete) = classify_diff(&repo, entries);
+                                        BucketUpdateOutcome::Diff { upsert, delete }
+                                    }
+                                    Err(_) => BucketUpdateOutcome::Full,
+                                },
+                                // No pre-pull HEAD (e.g. an unborn repo): can't diff.
+                                None => BucketUpdateOutcome::Full,
+                            }
+                        } else {
+                            BucketUpdateOutcome::None
                         }
                     }
                     Err(err) => {
@@ -527,14 +624,31 @@ pub async fn update(session: &Session) -> Fallible<()> {
                             ctx.set_failed(err.to_string().as_str());
                             let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
                         }
+                        BucketUpdateOutcome::Full
                     }
                 };
+
+                (name, outcome)
             })
         })
         .collect();
 
     for handle in handles {
-        let _ = handle.await;
+        match handle.await {
+            Ok((name, outcome)) => match outcome {
+                BucketUpdateOutcome::Diff { upsert, delete } => {
+                    changes
+                        .upsert
+                        .extend(upsert.into_iter().map(|p| (name.clone(), p)));
+                    changes
+                        .delete
+                        .extend(delete.into_iter().map(|n| (name.clone(), n)));
+                }
+                BucketUpdateOutcome::Full => changes.full_scan.push(name),
+                BucketUpdateOutcome::None => {}
+            },
+            Err(e) => tracing::warn!("bucket update task failed to join: {e}"),
+        }
     }
 
     // Scoop writes LAST_UPDATE unconditionally after the no-arg update
@@ -551,7 +665,7 @@ pub async fn update(session: &Session) -> Fallible<()> {
         let _ = tx.send(crate::Event::BucketUpdateDone).await;
     }
 
-    Ok(())
+    Ok(changes)
 }
 
 /// Remove a bucket from Scoop.
@@ -667,6 +781,71 @@ mod tests {
         let pulls = fake.pulls.lock().unwrap();
         assert_eq!(pulls.len(), 1, "pulls: {:?}", *pulls);
         assert_eq!(pulls[0], bucket_dir);
+    }
+
+    #[tokio::test]
+    async fn bucket_update_tracks_cache_changes_via_git_fake() {
+        use crate::internal::git::ManifestDiffEntry;
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_update_cache_track");
+        let session = test_session(&root);
+
+        // A real git repo with an origin remote so it is updatable; the pull
+        // and diff go through the injected fake.
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://example.com/extras.git")
+            .unwrap();
+
+        // Enable the SQLite cache so bucket::update tracks the manifest diff.
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir.clone(), "abc123".to_owned());
+        fake.diffs.lock().unwrap().insert(
+            bucket_dir.clone(),
+            vec![
+                ManifestDiffEntry {
+                    path: "bucket/foo.json".to_owned(),
+                    deleted: false,
+                },
+                ManifestDiffEntry {
+                    path: "bucket/bar.json".to_owned(),
+                    deleted: true,
+                },
+            ],
+        );
+        session.set_git(fake.clone()).unwrap();
+
+        let changes = crate::bucket::update(&session).await.unwrap();
+
+        // foo.json is an upsert path under the extras bucket; bar.json a delete.
+        assert_eq!(changes.upsert.len(), 1, "upserts: {:?}", changes.upsert);
+        assert_eq!(changes.upsert[0].0, "extras");
+        assert!(
+            changes.upsert[0].1.ends_with("foo.json"),
+            "upsert path: {:?}",
+            changes.upsert[0].1
+        );
+        assert_eq!(
+            changes.delete,
+            vec![("extras".to_owned(), "bar".to_owned())]
+        );
+        assert!(
+            changes.full_scan.is_empty(),
+            "cleanly-diffed bucket must not be re-scanned fully: {:?}",
+            changes.full_scan
+        );
     }
 
 }
