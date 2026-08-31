@@ -81,7 +81,31 @@ pub fn query_installed(
                         }
 
                         let pkg_dir = apps_dir.join(name);
-                        let meta_dir = if no_junction {
+                        // Resolve the installed version dir. In junction mode
+                        // the `current` junction points at the active version dir,
+                        // so when it carries valid metadata we read it directly
+                        // (matching Scoop's normal `current\manifest.json` path).
+                        // But an interrupted upgrade can leave `current` pointing
+                        // at an incomplete version dir with no `manifest.json` /
+                        // `install.json`; Scoop then falls back to the version dir
+                        // whose `install.json` is newest (`Select-CurrentVersion` +
+                        // `Get-InstalledVersion`) and still reports the last good
+                        // version as outdated/upgradable. Mirror that: if `current`
+                        // is unusable, fall back to `select_current_version`.
+                        let current_dir = pkg_dir.join("current");
+                        let current_ok = current_dir.join("manifest.json").exists()
+                            && current_dir.join("install.json").exists();
+                        // In junction mode a `current` that exists but carries no
+                        // metadata means the install is damaged (e.g. an interrupted
+                        // upgrade left the junction pointing at an incomplete version
+                        // dir). We still resolve the last good version dir below so
+                        // the app can be upgraded, but remember the damage so the
+                        // package is flagged install-failed (surfaced by `list`)
+                        // rather than appearing healthy. Under NO_JUNCTION there is
+                        // no `current` link, so `current_ok` is naturally false and
+                        // that is NOT damage.
+                        let current_broken = !no_junction && !current_ok;
+                        let meta_dir = if no_junction || !current_ok {
                             match select_current_version(&pkg_dir) {
                                 Some(v) => pkg_dir.join(v),
                                 None => {
@@ -92,7 +116,7 @@ pub fn query_installed(
                                 }
                             }
                         } else {
-                            pkg_dir.join("current")
+                            current_dir
                         };
                         let manifest_path = meta_dir.join("manifest.json");
                         let install_info_path = meta_dir.join("install.json");
@@ -138,6 +162,15 @@ pub fn query_installed(
 
                                 let package = Package::from(name, bucket, manifest);
                                 package.fill_install_state(state.clone());
+
+                                // A damaged install that resolved to a valid older
+                                // version dir is still damaged: keep the install-failed
+                                // flag (so `list` shows it) alongside the upgradable
+                                // status. This makes `update *` / `list -u` offer the
+                                // upgrade while `list` still reports the breakage.
+                                if current_broken {
+                                    package.mark_install_failed();
+                                }
 
                                 // Mark when the origin bucket no longer exists.
                                 if bucket != ISOLATED_PACKAGE_BUCKET
@@ -558,4 +591,66 @@ pub fn suggest(session: &Session, packages: &[&str]) -> Fallible<Vec<SuggestEntr
         }
     }
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{test_session, tmpdir, write_bucket_manifest};
+
+    fn mini_manifest(version: &str) -> String {
+        format!(
+            r#"{{"version": "{}", "homepage": "https://example.com", "license": "MIT"}}"#,
+            version
+        )
+    }
+
+    /// A valid, fully-installed version dir under `apps/<name>/<version>`.
+    fn install_version(root: &std::path::Path, name: &str, version: &str, bucket: &str) {
+        let dir = root.join("apps").join(name).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), mini_manifest(version)).unwrap();
+        std::fs::write(
+            dir.join("install.json"),
+            format!(r#"{{"architecture": "64bit", "bucket": "{}"}}"#, bucket),
+        )
+        .unwrap();
+    }
+
+    /// Interrupted upgrade: the `current` junction (simulated here as a plain
+    /// `current` dir) points at an incomplete version dir with **no**
+    /// metadata, while a valid older version dir remains. Scoop resolves the
+    /// installed version via `Select-CurrentVersion` fallback (newest version
+    /// dir with install.json) and reports the app outdated; hok must do the
+    /// same and surface it under `Upgradable` instead of dropping it.
+    #[test]
+    fn query_installed_upgradable_survives_broken_current_junction() {
+        let root = tmpdir("query_broken_current_upgrade");
+        let session = test_session(&root);
+
+        // The incomplete new version dir (no manifest/install metadata).
+        std::fs::create_dir_all(root.join("apps/Fiddler/6.0.20261.7291")).unwrap();
+        // Simulate `current` junction -> the incomplete dir (no metadata).
+        std::fs::create_dir_all(root.join("apps/Fiddler/current")).unwrap();
+        // The valid older installed version.
+        install_version(&root, "Fiddler", "5.0.20262.6151", "extras");
+        // Bucket offers the newer version.
+        write_bucket_manifest(&root, "extras", "Fiddler", &mini_manifest("6.0.20261.7291"));
+
+        let pkgs = query_installed(&session, &["*"], &[QueryOption::Upgradable]).unwrap();
+        let fiddler = pkgs.iter().find(|p| p.name() == "Fiddler");
+        assert!(
+            fiddler.is_some(),
+            "app with broken current junction but valid older version must be upgradable"
+        );
+        let f = fiddler.unwrap();
+        assert_eq!(f.installed_version(), Some("5.0.20262.6151"));
+        assert_eq!(f.upgradable_version(), Some("6.0.20261.7291"));
+        // The broken `current` junction is real damage: `list` must still
+        // flag the app install-failed even though an older version resolves
+        // and an upgrade is available.
+        assert!(f.is_install_failed(), "damaged install must stay flagged");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
