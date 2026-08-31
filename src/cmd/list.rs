@@ -1,10 +1,14 @@
 //! List installed package(s).
+//!
+//! Both the plain listing and the `--versions` listing render through the
+//! same table: one row per package, plus dimmed continuation rows for the
+//! retained (non-current) versions when `--versions` is given.
 
 use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
 use libscoop::{package, QueryOption, Session};
 
-use crate::format::pad_visual;
+use crate::format::{pad_visual, visual_width};
 use crate::{output, Result};
 
 /// List installed package(s)
@@ -27,6 +31,29 @@ pub struct Args {
     versions: bool,
 }
 
+/// A single rendered table row.
+struct Row {
+    name: String,
+    version: String,
+    source: String,
+    /// Pre-styled info column; it is the last column and never padded.
+    info: String,
+    /// Retained (non-current) version rows are dimmed as continuation rows.
+    dimmed: bool,
+}
+
+/// Counters feeding the summary footer.
+#[derive(Default)]
+struct Stats {
+    shown: u32,
+    held: u32,
+    upgradable: u32,
+    broken: u32,
+    orphaned: u32,
+    isolated: u32,
+    retained: u32,
+}
+
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.query.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let mut options = vec![QueryOption::UpgradableCheck, QueryOption::Broken];
@@ -39,137 +66,171 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(QueryOption::Upgradable);
     }
 
-    if args.versions {
-        return list_with_versions(&queries, &options, session);
-    }
+    let packages = package::query::query(session, queries, options, true)?;
 
-    match package::query::query(session, queries, options, true) {
-        Err(e) => Err(e.into()),
-        Ok(packages) => {
-            // Compute column widths
-            let mut max_name = 4usize;
-            let mut max_ver = 7usize;
-            let mut max_src = 6usize;
-            for pkg in &packages {
-                max_name = max_name.max(pkg.name().len());
-                max_ver = max_ver.max(pkg.version().len());
-                max_src = max_src.max(pkg.bucket().len());
-            }
+    let mut rows = Vec::new();
+    let mut stats = Stats::default();
 
-            // Header
-            output::header(rust_i18n::t!("cmd.header_installed_apps"));
-            let hdr_name = rust_i18n::t!("cmd.list_header_name");
-            let hdr_ver  = rust_i18n::t!("cmd.list_header_version");
-            let hdr_src  = rust_i18n::t!("cmd.list_header_source");
-            let hdr_info = rust_i18n::t!("cmd.list_header_info");
-            println!(
-                "  {}  {}  {}  {}",
-                pad_visual(&hdr_name, max_name).bold(),
-                pad_visual(&hdr_ver, max_ver).bold(),
-                pad_visual(&hdr_src, max_src).bold(),
-                hdr_info.bold(),
-            );
-            println!(
-                "  {}  {}  {}  ----",
-                "-".repeat(max_name),
-                "-".repeat(max_ver),
-                "-".repeat(max_src),
-            );
-
-            let mut shown = 0u32;
-            let mut shown_held = 0u32;
-            let mut shown_upgradable = 0u32;
-            let mut shown_broken = 0u32;
-            let mut shown_orphaned = 0u32;
-            let mut shown_isolated = 0u32;
-            for pkg in &packages {
-                let held = pkg.is_held();
-                if args.held && !held {
-                    continue;
-                }
-                shown += 1;
-
-                let mut info = Vec::new();
-                if pkg.is_install_failed() {
-                    info.push(rust_i18n::t!("cmd.list_install_failed").to_string());
-                    shown_broken += 1;
-                }
-                if pkg.is_bucket_removed() {
-                    info.push(rust_i18n::t!("cmd.list_bucket_removed").to_string());
-                    shown_orphaned += 1;
-                }
-                if pkg.is_isolated() {
-                    shown_isolated += 1;
-                }
-                if held {
-                    info.push("held".to_string());
-                    shown_held += 1;
-                }
-                if let Some(upgrade) = pkg.upgradable_version() {
-                    info.push(format!("→ {}", upgrade));
-                    shown_upgradable += 1;
-                }
-                let info_str = info.join(", ");
-
-                let info_display = if info_str.is_empty() {
-                    String::new()
-                } else {
-                    info_str.red().to_string()
-                };
-
-                let name_col = format!("{:<1$}", pkg.name(), max_name);
-                let ver_col  = format!("{:<1$}", pkg.version(), max_ver);
-                let src_col  = format!("{:<1$}", pkg.bucket(), max_src);
-                println!(
-                    "  {}  {}  {}  {}",
-                    name_col.dark_cyan(),
-                    ver_col,
-                    src_col,
-                    info_display,
-                );
-            }
-
-            // Status summary footer
-            println!();
-            output::info(rust_i18n::t!(
-                "cmd.list_summary",
-                count = shown,
-                held = shown_held,
-                upgradable = shown_upgradable,
-                broken = shown_broken,
-                orphaned = shown_orphaned,
-                isolated = shown_isolated,
-            ));
-
-            Ok(())
-        }
-    }
-}
-
-/// List packages with all installed versions shown.
-fn list_with_versions(queries: &[&str], options: &[QueryOption], session: &Session) -> Result<()> {
-    // Get current packages for name/bucket info
-    let pkgs = package::query::query(session, queries.to_vec(), options.to_vec(), true)
-        .unwrap_or_default();
-
-    for pkg in &pkgs {
-        output::named(pkg.name(), format!("/{}", pkg.bucket()));
-
-        let versions = package::list::list_installed_versions(session, pkg.name())?;
-
-        if versions.is_empty() {
-            output::named("(no versions)", "(broken install)");
+    for pkg in &packages {
+        let held = pkg.is_held();
+        if args.held && !held {
             continue;
         }
+        stats.shown += 1;
 
-        for ver in &versions {
-            if ver.is_current {
-                output::named(ver.version.as_str(), "(current)");
-            } else {
-                output::status(&ver.version);
+        let mut info = Vec::new();
+        if pkg.is_install_failed() {
+            info.push(rust_i18n::t!("cmd.list_install_failed").to_string());
+            stats.broken += 1;
+        }
+        if pkg.is_bucket_removed() {
+            info.push(rust_i18n::t!("cmd.list_bucket_removed").to_string());
+            stats.orphaned += 1;
+        }
+        if pkg.is_isolated() {
+            stats.isolated += 1;
+        }
+        if held {
+            info.push(rust_i18n::t!("cmd.list_held").to_string());
+            stats.held += 1;
+        }
+        if let Some(upgrade) = pkg.upgradable_version() {
+            info.push(format!("→ {}", upgrade));
+            stats.upgradable += 1;
+        }
+
+        let info = info.join(", ");
+        let info = if info.is_empty() {
+            String::new()
+        } else {
+            info.red().to_string()
+        };
+
+        rows.push(Row {
+            name: pkg.name().to_owned(),
+            version: pkg.version().to_owned(),
+            source: pkg.bucket().to_owned(),
+            info,
+            dimmed: false,
+        });
+
+        if args.versions {
+            let versions = package::list::list_installed_versions(session, pkg.name())?;
+            let retained = versions
+                .iter()
+                .filter(|v| !v.is_current && v.version != pkg.version());
+
+            if versions.is_empty() {
+                rows.push(continuation("-", rust_i18n::t!("cmd.list_no_versions")));
+            }
+
+            for ver in retained {
+                stats.retained += 1;
+                rows.push(continuation(
+                    &ver.version,
+                    rust_i18n::t!("cmd.list_version_old"),
+                ));
             }
         }
+    }
+
+    output::header(rust_i18n::t!("cmd.header_installed_apps"));
+
+    if rows.is_empty() {
+        output::info(rust_i18n::t!("cmd.list_no_match"));
+        return Ok(());
+    }
+
+    render(&rows);
+
+    println!();
+    output::info(rust_i18n::t!(
+        "cmd.list_summary",
+        count = stats.shown,
+        held = stats.held,
+        upgradable = stats.upgradable,
+        broken = stats.broken,
+        orphaned = stats.orphaned,
+        isolated = stats.isolated,
+    ));
+    if args.versions && stats.retained > 0 {
+        output::info(rust_i18n::t!(
+            "cmd.list_summary_versions",
+            versions = stats.retained,
+            apps = stats.shown,
+        ));
     }
 
     Ok(())
+}
+
+/// Build a dimmed continuation row carrying an extra installed version.
+fn continuation(version: &str, note: impl AsRef<str>) -> Row {
+    Row {
+        name: String::new(),
+        version: version.to_owned(),
+        source: String::new(),
+        info: note.as_ref().to_string().dark_grey().to_string(),
+        dimmed: true,
+    }
+}
+
+/// Render the table: bold header, dashed rule, then one line per row.
+fn render(rows: &[Row]) {
+    let hdr_name = rust_i18n::t!("cmd.list_header_name").to_string();
+    let hdr_ver = rust_i18n::t!("cmd.list_header_version").to_string();
+    let hdr_src = rust_i18n::t!("cmd.list_header_source").to_string();
+    let hdr_info = rust_i18n::t!("cmd.list_header_info").to_string();
+
+    let mut w_name = visual_width(&hdr_name);
+    let mut w_ver = visual_width(&hdr_ver);
+    let mut w_src = visual_width(&hdr_src);
+    let w_info = visual_width(&hdr_info);
+    for row in rows {
+        w_name = w_name.max(visual_width(&row.name));
+        w_ver = w_ver.max(visual_width(&row.version));
+        w_src = w_src.max(visual_width(&row.source));
+    }
+
+    println!(
+        "  {}  {}  {}  {}",
+        pad_visual(&hdr_name, w_name).bold(),
+        pad_visual(&hdr_ver, w_ver).bold(),
+        pad_visual(&hdr_src, w_src).bold(),
+        hdr_info.bold(),
+    );
+    println!(
+        "  {}  {}  {}  {}",
+        "-".repeat(w_name).dark_grey(),
+        "-".repeat(w_ver).dark_grey(),
+        "-".repeat(w_src).dark_grey(),
+        "-".repeat(w_info).dark_grey(),
+    );
+
+    for row in rows {
+        let name = pad_visual(&row.name, w_name);
+        let version = pad_visual(&row.version, w_ver);
+        // Trailing padding is pointless when nothing follows the source.
+        let source = if row.info.is_empty() {
+            row.source.clone()
+        } else {
+            pad_visual(&row.source, w_src)
+        };
+
+        let (name, version, source) = if row.dimmed {
+            (
+                name.dark_grey().to_string(),
+                version.dark_grey().to_string(),
+                source.dark_grey().to_string(),
+            )
+        } else {
+            (name.dark_cyan().to_string(), version, source)
+        };
+
+        if row.info.is_empty() {
+            println!("  {}  {}  {}", name, version, source);
+        } else {
+            println!("  {}  {}  {}  {}", name, version, source, row.info);
+        }
+    }
 }
