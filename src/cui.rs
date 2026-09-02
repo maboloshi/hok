@@ -5,6 +5,10 @@
 //! are rows in the same `MultiProgress`, so they stack vertically aligned
 //! instead of overwriting each other.
 //!
+//! The download stage's aggregate bar is [`DownloadBar`] — also an
+//! `indicatif::MultiProgress`, so one-off status lines emitted while it is
+//! active (e.g. cache hits) are drawn *above* the bar and never collide with it.
+//!
 //! # Design
 //!
 //! - **No event loop coupling**: These are pure UI components. The event
@@ -17,7 +21,7 @@
 use crossterm::style::Stylize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::IsTerminal;
 use std::time::Duration;
 
 /// Shared row-based status UI.
@@ -26,8 +30,8 @@ use std::time::Duration;
 /// [`start`](RowUI::start) (a spinner), updated in place, and closed by
 /// [`done`](RowUI::done) / [`fail`](RowUI::fail).
 ///
-/// For a *single* cross-package download progress line, see [`DownloadBar`], a
-/// hand-drawn `\r`-redrawn bar (no MultiProgress) used by the download stage.
+/// For the download stage's *single* cross-package progress line, see
+/// [`DownloadBar`], a separate indicatif `MultiProgress`.
 pub struct RowUI {
     mp: MultiProgress,
     bars: HashMap<String, ProgressBar>,
@@ -109,66 +113,111 @@ impl RowUI {
     }
 }
 
-/// Hand-drawn single-line aggregate download progress (no MultiProgress).
+/// Single aggregate download line driven by an indicatif [`MultiProgress`].
 ///
 /// Used by the download stage to show one self-updating line like:
 ///
 ///   downloading 2/3   3.60 GB ████████░░░░░░░░ 61%  ▸ git 70% · ffmpeg 45%
 ///
-/// Redrawn in place with `\r\x1b[2K` on every progress event, so the layout
-/// is fully controlled (unlike indicatif's fixed field-template bars) and a
-/// changing label/package list never shifts the bar column. Call [`begin`],
-/// then [`update`] on each progress event, then [`finish`] to move off the line.
+/// The line is registered as a row in a `MultiProgress` and recomposed on every
+/// progress event, so the layout is fully controlled while indicatif owns the
+/// row redraw. One-off status lines emitted while the bar is active (cache
+/// hits, notes) go through [`note`](DownloadBar::note), which draws them
+/// *above* the bar via `MultiProgress::println` instead of colliding with it.
+///
+/// Call [`begin`], then [`update`] on each progress event, then [`finish`] to
+/// move off the line.
 pub struct DownloadBar {
+    /// The owning multi-progress; the bar is its only row and notes stack above.
+    mp: MultiProgress,
+    /// The single aggregate row, present only while a download is in progress.
+    bar: Option<ProgressBar>,
     /// ident -> total bytes to download.
     pkgs: Vec<(String, u64)>,
     /// ident -> bytes downloaded so far.
     done: HashMap<String, u64>,
-    /// Whether a line is currently being drawn.
-    active: bool,
 }
 
 impl DownloadBar {
     pub fn new() -> DownloadBar {
         DownloadBar {
+            mp: MultiProgress::new(),
+            bar: None,
             pkgs: Vec::new(),
             done: HashMap::new(),
-            active: false,
         }
     }
 
-    /// Start drawing a download line for `packages` (`(ident, total_bytes)`).
+    /// Whether progress bars will be shown at all (i.e. stdout is a terminal).
+    ///
+    /// Off a TTY indicatif renders nothing, so the event loop can fall back to
+    /// the handler's plain status lines instead of swallowing them.
+    pub fn visible() -> bool {
+        std::io::stdout().is_terminal()
+    }
+
+    /// Whether an aggregate row is currently being drawn.
+    pub fn is_active(&self) -> bool {
+        self.bar.is_some()
+    }
+
+    /// Start drawing the download row for `packages` (`(ident, total_bytes)`).
+    ///
+    /// A no-op (no row is created) when `packages` is empty or stdout is not a
+    /// terminal — indicatif renders nothing off a TTY anyway, so skipping avoids
+    /// an inert row.
     pub fn begin(&mut self, packages: &[(String, u64)]) {
-        if packages.is_empty() {
+        self.pkgs.clear();
+        self.done.clear();
+        if packages.is_empty() || !std::io::stdout().is_terminal() {
+            self.bar = None;
             return;
         }
         self.pkgs = packages.to_vec();
-        self.done.clear();
-        self.active = true;
+        if self.bar.is_none() {
+            let bar = self.mp.add(ProgressBar::new_spinner());
+            // Show only our composed message; no spinner, no indicatif bar art.
+            bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
+            // Drive periodic redraws (the row has no position to change, so a
+            // steady tick is what makes indicatif repaint on each update).
+            bar.enable_steady_tick(Duration::from_millis(100));
+            self.bar = Some(bar);
+        }
         self.render();
     }
 
     /// Report that `ident` has `done` bytes downloaded (package cumulative).
     pub fn update(&mut self, ident: &str, done: u64) {
-        if !self.active {
+        if !self.is_active() {
             return;
         }
         self.done.insert(ident.to_owned(), done);
         self.render();
     }
 
-    /// Finish the line (move off it) and reset. No-op if not active.
-    pub fn finish(&mut self) {
-        if self.active {
-            // Redraw a cleared line then move to the next row so subsequent
-            // output does not overwrite a stale progress line.
-            self.active = false;
-            println!();
+    /// Draw a one-off status line *above* the active bar.
+    ///
+    /// Uses `MultiProgress::println`, which indicatif places above all its rows,
+    /// so concurrent status output (e.g. a cache hit for another package) never
+    /// shares the bar's terminal row.
+    pub fn note(&self, msg: impl AsRef<str>) {
+        if self.is_active() {
+            let _ = self.mp.println(msg.as_ref());
         }
     }
 
-    /// Recompute and draw the current line in place.
+    /// Finish the row (remove it) and reset. No-op if not active.
+    pub fn finish(&mut self) {
+        if let Some(bar) = self.bar.take() {
+            bar.finish_and_clear();
+        }
+        self.pkgs.clear();
+        self.done.clear();
+    }
+
+    /// Recompute and push the composed line into the indicatif row.
     fn render(&self) {
+        let Some(bar) = &self.bar else { return };
         let grand: u64 = self.pkgs.iter().map(|(_, t)| t).sum();
         let done_sum: u64 = self.done.values().sum();
         let total = self.pkgs.len();
@@ -216,10 +265,10 @@ impl DownloadBar {
         const BAR_W: u64 = 16;
         let filled = ((pct as u64) * BAR_W) / 100;
         let filled = filled.min(BAR_W);
-        let bar = format!(
+        let bar_txt = format!(
             "{}{}",
             "█".repeat(filled as usize).cyan(),
-            "░".repeat((BAR_W - filled) as usize).dark_grey()
+            "░".repeat((BAR_W - filled) as usize).dark_grey(),
         );
 
         let total_bytes = crate::format::humansize(grand, true);
@@ -231,16 +280,15 @@ impl DownloadBar {
         // Compact single line: label count/total · total bytes · bar · pct · list,
         // separated by single spaces (no width padding) so it stays tight.
         let line = format!(
-            "  {label} {running_count}/{total} {total_bytes} {bar} {pct}%{tail}",
+            "  {label} {running_count}/{total} {total_bytes} {bar_txt} {pct}%{tail}",
             label = label,
             running_count = running_count,
             total = total,
             total_bytes = total_bytes,
-            bar = bar,
+            bar_txt = bar_txt,
             pct = pct,
             tail = tail,
         );
-        print!("\r\x1b[2K{}", line);
-        let _ = std::io::stdout().flush();
+        bar.set_message(line);
     }
 }

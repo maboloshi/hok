@@ -92,19 +92,25 @@ pub fn run_event_loop(
                 },
             };
             match event {
-                // PackageDownloadStart: swallow so scoop_handler does not print a
-                // separate "downloading..." status line that would collide with
-                // the hand-drawn DownloadBar (which starts on PackageDownloadInfo).
-                Event::PackageDownloadStart => continue,
+                // PackageDownloadStart: on a terminal swallow so scoop_handler does
+                // not print a separate "downloading..." status line that would sit
+                // below the indicatif DownloadBar row (which starts on
+                // PackageDownloadInfo). Off a TTY there is no bar, so fall through
+                // to the handler, which prints a plain status line instead.
+                Event::PackageDownloadStart => {
+                    if cui::DownloadBar::visible() {
+                        continue;
+                    }
+                }
 
-                // Download starting: begin the hand-drawn single-line progress.
+                // Download starting: begin the indicatif single-line progress.
                 Event::PackageDownloadInfo { packages } => {
                     dlprogress.begin(&packages);
                     continue;
                 }
 
                 // Download progress — push per-package cumulative bytes into the
-                // hand-drawn single line.
+                // indicatif single line.
                 Event::PackageDownloadProgress(ref ctx) => {
                     dlprogress.update(&ctx.ident, ctx.pkg_done);
                     continue;
@@ -114,6 +120,21 @@ pub fn run_event_loop(
                 Event::PackageDownloadDone => {
                     dlprogress.finish();
                     continue;
+                }
+
+                // Cache hit while the aggregate bar is live: route it through the
+                // bar so indicatif draws it above the progress row instead of a
+                // plain println that would share (and corrupt) the bar line.
+                Event::PackageCacheHit(ref filename) => {
+                    if dlprogress.is_active() {
+                        dlprogress.note(output::status_line(rust_i18n::t!(
+                            "detail.loading_cache",
+                            filename = filename
+                        )));
+                        continue;
+                    }
+                    // No bar (not a terminal / nothing downloading): fall through
+                    // to the handler, which prints a normal status line.
                 }
 
                 // Interactive prompt: select from multiple package candidates

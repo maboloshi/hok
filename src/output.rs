@@ -71,10 +71,17 @@ pub fn err(msg: impl AsRef<str>) {
 
 /// Status/note line (grey), with a trailing ellipsis for live progress feel.
 pub fn status(msg: impl AsRef<str>) {
-    println!("  {}...", msg.as_ref().grey());
+    println!("{}", status_line(msg));
     let _ = std::io::stdout().flush();
 }
 
+/// The grey "  {msg}..." status line as a styled string, without printing.
+///
+/// Lets a component (e.g. the indicatif download bar `note`) render a status
+/// line through its own sink while staying visually identical to [`status`].
+pub fn status_line(msg: impl AsRef<str>) -> String {
+    format!("  {}...", msg.as_ref().grey())
+}
 /// Label-value pair (label cyan bold).
 pub fn field(label: impl AsRef<str>, value: impl AsRef<str>) {
     println!("  {} {}", label.as_ref().dark_cyan().bold(), value.as_ref());
