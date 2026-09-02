@@ -13,23 +13,24 @@ use std::{
     collections::HashMap,
     fs::File,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
-        Mutex,
     },
     time::{Duration, Instant},
 };
 use tracing::debug;
 
+use futures::StreamExt;
+
 use crate::constant::DEFAULT_USER_AGENT;
-use crate::{error::Fallible, internal, Event, Session};
+use crate::{Event, Session, error::Fallible, internal};
 
 use super::Package;
 
-pub use super::download_apps::{download_apps, DownloadOptions};
+pub use super::download_apps::{DownloadOptions, download_apps};
 use super::download_fragmented::download_fragmented;
 pub(crate) use super::download_verify::download_and_verify;
 
@@ -97,6 +98,300 @@ impl PackageCache<'_> {
     }
 }
 
+/// Result of one package's concurrent download.
+struct PkgDownloadOutcome {
+    /// Pending simple-download renames `(tmp, path, ident)`.
+    filepaths: Vec<(PathBuf, PathBuf, String)>,
+    /// Fragmented files to reassemble: `final_path -> (part_paths, ident)`.
+    chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)>,
+    /// The package ident when it failed (only under IgnoreFailure).
+    failed_ident: Option<String>,
+}
+
+/// Download the files of a single package. Runs on a concurrent task so
+/// multiple packages download in parallel (cross-package concurrency).
+///
+/// The body mirrors the per-package branch of the former sequential loop in
+/// [`PackageSet::download`]: fragmented or single-stream download per file,
+/// reporting progress, honouring reuse-cache and the cancellation token.
+/// Each package writes only its own cache files, so concurrent tasks never
+/// collide.
+#[allow(clippy::too_many_arguments)]
+async fn download_one_package<'a, 'b>(
+    session: &'a Session,
+    cache: &'b PackageCache<'a>,
+    cache_root: &Path,
+    base_opts: &internal::network::RequestOptions<'_>,
+    net: &Arc<dyn internal::network::Network + Send + Sync>,
+    reuse_cache: bool,
+    ignore_failure: bool,
+    fragmentation_enabled: bool,
+    chunk_count: u64,
+    min_split_size: u64,
+) -> Fallible<PkgDownloadOutcome> {
+    let mut filepaths: Vec<(PathBuf, PathBuf, String)> = vec![];
+    let mut chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)> = HashMap::new();
+
+    let cookie = cache.package.cookie().unwrap_or_default();
+    let ident = cache.package.ident();
+    let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
+        None
+    } else {
+        Some(
+            cookie
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    };
+    let file_opts = internal::network::RequestOptions {
+        cookies: cookie_map.as_ref(),
+        ..base_opts.clone()
+    };
+
+    // A failure on any file marks the whole package as failed so the rest of
+    // the transaction can still be committed (IgnoreFailure).
+    let mut pkg_error: Option<crate::Error> = None;
+    let emitter = session.emitter();
+
+    // Total bytes the package must fetch (all files that are not already
+    // fully cached). Mirrors the skip condition in the loop below, so the
+    // reported pkg_total equals the bytes actually downloaded.
+    let pkg_total: u64 = cache
+        .inner
+        .iter()
+        .filter(|(_, d)| !(reuse_cache && d.local_size > 0 && d.local_size == d.remote_size))
+        .map(|(_, d)| d.remote_size)
+        .sum();
+
+    // Running total of bytes this package has fully downloaded (across its
+    // files). Shared across the per-file progress closures so each progress
+    // event reports the package-wide cumulative done.
+    let pkg_done = Arc::new(AtomicU64::new(0));
+
+    for (filename, dlinfo) in cache.inner.iter() {
+        if reuse_cache && dlinfo.local_size > 0 && dlinfo.local_size == dlinfo.remote_size {
+            continue;
+        }
+
+        let use_fragments = fragmentation_enabled
+            && !dlinfo.estimated
+            && dlinfo.remote_size >= min_split_size
+            && dlinfo.remote_size > 0
+            && chunk_count > 1
+            // Avoid `(chunk_idx + 1) * chunk_size - 1` underflow when the
+            // file is smaller than the configured chunk count.
+            && chunk_count <= dlinfo.remote_size;
+
+        let result: Fallible<()> = async {
+            if use_fragments {
+                let path = cache_root.join(filename);
+                let part_dir = cache_root.join(format!("{}.parts", filename));
+                internal::fs::ensure_dir(&part_dir)?;
+
+                // Chunks whose retries are exhausted are re-downloaded serially
+                // (see `download_fragmented`), so a weak link degrades to fewer
+                // connections instead of failing the whole file.
+                let url_str = dlinfo.url.to_owned();
+                // Aggregate per-chunk deltas into a file-level count so the
+                // progress event matches the single-stream path.
+                let progress_total = Arc::new(AtomicU64::new(0));
+                let progress_total_h = progress_total.clone();
+                let throttle = Arc::new(ProgressThrottle::new());
+                let throttle_h = throttle.clone();
+                let emitter_h = emitter.clone();
+                let ident_h = ident.clone();
+                let filename_h = filename.to_owned();
+                let url_h = url_str.clone();
+                let pkg_done_h = pkg_done.clone();
+                let pkg_total_h = pkg_total;
+                let on_progress = move |delta: u64| {
+                    let dlnow = progress_total_h.fetch_add(delta, Ordering::Relaxed) + delta;
+                    // Throttle to one event per 100 ms so a slow event loop
+                    // cannot back up the bounded channel (aligned with rake's
+                    // THROTTLE_DURATION); force the final event so the bar
+                    // reaches 100%.
+                    let force = dlnow >= dlinfo.remote_size;
+                    if throttle_h.should_report(force)
+                        && let Some(tx) = &emitter_h
+                    {
+                        let _ = tx.try_send(Event::PackageDownloadProgress(
+                            PackageDownloadProgressContext {
+                                ident: ident_h.clone(),
+                                url: url_h.clone(),
+                                filename: filename_h.clone(),
+                                dltotal: dlinfo.remote_size,
+                                dlnow,
+                                pkg_total: pkg_total_h,
+                                pkg_done: pkg_done_h.load(Ordering::Relaxed) + dlnow,
+                            },
+                        ));
+                    }
+                };
+                let part_paths = download_fragmented(
+                    net.as_ref(),
+                    &url_str,
+                    &file_opts,
+                    dlinfo.remote_size,
+                    chunk_count,
+                    &part_dir,
+                    &on_progress,
+                    &session.cancellation_token(),
+                )
+                .await
+                .map_err(crate::error::Error::Custom)?;
+
+                pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
+                chunk_file_map.insert(path, (part_paths, ident.clone()));
+            } else {
+                // Single download (with resume for known-size files).
+                let path = cache_root.join(filename);
+                let tmp = cache_root.join(format!("{}.download", filename));
+                let _ = std::fs::remove_file(&path);
+
+                // Resume support: when the total size is known (not estimated)
+                // and a partial `.download` already exists, resume from its
+                // current size via a Range request instead of re-downloading.
+                let known_total = dlinfo.remote_size > 0 && !dlinfo.estimated;
+                let existing_len = tmp.metadata().map(|m| m.len()).unwrap_or(0);
+                let resume_from = if known_total {
+                    existing_len.min(dlinfo.remote_size)
+                } else {
+                    0
+                };
+
+                // A `.download` already at the full size needs no network
+                // transfer — promote it straight to the cache.
+                if known_total && existing_len == dlinfo.remote_size {
+                    filepaths.push((tmp, path, ident.clone()));
+                } else {
+                    // Fresh start: drop any stale partial.
+                    if resume_from == 0 {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+
+                    let fname = filename.to_owned();
+                    let url_str = dlinfo.url.to_owned();
+                    let dlinfo_total = dlinfo.remote_size;
+                    let pkg_total_here = pkg_total;
+                    let pkg_done_h = pkg_done.clone();
+
+                    // Stream the body (from `resume_from` when resuming)
+                    // through the network capability (reports cumulative bytes
+                    // via on_progress).
+                    let throttle = Arc::new(ProgressThrottle::new());
+                    let throttle_h = throttle.clone();
+                    let emitter_h = emitter.clone();
+                    let ident_h = ident.clone();
+                    let url_h = url_str.clone();
+                    let fname_h = fname.clone();
+                    let mut on_progress =
+                        move |dlnow: u64| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                            // Clone per call: the future is `move` so it must own
+                            // its captures.
+                            let throttle = throttle_h.clone();
+                            let tx = emitter_h.clone();
+                            let ident = ident_h.clone();
+                            let url = url_h.clone();
+                            let filename = fname_h.clone();
+                            let total = dlinfo_total;
+                            let pkg_done_here = pkg_done_h.clone();
+                            Box::pin(async move {
+                                // Throttle to one event per 100 ms (aligned with
+                                // rake's THROTTLE_DURATION); force the final event
+                                // so the bar reaches 100%.
+                                let force = dlnow >= total;
+                                if throttle.should_report(force)
+                                    && let Some(tx) = &tx
+                                {
+                                    let ctx = PackageDownloadProgressContext {
+                                        ident,
+                                        url,
+                                        filename,
+                                        dltotal: total,
+                                        dlnow,
+                                        pkg_total: pkg_total_here,
+                                        pkg_done: pkg_done_here.load(Ordering::Relaxed) + dlnow,
+                                    };
+                                    // `send().await` gives backpressure: a slow
+                                    // event loop cannot silently drop progress.
+                                    let _ = tx.send(Event::PackageDownloadProgress(ctx)).await;
+                                }
+                            })
+                        };
+
+                    let resumable_opts = internal::network::RequestOptions {
+                        range_start: resume_from,
+                        ..file_opts.clone()
+                    };
+                    // Race the stream against cooperative Ctrl-C cancellation;
+                    // on cancel the partial `.download` file is kept so the
+                    // next run resumes from here.
+                    let cancel = session.cancellation_token();
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            return Err(crate::error::Error::Custom(
+                                "download cancelled".to_owned(),
+                            ));
+                        }
+                        res = net.download_stream(
+                            &url_str,
+                            &resumable_opts,
+                            &tmp,
+                            &mut on_progress,
+                        ) => {
+                            res.map_err(|e| crate::error::Error::Custom(e.to_string()))?;
+                            // A resumed download must reach the full size — a
+                            // short 206 would leave a corrupt part that must
+                            // not be promoted to cache.
+                            if resume_from > 0
+                                && tmp.metadata().map(|m| m.len()).unwrap_or(0)
+                                    != dlinfo.remote_size
+                            {
+                                return Err(crate::error::Error::Custom(format!(
+                                    "short resumed download: {} != {} bytes",
+                                    tmp.display(),
+                                    dlinfo.remote_size,
+                                )));
+                            }
+                        }
+                    }
+
+                    pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
+                    filepaths.push((tmp, path, ident.clone()));
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = result {
+            pkg_error = Some(e);
+            break;
+        }
+    }
+
+    if let Some(err) = pkg_error {
+        if ignore_failure {
+            session
+                .output()
+                .error(format!("failed to download '{}': {}", ident, err));
+            return Ok(PkgDownloadOutcome {
+                filepaths,
+                chunk_file_map,
+                failed_ident: Some(ident),
+            });
+        }
+        return Err(err);
+    }
+
+    Ok(PkgDownloadOutcome {
+        filepaths,
+        chunk_file_map,
+        failed_ident: None,
+    })
+}
+
 impl<'a> PackageSet<'a> {
     pub fn new(
         session: &'a Session,
@@ -151,10 +446,11 @@ impl<'a> PackageSet<'a> {
 
                 if self.reuse_cache
                     && let Ok(file) = File::open(cache_root.join(filename))
-                        && let Ok(metadata) = file.metadata() {
-                            local_size = metadata.len();
-                            file_cached_count += 1;
-                        }
+                    && let Ok(metadata) = file.metadata()
+                {
+                    local_size = metadata.len();
+                    file_cached_count += 1;
+                }
 
                 package_cache.inner.insert(
                     filename.to_owned(),
@@ -200,7 +496,15 @@ impl<'a> PackageSet<'a> {
         // Extract config data into owned values inside a scope so the config
         // read guard is dropped before the awaits below (a guard held across an
         // await would block a concurrent `config_mut()`).
-        let (cache_root, proxy, user_agent, fragmentation_enabled, chunk_count, min_split_size) = {
+        let (
+            cache_root,
+            proxy,
+            user_agent,
+            fragmentation_enabled,
+            chunk_count,
+            min_split_size,
+            jobs,
+        ) = {
             let config = self.session.config();
             (
                 config.cache_path().to_path_buf(),
@@ -216,10 +520,21 @@ impl<'a> PackageSet<'a> {
                     .aria2_split()
                     .min(config.aria2_max_connection_per_server()) as u64,
                 config.aria2_min_split_size(),
+                config.jobs() as usize,
             )
         };
 
-        let package_caches = self.caches.get_mut().unwrap();
+        // Extract session-owned copies up front so the concurrent futures
+        // below never capture `self` (which would conflict with the caches
+        // borrow). Session is Sync + Send, so all of these share cleanly.
+        let session = self.session;
+        let reuse_cache = self.reuse_cache;
+        let ignore_failure = self.ignore_failure;
+        let net = self.session.network();
+        let emitter = self.session.emitter();
+
+        // Read caches immutably: the download phase never mutates them.
+        let package_caches = self.caches.get().unwrap();
 
         let mut chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)> = HashMap::new();
         let mut filepaths: Vec<(PathBuf, PathBuf, String)> = vec![];
@@ -228,263 +543,85 @@ impl<'a> PackageSet<'a> {
         internal::fs::ensure_dir(&cache_root)?;
 
         // Shared request options (proxy + UA); the cookie is injected per
-        // file below. The network capability is injected per session so tests
-        // can substitute an in-memory fake.
+        // file inside the per-package task. The network capability is
+        // injected per session so tests can substitute an in-memory fake.
         let base_opts = internal::network::RequestOptions {
             proxy: proxy.as_deref(),
             timeout_secs: 120,
             user_agent: Some(&user_agent),
             ..internal::network::RequestOptions::default()
         };
-        let net = self.session.network();
 
-        for cache in package_caches.values() {
-            if self.reuse_cache && cache.valid == CacheMaybeValid::Full {
-                if let Some(tx) = self.session.emitter() {
-                    for filename in cache.inner.keys() {
-                        let _ = tx.try_send(Event::PackageCacheHit(filename.clone()));
-                    }
-                }
-                continue;
-            }
+        // Concurrent cross-package download: each package's files are fetched
+        // on its own task, bounded by `jobs`. Every package writes only its
+        // own cache files (names embed `name#version#`), so concurrent tasks
+        // never collide. Fully-cached packages are skipped (their cache-hit
+        // events are still emitted) and packages whose download fails are
+        // reported per-package, matching the sequential semantics.
+        let jobs = jobs.max(1) as usize;
 
-            let cookie = cache.package.cookie().unwrap_or_default();
-            let ident = cache.package.ident();
-            let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
-                None
-            } else {
-                Some(
-                    cookie
+        // Tell the frontend which packages are about to be downloaded and their
+        // total bytes, so it can render one aggregate progress bar (count and
+        // grand total) before the per-package progress events start arriving.
+        if let Some(tx) = &emitter {
+            let packages: Vec<(String, u64)> = package_caches
+                .values()
+                .filter(|c| !(reuse_cache && c.valid == CacheMaybeValid::Full))
+                .map(|c| {
+                    let total: u64 = c
+                        .inner
                         .iter()
-                        .map(|(k, v)| (k.to_string(), v.to_string()))
-                        .collect(),
-                )
-            };
-            let file_opts = internal::network::RequestOptions {
-                cookies: cookie_map.as_ref(),
-                ..base_opts.clone()
-            };
-
-            // A failure on any file marks the whole package as failed so the
-            // rest of the transaction can still be committed (IgnoreFailure).
-            let mut pkg_error: Option<crate::Error> = None;
-            let emitter = self.session.emitter();
-
-            for (filename, dlinfo) in cache.inner.iter() {
-                if self.reuse_cache
-                    && dlinfo.local_size > 0
-                    && dlinfo.local_size == dlinfo.remote_size
-                {
-                    continue;
-                }
-
-                let use_fragments = fragmentation_enabled
-                    && !dlinfo.estimated
-                    && dlinfo.remote_size >= min_split_size
-                    && dlinfo.remote_size > 0
-                    && chunk_count > 1
-                    // Avoid `(chunk_idx + 1) * chunk_size - 1` underflow when
-                    // the file is smaller than the configured chunk count.
-                    && chunk_count <= dlinfo.remote_size;
-
-                let result: Fallible<()> = async {
-                    if use_fragments {
-                        let path = cache_root.join(filename);
-                        let part_dir = cache_root.join(format!("{}.parts", filename));
-                        internal::fs::ensure_dir(&part_dir)?;
-
-                        // Chunks whose retries are exhausted are re-downloaded
-                        // serially (see `download_fragmented`), so a weak link
-                        // degrades to fewer connections instead of failing the
-                        // whole file.
-                        let url_str = dlinfo.url.to_owned();
-                        // Aggregate per-chunk deltas into a file-level count so
-                        // the progress event matches the single-stream path.
-                        let progress_total = Arc::new(AtomicU64::new(0));
-                        let progress_total_h = progress_total.clone();
-                        let throttle = Arc::new(ProgressThrottle::new());
-                        let throttle_h = throttle.clone();
-                        let emitter_h = emitter.clone();
-                        let ident_h = ident.clone();
-                        let filename_h = filename.to_owned();
-                        let url_h = url_str.clone();
-                        let on_progress = move |delta: u64| {
-                            let dlnow =
-                                progress_total_h.fetch_add(delta, Ordering::Relaxed) + delta;
-                            // Throttle to one event per 100 ms so a slow event
-                            // loop cannot back up the bounded channel (aligned
-                            // with rake's THROTTLE_DURATION); force the final
-                            // event so the bar reaches 100%.
-                            let force = dlnow >= dlinfo.remote_size;
-                            if throttle_h.should_report(force)
-                                && let Some(tx) = &emitter_h
-                            {
-                                let _ = tx.try_send(Event::PackageDownloadProgress(
-                                    PackageDownloadProgressContext {
-                                        ident: ident_h.clone(),
-                                        url: url_h.clone(),
-                                        filename: filename_h.clone(),
-                                        dltotal: dlinfo.remote_size,
-                                        dlnow,
-                                    },
-                                ));
-                            }
-                        };
-                        let part_paths = download_fragmented(
-                            net.as_ref(),
-                            &url_str,
-                            &file_opts,
-                            dlinfo.remote_size,
-                            chunk_count,
-                            &part_dir,
-                            &on_progress,
-                            &self.session.cancellation_token(),
-                        )
-                        .await
-                        .map_err(crate::error::Error::Custom)?;
-
-                        chunk_file_map.insert(path, (part_paths, ident.clone()));
-                    } else {
-                        // Single download (with resume for known-size files).
-                        let path = cache_root.join(filename);
-                        let tmp = cache_root.join(format!("{}.download", filename));
-                        let _ = std::fs::remove_file(&path);
-
-                        // Resume support: when the total size is known (not
-                        // estimated) and a partial `.download` already exists,
-                        // resume from its current size via a Range request
-                        // instead of re-downloading from scratch.
-                        let known_total = dlinfo.remote_size > 0 && !dlinfo.estimated;
-                        let existing_len = tmp.metadata().map(|m| m.len()).unwrap_or(0);
-                        let resume_from = if known_total {
-                            existing_len.min(dlinfo.remote_size)
-                        } else {
-                            0
-                        };
-
-                        // A `.download` already at the full size needs no
-                        // network transfer — promote it straight to the cache.
-                        if known_total && existing_len == dlinfo.remote_size {
-                            filepaths.push((tmp, path, ident.clone()));
-                        } else {
-                            // Fresh start: drop any stale partial.
-                            if resume_from == 0 {
-                                let _ = std::fs::remove_file(&tmp);
-                            }
-
-                            let fname = filename.to_owned();
-                            let url_str = dlinfo.url.to_owned();
-                            let dlinfo_total = dlinfo.remote_size;
-
-                            // Stream the body (from `resume_from` when
-                            // resuming) through the network capability
-                            // (reports cumulative bytes via on_progress).
-                            let throttle = Arc::new(ProgressThrottle::new());
-                            let throttle_h = throttle.clone();
-                            let emitter_h = emitter.clone();
-                            let ident_h = ident.clone();
-                            let url_h = url_str.clone();
-                            let fname_h = fname.clone();
-                            let mut on_progress = move |dlnow: u64| -> Pin<
-                                Box<dyn Future<Output = ()> + Send>,
-                            > {
-                                // Clone per call: the future is `move` so it
-                                // must own its captures.
-                                let throttle = throttle_h.clone();
-                                let tx = emitter_h.clone();
-                                let ident = ident_h.clone();
-                                let url = url_h.clone();
-                                let filename = fname_h.clone();
-                                let total = dlinfo_total;
-                                Box::pin(async move {
-                                    // Throttle to one event per 100 ms
-                                    // (aligned with rake's THROTTLE_DURATION);
-                                    // force the final event so the bar
-                                    // reaches 100%.
-                                    let force = dlnow >= total;
-                                    if throttle.should_report(force)
-                                        && let Some(tx) = &tx
-                                    {
-                                        let ctx = PackageDownloadProgressContext {
-                                            ident,
-                                            url,
-                                            filename,
-                                            dltotal: total,
-                                            dlnow,
-                                        };
-                                        // `send().await` gives backpressure:
-                                        // a slow event loop cannot silently
-                                        // drop progress (throttled events are
-                                        // always delivered).
-                                        let _ = tx.send(Event::PackageDownloadProgress(ctx)).await;
-                                    }
-                                })
-                            };
-
-                            let resumable_opts = internal::network::RequestOptions {
-                                range_start: resume_from,
-                                ..file_opts.clone()
-                            };
-                            // Race the stream against cooperative Ctrl-C
-                            // cancellation; on cancel the partial `.download`
-                            // file is kept so the next run resumes from here.
-                            let cancel = self.session.cancellation_token();
-                            tokio::select! {
-                                _ = cancel.cancelled() => {
-                                    return Err(crate::error::Error::Custom(
-                                        "download cancelled".to_owned(),
-                                    ));
-                                }
-                                res = net.download_stream(
-                                    &url_str,
-                                    &resumable_opts,
-                                    &tmp,
-                                    &mut on_progress,
-                                ) => {
-                                    res.map_err(|e| {
-                                        crate::error::Error::Custom(e.to_string())
-                                    })?;
-                                    // A resumed download must reach the full
-                                    // size — a short 206 would leave a corrupt
-                                    // part that must not be promoted to cache.
-                                    if resume_from > 0
-                                        && tmp.metadata().map(|m| m.len()).unwrap_or(0)
-                                            != dlinfo.remote_size
-                                    {
-                                        return Err(crate::error::Error::Custom(format!(
-                                            "short resumed download: {} != {} bytes",
-                                            tmp.display(),
-                                            dlinfo.remote_size
-                                        )));
-                                    }
-                                }
-                            }
-
-                            filepaths.push((tmp, path, ident.clone()));
-                        }
-                    }
-                    Ok(())
-                }
-                .await;
-
-                if let Err(e) = result {
-                    pkg_error = Some(e);
-                    break;
-                }
-            }
-
-            if let Some(err) = pkg_error {
-                if self.ignore_failure {
-                    self.session
-                        .output()
-                        .error(format!("failed to download '{}': {}", ident, err));
-                    failed.push(ident);
-                } else {
-                    return Err(err);
-                }
-            }
+                        .filter(|(_, d)| {
+                            !(reuse_cache && d.local_size > 0 && d.local_size == d.remote_size)
+                        })
+                        .map(|(_, d)| d.remote_size)
+                        .sum();
+                    (c.package.ident(), total)
+                })
+                .collect();
+            let _ = tx.try_send(Event::PackageDownloadInfo { packages });
         }
 
+        let outcomes: Vec<Fallible<PkgDownloadOutcome>> =
+            futures::stream::iter(package_caches.values().filter(|c| {
+                if reuse_cache && c.valid == CacheMaybeValid::Full {
+                    if let Some(tx) = &emitter {
+                        for filename in c.inner.keys() {
+                            let _ = tx.try_send(Event::PackageCacheHit(filename.clone()));
+                        }
+                    }
+                    false
+                } else {
+                    true
+                }
+            }))
+            .map(|cache| {
+                download_one_package(
+                    session,
+                    cache,
+                    &cache_root,
+                    &base_opts,
+                    &net,
+                    reuse_cache,
+                    ignore_failure,
+                    fragmentation_enabled,
+                    chunk_count,
+                    min_split_size,
+                )
+            })
+            .buffer_unordered(jobs)
+            .collect()
+            .await;
+
+        // Merge the per-package outcomes into the shared accumulators.
+        for outcome in outcomes {
+            let outcome = outcome?; // a hard (non-ignore) failure aborts
+            filepaths.extend(outcome.filepaths);
+            chunk_file_map.extend(outcome.chunk_file_map);
+            if let Some(ident) = outcome.failed_ident {
+                failed.push(ident);
+            }
+        }
         // Reassemble fragmented files
         for (final_path, (part_paths, ident)) in chunk_file_map.iter() {
             let reassembled = (|| -> Fallible<()> {
@@ -541,7 +678,7 @@ impl<'a> PackageSet<'a> {
             self.load_cache();
         }
 
-        let (proxy, user_agent) = {
+        let (proxy, user_agent, jobs) = {
             let config = self.session.config();
             (
                 config.proxy().map(|s| s.to_owned()),
@@ -551,29 +688,25 @@ impl<'a> PackageSet<'a> {
                     .map(|s| s.as_str())
                     .unwrap_or(DEFAULT_USER_AGENT)
                     .to_owned(),
+                config.jobs() as usize,
             )
         };
 
-        let package_caches = self.caches.get_mut().unwrap();
+        // Fire all HEAD requests concurrently (one per URL), then apply the
+        // results back to the cache entries serially. The HEAD is pure network
+        // I/O and only writes `remote_size`/`estimated` into the caches, so the
+        // concurrent phase captures owned data and the apply phase mutates the
+        // caches under a single `&mut`.
+        let net = self.session.network();
 
-        let mut total = 0u64;
-        let mut estimated = false;
-
-        for &pkg in self.packages.iter() {
-            let pkg = pkg.upgradable().unwrap_or(pkg);
-            let urls = pkg.download_urls();
-            let filenames = pkg.download_filenames();
-            let cookie = pkg.cookie().unwrap_or_default();
-
-            for (url, filename) in urls.iter().zip(filenames.iter()) {
-                let ident = pkg.ident();
-                let package_cache = package_caches.get_mut(&ident).unwrap();
-                let info = package_cache
-                    .inner
-                    .get_mut(filename)
-                    .expect("failed to get cache info");
-
-                // HEAD request via the unified network layer
+        // Collect every (url, filename, ident, cookie) as an owned HEAD task.
+        let tasks: Vec<(String, String, String, Option<HashMap<String, String>>)> = self
+            .packages
+            .iter()
+            .map(|&pkg| pkg.upgradable().unwrap_or(pkg))
+            .flat_map(|pkg| {
+                let ident = pkg.ident().to_owned();
+                let cookie = pkg.cookie().unwrap_or_default();
                 let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
                     None
                 } else {
@@ -584,35 +717,69 @@ impl<'a> PackageSet<'a> {
                             .collect(),
                     )
                 };
-                let opts = internal::network::RequestOptions {
-                    proxy: proxy.as_deref(),
-                    timeout_secs: 30,
-                    user_agent: Some(&user_agent),
-                    cookies: cookie_map.as_ref(),
-                    ..internal::network::RequestOptions::default()
-                };
-                let result = self.session.network().head(url, &opts).await;
-                let code = result.status_code;
+                pkg.download_urls()
+                    .iter()
+                    .zip(pkg.download_filenames().iter())
+                    .map(move |(url, filename)| {
+                        (
+                            url.to_string(),
+                            filename.clone(),
+                            ident.clone(),
+                            cookie_map.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
-                if code == 200 {
-                    // head() returns both the status code and Content-Length
-                    // in a single round trip; reusing it avoids a redundant
-                    // second HEAD request per URL.
-                    info.remote_size = result.content_length.unwrap_or(0);
-                    if info.remote_size != info.local_size {
-                        total += info.remote_size;
-                    }
-                } else {
-                    debug!("code: {}, ident: {}, url: {}", code, ident, url)
+        let results: Vec<(String, String, u16, Option<u64>)> = futures::stream::iter(tasks)
+            .map(|(url, filename, ident, cookie_map)| {
+                let net = net.clone();
+                let proxy = proxy.clone();
+                let user_agent = user_agent.clone();
+                async move {
+                    let opts = internal::network::RequestOptions {
+                        proxy: proxy.as_deref(),
+                        timeout_secs: 30,
+                        user_agent: Some(&user_agent),
+                        cookies: cookie_map.as_ref(),
+                        ..internal::network::RequestOptions::default()
+                    };
+                    let result = net.head(&url, &opts).await;
+                    (ident, filename, result.status_code, result.content_length)
                 }
+            })
+            .buffer_unordered(jobs.max(1))
+            .collect()
+            .await;
 
-                if info.remote_size == 0 {
-                    info.estimated = true;
-                    estimated = true;
+        // Apply HEAD results back into the caches (serial, per file).
+        let package_caches = self.caches.get_mut().unwrap();
+        let mut total = 0u64;
+        let mut estimated = false;
+
+        for (ident, filename, code, content_length) in results {
+            let package_cache = package_caches.get_mut(&ident).unwrap();
+            let info = package_cache
+                .inner
+                .get_mut(&filename)
+                .expect("failed to get cache info");
+
+            if code == 200 {
+                info.remote_size = content_length.unwrap_or(0);
+                if info.remote_size != info.local_size {
+                    total += info.remote_size;
                 }
-
-                package_cache.update_valid_state();
+            } else {
+                debug!("code: {}, ident: {}, url: {}", code, ident, filename)
             }
+
+            if info.remote_size == 0 {
+                info.estimated = true;
+                estimated = true;
+            }
+
+            package_cache.update_valid_state();
         }
 
         Ok(DownloadSize { total, estimated })
@@ -672,8 +839,16 @@ pub struct PackageDownloadProgressContext {
     pub ident: String,
     pub url: String,
     pub filename: String,
+    /// Total bytes of the *current file*.
     pub dltotal: u64,
+    /// Bytes downloaded so far of the *current file*.
     pub dlnow: u64,
+    /// Total bytes of the whole package (all files to download). Lets the UI
+    /// aggregate per-file progress into a per-package bar / single total bar.
+    pub pkg_total: u64,
+    /// Bytes of the package downloaded so far (sum of completed files plus the
+    /// current file's progress). Monotonic within a package.
+    pub pkg_done: u64,
 }
 
 #[cfg(test)]

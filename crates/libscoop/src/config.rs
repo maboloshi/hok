@@ -179,6 +179,12 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_split: Option<u32>,
 
+    /// Concurrent package downloads (cross-package). Defaults to 4.
+    #[serde(alias = "jobs")]
+    #[serde(rename = "jobs")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    jobs: Option<u32>,
+
     #[serde(alias = "cachePath")]
     #[serde(default = "default::cache_path")]
     #[serde(skip_serializing_if = "default::is_default_cache_path")]
@@ -521,6 +527,13 @@ impl Config {
         self.inner.aria2_split.unwrap_or(5).max(1)
     }
 
+    /// Concurrent package downloads (cross-package) for the download phase
+    /// (HEAD sizing, download, verify). Maps from `jobs`. Defaults to 4.
+    #[inline]
+    pub fn jobs(&self) -> u32 {
+        self.inner.jobs.unwrap_or(4).max(1)
+    }
+
     /// Max connections per server (cap for fragmentation count).
     /// Maps from `aria2-max-connection-per-server`. Defaults to 5.
     #[inline]
@@ -533,9 +546,9 @@ impl Config {
 
     /// Minimum file size to trigger fragmented download.
     /// Maps from `aria2-min-split-size`. Parses strings like "5M", "10M".
-    /// Returns bytes. Defaults to 5MB.
+    /// Returns bytes. Defaults to 20MB.
     pub fn aria2_min_split_size(&self) -> u64 {
-        const DEFAULT: u64 = 5 * 1024 * 1024;
+        const DEFAULT: u64 = 20 * 1024 * 1024;
         let raw = match self.inner.aria2_min_split_size.as_deref() {
             Some(s) => s,
             None => return DEFAULT,
@@ -668,6 +681,13 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
+            "jobs" => match is_unset {
+                true => self.inner.jobs = None,
+                false => match value.parse::<u32>() {
+                    Ok(v) => self.inner.jobs = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => match is_unset
             {
                 true => self.inner.aria2_max_connection_per_server = None,
@@ -735,6 +755,7 @@ impl Default for Config {
             aria2_max_connection_per_server: Default::default(),
             aria2_min_split_size: Default::default(),
             aria2_split: Default::default(),
+            jobs: Default::default(),
             // default_cache_path: default::cache_path(),
             cache_path: default::cache_path(),
             cat_style: Default::default(),
@@ -1000,10 +1021,11 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
         config.aria2_max_connection_per_server().to_string(),
         "5".into(),
     ]);
+    rows.push(["jobs".into(), config.jobs().to_string(), "4".into()]);
     rows.push([
         "aria2-min-split-size".into(),
         fmt_size(config.aria2_min_split_size()),
-        "5M".into(),
+        "20M".into(),
     ]);
     rows.push([
         "cache_path".into(),
@@ -1288,6 +1310,7 @@ mod tests {
         match key {
             "aria2-split" | "aria2_split" => config.aria2_split,
             "aria2-max-connection-per-server" => config.aria2_max_connection_per_server,
+            "jobs" => config.jobs,
             _ => panic!("not a u32 key: {key}"),
         }
     }
@@ -1323,6 +1346,7 @@ mod tests {
             "aria2-split",
             "aria2_split",
             "aria2-max-connection-per-server",
+            "jobs",
         ] {
             crate::config::set(&session, key, "7").unwrap();
             assert_eq!(u32_field(&session.config().inner, key), Some(7));
@@ -1405,6 +1429,7 @@ mod tests {
             "aria2-split",
             "aria2-max-connection-per-server",
             "aria2-min-split-size",
+            "jobs",
             "cache_path",
             "cat_style",
             "confirm",

@@ -207,6 +207,14 @@ pub enum Event {
     /// Package download has made some progress.
     PackageDownloadProgress(PackageDownloadProgressContext),
 
+    /// Download is about to start for a known set of packages. Carries each
+    /// package's total download bytes so the frontend can render a single
+    /// aggregate progress bar up front.
+    PackageDownloadInfo {
+        /// (ident, total_bytes_to_download) for each package being fetched.
+        packages: Vec<(String, u64)>,
+    },
+
     /// Package download has finished.
     PackageDownloadDone,
 

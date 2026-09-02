@@ -375,4 +375,62 @@ mod tests {
         );
         assert_eq!(cache_files(&session).len(), 1);
     }
+
+    /// Concurrent multi-package download (cross-package `jobs` concurrency):
+    /// two packages fetched in parallel must both land in the cache with their
+    /// own files, and neither download must be lost to the other.
+    #[tokio::test]
+    async fn test_download_apps_concurrent_packages() {
+        let data = b"concurrent-package-download".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_concurrent");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let hash = sha256_hex(&data);
+
+        let m1 = write_manifest(&root, "concapp1", "1.0", &url, &hash);
+        let m2 = write_manifest(&root, "concapp2", "1.0", &url, &hash);
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(
+            &session,
+            &[m1.to_str().unwrap(), m2.to_str().unwrap()],
+            &opts,
+        )
+        .await
+        .unwrap();
+        server.shutdown();
+
+        let files = cache_files(&session);
+        assert_eq!(
+            files.len(),
+            2,
+            "both concurrent packages must be cached: {:?}",
+            files
+        );
+        for f in &files {
+            assert_eq!(&std::fs::read(f).unwrap(), &data);
+        }
+        assert!(
+            files.iter().any(|f| f
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("concapp1#")),
+            "concapp1 cached: {:?}",
+            files
+        );
+        assert!(
+            files.iter().any(|f| f
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("concapp2#")),
+            "concapp2 cached: {:?}",
+            files
+        );
+    }
 }
