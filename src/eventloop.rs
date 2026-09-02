@@ -76,10 +76,10 @@ pub fn run_event_loop(
         .receiver()
         .expect("event bus outbound receiver already taken");
     let tx = session.event_bus().sender();
-    let mut dlprogress = Some(cui::RowUI::new());
 
     tokio::spawn(async move {
         let _guard = CursorGuard::hide();
+        let mut dlprogress = cui::DownloadBar::new();
         // tokio::select! is the orchestration point between the backend event
         // stream and (in the prompt arms below) the frontend's stdin input.
         loop {
@@ -92,11 +92,27 @@ pub fn run_event_loop(
                 },
             };
             match event {
-                // Download progress — update progress bars (handled here)
+                // PackageDownloadStart: swallow so scoop_handler does not print a
+                // separate "downloading..." status line that would collide with
+                // the hand-drawn DownloadBar (which starts on PackageDownloadInfo).
+                Event::PackageDownloadStart => continue,
+
+                // Download starting: begin the hand-drawn single-line progress.
+                Event::PackageDownloadInfo { packages } => {
+                    dlprogress.begin(&packages);
+                    continue;
+                }
+
+                // Download progress — push per-package cumulative bytes into the
+                // hand-drawn single line.
                 Event::PackageDownloadProgress(ref ctx) => {
-                    if let Some(ref mut dp) = dlprogress {
-                        dp.set_bar(&ctx.ident, &ctx.url, ctx.dltotal, ctx.dlnow);
-                    }
+                    dlprogress.update(&ctx.ident, ctx.pkg_done);
+                    continue;
+                }
+
+                // Download finished: move off the progress line.
+                Event::PackageDownloadDone => {
+                    dlprogress.finish();
                     continue;
                 }
 

@@ -17,25 +17,21 @@
 use crossterm::style::Stylize;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::io::Write;
 use std::time::Duration;
-
-/// Template for download progress bars: cyan fill on a blue track, with
-/// partial block characters for a smooth fill.
-const BAR_FMT: &str = " {wide_msg} {total_bytes:>12} [{bar:20.cyan/blue}] {percent:>3}%";
 
 /// Shared row-based status UI.
 ///
 /// Rows are keyed by an identifier (`id`). A row is created lazily by
-/// [`set_bar`](RowUI::set_bar) (a progress bar) or [`start`](RowUI::start)
-/// (a spinner), updated in place, and closed by [`done`](RowUI::done) /
-/// [`fail`](RowUI::fail).
+/// [`start`](RowUI::start) (a spinner), updated in place, and closed by
+/// [`done`](RowUI::done) / [`fail`](RowUI::fail).
+///
+/// For a *single* cross-package download progress line, see [`DownloadBar`], a
+/// hand-drawn `\r`-redrawn bar (no MultiProgress) used by the download stage.
 pub struct RowUI {
     mp: MultiProgress,
     bars: HashMap<String, ProgressBar>,
     labels: HashMap<String, String>,
-    /// Per-id, per-url download totals (aggregated across mirrors).
-    ctx: HashMap<String, HashMap<String, (u64, u64)>>,
 }
 
 impl RowUI {
@@ -44,7 +40,6 @@ impl RowUI {
             mp: MultiProgress::new(),
             bars: HashMap::new(),
             labels: HashMap::new(),
-            ctx: HashMap::new(),
         }
     }
 
@@ -73,60 +68,6 @@ impl RowUI {
             self.start(id);
             if let Some(bar) = self.bars.get(id) {
                 bar.set_message(msg.as_ref().to_owned());
-            }
-        }
-    }
-
-    /// Update a download progress bar for `id`, aggregating concurrent
-    /// downloads of the same package from multiple URLs. `url` keys the
-    /// per-URL contribution; the bar shows the summed total/now.
-    pub fn set_bar(&mut self, id: &str, url: &str, total: u64, now: u64) {
-        if total == 0 {
-            return;
-        }
-        let mut agg_total = 0;
-        let mut agg_now = 0;
-        self.ctx
-            .entry(id.to_owned())
-            .and_modify(|inner| {
-                inner.insert(url.to_owned(), (total, now));
-            })
-            .or_insert_with(|| {
-                let mut inner = HashMap::new();
-                inner.insert(url.to_owned(), (total, now));
-                inner
-            })
-            .iter()
-            .for_each(|(_, (t, n))| {
-                agg_total += t;
-                agg_now += n;
-            });
-
-        match self.bars.entry(id.to_owned()) {
-            Entry::Occupied(mut e) => {
-                let bar = e.get_mut();
-                bar.set_length(agg_total);
-                bar.set_position(agg_now);
-                if agg_total == agg_now {
-                    bar.finish();
-                }
-            }
-            Entry::Vacant(v) => {
-                let label = self
-                    .labels
-                    .entry(id.to_owned())
-                    .or_insert_with(|| id.to_owned())
-                    .clone();
-                let bar = self.mp.add(ProgressBar::new(agg_total));
-                bar.set_message(label);
-                bar.set_position(0);
-                bar.set_style(
-                    ProgressStyle::default_bar()
-                        .template(BAR_FMT)
-                        .unwrap()
-                        .progress_chars("#> "),
-                );
-                v.insert(bar);
             }
         }
     }
@@ -165,5 +106,141 @@ impl RowUI {
             bar.finish_and_clear();
         }
         self.labels.clear();
+    }
+}
+
+/// Hand-drawn single-line aggregate download progress (no MultiProgress).
+///
+/// Used by the download stage to show one self-updating line like:
+///
+///   downloading 2/3   3.60 GB ████████░░░░░░░░ 61%  ▸ git 70% · ffmpeg 45%
+///
+/// Redrawn in place with `\r\x1b[2K` on every progress event, so the layout
+/// is fully controlled (unlike indicatif's fixed field-template bars) and a
+/// changing label/package list never shifts the bar column. Call [`begin`],
+/// then [`update`] on each progress event, then [`finish`] to move off the line.
+pub struct DownloadBar {
+    /// ident -> total bytes to download.
+    pkgs: Vec<(String, u64)>,
+    /// ident -> bytes downloaded so far.
+    done: HashMap<String, u64>,
+    /// Whether a line is currently being drawn.
+    active: bool,
+}
+
+impl DownloadBar {
+    pub fn new() -> DownloadBar {
+        DownloadBar {
+            pkgs: Vec::new(),
+            done: HashMap::new(),
+            active: false,
+        }
+    }
+
+    /// Start drawing a download line for `packages` (`(ident, total_bytes)`).
+    pub fn begin(&mut self, packages: &[(String, u64)]) {
+        if packages.is_empty() {
+            return;
+        }
+        self.pkgs = packages.to_vec();
+        self.done.clear();
+        self.active = true;
+        self.render();
+    }
+
+    /// Report that `ident` has `done` bytes downloaded (package cumulative).
+    pub fn update(&mut self, ident: &str, done: u64) {
+        if !self.active {
+            return;
+        }
+        self.done.insert(ident.to_owned(), done);
+        self.render();
+    }
+
+    /// Finish the line (move off it) and reset. No-op if not active.
+    pub fn finish(&mut self) {
+        if self.active {
+            // Redraw a cleared line then move to the next row so subsequent
+            // output does not overwrite a stale progress line.
+            self.active = false;
+            println!();
+        }
+    }
+
+    /// Recompute and draw the current line in place.
+    fn render(&self) {
+        let grand: u64 = self.pkgs.iter().map(|(_, t)| t).sum();
+        let done_sum: u64 = self.done.values().sum();
+        let total = self.pkgs.len();
+
+        // Running (not finished) packages, sorted by percent descending.
+        let mut running: Vec<(&str, u64, u64)> = self
+            .pkgs
+            .iter()
+            .filter_map(|(id, t)| {
+                let d = self.done.get(id.as_str()).copied().unwrap_or(0);
+                if d >= *t {
+                    None
+                } else {
+                    Some((id.as_str(), d, *t))
+                }
+            })
+            .collect();
+        running.sort_by(|a, b| {
+            let pa = a.1 as f64 / a.2.max(1) as f64;
+            let pb = b.1 as f64 / b.2.max(1) as f64;
+            pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let running_count = running.len();
+
+        // Overall percent.
+        let pct = if grand > 0 {
+            (done_sum * 100) / grand
+        } else {
+            0
+        };
+
+        // In-progress package list: `git 78% · node 44%`.
+        let list = running
+            .iter()
+            .map(|(id, d, t)| {
+                let p = (*d * 100) / (*t).max(1);
+                format!("{} {p}%", id.cyan())
+            })
+            .collect::<Vec<_>>()
+            .join(" \u{00b7} ");
+
+        let label = rust_i18n::t!("cmd.downloading").to_string();
+
+        // Bar: filled cyan blocks + dark-grey remaining.
+        const BAR_W: u64 = 16;
+        let filled = ((pct as u64) * BAR_W) / 100;
+        let filled = filled.min(BAR_W);
+        let bar = format!(
+            "{}{}",
+            "█".repeat(filled as usize).cyan(),
+            "░".repeat((BAR_W - filled) as usize).dark_grey()
+        );
+
+        let total_bytes = crate::format::humansize(grand, true);
+        let tail = if list.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{25b8} {list}")
+        };
+        // Compact single line: label count/total · total bytes · bar · pct · list,
+        // separated by single spaces (no width padding) so it stays tight.
+        let line = format!(
+            "  {label} {running_count}/{total} {total_bytes} {bar} {pct}%{tail}",
+            label = label,
+            running_count = running_count,
+            total = total,
+            total_bytes = total_bytes,
+            bar = bar,
+            pct = pct,
+            tail = tail,
+        );
+        print!("\r\x1b[2K{}", line);
+        let _ = std::io::stdout().flush();
     }
 }
