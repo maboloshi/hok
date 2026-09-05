@@ -302,9 +302,10 @@ async fn fetch_metalink_hash(
     let re = Regex::new(r"<hash[^>]+>([a-fA-F0-9]{64})")
         .map_err(|e| crate::Error::Custom(format!("bad metalink regex: {}", e)))?;
     if let Some(caps) = re.captures(&page)
-        && let Some(h) = caps.get(1) {
-            return Ok(h.as_str().to_string());
-        }
+        && let Some(h) = caps.get(1)
+    {
+        return Ok(h.as_str().to_string());
+    }
 
     Err(crate::Error::Custom(format!(
         "could not find hash in metalink at {}",
@@ -352,13 +353,14 @@ async fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -
         let re = Regex::new(r"SHA-256=([^,]+)").ok();
         if let Some(r) = re
             && let Some(caps) = r.captures(digest_val)
-                && let Some(b64) = caps.get(1) {
-                    // Decode standard base64 to hex
-                    if let Ok(bytes) = simple_base64_decode(b64.as_str()) {
-                        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                        return Ok(hex);
-                    }
-                }
+            && let Some(b64) = caps.get(1)
+        {
+            // Decode standard base64 to hex
+            if let Ok(bytes) = simple_base64_decode(b64.as_str()) {
+                let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                return Ok(hex);
+            }
+        }
     }
 
     Err(crate::Error::Custom(
@@ -466,9 +468,10 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Result<Stri
                     _ => v.as_str().map(|s| s.to_string()),
                 });
                 if let Some(h) = found_str
-                    && !h.is_empty() {
-                        return Ok(h);
-                    }
+                    && !h.is_empty()
+                {
+                    return Ok(h);
+                }
             }
         }
     }
@@ -479,24 +482,26 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Result<Stri
         let re = Regex::new(re_str)
             .map_err(|e| crate::Error::Custom(format!("bad hash regex: {}", e)))?;
         if let Some(caps) = re.captures(content)
-            && let Some(h) = caps.get(1).or_else(|| caps.get(0)) {
-                return Ok(h.as_str().to_string());
-            }
+            && let Some(h) = caps.get(1).or_else(|| caps.get(0))
+        {
+            return Ok(h.as_str().to_string());
+        }
     }
 
     // Find (simple substring + next whitespace-delimited hex token)
     if let Some(find_str) = ext.get("find").and_then(|v| v.as_str())
-        && let Some(pos) = content.find(find_str) {
-            let after = &content[pos + find_str.len()..];
-            // Scoop heuristic: look for the first hex token
-            if let Some(hash) = after.split_whitespace().next() {
-                let hash = hash.trim_matches(&['"', '\'', ',', ';', ':', '=', ' '][..]);
-                if is_hex_hash(hash) {
-                    return Ok(hash.to_string());
-                }
-                // Also check next token if first is an equals sign
+        && let Some(pos) = content.find(find_str)
+    {
+        let after = &content[pos + find_str.len()..];
+        // Scoop heuristic: look for the first hex token
+        if let Some(hash) = after.split_whitespace().next() {
+            let hash = hash.trim_matches(&['"', '\'', ',', ';', ':', '=', ' '][..]);
+            if is_hex_hash(hash) {
+                return Ok(hash.to_string());
             }
+            // Also check next token if first is an equals sign
         }
+    }
 
     Err(crate::Error::Custom(
         "could not extract hash from page".to_string(),

@@ -1,9 +1,9 @@
 //! Import installed apps from a JSON file.
 
 use clap::Parser;
-use libscoop::{fs, package, SyncOption, Session};
+use libscoop::{Session, SyncOption, fs, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Import installed packages from a file
 #[derive(Debug, Parser)]
@@ -17,16 +17,21 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let content = match fs::read_to_string(&args.file) {
         Ok(c) => c,
         Err(e) => {
-            output::err(format!("Error reading '{}': {}", args.file, e));
-            return Ok(());
+            return Err(anyhow::anyhow!(rust_i18n::t!(
+                "cmd.import_read_err",
+                file = args.file,
+                e = e
+            )));
         }
     };
 
     let packages = match package::import::parse_import_json(&content) {
         Ok(v) => v,
         Err(e) => {
-            output::err(format!("Error parsing JSON: {}", e));
-            return Ok(());
+            return Err(anyhow::anyhow!(rust_i18n::t!(
+                "cmd.import_parse_err",
+                e = e
+            )));
         }
     };
 
@@ -35,7 +40,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
-    output::info(format!("Found {} packages to install.", packages.len()));
+    output::info(rust_i18n::t!("cmd.import_found", count = packages.len()));
 
     let queries: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
     // Non-interactive restore: always assume yes, and always tolerate
@@ -44,7 +49,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     match package::sync::sync(session, queries, options).await {
         Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),
-        Err(e) => output::err(format!("Import error: {}", e)),
+        Err(e) => return Err(anyhow::anyhow!(rust_i18n::t!("cmd.import_err", e = e))),
     }
 
     Ok(())

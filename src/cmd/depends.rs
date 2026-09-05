@@ -1,10 +1,9 @@
 //! List dependencies of a package.
 
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
-use std::io::Write;
+use libscoop::{QueryOption, Session, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Show dependencies of a package
 #[derive(Debug, Parser)]
@@ -35,8 +34,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = package::query::query(session, queries, options, false)?;
 
     if result.is_empty() {
-        output::err(rust_i18n::t!("cmd.depends_not_found", query = query));
-        return Ok(());
+        return Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.depends_not_found",
+            query = query
+        )));
     }
 
     // Pick the first match (or let user choose if multiple)
@@ -46,17 +47,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         result.sort_by_key(|p| p.ident());
         output::info(format!("Found multiple packages named '{query}':\n"));
         for (idx, pkg) in result.iter().enumerate() {
-            output::named(format!("{idx}."), format!("{}/{}", pkg.bucket(), pkg.name()));
+            output::named(
+                format!("{idx}."),
+                format!("{}/{}", pkg.bucket(), pkg.name()),
+            );
         }
-        output::prompt(rust_i18n::t!("output.select_one", max = result.len() - 1));
-        std::io::stdout().flush().ok();
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();
-        let idx = input.trim().parse::<usize>().unwrap_or(0);
-        if idx >= result.len() {
-            output::err(rust_i18n::t!("cmd.depends_invalid"));
-            return Ok(());
-        }
+        let idx = output::prompt_select(result.len())
+            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.depends_invalid")))?;
         result.remove(idx)
     };
 
@@ -67,9 +64,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             output::named(format!("{}/{}", node.bucket, node.name), "");
         } else if node.already_listed {
             println!(
-                "{:indent$} {} (already listed)",
+                "{:indent$} {} {}",
                 "",
                 node.name,
+                rust_i18n::t!("cmd.depends_already"),
                 indent = node.depth * 2
             );
         } else {

@@ -15,9 +15,10 @@ pub(crate) fn split_bucket_query(query: &str) -> (Option<String>, &str) {
         return (Some(bucket.to_owned()), name);
     }
     if let Some(pos) = query.find('\\')
-        && pos > 0 {
-            return (Some(query[..pos].to_owned()), &query[pos + 1..]);
-        }
+        && pos > 0
+    {
+        return (Some(query[..pos].to_owned()), &query[pos + 1..]);
+    }
     (None, query)
 }
 

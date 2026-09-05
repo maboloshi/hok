@@ -42,15 +42,15 @@
 //! not call `config_mut()` while a `config()` guard is still held
 //! (it fails with `ConfigInUse`).
 
-use tokio::sync::mpsc;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{possible_config_paths, Config, ConfigBuilder},
+    config::{Config, ConfigBuilder, possible_config_paths},
     error::{Error, Fallible},
     event::{Event, EventBus},
     internal::archive::{Archive, RealArchive},

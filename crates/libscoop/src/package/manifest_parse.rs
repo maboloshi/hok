@@ -489,17 +489,19 @@ where
             Some(_) => {
                 return Err(de::Error::custom(
                     "hook script object's `script` must be a string or an array of strings",
-                ))
+                ));
             }
             None => {
                 return Err(de::Error::custom(
                     "hook script object must contain a `script` field",
-                ))
+                ));
             }
         },
-        _ => return Err(de::Error::custom(
-            "hook script must be a string, an array of strings, or an object with a `script` field",
-        )),
+        _ => {
+            return Err(de::Error::custom(
+                "hook script must be a string, an array of strings, or an object with a `script` field",
+            ));
+        }
     };
     Ok(Some(Vectorized(scripts)))
 }

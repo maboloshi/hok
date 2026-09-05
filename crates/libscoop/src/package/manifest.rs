@@ -874,6 +874,16 @@ impl Manifest {
         })
     }
 
+    /// Serialize the parsed manifest spec back to pretty JSON.
+    ///
+    /// Used when the original raw text is not retained and there is no
+    /// on-disk file to read - e.g. manifests loaded from the SQLite
+    /// manifest cache via Manifest::from_json, where the path is a
+    /// virtual identifier.
+    pub fn to_pretty_json(&self) -> Option<String> {
+        serde_json::to_string_pretty(&self.inner).ok()
+    }
+
     /// Return the raw JSON text this manifest was loaded from, if any.
     #[inline]
     pub fn raw(&self) -> Option<&str> {
@@ -1169,12 +1179,13 @@ impl Manifest {
                 ("arm64", &arch.aarch64),
             ] {
                 if let Some(spec) = spec_opt
-                    && let Some(ref h) = spec.hash {
-                        let count = h.devectorize().len();
-                        if count > 0 {
-                            segments.push((format!("/architecture/{arch_name}/hash"), count));
-                        }
+                    && let Some(ref h) = spec.hash
+                {
+                    let count = h.devectorize().len();
+                    if count > 0 {
+                        segments.push((format!("/architecture/{arch_name}/hash"), count));
                     }
+                }
             }
         }
         segments
@@ -1846,7 +1857,6 @@ mod tests {
         assert!(HashString::new("sha1:").is_err());
     }
 
-
     // ── hook script fields (deserialize_hook_script) ────────────────────────
 
     #[test]
@@ -1922,7 +1932,6 @@ mod tests {
         assert!(spec.installer.is_some());
         assert!(spec.shortcuts.is_some());
     }
-
 
     #[test]
     fn test_hook_script_array_form_parses() {
@@ -2252,8 +2261,14 @@ mod tests {
             }"#,
         );
         assert_eq!(m.version(), "1.0.0");
-        assert!(m.env_set().is_none(), "explicit null env_set should be absent");
-        assert!(m.cookie().is_none(), "explicit null cookie should be absent");
+        assert!(
+            m.env_set().is_none(),
+            "explicit null env_set should be absent"
+        );
+        assert!(
+            m.cookie().is_none(),
+            "explicit null cookie should be absent"
+        );
         assert!(m.env_add_path().is_none());
         assert!(m.bin().is_none());
     }

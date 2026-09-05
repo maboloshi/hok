@@ -254,7 +254,9 @@ impl DownloadBar {
             .iter()
             .map(|(id, d, t)| {
                 let p = (*d * 100) / (*t).max(1);
-                format!("{} {p}%", id.cyan())
+                // 只取 '/' 之后的部分作为包名，若无 '/' 则保留原字符串
+                let pkg_name = id.split_once('/').map(|(_, name)| name).unwrap_or(id);
+                format!("{} {p}%", pkg_name.cyan())
             })
             .collect::<Vec<_>>()
             .join(" \u{00b7} ");

@@ -19,11 +19,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    Error, Session,
     error::Fallible,
     event,
     internal::dag::DepGraph,
-    package::{query, Package},
-    Error, Session,
+    package::{Package, query},
 };
 
 /// Names of the implicit installation helpers, mirroring Scoop's
@@ -466,7 +466,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -516,7 +518,9 @@ mod tests {
         let (session, _root) = setup("no_deps");
 
         let mut packages = vec![pkg("main", "solo", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["solo"]);
@@ -528,7 +532,9 @@ mod tests {
         write_manifest(&root.0, "main", "a", &["ghost"]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).await.unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
     }
@@ -540,7 +546,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -559,7 +567,9 @@ mod tests {
         // a → b → ghost: b cannot be resolved, so a must be dropped too,
         // otherwise a would be committed with a missing dependency.
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert!(
@@ -581,7 +591,9 @@ mod tests {
         write_manifest(&root.0, "main", "c", &["alt/b"]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "c", &["alt/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let idents = packages.iter().map(|p| p.ident()).collect::<Vec<_>>();
         assert_eq!(
@@ -599,7 +611,9 @@ mod tests {
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -616,7 +630,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["b", "a"], "no duplicates, deps first");
@@ -633,7 +649,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        resolve_dependencies(&session, &mut packages, false, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
@@ -649,7 +667,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).await.unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap_err();
 
         assert!(matches!(err, Error::PackageMultipleCandidates(name) if name == "a"));
     }
@@ -663,7 +683,9 @@ mod tests {
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "b", &["a"]), pkg("main", "c", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).await.unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(

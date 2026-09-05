@@ -1,10 +1,11 @@
 //! Inspect the manifest of a package.
 
 use clap::Parser;
-use libscoop::{fs, os, package, QueryOption, Session};
-use std::path::Path;
+use libscoop::{QueryOption, Session, fs, os, package};
+use std::io::Write;
+use std::process::{Command, Stdio};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Inspect the manifest of a package
 #[derive(Debug, Parser)]
@@ -14,68 +15,89 @@ pub struct Args {
     package: String,
 }
 
-pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    let query = args.package;
-
-    let queries = vec![query.as_str()];
-    let options = vec![QueryOption::Explicit];
-    let mut result = package::query::query(session, queries, options, false)?;
-
-    if result.is_empty() {
-        output::err(rust_i18n::t!("cmd.cat_not_found", query = query))
+/// Pretty-print a manifest as JSON, rendering from the in-memory content so it
+/// also works when the manifest is served by the (SQLite) manifest cache where
+/// the on-disk path may not exist.
+fn pretty_manifest(pkg: &package::Package) -> Result<String> {
+    let manifest = pkg.manifest();
+    // Prefer the retained raw text; else read the on-disk manifest file; else
+    // (SQLite manifest cache - no raw text, virtual path) render the parsed
+    // spec so the content is always shown.
+    let content: String = if let Some(raw) = manifest.raw() {
+        raw.to_string()
+    } else if manifest.path().is_file() {
+        fs::read_to_string(manifest.path())?
     } else {
-        let length = result.len();
-        let package = if length == 1 {
-            &result[0]
-        } else {
-            result.sort_by_key(|p| p.ident());
-
-            println!("Found multiple packages named '{query}':\n");
-            for (idx, pkg) in result.iter().enumerate() {
-                println!(
-                    "  {idx}. {}/{} ({})",
-                    pkg.bucket(),
-                    pkg.name(),
-                    pkg.homepage()
-                );
-            }
-            output::prompt(rust_i18n::t!("output.select_prompt"));
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let num = match input.trim().parse::<usize>() {
-                Ok(n) if n < length => n,
-                _ => {
-                    output::err(rust_i18n::t!("cmd.cat_invalid"));
-                    return Ok(());
-                }
-            };
-            &result[num]
-        };
-
-        let path = package.manifest().path();
-        output::info(format!("{}", path.display()));
-
-        // Use bat.exe for syntax-highlighted output if available
-        // (install via: hok install bat)
-        if os::is_program_available("bat.exe") {
-            let config = session.config();
-            let mut args = vec!["--no-paging"];
-            let cat_style = config.cat_style();
-            if !cat_style.is_empty() {
-                args.push("--style");
-                args.push(cat_style);
-            }
-            args.push("--language");
-            args.push("json");
-            let path_str = path.to_str().unwrap_or_default();
-            let mut cmd_args = vec![path_str];
-            cmd_args.extend(args);
-            os::run_program(Path::new("bat.exe"), &cmd_args, None)?;
-        } else {
-            let content = fs::read_to_string(path)?;
-            println!("{}", content.trim());
-        }
+        manifest
+            .to_pretty_json()
+            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.cat_render_failed")))?
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) => Ok(serde_json::to_string_pretty(&value).unwrap_or(content)),
+        Err(_) => Ok(content),
     }
+}
+
+/// Pipe a JSON string through bat for syntax highlighting (Scoop's
+/// scoop cat only shells out to bat when cat_style is configured).
+fn run_bat(json: &str, style: &str) -> std::io::Result<()> {
+    let mut child = Command::new("bat.exe")
+        .args(["--no-paging", "--style", style, "--language", "json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(json.as_bytes())?;
+    }
+    child.wait()?;
     Ok(())
 }
 
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
+    let query = args.package;
+
+    let mut result = package::query::query(
+        session,
+        vec![query.as_str()],
+        vec![QueryOption::Explicit],
+        false,
+    )?;
+
+    let pkg = if result.is_empty() {
+        return Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.cat_not_found",
+            query = query
+        )));
+    } else if result.len() == 1 {
+        result.remove(0)
+    } else {
+        result.sort_by_key(|p| p.ident());
+        output::info(rust_i18n::t!(
+            "cmd.found",
+            count = result.len(),
+            query = query
+        ));
+        for (idx, pkg) in result.iter().enumerate() {
+            println!("  {idx}. {}/{}", pkg.bucket(), pkg.name());
+        }
+        let index = output::prompt_select(result.len())
+            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.cat_invalid")))?;
+        result.remove(index)
+    };
+
+    let json = pretty_manifest(&pkg)?;
+
+    // Only delegate to bat when a style is configured and bat is on PATH;
+    // otherwise (or if bat cannot start) print the plain pretty JSON so the
+    // manifest content is always shown.
+    let config = session.config();
+    let style = config.cat_style();
+    let used_bat = !style.is_empty() && os::is_program_available("bat.exe");
+    if used_bat && run_bat(&json, &style).is_ok() {
+        return Ok(());
+    }
+
+    println!("{json}");
+    Ok(())
+}

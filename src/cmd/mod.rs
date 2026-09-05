@@ -34,8 +34,8 @@
 //!   other crates use `RUST_LOG` or the default filter.
 
 use clap::{
-    crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser,
-    Subcommand,
+    CommandFactory, FromArgMatches, Parser, Subcommand, crate_description, crate_name,
+    crate_version,
 };
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
@@ -43,7 +43,7 @@ use libscoop::Session;
 use rust_i18n::t;
 use std::ffi::OsString;
 use tracing_subscriber::{
-    filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+    EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
 use crate::i18n::{self, LanguageChoice};
@@ -290,6 +290,10 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
         args.no_color || config.no_color()
     };
     crate::output::set_color_enabled(!no_color);
+
+    // Verbose step output: the global `-v` (warn) and above turns on the
+    // per-package lifecycle transcript. Read before `args.command` is moved.
+    crate::output::set_show_steps(args.verbose.tracing_level_filter() >= LevelFilter::WARN);
 
     match args.command {
         Command::Alias(args) => alias::execute(args, &session).await,

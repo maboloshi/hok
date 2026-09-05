@@ -1,9 +1,9 @@
 //! Reset a package to its current version.
 
 use clap::Parser;
-use libscoop::{package, Session};
+use libscoop::{EventHandler, Session, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)
 #[derive(Debug, Parser)]
@@ -41,28 +41,42 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 // Official warns and skips global apps without admin rights.
                 if global && !session.is_admin() {
-                    output::warn(format!(
-                        "'{}' is a global app. You need admin rights to reset it. Skipping.",
-                        pkg.name()
-                    ));
+                    output::warn(rust_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
                     continue;
                 }
                 // Official scoop-reset.ps1 iterates apps independently
                 // (ForEach-Object with `return`): a failing app is reported
                 // and skipped, the remaining apps keep resetting.
                 if let Err(e) = package::sync::reset(session, pkg.name(), None).await {
-                    output::err(format!("Failed to reset '{}': {e}", pkg.name()));
+                    output::err(rust_i18n::t!("cmd.reset_failed", name = pkg.name(), e = e));
                     continue;
                 }
             }
         }
         // Leave the session back in the default (user-level) state.
         session.set_global(false);
+        drain_steps(session);
         return Ok(());
     }
 
     let name = args.app.unwrap();
     let version = args.version.as_deref();
     package::sync::reset(session, &name, version).await?;
+    drain_steps(session);
     Ok(())
+}
+
+/// `reset` runs synchronously (no async event loop — unlike install/update it
+/// needs no progress bars or prompts), so the lifecycle `PackageStep` events it
+/// emitted sit in the event bus until now. Drain them into the default handler
+/// so verbose step output (`-v`) renders for reset just like the other verbs.
+fn drain_steps(session: &Session) {
+    let Some(mut rx) = session.event_bus().receiver() else {
+        return;
+    };
+    let mut handler = crate::scoop_handler::ScoopHandler::new();
+    while let Ok(event) = rx.try_recv() {
+        handler.handle(&event);
+    }
+    handler.on_finished();
 }

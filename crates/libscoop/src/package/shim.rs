@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::{error::Fallible, Session};
+use crate::{Session, error::Fallible};
 
 /// List the names of all shims (each shim is reported once, without
 /// extension). Both `.shim` metadata files and `.ps1` shims are collected

@@ -18,7 +18,7 @@ use std::path::Path;
 
 use tracing::debug;
 
-use crate::{error::Fallible, internal, package::Package, permission, Event, Session};
+use crate::{Event, Session, error::Fallible, internal, package::Package, permission};
 
 /// Link persistent data for a package.
 ///

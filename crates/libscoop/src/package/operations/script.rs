@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::package::Package;
-use crate::{error::Fallible, internal, Error, Event, Session};
+use crate::{Error, Event, Session, error::Fallible, internal};
 
 /// Read a captured child pipe line by line (lossy UTF-8) and forward every
 /// non-empty line to the event bus as `ScriptOutput`, so the frontend renders

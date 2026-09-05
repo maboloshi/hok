@@ -264,9 +264,10 @@ pub async fn execute(
                     // Official checkver.ps1: `?path=/...` only when a path is present
                     let mut rss = format!("https://sourceforge.net/projects/{}/rss", proj);
                     if let Some(p) = &sf.path
-                        && !p.is_empty() {
-                            rss = format!("{rss}?path=/{}", p.trim_start_matches('/'));
-                        }
+                        && !p.is_empty()
+                    {
+                        rss = format!("{rss}?path=/{}", p.trim_start_matches('/'));
+                    }
                     rss
                 }
                 None => {
@@ -304,10 +305,12 @@ pub async fn execute(
         };
 
         // Transform github.com releases URLs to API URLs (Scoop's useGithubAPI behavior)
-        if github_mode && url::is_github_web_url(&url)
-            && let Some(api_url) = url::github_releases_api_url(&url) {
-                url = api_url;
-            }
+        if github_mode
+            && url::is_github_web_url(&url)
+            && let Some(api_url) = url::github_releases_api_url(&url)
+        {
+            url = api_url;
+        }
 
         // Automatically add `$.tag_name` JSONPath for GitHub API responses.
         // This substitutes for the *default* github regex `/releases/tag/...`
@@ -567,10 +570,11 @@ fn extract_version(
             // `/releases/tag/...` is excluded — it only makes sense against
             // HTML pages and cannot match a bare tag value.
             if let Some(regex_str) = regex_override.or(cv.regex.as_deref())
-                && !regex_str.contains("/releases/tag/") {
-                    let rev = cv.reverse.unwrap_or(false);
-                    return match_regex(ver, regex_str, rev, cv.replace.as_deref());
-                }
+                && !regex_str.contains("/releases/tag/")
+            {
+                let rev = cv.reverse.unwrap_or(false);
+                return match_regex(ver, regex_str, rev, cv.replace.as_deref());
+            }
             let caps = vec![ver.to_string()];
             let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
             return Some((v, caps, HashMap::new()));
@@ -579,11 +583,12 @@ fn extract_version(
 
     // XPath: evaluate XPath expression on XML content
     if let Some(xp) = &cv.xpath
-        && let Some(ver) = extract_xpath(content, xp) {
-            let caps = vec![ver.clone()];
-            let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
-            return Some((v, caps, HashMap::new()));
-        }
+        && let Some(ver) = extract_xpath(content, xp)
+    {
+        let caps = vec![ver.clone()];
+        let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
+        return Some((v, caps, HashMap::new()));
+    }
 
     // Regex: use override first (sourceforge default), then cv.regex
     if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
@@ -660,12 +665,13 @@ fn official_capture_version(re: &Regex, caps: &regex::Captures<'_>) -> Option<St
         .skip(1) // skip group 0 (full match)
         .find(|(_, name)| name.is_none())
         .map(|(i, _)| i)
-        && let Some(v) = caps.get(i) {
-            let s = v.as_str();
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+        && let Some(v) = caps.get(i)
+    {
+        let s = v.as_str();
+        if !s.is_empty() {
+            return Some(s.to_string());
         }
+    }
     // Named group `version`
     if let Some(v) = caps.name("version") {
         let s = v.as_str();
@@ -957,9 +963,10 @@ pub(crate) async fn apply_autoupdate(
 
     let mut set_prop = |prop: &str, value: Option<serde_json::Value>| {
         if let Some(v) = value
-            && root.get(prop).is_some() {
-                root[prop] = sub_json_value(&v, &sub);
-            }
+            && root.get(prop).is_some()
+        {
+            root[prop] = sub_json_value(&v, &sub);
+        }
     };
     set_prop(
         "bin",
@@ -1067,9 +1074,10 @@ pub(crate) async fn apply_autoupdate(
                 };
                 if let Some(v) = value
                     && let Some(obj) = root.pointer_mut(&ptr)
-                        && obj.get(prop).is_some() {
-                            obj[prop] = sub_json_value(&v, &sub);
-                        }
+                    && obj.get(prop).is_some()
+                {
+                    obj[prop] = sub_json_value(&v, &sub);
+                }
             }
         }
     }

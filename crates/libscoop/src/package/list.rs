@@ -6,7 +6,7 @@
 
 use std::cmp::Ordering;
 
-use crate::{error::Fallible, Session};
+use crate::{Session, error::Fallible};
 
 /// A single installed version directory of a package.
 #[derive(Debug, Clone, PartialEq, Eq)]

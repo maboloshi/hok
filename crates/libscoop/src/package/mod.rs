@@ -61,10 +61,10 @@ pub mod missing_checkver;
 pub(crate) mod operations;
 pub mod query;
 pub(crate) mod query_matcher;
-pub mod status;
 pub(crate) mod resolve;
 pub mod shim;
 pub mod source;
+pub mod status;
 pub mod sync;
 pub mod virustotal;
 

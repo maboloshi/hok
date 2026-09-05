@@ -6,7 +6,7 @@
 //! are routed to the `tracing` log channel instead — visible only with
 //! `-v` / `-vv` / `-vvv` — keeping stdout minimal and constant.
 
-use libscoop::{Event, EventHandler};
+use libscoop::{Event, EventHandler, PackageStepKind};
 
 use crate::output;
 use std::io::Write;
@@ -217,6 +217,17 @@ impl EventHandler for ScoopHandler {
                 }
             }
 
+            // --- Verbose lifecycle steps (-v) ---
+            // Each PackageStep names a Scoop-ordered stage the current
+            // commit just passed. Rendering is gated inside `output::step`
+            // on the global show_steps toggle, so at the default verbosity
+            // these lines never reach stdout.
+            Event::PackageStep {
+                name: _,
+                kind,
+                object,
+            } => self.render_step(*kind, object.as_deref()),
+
             // --- Post-install notes ---
             Event::PackageNotes(note) => {
                 output::info(note);
@@ -262,5 +273,57 @@ impl EventHandler for ScoopHandler {
 impl ScoopHandler {
     pub fn new() -> Self {
         Self { extracting: None }
+    }
+
+    /// Render a single verbose lifecycle step as a localized "verb + object"
+    /// line. The localized sentence is built with the object substituted (so
+    /// both languages can place it anywhere); `output::step` then colourises
+    /// the object in the default foreground and greys the rest. Phrase-only
+    /// kinds carry no object and render fully grey.
+    fn render_step(&self, kind: PackageStepKind, object: Option<&str>) {
+        use std::borrow::Cow;
+        let o = object.unwrap_or("");
+        let (sentence, highlight): (Cow<'_, str>, bool) = match kind {
+            PackageStepKind::Extract => (rust_i18n::t!("step.extract", object = o), true),
+            PackageStepKind::RunHookScript => (rust_i18n::t!("step.hook_script", object = o), true),
+            PackageStepKind::RunInstallerFile => {
+                (rust_i18n::t!("step.installer", object = o), true)
+            }
+            PackageStepKind::LinkCurrent => (rust_i18n::t!("step.link_current"), false),
+            PackageStepKind::UnlinkCurrent => (rust_i18n::t!("step.unlink_current"), false),
+            PackageStepKind::CreateShim => (rust_i18n::t!("step.create_shim", object = o), true),
+            PackageStepKind::RemoveShim => (rust_i18n::t!("step.remove_shim", object = o), true),
+            PackageStepKind::CreateShortcut => {
+                (rust_i18n::t!("step.create_shortcut", object = o), true)
+            }
+            PackageStepKind::RemoveShortcut => {
+                (rust_i18n::t!("step.remove_shortcut", object = o), true)
+            }
+            PackageStepKind::AddPsModule => (rust_i18n::t!("step.add_psmodule", object = o), true),
+            PackageStepKind::RemovePsModule => {
+                (rust_i18n::t!("step.remove_psmodule", object = o), true)
+            }
+            PackageStepKind::AddEnvPath => (rust_i18n::t!("step.add_env_path", object = o), true),
+            PackageStepKind::RemoveEnvPath => {
+                (rust_i18n::t!("step.remove_env_path", object = o), true)
+            }
+            PackageStepKind::SetEnvVar => (rust_i18n::t!("step.set_env_var", object = o), true),
+            PackageStepKind::RemoveEnvVar => {
+                (rust_i18n::t!("step.remove_env_var", object = o), true)
+            }
+            PackageStepKind::PersistLink => (rust_i18n::t!("step.persist_link", object = o), true),
+            PackageStepKind::PersistUnlink => {
+                (rust_i18n::t!("step.persist_unlink", object = o), true)
+            }
+            PackageStepKind::RemoveDir => (rust_i18n::t!("step.remove_dir", object = o), true),
+            PackageStepKind::PersistPurge => (rust_i18n::t!("step.persist_purge"), false),
+            _ => return, // non_exhaustive: ignore future kinds until rendered
+        };
+        let obj = if highlight && !o.is_empty() {
+            Some(o.to_owned())
+        } else {
+            None
+        };
+        crate::output::step(sentence, obj);
     }
 }

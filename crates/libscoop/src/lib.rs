@@ -79,10 +79,11 @@ mod test_utils;
 
 pub use error::Error;
 pub use event::Event;
+pub use event::PackageStepKind;
 pub use handler::EventHandler;
 pub use internal::arch::Arch;
 pub use internal::compare_versions;
-pub use package::manifest::{parse_file, Checkver, Manifest};
+pub use package::manifest::{Checkver, Manifest, parse_file};
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;
 pub use shim::{add_custom, remove_by_name};
@@ -118,5 +119,5 @@ pub mod url {
 ///
 /// MD5 / SHA1 / SHA256 / SHA512 computation via [`ChecksumBuilder`] / [`Checksum`].
 pub mod hash {
-    pub use crate::internal::hash::{format_hash_value, Checksum, ChecksumBuilder};
+    pub use crate::internal::hash::{Checksum, ChecksumBuilder, format_hash_value};
 }

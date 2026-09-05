@@ -2,9 +2,9 @@
 
 use clap::{ArgAction, Parser, Subcommand};
 use crossterm::style::Stylize;
-use libscoop::{bucket, Session};
+use libscoop::{Session, bucket};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Manage manifest buckets
 #[derive(Debug, Parser)]
@@ -59,10 +59,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         Command::List { known } => {
             if known {
                 let known_buckets = bucket::list_known();
-                let max_name = known_buckets.iter().map(|&(n, _)| n.len()).max().unwrap_or(4);
+                let max_name = known_buckets
+                    .iter()
+                    .map(|&(n, _)| n.len())
+                    .max()
+                    .unwrap_or(4);
                 output::header(rust_i18n::t!("cmd.header_buckets_list"));
                 for (name, repo) in &known_buckets {
-                    println!("  {}  {}", format!("{:<1$}", name, max_name).dark_cyan(), repo);
+                    println!(
+                        "  {}  {}",
+                        format!("{:<1$}", name, max_name).dark_cyan(),
+                        repo
+                    );
                 }
                 Ok(())
             } else {
@@ -71,11 +79,20 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     Ok(buckets) => {
                         for bucket in buckets {
                             output::named(bucket.name(), "");
-                            output::field(" ├─manifests", bucket.manifest_count().to_string());
+                            output::field(
+                                format!(" ├─{}", rust_i18n::t!("cmd.bucket_manifests")),
+                                bucket.manifest_count().to_string(),
+                            );
                             if let Some(updated) = bucket.updated_at() {
-                                output::field(" ├─updated", updated);
+                                output::field(
+                                    format!(" ├─{}", rust_i18n::t!("cmd.bucket_updated")),
+                                    updated,
+                                );
                             }
-                            output::field(" └─source", bucket.source());
+                            output::field(
+                                format!(" └─{}", rust_i18n::t!("cmd.bucket_source")),
+                                bucket.source(),
+                            );
                         }
                         Ok(())
                     }
@@ -84,10 +101,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Known => {
             let known_buckets = bucket::list_known();
-            let max_name = known_buckets.iter().map(|&(n, _)| n.len()).max().unwrap_or(4);
+            let max_name = known_buckets
+                .iter()
+                .map(|&(n, _)| n.len())
+                .max()
+                .unwrap_or(4);
             output::header(rust_i18n::t!("cmd.header_buckets_list"));
             for (name, repo) in &known_buckets {
-                println!("  {}  {}", format!("{:<1$}", name, max_name).dark_cyan(), repo);
+                println!(
+                    "  {}  {}",
+                    format!("{:<1$}", name, max_name).dark_cyan(),
+                    repo
+                );
             }
             Ok(())
         }

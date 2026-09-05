@@ -18,7 +18,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::{bucket, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible, Session};
+use crate::{Session, bucket, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible};
 
 /// Build the export JSON document for all installed packages.
 ///

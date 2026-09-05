@@ -1,9 +1,9 @@
 //! Locate the shim or executable of a package.
 
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
+use libscoop::{Session, package};
 
-use crate::{output, Result};
+use crate::Result;
 
 /// Show the shim location(s) of a command
 #[derive(Debug, Parser)]
@@ -25,23 +25,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if !found {
-        // Search installed packages for the binary
-        let queries = vec!["*"];
-        let options = vec![QueryOption::Binary];
-        let pkgs = package::query::query(session, queries, options, true)?;
-
-        for pkg in &pkgs {
-            if let Some(shims) = pkg.shims()
-                && shims.iter().any(|s| s == &command) {
-                    let path = session.current_dir(pkg.name());
-                    println!("{}", path.display());
-                    found = true;
-                }
-        }
-    }
-
-    if !found {
-        output::err(format!("Could not find '{}'.", command));
+        // Scoop's `which` resolves only a real shim/executable file — never an
+        // app directory. `shim_paths` above already enumerated every candidate
+        // (.exe/.cmd/.ps1); reaching here means the command is not a shim, is a
+        // broken shim, or is not an installed app's command.
+        return Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.which_not_found",
+            command = command
+        )));
     }
 
     Ok(())

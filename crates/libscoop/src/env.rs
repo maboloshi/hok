@@ -30,13 +30,12 @@
 use std::ffi::OsString;
 
 use crate::{
-    config,
+    Error, Event, Session, config,
     error::Fallible,
     internal,
     internal::env::EnvScope,
     package::operations::expand_scoop_vars,
     package::{Manifest, Package},
-    Error, Event, Session,
 };
 
 /// Apply all environment variable definitions of a given package.
@@ -304,13 +303,14 @@ pub fn ensure_install_dir_not_in_path(
 
     if !session.is_global()
         && let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global)
-            && let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p)) {
-                session.output().warn(format!(
-                    "Installer added '{}' to system path. You might want to remove this manually \
+        && let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p))
+    {
+        session.output().warn(format!(
+            "Installer added '{}' to system path. You might want to remove this manually \
                      (requires admin permission).",
-                    p.display()
-                ));
-            }
+            p.display()
+        ));
+    }
 
     Ok(())
 }

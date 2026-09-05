@@ -37,7 +37,7 @@
 //!   (official behavior would alter string semantics, so this is intentionally skipped).
 
 use crate::package::manifest_walker;
-use crate::{error::Fallible, Error};
+use crate::{Error, error::Fallible};
 use serde::Serialize;
 use std::path::Path;
 
@@ -154,22 +154,24 @@ fn schema_warnings(path: &Path) -> Vec<String> {
 
     // uninstaller: at least one of `file` / `script` (oneOf, schema.json:419-430)
     if let Some(serde_json::Value::Object(map)) = value.get("uninstaller")
-        && map.get("file").is_none() && map.get("script").is_none() {
-            warnings.push(format!(
-                "{name}: uninstaller must include 'file' or 'script'"
-            ));
-        }
+        && map.get("file").is_none()
+        && map.get("script").is_none()
+    {
+        warnings.push(format!(
+            "{name}: uninstaller must include 'file' or 'script'"
+        ));
+    }
 
     // version pattern ^[\w\.\-+_]+$ (schema.json:644-647)
     if let Some(ver) = value.get("version").and_then(|v| v.as_str())
         && !ver
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
-        {
-            warnings.push(format!(
-                "{name}: version contains invalid characters: {ver}"
-            ));
-        }
+    {
+        warnings.push(format!(
+            "{name}: version contains invalid characters: {ver}"
+        ));
+    }
 
     // shortcuts: each entry has 2-4 elements (schema.json:165-176)
     if let Some(shortcuts) = value.get("shortcuts").and_then(|v| v.as_array()) {

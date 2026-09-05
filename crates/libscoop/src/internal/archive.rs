@@ -21,9 +21,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::Error;
 use crate::error::Fallible;
 use crate::event::Event;
-use crate::Error;
 use tokio::sync::mpsc;
 
 /// Detect archive format from filename extension.
@@ -266,28 +266,28 @@ fn extract_pseudo_7z(
                 && let Some(pos) = file_data
                     .windows(MAGIC_7Z.len())
                     .position(|w| w == MAGIC_7Z)
+            {
+                // Validate the candidate before committing to the Rust
+                // path, so a false magic match falls through to 7z.exe.
+                let mut probe = std::io::Cursor::new(&file_data[pos..]);
+                if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty()).is_ok()
                 {
-                    // Validate the candidate before committing to the Rust
-                    // path, so a false magic match falls through to 7z.exe.
-                    let mut probe = std::io::Cursor::new(&file_data[pos..]);
-                    if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty())
-                        .is_ok()
-                    {
-                        return extract_7z_entries_mt(
-                            file_data,
-                            pos,
-                            dest.to_path_buf(),
-                            owned_filter(filter),
-                            emitter.clone(),
-                        );
-                    }
+                    return extract_7z_entries_mt(
+                        file_data,
+                        pos,
+                        dest.to_path_buf(),
+                        owned_filter(filter),
+                        emitter.clone(),
+                    );
                 }
+            }
             // ZIP SFX / plain-zip-misnamed-.7z: locate the EOCD, slice from
             // the zip start, extract with the zip crate.
             if let Some(zip_start) = find_embedded_zip_start(&file_data)
-                && extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
-                    return Ok(());
-                }
+                && extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok()
+            {
+                return Ok(());
+            }
         }
         InstallerKind::Nsis if extract_nsis(src, dest, filter, emitter).is_ok() => {
             return Ok(());
@@ -386,9 +386,10 @@ fn extract_7z_entries_mt(
                         }
                         let name = entry.name();
                         if let Some(f) = filter.as_deref()
-                            && !f.iter().any(|d| name.starts_with(d)) {
-                                return Ok(true);
-                            }
+                            && !f.iter().any(|d| name.starts_with(d))
+                        {
+                            return Ok(true);
+                        }
                         let n = file_idx.fetch_add(1, Ordering::Relaxed);
                         emit_extract_progress(&emitter, n, Some(total));
                         let target = strip_dir(name, filter_ref.as_deref())
@@ -602,9 +603,10 @@ fn extract_zip_mt(
                         continue;
                     }
                     if let Some(f) = filter_ref.as_deref()
-                        && !f.iter().any(|d| name.starts_with(d)) {
-                            continue;
-                        }
+                        && !f.iter().any(|d| name.starts_with(d))
+                    {
+                        continue;
+                    }
                     let n = done.fetch_add(1, Ordering::Relaxed);
                     emit_extract_progress(&emitter, n, Some(total));
                     let target = strip_dir(&name, filter_ref.as_deref()).unwrap_or(name);
@@ -621,10 +623,11 @@ fn extract_zip_mt(
                     let target_path = dest.join(&target);
                     if let Some(parent) = target_path.parent()
                         && made_dirs.insert(parent.to_path_buf())
-                            && let Err(e) = crate::internal::fs::ensure_dir(parent) {
-                                errors.lock().unwrap().push(e.to_string());
-                                break;
-                            }
+                        && let Err(e) = crate::internal::fs::ensure_dir(parent)
+                    {
+                        errors.lock().unwrap().push(e.to_string());
+                        break;
+                    }
                     let mut data = Vec::new();
                     if let Err(e) = entry.read_to_end(&mut data) {
                         errors
@@ -797,9 +800,10 @@ fn extract_tar(
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
             if let Some(f) = filter
-                && !f.iter().any(|d| path.starts_with(d)) {
-                    continue;
-                }
+                && !f.iter().any(|d| path.starts_with(d))
+            {
+                continue;
+            }
             emit_extract_progress(emitter, i, None);
             let target = strip_dir(&path, filter).unwrap_or(path);
             if Path::new(&target)
@@ -851,12 +855,13 @@ fn extract_rar(
 
         let name = entry.entry().filename.to_string_lossy().to_string();
         if let Some(f) = filter
-            && !f.iter().any(|d| name.starts_with(d)) {
-                archive = entry
-                    .skip()
-                    .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
-                continue;
-            }
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            archive = entry
+                .skip()
+                .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
+            continue;
+        }
         emit_extract_progress(emitter, file_idx, None);
         file_idx += 1;
 
@@ -890,7 +895,11 @@ fn extract_rar(
 
 // ─── Fallback: call external 7z.exe for ISO ─────────────────────────
 
-fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<mpsc::Sender<Event>>) -> Fallible<()> {
+fn extract_with_7z_exe(
+    src: &Path,
+    dest: &Path,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
     // Look for 7z.exe in PATH or in Scoop's shims directory
     let path_env = std::env::var("SCOOP").unwrap_or_default();
     let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
@@ -939,9 +948,10 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<mpsc::Sender<Ev
                 .split('%')
                 .next()
                 .and_then(|s| s.parse::<u8>().ok())
-                && let Some(tx) = emitter {
-                    let _ = tx.try_send(Event::PackageExtractProgress(format!("7z {}%", pct)));
-                }
+                && let Some(tx) = emitter
+            {
+                let _ = tx.try_send(Event::PackageExtractProgress(format!("7z {}%", pct)));
+            }
         }
     }
 
@@ -1127,9 +1137,10 @@ fn extract_innosetup(
             continue;
         }
         if let Some(f) = filter
-            && !f.iter().any(|d| name.starts_with(d)) {
-                continue;
-            }
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            continue;
+        }
         emit_extract_progress(emitter, i, None);
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
         if Path::new(&target)
@@ -1242,9 +1253,10 @@ fn extract_nsis(
             continue;
         }
         if let Some(f) = filter
-            && !f.iter().any(|d| rel.starts_with(d)) {
-                continue;
-            }
+            && !f.iter().any(|d| rel.starts_with(d))
+        {
+            continue;
+        }
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
         // them by that exact name, matching what 7z.exe produces.
@@ -1273,8 +1285,8 @@ fn extract_nsis(
     }
     let total = files.len();
 
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let workers = total
         .min(
             std::thread::available_parallelism()
@@ -1340,7 +1352,10 @@ fn extract_nsis(
     });
 
     if let Some(e) = errors_ref.lock().unwrap().first() {
-        return Err(Error::ExtractionFailed(format!("nsis extract error: {}", e)));
+        return Err(Error::ExtractionFailed(format!(
+            "nsis extract error: {}",
+            e
+        )));
     }
 
     // Uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
@@ -1357,9 +1372,10 @@ fn extract_nsis(
             continue;
         }
         if let Some(f) = filter
-            && !f.iter().any(|d| rel.starts_with(d)) {
-                continue;
-            }
+            && !f.iter().any(|d| rel.starts_with(d))
+        {
+            continue;
+        }
         emit_extract_progress(emitter, i, None);
         let rel_slashes = rel.replace('\\', "/");
         let target = strip_dir(&rel_slashes, filter).unwrap_or(rel_slashes);
@@ -1556,9 +1572,11 @@ mod tests {
         // path (Expand-7zipArchive $dir\$PLUGINSDIR\app-64.7z).
         let app7z = dest.join("$PLUGINSDIR").join("app-64.7z");
         assert!(app7z.exists(), "missing $PLUGINSDIR\\app-64.7z");
-        assert!(std::fs::metadata(&app7z)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false));
+        assert!(
+            std::fs::metadata(&app7z)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        );
     }
 
     #[test]
@@ -1750,9 +1768,9 @@ mod tests {
     use crate::test_utils::tmpdir;
 
     fn create_test_zip(path: &std::path::Path) {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let file = std::fs::File::create(path).unwrap();
         let mut zip = ZipWriter::new(file);
@@ -1776,9 +1794,9 @@ mod tests {
     /// to an illegal trailing-backslash path (os error 3 on Windows).
     #[test]
     fn test_extract_zip_backslash_separators() {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let dir = tmpdir("extract_zip_backslash");
         let archive_path = dir.join("backslash.zip");
@@ -1887,8 +1905,8 @@ mod tests {
     }
 
     fn create_test_tar_gz(path: &std::path::Path) {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use tar::Builder;
 
         let stagedir = tmpdir("tar_staging");
@@ -2207,8 +2225,8 @@ mod tests {
 
         let t = Instant::now();
         {
-            use std::sync::atomic::{AtomicUsize, Ordering};
             use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
             let archive = Arc::new(archive);
             let password = Arc::new(sevenz_rust2::Password::empty());
             let next = Arc::new(AtomicUsize::new(0));
@@ -2218,23 +2236,26 @@ mod tests {
                     let password = password.clone();
                     let next = next.clone();
                     let file_data = file_data.clone();
-                    std::thread::spawn(move || loop {
-                        let bi = next.fetch_add(1, Ordering::Relaxed);
-                        if bi >= archive.blocks.len() {
-                            break;
+                    std::thread::spawn(move || {
+                        loop {
+                            let bi = next.fetch_add(1, Ordering::Relaxed);
+                            if bi >= archive.blocks.len() {
+                                break;
+                            }
+                            let mut src = std::io::Cursor::new(&file_data[pos..]);
+                            let decoder = sevenz_rust2::BlockDecoder::new(
+                                1, bi, &archive, &password, &mut src,
+                            );
+                            decoder
+                                .for_each_entries(&mut |_e, r| {
+                                    let mut b = Vec::new();
+                                    r.read_to_end(&mut b).map_err(|e| {
+                                        sevenz_rust2::Error::Other(e.to_string().into())
+                                    })?;
+                                    Ok(true)
+                                })
+                                .expect("block decode");
                         }
-                        let mut src = std::io::Cursor::new(&file_data[pos..]);
-                        let decoder =
-                            sevenz_rust2::BlockDecoder::new(1, bi, &archive, &password, &mut src);
-                        decoder
-                            .for_each_entries(&mut |_e, r| {
-                                let mut b = Vec::new();
-                                r.read_to_end(&mut b).map_err(|e| {
-                                    sevenz_rust2::Error::Other(e.to_string().into())
-                                })?;
-                                Ok(true)
-                            })
-                            .expect("block decode");
                     })
                 })
                 .collect();

@@ -365,6 +365,24 @@ pub enum Event {
         stderr: String,
     },
 
+    /// A single lifecycle step performed during an install / update /
+    /// uninstall / reset commit, in Scoop execution order.
+    ///
+    /// Emitted by the sync pipelines at each stage boundary. The frontend
+    /// renders it as a "verb + object" line (e.g. "Creating shim for 7z") —
+    /// but only when verbose step output is enabled, so the default minimal
+    /// stdout is unchanged. `kind` selects the localized sentence; `object`
+    /// carries the concrete target (archive name, exe, shim name, path,
+    /// persisted item, ...) when the phrase takes one.
+    PackageStep {
+        /// Package being committed.
+        name: String,
+        /// Which Scoop stage this is.
+        kind: PackageStepKind,
+        /// The concrete object of the step, or `None` for phrase-only steps.
+        object: Option<String>,
+    },
+
     /// Post-install notes from the manifest.
     PackageNotes(String),
 
@@ -401,4 +419,56 @@ pub enum Event {
     ///
     /// [1]: Event::PromptPackageCandidate
     PromptPackageCandidateResult(usize),
+}
+
+/// The Scoop lifecycle stage a [`PackageStep`][1] belongs to.
+///
+/// [1]: Event::PackageStep
+///
+/// Each variant is a *phrase* the frontend renders as a sentence. The
+/// concrete target rides along in `Event::PackageStep::object`; variants here
+/// with an `object` expectation substitute it into the sentence, the rest are
+/// phrase-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PackageStepKind {
+    /// Extracting an archive. `object` = archive file name.
+    Extract,
+    /// Running a manifest hook script (`pre_install` / `post_install` /
+    /// `pre_uninstall` / `post_uninstall`). `object` = the hook token.
+    RunHookScript,
+    /// Running an installer / uninstaller executable. `object` = "file args".
+    RunInstallerFile,
+    /// Re-pointing the `current` junction/symlink.
+    LinkCurrent,
+    /// Dropping the `current` junction/symlink.
+    UnlinkCurrent,
+    /// Creating a shim. `object` = shim name.
+    CreateShim,
+    /// Removing a shim. `object` = shim name.
+    RemoveShim,
+    /// Creating a shortcut. `object` = shortcut name.
+    CreateShortcut,
+    /// Removing a shortcut. `object` = shortcut name.
+    RemoveShortcut,
+    /// Installing a PowerShell module. `object` = module name.
+    AddPsModule,
+    /// Removing a PowerShell module. `object` = module name.
+    RemovePsModule,
+    /// Adding a PATH entry. `object` = the directory.
+    AddEnvPath,
+    /// Removing a PATH entry. `object` = the directory.
+    RemoveEnvPath,
+    /// Setting an environment variable. `object` = the variable name.
+    SetEnvVar,
+    /// Removing an environment variable. `object` = the variable name.
+    RemoveEnvVar,
+    /// Linking persisted data. `object` = the persisted item.
+    PersistLink,
+    /// Unlinking persisted data. `object` = the persisted item.
+    PersistUnlink,
+    /// Removing a version directory. `object` = the directory.
+    RemoveDir,
+    /// Purging persisted data.
+    PersistPurge,
 }

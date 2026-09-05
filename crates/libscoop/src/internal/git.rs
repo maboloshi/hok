@@ -192,9 +192,10 @@ fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commi
             // those with GIT_ENOTFOUND, so we use one full status pass here.
             let key = path.to_string_lossy().into_owned();
             if let Some(status) = status_by_path.get(&key)
-                && !status.is_empty() {
-                    local.push(key);
-                }
+                && !status.is_empty()
+            {
+                local.push(key);
+            }
         }
     }
 

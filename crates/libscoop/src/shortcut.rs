@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{error::Fallible, internal, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, internal, package::Package};
 
 /// Return the path to the `Scoop Apps` shortcut folder.
 ///
@@ -108,12 +108,11 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
                 let conflicts_other = owner
                     .as_deref()
                     .is_some_and(|o| !o.eq_ignore_ascii_case(package.name()));
-                if conflicts_other
-                    && let Some(tx) = session.emitter() {
-                        let _ = tx.try_send(Event::PackageShortcutConflict(
-                            link_path.to_string_lossy().into_owned(),
-                        ));
-                    }
+                if conflicts_other && let Some(tx) = session.emitter() {
+                    let _ = tx.try_send(Event::PackageShortcutConflict(
+                        link_path.to_string_lossy().into_owned(),
+                    ));
+                }
             }
 
             create_shortcut(&target_str, &link_path, args, icon)?;
@@ -462,8 +461,8 @@ mod tests {
         let path = "D:\\scoop\\apps\\git\\current\\bin";
         let mut bytes: Vec<u8> = path.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         bytes.extend_from_slice(&[0x00, 0x00]); // NUL terminator
-                                                // The ANSI/NUL view sees only single-char fragments here -> misses,
-                                                // the UTF-16 view must find it.
+        // The ANSI/NUL view sees only single-char fragments here -> misses,
+        // the UTF-16 view must find it.
         assert_eq!(owner_from_bytes(&bytes), Some("git".into()));
 
         // Binary junk with non-zero UTF-16 high bytes must not confuse either

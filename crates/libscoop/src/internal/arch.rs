@@ -150,8 +150,8 @@ impl Arch {
 /// Returns 0 on non-Windows or when unreadable.
 #[cfg(target_os = "windows")]
 fn windows_build_number() -> u32 {
-    use winreg::enums::HKEY_LOCAL_MACHINE;
     use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     hklm.open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")

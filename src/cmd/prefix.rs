@@ -3,7 +3,7 @@
 use clap::Parser;
 use libscoop::Session;
 
-use crate::{output, Result};
+use crate::Result;
 
 /// Show the directory where a package is installed
 #[derive(Debug, Parser)]
@@ -19,12 +19,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if !app_dir.exists() {
         // Check if the app directory exists at all (without /current)
         let base_dir = session.app_dir(&args.package);
-        if base_dir.exists() {
-            output::err(rust_i18n::t!("cmd.prefix_installed", pkg = args.package));
+        let msg = if base_dir.exists() {
+            rust_i18n::t!("cmd.prefix_installed", pkg = args.package)
         } else {
-            output::err(rust_i18n::t!("cmd.prefix_no_pkg", pkg = args.package));
-        }
-        return Ok(());
+            rust_i18n::t!("cmd.prefix_no_pkg", pkg = args.package)
+        };
+        return Err(anyhow::anyhow!(msg));
     }
 
     println!("{}", app_dir.display());

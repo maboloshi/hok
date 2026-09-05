@@ -22,7 +22,7 @@ use crate::{
     shortcut,
 };
 
-use super::sync_install::check_not_running;
+use super::sync_install::{check_not_running, emit_step, joined_or_none, shim_display_names};
 use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
 /// Sync operation: remove packages.
@@ -223,6 +223,14 @@ async fn commit_one_remove(
         let fallback_dir = app_dir.join("current");
         let script_dir = version_dir.as_deref().unwrap_or(&fallback_dir);
 
+        if package.manifest().pre_uninstall().is_some() {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RunHookScript,
+                Some("pre_uninstall".to_owned()),
+            );
+        }
         run_script(
             session,
             package,
@@ -241,6 +249,31 @@ async fn commit_one_remove(
         check_not_running(session, package.name(), "uninstalling")?;
 
         if let Some(uninstaller) = package.manifest().uninstaller() {
+            match uninstaller.file() {
+                Some(file) => {
+                    let mut object = file.to_owned();
+                    if let Some(args) = uninstaller.args()
+                        && !args.is_empty()
+                    {
+                        object.push(' ');
+                        object.push_str(&args.join(" "));
+                    }
+                    emit_step(
+                        session,
+                        package.name(),
+                        crate::PackageStepKind::RunInstallerFile,
+                        Some(object),
+                    );
+                }
+                None => {
+                    emit_step(
+                        session,
+                        package.name(),
+                        crate::PackageStepKind::RunHookScript,
+                        Some("uninstaller".to_owned()),
+                    );
+                }
+            }
             operations::run_hook(
                 session,
                 package,
@@ -259,6 +292,14 @@ async fn commit_one_remove(
             "remove: {} - cleanup (shims/shortcuts/current/env/persist)",
             package.name()
         );
+        for shim_name in shim_display_names(package) {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RemoveShim,
+                Some(shim_name),
+            );
+        }
         shim::remove(session, package)?;
         shortcut::remove(session, package)?;
 
@@ -266,8 +307,37 @@ async fn commit_one_remove(
         // before psmodule/env (scoop-uninstall.ps1). `psmodule::remove` and
         // `env::remove` resolve their own paths, so they don't need the
         // `$refdir` return value that upstream passes along.
+        emit_step(
+            session,
+            package.name(),
+            crate::PackageStepKind::UnlinkCurrent,
+            None,
+        );
         operations::unlink_current(&app_dir, session.config().no_junction())?;
         psmodule::remove(session, package)?;
+
+        if let Some(paths) = package.manifest().env_add_path()
+            && !paths.is_empty()
+        {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RemoveEnvPath,
+                joined_or_none(paths.iter().map(|s| s.to_string()).collect()),
+            );
+        }
+        if let Some(vars) = package.manifest().env_set() {
+            let mut keys = vars.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            for key in keys {
+                emit_step(
+                    session,
+                    package.name(),
+                    crate::PackageStepKind::RemoveEnvVar,
+                    Some(key),
+                );
+            }
+        }
         env::remove(session, package)?;
     }
 
@@ -281,8 +351,29 @@ async fn commit_one_remove(
         // has no persist metadata anyway, so skip it (Scoop's
         // unlink_persist_data is a no-op for a placeholder manifest too).
         if !package.is_install_failed() {
+            if let Some(persist) = package.manifest().persist() {
+                for item in persist {
+                    let source = item
+                        .first()
+                        .copied()
+                        .unwrap_or_default()
+                        .trim_end_matches(['/', '\\']);
+                    emit_step(
+                        session,
+                        package.name(),
+                        crate::PackageStepKind::PersistUnlink,
+                        Some(source.to_owned()),
+                    );
+                }
+            }
             persist::unlink(session, package, version_dir)?;
         }
+        emit_step(
+            session,
+            package.name(),
+            crate::PackageStepKind::RemoveDir,
+            Some(version_dir.to_string_lossy().into_owned()),
+        );
         match internal::fs::remove_dir(version_dir) {
             Ok(()) => {}
             Err(_e) if !version_dir.exists() => {}
@@ -297,6 +388,14 @@ async fn commit_one_remove(
 
         // post_uninstall runs after the version dir has been removed
         // (Scoop order in scoop-uninstall.ps1).
+        if package.manifest().post_uninstall().is_some() {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RunHookScript,
+                Some("post_uninstall".to_owned()),
+            );
+        }
         run_script(
             session,
             package,
@@ -362,9 +461,10 @@ async fn commit_one_remove(
     // Remove the app dir only when it is empty (Scoop: `if (!(Get-ChildItem
     // $appDir)) { Remove-Item $appdir }`).
     if let Ok(mut entries) = std::fs::read_dir(&app_dir)
-        && entries.next().is_none() {
-            internal::fs::remove_dir(&app_dir)?;
-        }
+        && entries.next().is_none()
+    {
+        internal::fs::remove_dir(&app_dir)?;
+    }
 
     if purge {
         persist::purge(session, package.name())?;
@@ -424,8 +524,24 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
 
     // Re-create the `current` symlink
     operations::link_current(&pkg_dir, &version_dir, session.config().no_junction())?;
+    emit_step(session, name, crate::PackageStepKind::LinkCurrent, None);
 
     // Re-link persistent data
+    if let Some(persist) = pkg.manifest().persist() {
+        for item in persist {
+            let source = item
+                .first()
+                .copied()
+                .unwrap_or_default()
+                .trim_end_matches(['/', '\\']);
+            emit_step(
+                session,
+                name,
+                crate::PackageStepKind::PersistLink,
+                Some(source.to_owned()),
+            );
+        }
+    }
     persist::link(session, &pkg)?;
     // persist_permission (upstream reset.ps1:91): global apps reset their
     // persist root grant as well (idempotent).
@@ -443,6 +559,14 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
     env::add(session, &pkg)?;
 
     // Run post_install to reapply localization (fixes Scoop bug)
+    if pkg.manifest().post_install().is_some() {
+        emit_step(
+            session,
+            name,
+            crate::PackageStepKind::RunHookScript,
+            Some("post_install".to_owned()),
+        );
+    }
     run_script(
         session,
         &pkg,

@@ -491,13 +491,18 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction, true).await.unwrap();
+        let result = confirm_transaction(&session, &transaction, true)
+            .await
+            .unwrap();
         assert!(result, "should return true when frontend accepts");
 
         // Verify the request was actually emitted (with the gate flag)
         let request = frontend_rx.recv().await.unwrap();
         assert!(
-            matches!(request, Event::PromptTransactionNeedConfirm { gate: true, .. }),
+            matches!(
+                request,
+                Event::PromptTransactionNeedConfirm { gate: true, .. }
+            ),
             "should have emitted a gated PromptTransactionNeedConfirm"
         );
     }
@@ -514,7 +519,9 @@ mod tests {
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction, true).await.unwrap();
+        let result = confirm_transaction(&session, &transaction, true)
+            .await
+            .unwrap();
         assert!(!result, "should return false when frontend rejects");
     }
 

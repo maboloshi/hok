@@ -190,10 +190,11 @@ fn merge_adjacent_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     let mut merged: Vec<(u64, u64)> = Vec::new();
     for (s, e) in ranges {
         if let Some(last) = merged.last_mut()
-            && s <= last.1 + 1 {
-                last.1 = last.1.max(e);
-                continue;
-            }
+            && s <= last.1 + 1
+        {
+            last.1 = last.1.max(e);
+            continue;
+        }
         merged.push((s, e));
     }
     merged
@@ -471,18 +472,20 @@ pub(crate) mod test_server {
                         // first `attempts` such requests — used to exercise
                         // the serial fallback in `download_fragmented`.
                         if let Some((fs, fe, attempts)) = fail_range
-                            && s <= fe && fs <= e {
-                                let n = fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
-                                if n <= attempts {
-                                    responses_h.lock().unwrap().push(fail_status);
-                                    let _ = write!(
-                                        stream,
-                                        "HTTP/1.1 {} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                                        fail_status
-                                    );
-                                    continue;
-                                }
+                            && s <= fe
+                            && fs <= e
+                        {
+                            let n = fail_range_count_h.fetch_add(1, Ordering::SeqCst) + 1;
+                            if n <= attempts {
+                                responses_h.lock().unwrap().push(fail_status);
+                                let _ = write!(
+                                    stream,
+                                    "HTTP/1.1 {} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                    fail_status
+                                );
+                                continue;
                             }
+                        }
 
                         // Simulate a server that reports a 206 but delivers
                         // only half the requested bytes (truncated body): the
@@ -494,7 +497,10 @@ pub(crate) mod test_server {
                             let _ = write!(
                                 stream,
                                 "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                s, e2, data.len(), half
+                                s,
+                                e2,
+                                data.len(),
+                                half
                             );
                             let _ = stream.write_all(&slice[..half]);
                             continue;
@@ -504,7 +510,10 @@ pub(crate) mod test_server {
                         let _ = write!(
                             stream,
                             "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            s, e, data.len(), slice.len()
+                            s,
+                            e,
+                            data.len(),
+                            slice.len()
                         );
                         let _ = stream.write_all(slice);
                     }
@@ -571,8 +580,8 @@ mod tests {
     use super::test_server::*;
     use super::*;
     use crate::internal::network::{RealNetwork, RequestOptions};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[tokio::test]
     async fn test_download_range_retries_transient_failure() {
@@ -1130,9 +1139,6 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), data);
         let responses = fake.responses.lock().unwrap();
         assert_eq!(*responses.last().unwrap(), 206);
-        assert!(responses[..responses.len() - 1]
-            .iter()
-            .all(|&s| s == 500));
+        assert!(responses[..responses.len() - 1].iter().all(|&s| s == 500));
     }
-
 }

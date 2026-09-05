@@ -16,6 +16,56 @@ use crate::{
 
 use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
+/// Emit a verbose lifecycle step marker for the current package commit.
+///
+/// The frontend only renders these when verbose step output (`-v`) is on, so
+/// emitting them unconditionally keeps the library agnostic to verbosity while
+/// default stdout stays minimal. `object` carries the concrete target of the
+/// step (hook token, installer file, shim name, path, ...) or `None` for
+/// phrase-only steps.
+pub(super) fn emit_step(
+    session: &Session,
+    name: &str,
+    kind: crate::event::PackageStepKind,
+    object: Option<String>,
+) {
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageStep {
+            name: name.to_owned(),
+            kind,
+            object,
+        });
+    }
+}
+
+/// Scoop-style shim display names for `manifest.bin`, mirroring `Shim::new`
+/// (`[target, name, args...]` → `name`; bare `[target]` → target basename
+/// without extension). Used only to describe what `shim::add` is about to do.
+pub(super) fn shim_display_names(pkg: &Package) -> Vec<String> {
+    pkg.manifest()
+        .bin()
+        .into_iter()
+        .flatten()
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            if d.len() == 1 {
+                internal::path::leaf_base(d[0]).unwrap_or(d[0]).to_owned()
+            } else {
+                d[1].to_owned()
+            }
+        })
+        .collect()
+}
+
+/// Whether an object list is empty (so callers can omit a phrase-only step).
+pub(super) fn joined_or_none(items: Vec<String>) -> Option<String> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.join(", "))
+    }
+}
+
 /// Sync operation: install and/or upgrade packages.
 pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let mut packages = vec![];
@@ -438,7 +488,11 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
 
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
-async fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
+async fn commit_install(
+    session: &Session,
+    packages: &[&Package],
+    ignore_failure: bool,
+) -> Fallible<()> {
     let total = packages.len();
     for (i, &pkg) in packages.iter().enumerate() {
         let index = i + 1;
@@ -470,7 +524,10 @@ async fn commit_one_install(
 ) -> Fallible<()> {
     // Extract config-derived values before the awaits so the config read guard
     // is dropped (a guard held across an await would block `config_mut()`).
-    let no_junction = { let config = session.config(); config.no_junction() };
+    let no_junction = {
+        let config = session.config();
+        config.no_junction()
+    };
     let apps_dir = session.apps_dir();
 
     // The install layout version: upstream rewrites `nightly` to
@@ -501,6 +558,12 @@ async fn commit_one_install(
 
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
     if pkg.manifest().pre_install().is_some() {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::RunHookScript,
+            Some("pre_install".to_owned()),
+        );
         debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
         operations::run_script(
             session,
@@ -516,6 +579,32 @@ async fn commit_one_install(
 
     // 3. installer, $dir = version dir)
     if let Some(installer) = pkg.manifest().installer() {
+        match installer.file() {
+            Some(file) => {
+                let mut object = file.to_owned();
+                if let Some(args) = installer.args()
+                    && !args.is_empty()
+                {
+                    object.push(' ');
+                    object.push_str(&args.join(" "));
+                }
+                emit_step(
+                    session,
+                    pkg.name(),
+                    crate::PackageStepKind::RunInstallerFile,
+                    Some(object),
+                );
+            }
+            None => {
+                // Script-only installer: surfaced as a hook-script line.
+                emit_step(
+                    session,
+                    pkg.name(),
+                    crate::PackageStepKind::RunHookScript,
+                    Some("installer".to_owned()),
+                );
+            }
+        }
         operations::run_hook(
             session,
             pkg,
@@ -566,11 +655,13 @@ async fn commit_one_install(
 
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
-    operations::link_current(
-        &apps_dir.join(pkg.name()),
-        &working_dir,
-        no_junction,
-    )?;
+    operations::link_current(&apps_dir.join(pkg.name()), &working_dir, no_junction)?;
+    emit_step(
+        session,
+        pkg.name(),
+        crate::PackageStepKind::LinkCurrent,
+        None,
+    );
 
     // 5. shims + shortcuts
     debug!(
@@ -578,6 +669,14 @@ async fn commit_one_install(
         pkg.name(),
         pkg.version()
     );
+    for shim_name in shim_display_names(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::CreateShim,
+            Some(shim_name),
+        );
+    }
     shim::add(session, pkg)?;
     shortcut::add(session, pkg)?;
 
@@ -587,10 +686,47 @@ async fn commit_one_install(
 
     // 5.5 env (Scoop order: after shims/shortcuts, before persist)
     debug!("commit: {} v{} - env", pkg.name(), pkg.version());
+    if let Some(paths) = pkg.manifest().env_add_path()
+        && !paths.is_empty()
+    {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::AddEnvPath,
+            joined_or_none(paths.iter().map(|s| s.to_string()).collect()),
+        );
+    }
+    if let Some(vars) = pkg.manifest().env_set() {
+        let mut keys = vars.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            emit_step(
+                session,
+                pkg.name(),
+                crate::PackageStepKind::SetEnvVar,
+                Some(key),
+            );
+        }
+    }
     env::add(session, pkg)?;
 
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
+    if let Some(persist) = pkg.manifest().persist() {
+        for item in persist {
+            let source = item
+                .first()
+                .copied()
+                .unwrap_or_default()
+                .trim_end_matches(['/', '\\']);
+            emit_step(
+                session,
+                pkg.name(),
+                crate::PackageStepKind::PersistLink,
+                Some(source.to_owned()),
+            );
+        }
+    }
     persist::link(session, pkg)?;
     // 6.1 persist_permission (upstream install.ps1:67): global installs
     // with persist data grant the Users group write access on the global
@@ -601,6 +737,12 @@ async fn commit_one_install(
     // `current` junction (upstream `link_current` reassigns $dir), while
     // `$original_dir` stays the real version dir.
     if pkg.manifest().post_install().is_some() {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::RunHookScript,
+            Some("post_install".to_owned()),
+        );
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         let runtime_dir = session
             .app_dir(pkg.name())
@@ -772,7 +914,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Test URL fragment rename: url#/installer.exe → copy directly as installer.exe
+    /// A verbose lifecycle step marker is delivered over the event bus.
+    #[tokio::test]
+    async fn test_emit_step_delivers_package_step() {
+        let root = crate::test_utils::tmpdir("emit_step");
+        let session = crate::test_utils::test_session(&root);
+        let mut rx = session.event_bus().receiver().expect("event bus receiver");
+
+        emit_step(
+            &session,
+            "app",
+            crate::PackageStepKind::CreateShim,
+            Some("7z".to_owned()),
+        );
+
+        let event = rx.try_recv().expect("PackageStep should be delivered");
+        assert!(
+            matches!(
+                event,
+                Event::PackageStep {
+                    name,
+                    kind: crate::PackageStepKind::CreateShim,
+                    object: Some(object),
+                } if name == "app" && object == "7z"
+            ),
+            "expected a CreateShim PackageStep for '7z'"
+        );
+    }
+
+    /// Shim display names mirror `Shim::new`: bare `[target]` yields the target
+    /// basename, `[target, name, args...]` yields the explicit name.
+    #[test]
+    fn test_shim_display_names() {
+        use crate::package::manifest::{Manifest, parse_file};
+        let root = crate::test_utils::tmpdir("shim_display");
+        let json = r#"{
+            "version": "1.0.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "bin": [["bin/tool.exe"], ["bin/gui.exe", "tool-gui"], ["tool.bat", "tb", "-x"]]
+        }"#;
+        let p = root.join("manifest.json");
+        std::fs::write(&p, json).unwrap();
+        let manifest: Manifest = parse_file(&p).unwrap();
+        // Wrap a Package so shim_display_names can read `.bin()`.
+        let pkg = crate::package::Package::from("tool", "main", manifest);
+        let names = shim_display_names(&pkg);
+        assert_eq!(names, vec!["tool", "tool-gui", "tb"]);
+    }
     #[tokio::test]
     async fn test_url_fragment_rename() {
         let tmp = crate::test_utils::tmpdir("fragment_rename");

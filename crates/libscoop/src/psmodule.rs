@@ -19,7 +19,7 @@ use std::ffi::OsString;
 use tracing::debug;
 
 use crate::internal;
-use crate::{error::Fallible, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, package::Package};
 
 /// Install the PowerShell module declared by a package into the modules
 /// directory, mirroring upstream Scoop's `install_psmodule`
@@ -140,7 +140,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 mod tests {
     use super::*;
     use crate::package::manifest::Manifest;
-    use crate::package::{operations, Package};
+    use crate::package::{Package, operations};
     use crate::test_utils;
 
     fn make_package(name: &str, psmodule: &str) -> Package {

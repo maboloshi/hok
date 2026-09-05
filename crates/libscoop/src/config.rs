@@ -104,14 +104,15 @@ impl ConfigBuilder {
         // into a new hok config file, then use only that from now on.
         // Unsupported Scoop keys are dropped by deserialization.
         if let Some(scoop_path) = &self.scoop_path
-            && let Ok(value) = read_json_file(scoop_path) {
-                let inner: ConfigInner = serde_json::from_value(value)?;
-                internal::fs::write_json(&self.path, &inner)?;
-                return Ok(Config {
-                    path: self.path.clone(),
-                    inner,
-                });
-            }
+            && let Ok(value) = read_json_file(scoop_path)
+        {
+            let inner: ConfigInner = serde_json::from_value(value)?;
+            internal::fs::write_json(&self.path, &inner)?;
+            return Ok(Config {
+                path: self.path.clone(),
+                inner,
+            });
+        }
 
         // Neither file exists: report the missing hok config file.
         Err(std::io::Error::new(
@@ -826,49 +827,50 @@ pub(crate) fn possible_config_paths() -> Vec<PathBuf> {
     let mut ret = vec![];
 
     if let Ok(exe_path) = std::env::current_exe()
-        && let Ok(metadata) = std::fs::symlink_metadata(&exe_path) {
-            let is_symlink = metadata.is_symlink();
-            let mut path = exe_path.clone();
+        && let Ok(metadata) = std::fs::symlink_metadata(&exe_path)
+    {
+        let is_symlink = metadata.is_symlink();
+        let mut path = exe_path.clone();
 
-            if is_symlink {
-                // since the executable is a symlink, we can use `read_link`
-                // to get the real path of the executable
-                if let Ok(real_path) = std::fs::read_link(&exe_path) {
-                    path = real_path;
-                }
+        if is_symlink {
+            // since the executable is a symlink, we can use `read_link`
+            // to get the real path of the executable
+            if let Ok(real_path) = std::fs::read_link(&exe_path) {
+                path = real_path;
             }
+        }
 
-            path.pop();
-            path.push("config.json");
+        path.pop();
+        path.push("config.json");
 
-            // 1) config.json side-by-side with the real executable
-            ret.push(path.clone());
+        // 1) config.json side-by-side with the real executable
+        ret.push(path.clone());
 
-            // this pop is ok, it removes `config.json` we just pushed
+        // this pop is ok, it removes `config.json` we just pushed
+        // <app>\<current>\<app_name>\apps\<root> (in theory)
+        //       ^^^^^^^^^
+        path.pop();
+        // <app>\<current>\<app_name>\apps\<root> (in theory)
+        //                 ^^^^^^^^^^
+        if path.pop() {
             // <app>\<current>\<app_name>\apps\<root> (in theory)
-            //       ^^^^^^^^^
-            path.pop();
-            // <app>\<current>\<app_name>\apps\<root> (in theory)
-            //                 ^^^^^^^^^^
+            //                            ^^^^
             if path.pop() {
+                let check = internal::path::leaf(&path)
+                    .map(|n| n == "apps")
+                    .unwrap_or_default();
                 // <app>\<current>\<app_name>\apps\<root> (in theory)
-                //                            ^^^^
-                if path.pop() {
-                    let check = internal::path::leaf(&path)
-                        .map(|n| n == "apps")
-                        .unwrap_or_default();
-                    // <app>\<current>\<app_name>\apps\<root> (in theory)
-                    //                                 ^^^^^
-                    if check && path.pop() {
-                        path.push("config.json");
+                //                                 ^^^^^
+                if check && path.pop() {
+                    path.push("config.json");
 
-                        // 2) config.json located in the `root` directory of
-                        // Scoop, i.e., the portable config.json
-                        ret.push(path);
-                    }
+                    // 2) config.json located in the `root` directory of
+                    // Scoop, i.e., the portable config.json
+                    ret.push(path);
                 }
             }
         }
+    }
 
     // 3) config.json located in the XDG_CONFIG_HOME directory, i.e.,
     // `~/.config/scoop/config.json`
@@ -1177,11 +1179,7 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
 }
 
 fn fmt_bool(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
+    if value { "true" } else { "false" }
 }
 
 /// Format a byte size back into the `aria2-min-split-size` style (5M, 10M).

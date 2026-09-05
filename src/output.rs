@@ -37,12 +37,60 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+static SHOW_STEPS: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable colored output.
 pub fn set_color_enabled(enabled: bool) {
     COLOR_ENABLED.store(enabled, Ordering::Relaxed);
     // crossterm respects NO_COLOR env var by default; force the override
     crossterm::style::force_color_output(enabled);
+}
+
+/// Whether verbose step output is enabled (the global `-v` flag and above).
+pub fn show_steps() -> bool {
+    SHOW_STEPS.load(Ordering::Relaxed)
+}
+
+/// Turn verbose step output on/off (mirrors [`set_color_enabled`]; set once at
+/// startup from the global verbosity level).
+pub fn set_show_steps(enabled: bool) {
+    SHOW_STEPS.store(enabled, Ordering::Relaxed);
+}
+
+/// Render a verbose "verb + object" lifecycle step line (the `-v` expansion).
+///
+/// `sentence` is the fully localized phrase (the `object` already substituted,
+/// e.g. `Running pre_install script` or `解压 7zip-24.09.7z`). The parts before
+/// and after the `object` are grey (notes colour) so the line reads as
+/// subordinate detail under the package commit header; the `object` itself is
+/// emitted in the default foreground so the concrete target stands out. When
+/// `object` is absent (phrase-only lines) the whole sentence is grey.
+///
+/// These lines only appear when verbose step output is enabled; at the default
+/// verbosity nothing is printed here.
+pub fn step(sentence: impl AsRef<str>, object: Option<impl AsRef<str>>) {
+    if !show_steps() {
+        return;
+    }
+    let sentence = sentence.as_ref();
+    match object {
+        Some(o) => {
+            let o = o.as_ref();
+            if let Some(i) = sentence.find(o)
+                && !o.is_empty()
+            {
+                println!(
+                    "  {}{}{}",
+                    sentence[..i].dark_grey(),
+                    o,
+                    sentence[i + o.len()..].dark_grey()
+                );
+            } else {
+                println!("  {}", sentence.dark_grey());
+            }
+        }
+        None => println!("  {}", sentence.dark_grey()),
+    }
 }
 
 /// Section heading: `:: resolving...` (cyan bold).
@@ -213,6 +261,27 @@ pub fn prompt(msg: impl AsRef<str>) {
     let _ = std::io::stdout().flush();
 }
 
+/// Read a 0-based selection index in `0..count` after the localized selection
+/// prompt. Returns `None` on EOF / empty / non-numeric / out-of-range input so
+/// the caller decides how to report an invalid choice (shared by the
+/// "choose among multiple matches" flows of `cat` / `home` / `depends`).
+pub fn prompt_select(count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    print!("\n{} ", rust_i18n::t!("output.select_prompt"));
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return None;
+    }
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let index = trimmed.parse::<usize>().ok()?;
+    (index < count).then_some(index)
+}
 /// Inline progress with flush (paired with ok/err/done).
 /// Example: progress("Holding", "7zip") → "  Holding 7zip... "
 pub fn progress(action: impl AsRef<str>, target: impl AsRef<str>) {

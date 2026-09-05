@@ -33,7 +33,7 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
-use crate::{error::Fallible, internal, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, internal, package::Package};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_shim.rs"));
 

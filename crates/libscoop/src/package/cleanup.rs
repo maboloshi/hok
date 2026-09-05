@@ -3,7 +3,7 @@
 //! Removes all version directories except the current one for each package,
 //! mirroring Scoop's `cleanup` command.
 
-use crate::{error::Fallible, internal, Error, Session};
+use crate::{Error, Session, error::Fallible, internal};
 
 /// Cleanup old versions of packages.
 ///
@@ -31,9 +31,10 @@ pub fn cleanup(
         if let Ok(entries) = std::fs::read_dir(&apps_dir) {
             for entry in entries.flatten() {
                 if entry.file_type().is_ok_and(|t| t.is_dir())
-                    && let Some(name) = entry.file_name().to_str() {
-                        all.push(name.to_owned());
-                    }
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    all.push(name.to_owned());
+                }
             }
         }
         all

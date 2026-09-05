@@ -1,9 +1,9 @@
 //! Manage shims (add / remove / list / inspect).
 
 use clap::{ArgAction, Parser, Subcommand};
-use libscoop::{add_custom, package, remove_by_name, Session};
+use libscoop::{Session, add_custom, package, remove_by_name};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Manipulate shims
 #[derive(Debug, Parser)]
@@ -105,7 +105,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 .iter()
                 .filter(|n| regex.as_ref().is_none_or(|re| re.is_match(n)))
             {
-                output::named(name.as_str(), "(shim)");
+                println!("  {}", name);
             }
         }
         Command::Info { name } => {

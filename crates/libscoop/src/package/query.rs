@@ -33,8 +33,8 @@ use super::install_state::{
     fill_install_state, load_bucket_manifest, maybe_fill_upgradable, parse_install_info,
     select_current_version,
 };
-use super::query_matcher::{build_matchers, manifest_matches, name_prefiltered_out, QueryOption};
-use super::{manifest_cache, InstallState, InstallStateInstalled, Manifest, Package};
+use super::query_matcher::{QueryOption, build_matchers, manifest_matches, name_prefiltered_out};
+use super::{InstallState, InstallStateInstalled, Manifest, Package, manifest_cache};
 
 /// Search installed packages.
 pub fn query_installed(
@@ -130,65 +130,65 @@ pub fn query_installed(
                         }
 
                         if let Ok(manifest) = parse_file(manifest_path)
-                            && let Ok(install_info) = parse_install_info(&install_info_path) {
-                                // Noted that packages installed via URLs don't have
-                                // bucket info in install info file. We mark them as
-                                // isolated packages and use `ISOLATED_PACKAGE_BUCKET`
-                                // as bucket name.
-                                let bucket =
-                                    install_info.bucket().unwrap_or(ISOLATED_PACKAGE_BUCKET);
+                            && let Ok(install_info) = parse_install_info(&install_info_path)
+                        {
+                            // Noted that packages installed via URLs don't have
+                            // bucket info in install info file. We mark them as
+                            // isolated packages and use `ISOLATED_PACKAGE_BUCKET`
+                            // as bucket name.
+                            let bucket = install_info.bucket().unwrap_or(ISOLATED_PACKAGE_BUCKET);
 
-                                if !manifest_matches(
-                                    name,
-                                    bucket,
-                                    &manifest,
-                                    is_wildcard_query,
-                                    is_explicit_mode,
-                                    &matchers,
-                                    options,
-                                ) {
-                                    return None;
-                                }
-
-                                let current_version = manifest.version().to_owned();
-
-                                let state = InstallState::Installed(InstallStateInstalled {
-                                    version: current_version.clone(),
-                                    bucket: install_info.bucket().map(|s| s.to_owned()),
-                                    arch: install_info.arch().to_owned(),
-                                    held: install_info.is_held(),
-                                    url: install_info.url().map(|s| s.to_owned()),
-                                });
-
-                                let package = Package::from(name, bucket, manifest);
-                                package.fill_install_state(state.clone());
-
-                                // A damaged install that resolved to a valid older
-                                // version dir is still damaged: keep the install-failed
-                                // flag (so `list` shows it) alongside the upgradable
-                                // status. This makes `update *` / `list -u` offer the
-                                // upgrade while `list` still reports the breakage.
-                                if current_broken {
-                                    package.mark_install_failed();
-                                }
-
-                                if !maybe_fill_upgradable(
-                                    &root_path,
-                                    &package,
-                                    name,
-                                    bucket,
-                                    &current_version,
-                                    &state,
-                                    options,
-                                ) {
-                                    return None;
-                                }
-
-                                return Some(package);
-                            } else if include_broken {
-                                // manifest/install exist but failed to parse.
-                                return broken_package(name, &pkg_dir);
+                            if !manifest_matches(
+                                name,
+                                bucket,
+                                &manifest,
+                                is_wildcard_query,
+                                is_explicit_mode,
+                                &matchers,
+                                options,
+                            ) {
+                                return None;
                             }
+
+                            let current_version = manifest.version().to_owned();
+
+                            let state = InstallState::Installed(InstallStateInstalled {
+                                version: current_version.clone(),
+                                bucket: install_info.bucket().map(|s| s.to_owned()),
+                                arch: install_info.arch().to_owned(),
+                                held: install_info.is_held(),
+                                url: install_info.url().map(|s| s.to_owned()),
+                            });
+
+                            let package = Package::from(name, bucket, manifest);
+                            package.fill_install_state(state.clone());
+
+                            // A damaged install that resolved to a valid older
+                            // version dir is still damaged: keep the install-failed
+                            // flag (so `list` shows it) alongside the upgradable
+                            // status. This makes `update *` / `list -u` offer the
+                            // upgrade while `list` still reports the breakage.
+                            if current_broken {
+                                package.mark_install_failed();
+                            }
+
+                            if !maybe_fill_upgradable(
+                                &root_path,
+                                &package,
+                                name,
+                                bucket,
+                                &current_version,
+                                &state,
+                                options,
+                            ) {
+                                return None;
+                            }
+
+                            return Some(package);
+                        } else if include_broken {
+                            // manifest/install exist but failed to parse.
+                            return broken_package(name, &pkg_dir);
+                        }
                     }
                     None
                 })
@@ -198,7 +198,6 @@ pub fn query_installed(
 
     Ok(ret)
 }
-
 
 /// Build a placeholder package for a broken/partial install so `list` can
 /// surface it as "Install failed" instead of silently dropping it.

@@ -20,12 +20,12 @@ use tracing::debug;
 use crate::error::Fallible;
 
 use windows_sys::Win32::Foundation::LocalFree;
+use windows_sys::Win32::Security::Authorization::{
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, SE_FILE_OBJECT, SetEntriesInAclW,
+    SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+};
 use windows_sys::Win32::Security::{
     ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, WinBuiltinUsersSid,
-};
-use windows_sys::Win32::Security::Authorization::{
-    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-    SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_WRITE_ATTRIBUTES, FILE_WRITE_EA,
@@ -60,7 +60,8 @@ pub fn grant_users_write_inherit(root: &Path) -> Fallible<()> {
             std::ptr::null_mut(),
             sid_buf.as_mut_ptr().cast(),
             &mut sid_len,
-        ) == 0 {
+        ) == 0
+        {
             return Err(crate::Error::Custom(format!(
                 "failed to resolve the Users SID (S-1-5-32-545) for {}",
                 root.display()
@@ -100,8 +101,10 @@ pub fn grant_users_write_inherit(root: &Path) -> Fallible<()> {
             ptstrName: sid_buf.as_mut_ptr().cast::<u16>(),
         };
         let access = EXPLICIT_ACCESS_W {
-            grfAccessPermissions:
-                FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES,
+            grfAccessPermissions: FILE_ADD_FILE
+                | FILE_ADD_SUBDIRECTORY
+                | FILE_WRITE_EA
+                | FILE_WRITE_ATTRIBUTES,
             grfAccessMode: GRANT_ACCESS,
             grfInheritance: OBJECT_INHERIT_ACE,
             Trustee: trustee,
@@ -146,11 +149,11 @@ pub fn grant_users_write_inherit(root: &Path) -> Fallible<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, ACL};
     use windows_sys::Win32::Security::Authorization::{
         GetEffectiveRightsFromAclW, GetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_USER,
         TRUSTEE_W,
     };
+    use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION};
 
     /// Grant on a scratch directory, then read the DACL back and verify the
     /// Users group actually holds the write rights — guards against a grant
@@ -216,8 +219,7 @@ mod tests {
     /// upstream `SetAccessRule` replaces the matching ACE instead.
     #[test]
     fn grant_users_write_inherit_is_idempotent() {
-        let dir =
-            std::env::temp_dir().join(format!("hok-acl-idem-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("hok-acl-idem-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         grant_users_write_inherit(&dir).unwrap();
         grant_users_write_inherit(&dir).unwrap();
@@ -252,15 +254,14 @@ mod tests {
             );
             let users_sid = &sid_buf[..sid_len as usize];
 
-            use windows_sys::Win32::Security::{GetAce, GetAclInformation, AclSizeInformation};
+            use windows_sys::Win32::Security::{AclSizeInformation, GetAce, GetAclInformation};
             let mut size_info = windows_sys::Win32::Security::ACL_SIZE_INFORMATION {
                 AceCount: 0,
                 AclBytesInUse: 0,
                 AclBytesFree: 0,
             };
             let size_info_ptr: *mut core::ffi::c_void =
-                (&mut size_info as *mut windows_sys::Win32::Security::ACL_SIZE_INFORMATION)
-                    .cast();
+                (&mut size_info as *mut windows_sys::Win32::Security::ACL_SIZE_INFORMATION).cast();
             assert_ne!(
                 GetAclInformation(
                     dacl,
@@ -299,4 +300,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

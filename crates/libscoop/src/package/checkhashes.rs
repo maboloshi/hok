@@ -119,12 +119,13 @@ pub async fn execute(
             let cache_path = cache_dir.join(&cache_filename);
 
             if (!cache_path.exists() || options.force)
-                && let Err(e) = network::download_file(session, url, &cache_path).await {
-                    item.status = CheckHashesStatus::Failed;
-                    item.messages.push(format!("download failed: {}", e));
-                    has_any_failure = true;
-                    break;
-                }
+                && let Err(e) = network::download_file(session, url, &cache_path).await
+            {
+                item.status = CheckHashesStatus::Failed;
+                item.messages.push(format!("download failed: {}", e));
+                has_any_failure = true;
+                break;
+            }
 
             let actual_hash =
                 match crate::internal::hash::compute_file_hash(&cache_path, hash_str.algorithm()) {

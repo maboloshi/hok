@@ -3,7 +3,7 @@
 use std::path::Path;
 use tracing::debug;
 
-use crate::{error::Fallible, internal, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, internal, package::Package};
 
 /// Extract the downloaded archive files of `pkg` into `working_dir`.
 ///
@@ -191,9 +191,9 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
+    use crate::Session;
     use crate::package::{Manifest, Package};
     use crate::test_utils::{test_session, tmpdir};
-    use crate::Session;
 
     use super::*;
 
@@ -222,9 +222,9 @@ mod tests {
     /// Create a small real zip archive containing `app/hello.txt` and
     /// `app/sub/deep.txt` (mirrors `internal::archive::tests`).
     fn create_zip(path: &Path) {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let file = std::fs::File::create(path).unwrap();
         let mut zip = ZipWriter::new(file);
@@ -254,8 +254,8 @@ mod tests {
     /// Create a small real tar.bz2 archive containing `app/hello.txt` and
     /// `app/sub/deep.txt` (same layout as `create_zip`).
     fn create_tar_bz2(path: &Path) {
-        use bzip2::write::BzEncoder;
         use bzip2::Compression as BzCompression;
+        use bzip2::write::BzEncoder;
         use tar::{Builder, Header};
 
         fn append(tar: &mut Builder<BzEncoder<std::fs::File>>, name: &str, data: &[u8]) {

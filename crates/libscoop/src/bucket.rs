@@ -771,7 +771,8 @@ mod tests {
         let bucket_dir = root.join("buckets").join("extras");
         std::fs::create_dir_all(&bucket_dir).unwrap();
         let repo = git2::Repository::init(&bucket_dir).unwrap();
-        repo.remote("origin", "https://example.com/extras.git").unwrap();
+        repo.remote("origin", "https://example.com/extras.git")
+            .unwrap();
 
         let fake = Arc::new(FakeGit::default());
         session.set_git(fake.clone()).unwrap();
@@ -847,5 +848,4 @@ mod tests {
             changes.full_scan
         );
     }
-
 }

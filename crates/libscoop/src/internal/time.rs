@@ -22,8 +22,9 @@ use time::macros::format_description;
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 
 /// Scoop `LAST_UPDATE` output shape: `YYYY-MM-DDTHH:MM:SS.fffffff±HH:MM`.
-const FMT_LAST_UPDATE: &[time::format_description::FormatItem<'_>] =
-    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:7][offset_hour sign:mandatory]:[offset_minute]");
+const FMT_LAST_UPDATE: &[time::format_description::FormatItem<'_>] = format_description!(
+    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:7][offset_hour sign:mandatory]:[offset_minute]"
+);
 
 /// Bare no-offset input shape (treated as UTC): fractional seconds optional.
 /// Two formats because a time optional group starting with a literal (`.`)

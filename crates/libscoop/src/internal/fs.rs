@@ -18,8 +18,8 @@ use serde_json::ser::PrettyFormatter;
 use std::io;
 use std::path::Path;
 
-use crate::error::Fallible;
 use crate::Error;
+use crate::error::Fallible;
 
 /// Ensure given `path` exist.
 #[inline]

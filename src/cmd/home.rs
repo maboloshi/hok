@@ -1,9 +1,9 @@
 //! Open the homepage of a package.
 
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
+use libscoop::{QueryOption, Session, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Browse the homepage of a package
 #[derive(Debug, Parser)]
@@ -21,7 +21,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = package::query::query(session, queries, options, false)?;
 
     match result.len() {
-        0 => output::err(rust_i18n::t!("cmd.home_not_found", query = query)),
+        0 => {
+            return Err(anyhow::anyhow!(rust_i18n::t!(
+                "cmd.home_not_found",
+                query = query
+            )));
+        }
         1 => {
             let package = &result[0];
             let url = package.homepage();
@@ -39,18 +44,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     pkg.homepage()
                 );
             }
-            output::prompt(rust_i18n::t!("output.select_prompt"));
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let parsed = input.trim().parse::<usize>();
-            if let Ok(num) = parsed
-                && num < result.len() {
-                    let package = &result[num];
-                    let url = package.homepage();
-                    libscoop::os::open_url(url)?;
-                    return Ok(());
-                }
-            output::err(rust_i18n::t!("cmd.home_invalid"));
+            let index = output::prompt_select(result.len())
+                .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.home_invalid")))?;
+            let package = &result[index];
+            let url = package.homepage();
+            libscoop::os::open_url(url)?;
+            return Ok(());
         }
     }
     Ok(())

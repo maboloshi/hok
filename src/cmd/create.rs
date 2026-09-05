@@ -1,10 +1,10 @@
 //! Create a package manifest.
 
 use clap::Parser;
-use libscoop::{fs, package::create, Session};
+use libscoop::{Session, fs, package::create};
 use std::path::PathBuf;
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Create a manifest from a download URL
 ///
@@ -23,11 +23,10 @@ pub struct Args {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let url = args.url.trim();
     if url.is_empty() {
-        output::err(rust_i18n::t!("cmd.create_url_required"));
-        return Ok(());
+        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.create_url_required")));
     }
 
-    output::info(format!("Creating manifest for: {url}"));
+    output::info(rust_i18n::t!("cmd.create_creating", url = url));
 
     output::progress(rust_i18n::t!("cmd.downloading"), "");
     let manifest = create::create_manifest(session, url)
@@ -40,7 +39,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match &args.output {
         Some(path) => {
             fs::write(path, output_json.as_bytes())?;
-            output::done(rust_i18n::t!("cmd.create_manifest_saved", path = path.display()));
+            output::done(rust_i18n::t!(
+                "cmd.create_manifest_saved",
+                path = path.display()
+            ));
         }
         None => {
             println!("\n{}", output_json);

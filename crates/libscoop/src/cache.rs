@@ -79,22 +79,21 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
                 .filter_map(|de| {
                     if let Ok(entry) = de {
                         let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-                        if is_file
-                            && let Ok(item) = CacheFile::from(entry.path()) {
-                                if !is_wildcard_query {
-                                    let matched = item
-                                        .package_name()
-                                        .to_lowercase()
-                                        .contains(&query.to_lowercase());
-                                    if matched {
-                                        return Some(item);
-                                    } else {
-                                        return None;
-                                    }
+                        if is_file && let Ok(item) = CacheFile::from(entry.path()) {
+                            if !is_wildcard_query {
+                                let matched = item
+                                    .package_name()
+                                    .to_lowercase()
+                                    .contains(&query.to_lowercase());
+                                if matched {
+                                    return Some(item);
+                                } else {
+                                    return None;
                                 }
-
-                                return Some(item);
                             }
+
+                            return Some(item);
+                        }
                     }
                     None
                 })
@@ -149,13 +148,14 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
             let files = list(session, query)?;
             for f in files.into_iter() {
                 if let Err(e) = std::fs::remove_file(f.path())
-                    && e.kind() != std::io::ErrorKind::NotFound {
-                        session.output().error(format!(
-                            "failed to remove cache '{}': {}",
-                            f.path().display(),
-                            e
-                        ));
-                    }
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    session.output().error(format!(
+                        "failed to remove cache '{}': {}",
+                        f.path().display(),
+                        e
+                    ));
+                }
             }
             Ok(())
         }

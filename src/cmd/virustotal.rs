@@ -1,9 +1,9 @@
 //! Look for malware using VirusTotal.
 
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
+use libscoop::{QueryOption, Session, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Check a package's download URL against VirusTotal
 ///
@@ -24,8 +24,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let pkgs = package::query::query(session, queries, options, false)?;
 
     if pkgs.is_empty() {
-        output::err(rust_i18n::t!("cmd.no_pkgs_found"));
-        return Ok(());
+        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.no_pkgs_found")));
     }
 
     // Get API key: env var > config > none
@@ -40,21 +39,29 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             continue;
         }
 
-        let url = urls[0].split('#').next().unwrap_or(urls[0]);
-        print!("  {}: {} ... ", pkg.name(), url);
-
         if let Some(key) = &api_key {
+            let url = urls[0].split('#').next().unwrap_or(urls[0]);
             match package::virustotal::check_url(url, key).await {
-                Ok(stats) => {
-                    if stats.malicious > 0 {
-                        output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));
-                    } else if stats.suspicious > 0 {
-                        output::warn(format!("SUSPICIOUS {}/{} suspicious", stats.suspicious, stats.total));
-                    } else {
-                        output::info(format!("OK {}/{} clean", stats.total - stats.harmless, stats.total));
-                    }
-                }
-                Err(e) => output::err(format!("{e}")),
+                Ok(stats) if stats.malicious > 0 => output::err(format!(
+                    "{}: {}",
+                    pkg.name(),
+                    rust_i18n::t!("cmd.vt_malicious", n = stats.malicious, total = stats.total)
+                )),
+                Ok(stats) if stats.suspicious > 0 => output::warn(format!(
+                    "{}: {}",
+                    pkg.name(),
+                    rust_i18n::t!(
+                        "cmd.vt_suspicious",
+                        n = stats.suspicious,
+                        total = stats.total
+                    )
+                )),
+                Ok(stats) => output::info(format!(
+                    "{}: {}",
+                    pkg.name(),
+                    rust_i18n::t!("cmd.vt_clean", total = stats.total)
+                )),
+                Err(e) => output::err(format!("{}: {}", pkg.name(), e)),
             }
         } else {
             output::warn(rust_i18n::t!("cmd.vt_skip"));
