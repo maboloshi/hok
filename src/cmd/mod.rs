@@ -209,6 +209,63 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
         .collect()
 }
 
+/// Localize every structural section heading in the help of *all* commands.
+///
+/// clap renders arguments that carry **no** `help_heading` under hard-coded
+/// English titles ("Arguments:"/"Options:"), which is why a zh session used to
+/// mix English "Arguments"/"Options" headings with the localized ones the
+/// [`I18nHelp`] derive sets on the global args. Here we assign a localized
+/// `help_heading` to *every* argument of every command (positionals to the
+/// Arguments heading, options/help/version to the Options heading) so clap
+/// never falls back to its English literals, and so all option-style args
+/// (per-command flags + globals + -h/--help) merge into a single localized
+/// "Options" section instead of two parallel ones.
+///
+/// Must run *after* the command tree is built so the auto-generated
+/// -h/--help and -V/--version args exist to be labelled.
+fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
+    let args_h = rust_i18n::t!("cli_help.heading.arguments").to_string();
+    let opts_h = rust_i18n::t!("cli_help.heading.options").to_string();
+    cmd.build();
+    localize_heading_level(cmd, &args_h, &opts_h)
+}
+
+/// Assign localized headings to one command and recurse into its subcommands.
+///
+/// Positionals are processed first so the Arguments section renders before
+/// the Options section regardless of declaration order.
+fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> clap::Command {
+    let mut cmd = cmd;
+    let pos_ids: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| a.is_positional())
+        .map(|a| a.get_id().to_string())
+        .collect();
+    let opt_ids: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| !a.is_positional())
+        .map(|a| a.get_id().to_string())
+        .collect();
+    for id in &pos_ids {
+        let h = args_h.to_string();
+        cmd = cmd.mut_arg(id, move |a| a.help_heading(h));
+    }
+    for id in &opt_ids {
+        let h = opts_h.to_string();
+        cmd = cmd.mut_arg(id, move |a| a.help_heading(h));
+    }
+    let sub_names: Vec<String> = cmd
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .collect();
+    for name in &sub_names {
+        let a = args_h.to_string();
+        let o = opts_h.to_string();
+        cmd = cmd.mut_subcommand(name, move |sub| localize_heading_level(sub, &a, &o));
+    }
+    cmd
+}
+
 /// CLI entry point
 ///
 /// `cancellation` is the process-wide cooperative cancellation token (wired
@@ -220,7 +277,7 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     i18n::init_language(preselected_language);
 
     let args = {
-        let cmd = Cli::patch_i18n(Cli::command());
+        let cmd = localize_structural_headings(Cli::patch_i18n(Cli::command()));
         // Scoop (PowerShell) semantics: subcommand names are case-insensitive
         // (`hok INSTALL` == `hok install`). clap 4 dropped subcommand-level
         // `ignore_case`, so normalise the subcommand token (the first
