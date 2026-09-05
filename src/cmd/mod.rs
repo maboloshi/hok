@@ -54,6 +54,33 @@ include!("__cmd_reg__.rs");
 
 use crate::Result;
 
+/// Localized Info-column word for one concern kind.
+///
+/// The *order* of the words is fixed once in
+/// `libscoop::package::status::AppStatus::info_kinds` and shared verbatim by
+/// `status` and `list`; this function only translates a kind into the
+/// currently selected language, so the two commands can never drift.
+pub(crate) fn status_info_word(kind: libscoop::package::status::InfoKind) -> String {
+    match kind {
+        libscoop::package::status::InfoKind::InstallFailed => {
+            rust_i18n::t!("cmd.status_install_failed").to_string()
+        }
+        libscoop::package::status::InfoKind::Held => rust_i18n::t!("cmd.status_held").to_string(),
+        libscoop::package::status::InfoKind::Deprecated => {
+            rust_i18n::t!("cmd.status_deprecated").to_string()
+        }
+        libscoop::package::status::InfoKind::Orphaned => {
+            rust_i18n::t!("cmd.status_removed").to_string()
+        }
+        libscoop::package::status::InfoKind::BucketMissing => {
+            rust_i18n::t!("cmd.status_bucket_missing").to_string()
+        }
+        libscoop::package::status::InfoKind::SourceUnknown => {
+            rust_i18n::t!("cmd.status_source_unknown").to_string()
+        }
+    }
+}
+
 #[derive(Parser, I18nHelp)]
 #[command(
     name = crate_name!(),

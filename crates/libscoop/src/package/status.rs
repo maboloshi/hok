@@ -2,69 +2,172 @@
 //!
 //! Mirrors upstream `scoop status` (libexec/scoop-status.ps1) + `app_status`
 //! (lib/core.ps1): for every installed app it reports which dimensions need
-//! attention — outdated, install-failed, deprecated, manifest-removed,
-//! missing dependencies, held — plus the installed and latest versions.
+//! attention across a shared four-axis model:
 //!
-//! # Design
-//!
-//! The heavy lifting (installed enumeration, `current`-junction resolution,
-//! version selection, upgradable detection) lives in [`query::query_installed`];
-//! this module builds on it and adds the pieces Scoop computes on top of the
-//! installed package:
-//!
-//! - **deprecated** — a manifest for the app under the origin bucket's
-//!   `deprecated` subfolder (upstream keeps deprecated manifests there);
-//! - **removed** — the origin bucket no longer carries a live manifest for the
-//!   app (either the bucket directory is gone, or the manifest was deleted);
-//! - **missing_deps** — `depends` entries of the source manifest that are not
-//!   installed.
+//! - **Axis 1 (install integrity)** - `broken` (Ok / Broken);
+//! - **Axis 2 (source state)** - `SourceState`, collapsed by the shared
+//!   `classify` so `status` and `list` can never drift into two predicates;
+//! - **Axis 3 (update state)** - `outdated` (Current / Outdated); a source
+//!   that cannot be compared (Deprecated / Orphaned / BucketMissing /
+//!   UnknownBroken / Isolated) is *Unknown* and is surfaced through the info
+//!   words rather than silently left blank;
+//! - **Axis 4 (deps + policy)** - `missing_deps`, `held`.
 //!
 //! Output here is data, never text: the caller (CLI) renders the table and the
-//! "Everything is ok!" gating.
+//! summary footer. Both `status` and `list` derive their info column from
+//! [`AppStatus::info_kinds`], so the word order cannot drift.
+//!
+//! The heavy lifting (installed enumeration, `current`-junction resolution,
+//! version selection, upgradable detection) lives in `query::query_installed`;
+//! this module builds on it and adds the source classification.
 
-use std::path::Path;
+use std::collections::HashSet;
 
 use crate::Session;
 use crate::error::Fallible;
-use crate::package::QueryOption;
 use crate::package::query::query_installed;
+use crate::package::source::{SourceState, classify};
+use crate::package::{Package, QueryOption};
 
-/// The per-app status record produced by [`status`].
+/// A dimension that can draw an installed app to the user's attention,
+/// ordered by the priority used when a row is counted once in the summary
+/// footer (highest wins): Broken > source anomaly > missing deps > outdated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attention {
+    /// The app is healthy on every axis.
+    None,
+    /// Axis 1: the install is broken/partial.
+    Broken,
+    /// Axis 2: the origin bucket no longer carries a live manifest for the
+    /// app (Deprecated / Orphaned / BucketMissing - not UnknownBroken, which
+    /// is always Broken too).
+    Source,
+    /// Axis 4: a `depends` entry is not installed.
+    MissingDeps,
+    /// Axis 3: a newer version exists in the (live) origin bucket.
+    Updatable,
+}
+
+/// A single info-column word, in a fixed order shared verbatim between the
+/// `status` and `list` renderers (via [`AppStatus::info_kinds`]). The CLI
+/// maps each kind to a localized string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfoKind {
+    /// The install is broken/partial (axis 1).
+    InstallFailed,
+    /// The package is held (axis 4 policy).
+    Held,
+    /// Source is only under the bucket's `deprecated/` folder (axis 2).
+    Deprecated,
+    /// The live manifest was deleted from the origin bucket (axis 2).
+    Orphaned,
+    /// The whole origin bucket directory is gone (axis 2).
+    BucketMissing,
+    /// Broken install with neither a bucket nor a URL record - source
+    /// genuinely unknown, and deliberately not labelled "removed" (axis 2).
+    SourceUnknown,
+}
+
+/// The per-app status record produced by [`status`] and consumed by `list`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppStatus {
     /// Installed app name.
     pub name: String,
-    /// Origin bucket name (or `__isolated__` for URL/path installs).
+    /// Source column value: the origin bucket name, `__isolated__` for
+    /// URL/path installs, or empty when the source is genuinely unknown
+    /// ([`SourceState::UnknownBroken`]).
     pub bucket: String,
+    /// Axis 2: how this app relates to its origin source.
+    pub source: SourceState,
+    /// Axis 1: the install is broken/partial.
+    pub broken: bool,
     /// Installed version (`None` for a broken install).
     pub installed_version: Option<String>,
-    /// Latest version available from the origin bucket (`Some` only when
-    /// outdated; upstream leaves this column blank otherwise).
+    /// Axis 3 latest: newest version available from a *live* origin manifest
+    /// (`Some` only when outdated; upstream leaves this column blank
+    /// otherwise).
     pub latest_version: Option<String>,
-    /// A newer version exists in the origin bucket.
+    /// Axis 3: a newer version exists in the live origin bucket.
     pub outdated: bool,
-    /// The install is broken/partial.
-    pub failed: bool,
-    /// A manifest exists under the origin bucket's `deprecated` folder.
-    pub deprecated: bool,
-    /// The origin bucket no longer has a live manifest for the app.
-    pub removed: bool,
-    /// The package is held.
+    /// Axis 4: the package is held.
     pub held: bool,
-    /// Names of `depends` entries that are not installed.
+    /// Axis 4: names of `depends` entries that are not installed.
     pub missing_deps: Vec<String>,
 }
 
 impl AppStatus {
-    /// Whether this app needs to be listed in Scoop's "attention" view
-    /// (upstream only shows apps that are outdated / failed / deprecated /
-    /// removed / missing deps — a held-but-otherwise-healthy app is omitted).
+    /// Build the four-axis view of one installed package given its already
+    /// computed source state. `missing_deps` is left empty (it requires the
+    /// whole installed-name set); [`status`] fills it in.
+    pub fn from_package(pkg: &Package, source: SourceState) -> Self {
+        let latest = pkg.upgradable_version().map(str::to_owned);
+        // A broken install with no record should not masquerade as the
+        // `__isolated__` fallback the query layer assigned to it.
+        let bucket = if source == SourceState::UnknownBroken {
+            String::new()
+        } else {
+            pkg.bucket().to_owned()
+        };
+        AppStatus {
+            name: pkg.name().to_owned(),
+            bucket,
+            source,
+            broken: pkg.is_install_failed(),
+            installed_version: pkg.installed_version().map(str::to_owned),
+            latest_version: latest.clone(),
+            outdated: latest.is_some(),
+            held: pkg.is_held(),
+            missing_deps: Vec::new(),
+        }
+    }
+
+    /// The highest-priority axis that needs the user's attention, used both
+    /// to decide the default `status` filter and to count each row once in
+    /// the summary footer.
+    pub fn attention(&self) -> Attention {
+        if self.broken {
+            Attention::Broken
+        } else if matches!(
+            self.source,
+            SourceState::Deprecated | SourceState::Orphaned | SourceState::BucketMissing
+        ) {
+            Attention::Source
+        } else if !self.missing_deps.is_empty() {
+            Attention::MissingDeps
+        } else if self.outdated {
+            Attention::Updatable
+        } else {
+            Attention::None
+        }
+    }
+
+    /// Whether this app needs to be listed in Scoop's "attention" view.
+    /// (Upstream only shows apps that are outdated / failed / deprecated /
+    /// removed / missing deps - a held-but-otherwise-healthy app is omitted.)
     pub fn needs_attention(&self) -> bool {
-        self.outdated
-            || self.failed
-            || self.deprecated
-            || self.removed
-            || !self.missing_deps.is_empty()
+        self.attention() != Attention::None
+    }
+
+    /// The info-column words for this app, in a fixed order shared verbatim
+    /// by `status` and `list`. Missing-dependency names and the outdated
+    /// "-> new" arrow are *not* kinds: `status` shows them in dedicated
+    /// columns, `list` renders the arrow as its only update indicator.
+    pub fn info_kinds(&self) -> Vec<InfoKind> {
+        let mut kinds = Vec::with_capacity(2);
+        if self.broken {
+            kinds.push(InfoKind::InstallFailed);
+        }
+        if self.held {
+            kinds.push(InfoKind::Held);
+        }
+        match self.source {
+            SourceState::Deprecated => kinds.push(InfoKind::Deprecated),
+            SourceState::Orphaned => kinds.push(InfoKind::Orphaned),
+            SourceState::BucketMissing => kinds.push(InfoKind::BucketMissing),
+            SourceState::UnknownBroken => kinds.push(InfoKind::SourceUnknown),
+            SourceState::Synced | SourceState::Isolated => {}
+        }
+        kinds
     }
 }
 
@@ -72,8 +175,8 @@ impl AppStatus {
 ///
 /// Enumerates installed apps via [`query_installed`] with `Broken` +
 /// `UpgradableCheck` (so partial installs are surfaced and upgradable state
-/// is filled without filtering out up-to-date apps), then fills in the
-/// deprecation / removal / missing-dependency dimensions per app.
+/// is filled without filtering out up-to-date apps), classifies each app's
+/// source via [`classify`], then fills in the missing-dependency dimension.
 ///
 /// # Errors
 ///
@@ -84,30 +187,20 @@ pub fn status(session: &Session) -> Fallible<Vec<AppStatus>> {
         &["*"],
         &[QueryOption::Broken, QueryOption::UpgradableCheck],
     )?;
+    let sources = classify(session, &packages);
 
     // Installed names in the current scope, used to detect missing deps.
-    let mut installed_names = std::collections::HashSet::new();
+    let mut installed_names = HashSet::new();
     for pkg in &packages {
         installed_names.insert(pkg.name().to_lowercase());
     }
 
     let mut out = Vec::with_capacity(packages.len());
-    for pkg in &packages {
-        let installed_version = pkg.installed_version().map(str::to_owned);
-        let latest = pkg.upgradable_version().map(str::to_owned);
-        let bucket = pkg.bucket().to_owned();
-
-        // Only bucket-installed apps can be deprecated/removed; isolated
-        // (URL / local-path) installs have no origin bucket to check.
-        let (deprecated, removed) = if pkg.is_isolated() {
-            (false, false)
-        } else {
-            probe_origin_bucket(session, &bucket, pkg.name())
-        };
-
+    for (pkg, source) in packages.iter().zip(sources) {
+        let mut s = AppStatus::from_package(pkg, source);
         // Scoop's app_status checks the *explicit* depends field (not the
         // implicit installation helpers) for missing dependencies.
-        let missing_deps = pkg
+        s.missing_deps = pkg
             .manifest()
             .depends()
             .unwrap_or_default()
@@ -115,118 +208,12 @@ pub fn status(session: &Session) -> Fallible<Vec<AppStatus>> {
             .map(|d| crate::package::extract_name(d).to_lowercase())
             .filter(|n| !installed_names.contains(n))
             .collect::<Vec<_>>();
-
-        out.push(AppStatus {
-            name: pkg.name().to_owned(),
-            bucket,
-            installed_version,
-            latest_version: latest.clone(),
-            outdated: latest.is_some(),
-            failed: pkg.is_install_failed(),
-            deprecated,
-            removed,
-            held: pkg.is_held(),
-            missing_deps,
-        });
+        out.push(s);
     }
 
     Ok(out)
 }
 
-/// Determine the deprecated / removed state of a bucket-installed app.
-///
-/// Upstream `app_status` (lib/core.ps1:557-561):
-///
-/// \`\`text
-/// $deprecated_dir = bucket + '\deprecated'
-/// $status.deprecated = Get-ChildItem $deprecated_dir -Filter "$app.json" -Recurse
-/// $manifest = manifest $app $bucket
-/// $status.removed = (!$manifest)   # live manifest gone from the bucket
-/// \`\`
-///
-/// A manifest under the `deprecated` subfolder counts as deprecated but *not*
-/// removed (it is still findable by Scoop's recursive `manifest` lookup).
-fn probe_origin_bucket(session: &Session, bucket: &str, app: &str) -> (bool, bool) {
-    let bucket_dir = session.bucket_dir(bucket);
-    if !bucket_dir.exists() {
-        // Whole bucket gone -> the manifest is removed.
-        return (false, true);
-    }
-
-    let filename = format!("{app}.json");
-    // Deprecated manifests may sit at <bucket>/bucket/deprecated/ (categorized
-    // layout) or directly under a deprecated folder. Mirror Scoop's recursive
-    // search under the deprecated directory wherever it appears.
-    let deprecated_hit = find_deprecated_manifest(&bucket_dir, &filename);
-
-    // A live manifest elsewhere in the bucket (root / bucket / category),
-    // excluding any deprecated folder.
-    let live_hit = find_live_manifest(&bucket_dir, &filename);
-
-    (deprecated_hit, !deprecated_hit && !live_hit)
-}
-
-/// Depth-first search for `filename` under a `deprecated` subfolder.
-fn find_deprecated_manifest(bucket: &Path, filename: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(bucket) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir()
-            && path.file_name().is_some_and(|n| n == "deprecated")
-            && walk_for_file(&path, filename)
-        {
-            return true;
-        }
-    }
-    // Also check a nested <bucket>/bucket/deprecated when the top-level walk
-    // found nothing (defensive; some buckets nest).
-    let nested = bucket.join("bucket").join("deprecated");
-    if nested.is_dir() && walk_for_file(&nested, filename) {
-        return true;
-    }
-    false
-}
-
-/// Depth-first search for a live manifest, skipping any `deprecated` folder.
-fn find_live_manifest(bucket: &Path, filename: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(bucket) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if path.file_name().is_some_and(|n| n == "deprecated") {
-                continue;
-            }
-            if find_live_manifest(&path, filename) {
-                return true;
-            }
-        } else if path.file_name().is_some_and(|n| n == filename) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Depth-first search for a file named `filename`, stopping when found.
-fn walk_for_file(dir: &Path, filename: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if walk_for_file(&path, filename) {
-                return true;
-            }
-        } else if path.file_name().is_some_and(|n| n == filename) {
-            return true;
-        }
-    }
-    false
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +221,17 @@ mod tests {
 
     const MINI: &str =
         "{\"version\": \"1.0.0\", \"homepage\": \"https://e.com\", \"license\": \"MIT\"}";
+    const MINI_V2: &str =
+        "{\"version\": \"2.0.0\", \"homepage\": \"https://e.com\", \"license\": \"MIT\"}";
+
+    /// Create a broken, source-unknown install: a `current/manifest.json`
+    /// (so the app dir is enumerated) with no `install.json` (so the source
+    /// bucket cannot be read back -> UnknownBroken).
+    fn install_broken(root: &std::path::Path, name: &str) {
+        let current = root.join("apps").join(name).join("current");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("manifest.json"), MINI).unwrap();
+    }
 
     fn install(root: &std::path::Path, name: &str, bucket: &str, version: &str) {
         mark_installed(
@@ -267,10 +265,10 @@ mod tests {
         let s = &list[0];
         assert_eq!(s.name, "7zip");
         assert_eq!(s.installed_version.as_deref(), Some("1.0.0"));
-        assert!(
-            !s.outdated && !s.failed && !s.deprecated && !s.removed && s.missing_deps.is_empty()
-        );
+        assert_eq!(s.source, SourceState::Synced);
+        assert!(!s.broken && !s.outdated && s.missing_deps.is_empty());
         assert!(!s.needs_attention());
+        assert_eq!(s.info_kinds(), vec![]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -278,18 +276,20 @@ mod tests {
     fn outdated_app_reports_latest() {
         let root = tmpdir("status_outdated");
         let session = test_session(&root);
-        write_bucket_manifest(&root, "main", "7zip", MINI);
-        install(&root, "7zip", "main", "0.9.0");
+        write_bucket_manifest(&root, "main", "7zip", MINI_V2);
+        install(&root, "7zip", "main", "1.0.0");
         let list = status(&session).unwrap();
         let s = &list[0];
         assert!(s.outdated);
-        assert_eq!(s.latest_version.as_deref(), Some("1.0.0"));
+        assert_eq!(s.source, SourceState::Synced);
+        assert_eq!(s.latest_version.as_deref(), Some("2.0.0"));
+        assert_eq!(s.attention(), Attention::Updatable);
         assert!(s.needs_attention());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn deprecated_manifest_flagged_not_removed() {
+    fn deprecated_manifest_flagged_not_orphaned() {
         let root = tmpdir("status_deprecated");
         let session = test_session(&root);
         let dir = root.join("buckets").join("main").join("deprecated");
@@ -298,28 +298,60 @@ mod tests {
         install(&root, "legacy", "main", "1.0.0");
         let list = status(&session).unwrap();
         assert_eq!(list.len(), 1);
-        assert!(
-            list[0].deprecated,
-            "app with only a deprecated manifest is deprecated"
-        );
-        assert!(
-            !list[0].removed,
-            "deprecated manifest is still findable -> not removed"
-        );
+        assert_eq!(list[0].source, SourceState::Deprecated);
+        assert_eq!(list[0].info_kinds(), vec![InfoKind::Deprecated]);
+        assert_eq!(list[0].attention(), Attention::Source);
         assert!(list[0].needs_attention());
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn manifest_removed_from_live_bucket_is_removed() {
-        let root = tmpdir("status_removed");
+    fn live_manifest_removed_is_orphaned() {
+        let root = tmpdir("status_orphaned");
         let session = test_session(&root);
         install(&root, "gone", "main", "1.0.0");
         std::fs::create_dir_all(root.join("buckets").join("main")).unwrap();
         let list = status(&session).unwrap();
         assert_eq!(list.len(), 1);
-        assert!(list[0].removed);
+        assert_eq!(list[0].source, SourceState::Orphaned);
+        assert_eq!(list[0].attention(), Attention::Source);
         assert!(list[0].needs_attention());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn whole_bucket_gone_is_bucket_missing() {
+        let root = tmpdir("status_bucket_missing");
+        let session = test_session(&root);
+        install(&root, "gone", "main", "1.0.0");
+        // No buckets/main directory at all -> the bucket itself is gone.
+        let list = status(&session).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].source, SourceState::BucketMissing);
+        assert_eq!(list[0].bucket, "main");
+        assert_eq!(list[0].attention(), Attention::Source);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn broken_without_record_is_unknown_broken() {
+        let root = tmpdir("status_unknown_broken");
+        let session = test_session(&root);
+        // A `current` with no install.json -> broken package with no source
+        // record -> UnknownBroken, not "removed".
+        install_broken(&root, "fiddler");
+        let list = status(&session).unwrap();
+        assert_eq!(list.len(), 1);
+        let s = &list[0];
+        assert_eq!(s.name, "fiddler");
+        assert!(s.broken);
+        assert_eq!(s.source, SourceState::UnknownBroken);
+        assert!(s.bucket.is_empty(), "source unknown -> no bucket claimed");
+        assert_eq!(s.attention(), Attention::Broken);
+        assert_eq!(
+            s.info_kinds(),
+            vec![InfoKind::InstallFailed, InfoKind::SourceUnknown]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -331,8 +363,10 @@ mod tests {
         write_bucket_manifest(&root, "main", "a", deps);
         mark_installed(&root, "a", "main", deps, false);
         let list = status(&session).unwrap();
-        assert_eq!(list[0].missing_deps, vec!["helper"]);
-        assert!(list[0].needs_attention());
+        let s = &list[0];
+        assert_eq!(s.missing_deps, vec!["helper"]);
+        assert_eq!(s.attention(), Attention::MissingDeps);
+        assert!(s.needs_attention());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -364,7 +398,89 @@ mod tests {
         .unwrap();
         let list = status(&session).unwrap();
         assert_eq!(list.len(), 1);
-        assert!(!list[0].deprecated && !list[0].removed);
+        assert_eq!(list[0].source, SourceState::Isolated);
+        assert!(!list[0].broken && !list[0].outdated);
+        assert_eq!(list[0].attention(), Attention::None);
+        assert!(!list[0].needs_attention());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Reproduces the user's real status/list dataset so the shared footer
+    // semantics are pinned: 8 items needing attention summing to 8.
+    //
+    //   WorkBuddy       Synced + outdated                 -> Updatable
+    //   hp              origin bucket directory gone      -> BucketMissing
+    //   GuoheView       live manifest removed            -> Orphaned
+    //   Reqable         live manifest removed            -> Orphaned
+    //   Fiddler/potplayer/sublime-merge/sublime-text
+    //                   broken with no source record     -> UnknownBroken
+    #[test]
+    fn acceptance_footer_counts_sum_to_rows() {
+        let root = tmpdir("status_acceptance");
+        let session = test_session(&root);
+
+        // WorkBuddy: extras bucket exists and carries a live, newer manifest.
+        write_bucket_manifest(&root, "extras", "workbuddy", MINI_V2);
+        install(&root, "WorkBuddy", "extras", "1.0.0");
+        // GuoheView / Reqable: same live bucket, but no manifest for them.
+        install(&root, "GuoheView", "extras", "1.0.0");
+        install(&root, "Reqable", "extras", "1.0.0");
+        // hp: recorded origin bucket "main" does not exist at all.
+        install(&root, "hp", "main", "1.0.0");
+        // Broken, source-unknown apps.
+        for name in ["Fiddler", "potplayer", "sublime-merge", "sublime-text"] {
+            install_broken(&root, name);
+        }
+
+        let list = status(&session).unwrap();
+        assert_eq!(list.len(), 8);
+
+        let by = |n: &str| {
+            list.iter()
+                .find(|s| s.name.eq_ignore_ascii_case(n))
+                .unwrap_or_else(|| panic!("no status row for {n}"))
+        };
+
+        let wb = by("WorkBuddy");
+        assert_eq!(wb.source, SourceState::Synced);
+        assert!(wb.outdated);
+        assert_eq!(wb.attention(), Attention::Updatable);
+
+        assert_eq!(by("hp").source, SourceState::BucketMissing);
+        assert_eq!(by("hp").attention(), Attention::Source);
+        assert_eq!(by("GuoheView").source, SourceState::Orphaned);
+        assert_eq!(by("Reqable").source, SourceState::Orphaned);
+
+        for name in ["Fiddler", "potplayer", "sublime-merge", "sublime-text"] {
+            let s = by(name);
+            assert!(s.broken, "{name} should be broken");
+            assert_eq!(s.source, SourceState::UnknownBroken);
+            assert_eq!(s.attention(), Attention::Broken);
+        }
+
+        // Every row needs attention and is counted exactly once, by its
+        // highest-priority category: Broken(4) > Source(3) > MissingDeps(0)
+        // > Updatable(1). The four numbers sum to the eight rows.
+        assert_eq!(list.iter().filter(|s| s.needs_attention()).count(), 8);
+        assert_eq!(list.iter().filter(|s| s.broken).count(), 4);
+        assert_eq!(
+            list.iter()
+                .filter(|s| s.attention() == Attention::Source)
+                .count(),
+            3
+        );
+        assert_eq!(
+            list.iter()
+                .filter(|s| s.attention() == Attention::MissingDeps)
+                .count(),
+            0
+        );
+        assert_eq!(
+            list.iter()
+                .filter(|s| s.attention() == Attention::Updatable)
+                .count(),
+            1
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
