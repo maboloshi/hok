@@ -7,16 +7,19 @@
 //! predicates (which is what happened before: `status` probed "no live
 //! manifest" while `list` only checked "whole bucket directory gone").
 //!
-//! Cost model: the expensive part is scanning a bucket (to learn which
-//! manifests are live vs. only under deprecated/), not classifying one app.
-//! classify() walks each referenced bucket once - building a BucketIndex in
-//! a single recursive pass - then answers every app of that bucket with two
-//! O(1) set lookups. The previous code re-walked the bucket for every app.
+//! Cost model: classifying never scans a whole bucket (that would read the
+//! bucket's entire tree - including its `.git/` directory - on every
+//! `list`/`status`). Instead each app is decided with a bounded handful of
+//! `exists()` probes against the canonical manifest locations that Scoop
+//! actually uses (the same [`Bucket::path_of_manifest`] lookup that loads the
+//! origin manifest for upgradable checks, plus the known `deprecated`
+//! folders), so per-bucket cost is O(apps) regardless of bucket size.
 
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::Session;
+use crate::bucket::Bucket;
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::Package;
 
@@ -40,62 +43,26 @@ pub enum SourceState {
     UnknownBroken,
 }
 
-/// What one bucket currently contains, indexed once per call.
-#[derive(Default)]
-struct BucketIndex {
-    /// App names (lower-cased) that have a live manifest outside `deprecated/`.
-    live: HashSet<String>,
-    /// App names (lower-cased) whose only manifest lives under `deprecated/`.
-    deprecated: HashSet<String>,
-}
-
-impl BucketIndex {
-    /// Recursively index a bucket directory, splitting live vs. deprecated.
-    fn build(bucket_dir: &Path) -> BucketIndex {
-        let mut idx = BucketIndex::default();
-        walk(bucket_dir, false, &mut idx);
-        idx
-    }
-
-    fn source(&self, app: &str) -> SourceState {
-        let key = app.to_lowercase();
-        if self.deprecated.contains(&key) {
-            SourceState::Deprecated
-        } else if self.live.contains(&key) {
-            SourceState::Synced
-        } else {
-            SourceState::Orphaned
-        }
-    }
-}
-
-fn walk(dir: &Path, inside_deprecated: bool, idx: &mut BucketIndex) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let is_deprecated =
-                inside_deprecated || path.file_name().is_some_and(|n| n == "deprecated");
-            walk(&path, is_deprecated, idx);
-        } else if path.extension().is_some_and(|e| e == "json") {
-            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().to_lowercase()) else {
-                continue;
-            };
-            if inside_deprecated {
-                idx.deprecated.insert(stem);
-            } else {
-                idx.live.insert(stem);
-            }
-        }
-    }
+/// The `deprecated` folders Scoop keeps deprecated manifests in. A bucket
+/// may hold them directly under `<bucket>/deprecated` or, in the categorized
+/// layout, under `<bucket>/bucket/deprecated`. Only existing folders are
+/// returned, so per-app probing stays a couple of cheap `exists()` calls.
+fn deprecated_roots(bucket_dir: &Path) -> Vec<PathBuf> {
+    let candidates = [
+        bucket_dir.join("deprecated"),
+        bucket_dir.join("bucket").join("deprecated"),
+    ];
+    candidates
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>()
 }
 
 /// Classify every installed package; returns one SourceState per input
 /// package (order preserved). Bucket-installed apps are grouped by their
-/// origin bucket and each referenced bucket is walked at most once. Isolated
-/// (URL/path) and broken-without-a-record apps never trigger a bucket walk.
+/// origin bucket and each bucket is resolved with cheap per-app `exists()`
+/// probes - never a recursive scan of the whole bucket. Isolated
+/// (URL/path) and broken-without-a-record apps never touch a bucket.
 pub fn classify(session: &Session, pkgs: &[Package]) -> Vec<SourceState> {
     let mut out = vec![SourceState::Synced; pkgs.len()];
 
@@ -116,15 +83,38 @@ pub fn classify(session: &Session, pkgs: &[Package]) -> Vec<SourceState> {
 
     for (bucket, indexes) in by_bucket {
         let bucket_dir = session.bucket_dir(bucket);
-        let idx = if bucket_dir.exists() {
-            Some(BucketIndex::build(&bucket_dir))
-        } else {
-            None
+        if !bucket_dir.is_dir() {
+            for i in indexes {
+                out[i] = SourceState::BucketMissing;
+            }
+            continue;
+        }
+
+        let deprecated_roots = deprecated_roots(&bucket_dir);
+        // Bucket::from only fails if the directory vanished between the
+        // is_dir() check and now - treat that as the bucket being missing.
+        let Ok(bucket_obj) = Bucket::from(&bucket_dir) else {
+            for i in indexes {
+                out[i] = SourceState::BucketMissing;
+            }
+            continue;
         };
+
         for i in indexes {
-            out[i] = match &idx {
-                Some(idx) => idx.source(pkgs[i].name()),
-                None => SourceState::BucketMissing,
+            // Manifest filenames are conventionally lower-cased; match how
+            // the bucket index keys were previously normalised.
+            let name = pkgs[i].name().to_lowercase();
+            let deprecated = deprecated_roots
+                .iter()
+                .any(|dir| dir.join(format!("{name}.json")).exists());
+            if deprecated {
+                out[i] = SourceState::Deprecated;
+                continue;
+            }
+            out[i] = if bucket_obj.path_of_manifest(&name).is_some() {
+                SourceState::Synced
+            } else {
+                SourceState::Orphaned
             };
         }
     }
