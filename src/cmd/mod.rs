@@ -254,6 +254,27 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
         let h = opts_h.to_string();
         cmd = cmd.mut_arg(id, move |a| a.help_heading(h));
     }
+    // Localize the descriptions of the auto-generated -h/--help and -V/--version
+    // args (they are only materialised at build time, so the derive cannot reach
+    // them); every option already got the localized Options heading above.
+    for special in &["help", "version"] {
+        if cmd.get_arguments().any(|a| a.get_id() == *special) {
+            let tk = if *special == "help" {
+                "cli_help.hok.args.help"
+            } else {
+                "cli_help.hok.args.version"
+            };
+            let txt = rust_i18n::t!(tk).to_string();
+            let h = opts_h.to_string();
+            let txt2 = txt.clone();
+            cmd = cmd.mut_arg(*special, move |a| {
+                // Both short (-h/-V) and long (--help/--version) render paths must
+                // show the localized text: help is used for the short view and
+                // long_help for the long view, so set both when present.
+                a.help_heading(h).help(txt).long_help(txt2)
+            });
+        }
+    }
     let sub_names: Vec<String> = cmd
         .get_subcommands()
         .map(|s| s.get_name().to_string())
