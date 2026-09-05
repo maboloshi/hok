@@ -75,6 +75,7 @@ use std::{fmt, path::PathBuf};
 
 pub use manifest::{HashString, InstallInfo, License, Manifest};
 pub use query_matcher::QueryOption;
+pub use source::SourceState;
 pub use sync::SyncOption;
 
 pub(crate) use identity::*;
@@ -111,12 +112,6 @@ pub struct Package {
     /// only when [`QueryOption::Broken`] is active; never serialized.
     #[serde(skip)]
     install_failed: OnceCell<bool>,
-
-    /// Whether the source bucket named by this install's `install.json`
-    /// no longer exists under `buckets/`. Only meaningful for installed
-    /// packages; never serialized.
-    #[serde(skip)]
-    bucket_removed: OnceCell<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,7 +165,6 @@ impl Package {
             manifest,
             origin: OnceCell::new(),
             install_failed: OnceCell::new(),
-            bucket_removed: OnceCell::new(),
             install_state: OnceCell::new(),
             upgradable: OnceCell::new(),
         }
@@ -520,11 +514,6 @@ impl Package {
         self.install_failed.get().copied().unwrap_or(false)
     }
 
-    /// Whether the source bucket of this installed package is missing.
-    pub fn is_bucket_removed(&self) -> bool {
-        self.bucket_removed.get().copied().unwrap_or(false)
-    }
-
     /// Whether this installed package is isolated (installed from a URL or
     /// local path, not managed by any synced bucket).
     pub fn is_isolated(&self) -> bool {
@@ -533,10 +522,6 @@ impl Package {
 
     pub(crate) fn mark_install_failed(&self) {
         let _ = self.install_failed.set(true);
-    }
-
-    pub(crate) fn mark_bucket_removed(&self) {
-        let _ = self.bucket_removed.set(true);
     }
 }
 

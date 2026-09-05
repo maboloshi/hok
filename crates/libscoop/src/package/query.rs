@@ -172,13 +172,6 @@ pub fn query_installed(
                                     package.mark_install_failed();
                                 }
 
-                                // Mark when the origin bucket no longer exists.
-                                if bucket != ISOLATED_PACKAGE_BUCKET
-                                    && !internal_bucket_dir(&root_path, bucket).exists()
-                                {
-                                    package.mark_bucket_removed();
-                                }
-
                                 if !maybe_fill_upgradable(
                                     &root_path,
                                     &package,
@@ -245,11 +238,6 @@ fn broken_package(name: &str, pkg_dir: &std::path::Path) -> Option<Package> {
     let package = Package::from(name, &bucket, manifest);
     package.mark_install_failed();
     Some(package)
-}
-
-/// The `<root>/buckets/<name>` directory (user-level root).
-fn internal_bucket_dir(root: &std::path::Path, name: &str) -> std::path::PathBuf {
-    crate::internal::path::bucket_dir(root, name)
 }
 
 /// Search available packages.

@@ -3,13 +3,19 @@
 //! Both the plain listing and the `--versions` listing render through the
 //! same table: one row per package, plus dimmed continuation rows for the
 //! retained (non-current) versions when `--versions` is given.
+//!
+//! The info column reuses `status`'s word set and order
+//! (`AppStatus::info_kinds`, localized by `status_info_word`) so the two
+//! commands cannot drift; `list` additionally folds the outdated "-> new"
+//! arrow into Info because it has no Latest column.
 
 use clap::{ArgAction, Parser};
 use crossterm::style::Stylize;
-use libscoop::{package, QueryOption, Session};
+use libscoop::{QueryOption, Session, package};
 
+use crate::cmd::status_info_word;
 use crate::format::{pad_visual, visual_width};
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// List installed package(s)
 #[derive(Debug, Parser)]
@@ -49,6 +55,7 @@ struct Stats {
     held: u32,
     upgradable: u32,
     broken: u32,
+    /// Deprecated / Orphaned / BucketMissing (no longer fully managed).
     orphaned: u32,
     isolated: u32,
     retained: u32,
@@ -67,49 +74,57 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     let packages = package::query::query(session, queries, options, true)?;
+    let sources = package::source::classify(session, &packages);
 
     let mut rows = Vec::new();
     let mut stats = Stats::default();
 
-    for pkg in &packages {
+    for (idx, pkg) in packages.iter().enumerate() {
+        let st = package::status::AppStatus::from_package(pkg, sources[idx]);
         let held = pkg.is_held();
         if args.held && !held {
             continue;
         }
         stats.shown += 1;
 
-        let mut info = Vec::new();
-        if pkg.is_install_failed() {
-            info.push(rust_i18n::t!("cmd.list_install_failed").to_string());
+        if st.broken {
             stats.broken += 1;
         }
-        if pkg.is_bucket_removed() {
-            info.push(rust_i18n::t!("cmd.list_bucket_removed").to_string());
-            stats.orphaned += 1;
-        }
-        if pkg.is_isolated() {
-            stats.isolated += 1;
+        match st.source {
+            package::SourceState::Isolated => stats.isolated += 1,
+            package::SourceState::Deprecated
+            | package::SourceState::Orphaned
+            | package::SourceState::BucketMissing => stats.orphaned += 1,
+            package::SourceState::Synced | package::SourceState::UnknownBroken => {}
         }
         if held {
-            info.push(rust_i18n::t!("cmd.list_held").to_string());
             stats.held += 1;
         }
+
+        // Shared info words (same order as `status`). `list` has no Latest
+        // column, so an outdated app folds its "-> new" arrow in here; a
+        // future Updated column could move that out of Info.
+        // TODO: 未来加 Updated 列 后，把 outdated 的 → <new> 从 Info 挪走。
+        let mut words = st
+            .info_kinds()
+            .into_iter()
+            .map(status_info_word)
+            .collect::<Vec<_>>();
         if let Some(upgrade) = pkg.upgradable_version() {
-            info.push(format!("→ {}", upgrade));
+            words.push(format!("→ {}", upgrade));
             stats.upgradable += 1;
         }
 
-        let info = info.join(", ");
-        let info = if info.is_empty() {
+        let info = if words.is_empty() {
             String::new()
         } else {
-            info.red().to_string()
+            words.join(" · ").red().to_string()
         };
 
         rows.push(Row {
             name: pkg.name().to_owned(),
             version: pkg.version().to_owned(),
-            source: pkg.bucket().to_owned(),
+            source: st.bucket,
             info,
             dimmed: false,
         });
