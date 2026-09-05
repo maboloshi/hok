@@ -66,6 +66,24 @@ pub(super) fn joined_or_none(items: Vec<String>) -> Option<String> {
     }
 }
 
+/// Start-menu display names for `manifest.shortcuts` (the `[1]` element of
+/// each entry, mirroring `shortcut::add`). Used to describe what the shortcut
+/// step is about to create/remove.
+pub(super) fn shortcut_display_names(pkg: &Package) -> Vec<String> {
+    pkg.manifest()
+        .shortcuts()
+        .into_iter()
+        .flatten()
+        .filter(|s| s.len() > 1)
+        .map(|s| s[1].to_owned())
+        .collect()
+}
+
+/// Display name of a package's `psmodule` (mirroring `psmodule::add`).
+pub(super) fn psmodule_display_name(pkg: &Package) -> Option<String> {
+    pkg.manifest().psmodule().map(|m| m.name().to_owned())
+}
+
 /// Sync operation: install and/or upgrade packages.
 pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let mut packages = vec![];
@@ -678,10 +696,26 @@ async fn commit_one_install(
         );
     }
     shim::add(session, pkg)?;
+    for shortcut_name in shortcut_display_names(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::CreateShortcut,
+            Some(shortcut_name),
+        );
+    }
     shortcut::add(session, pkg)?;
 
     // 5.25 psmodule (Scoop order: after shims/shortcuts, before env)
     debug!("commit: {} v{} - psmodule", pkg.name(), pkg.version());
+    if let Some(module) = psmodule_display_name(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::AddPsModule,
+            Some(module),
+        );
+    }
     psmodule::add(session, pkg)?;
 
     // 5.5 env (Scoop order: after shims/shortcuts, before persist)
@@ -961,6 +995,28 @@ mod tests {
         let pkg = crate::package::Package::from("tool", "main", manifest);
         let names = shim_display_names(&pkg);
         assert_eq!(names, vec!["tool", "tool-gui", "tb"]);
+    }
+
+    /// Shortcut and ps-module display helpers read `manifest.shortcuts[][1]`
+    /// and `manifest.psmodule.name`, mirroring the add/remove operations.
+    #[test]
+    fn test_shortcut_and_psmodule_display_helpers() {
+        use crate::package::manifest::{Manifest, parse_file};
+        let root = crate::test_utils::tmpdir("shortcut_display");
+        let json = r#"{
+            "version": "1.0.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "shortcuts": [["bin/tool.exe", "My Tool", "-a"], ["bin/other.exe", "Other"]],
+            "psmodule": { "name": "MyToolPS" }
+        }"#;
+        let p = root.join("manifest.json");
+        std::fs::write(&p, json).unwrap();
+        let manifest: Manifest = parse_file(&p).unwrap();
+        let pkg = crate::package::Package::from("tool", "main", manifest);
+
+        assert_eq!(shortcut_display_names(&pkg), vec!["My Tool", "Other"]);
+        assert_eq!(psmodule_display_name(&pkg).as_deref(), Some("MyToolPS"));
     }
     #[tokio::test]
     async fn test_url_fragment_rename() {

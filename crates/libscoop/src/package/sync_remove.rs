@@ -22,7 +22,10 @@ use crate::{
     shortcut,
 };
 
-use super::sync_install::{check_not_running, emit_step, joined_or_none, shim_display_names};
+use super::sync_install::{
+    check_not_running, emit_step, joined_or_none, psmodule_display_name, shim_display_names,
+    shortcut_display_names,
+};
 use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
 /// Sync operation: remove packages.
@@ -301,6 +304,14 @@ async fn commit_one_remove(
             );
         }
         shim::remove(session, package)?;
+        for shortcut_name in shortcut_display_names(package) {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RemoveShortcut,
+                Some(shortcut_name),
+            );
+        }
         shortcut::remove(session, package)?;
 
         // Scoop order: `unlink_current` runs right after shims/shortcuts and
@@ -314,6 +325,14 @@ async fn commit_one_remove(
             None,
         );
         operations::unlink_current(&app_dir, session.config().no_junction())?;
+        if let Some(module) = psmodule_display_name(package) {
+            emit_step(
+                session,
+                package.name(),
+                crate::PackageStepKind::RemovePsModule,
+                Some(module),
+            );
+        }
         psmodule::remove(session, package)?;
 
         if let Some(paths) = package.manifest().env_add_path()
@@ -522,6 +541,20 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
 
     info!("resetting {} ({})", name, version);
 
+    // Anchor the reset in the commit sequence like install/remove do: a bare
+    // `(1/1) name` header (no version arrow — a reset re-applies the current
+    // version, it doesn't transition versions) closed by `✓ name`. Emitted
+    // only on the success path after the running-process/broken checks above.
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageCommitStart {
+            name: name.to_owned(),
+            index: 1,
+            total: 1,
+            old_version: String::new(),
+            new_version: String::new(),
+        });
+    }
+
     // Re-create the `current` symlink
     operations::link_current(&pkg_dir, &version_dir, session.config().no_junction())?;
     emit_step(session, name, crate::PackageStepKind::LinkCurrent, None);
@@ -577,6 +610,14 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
         pkg.manifest().post_install(),
     )
     .await?;
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageCommitDone {
+            name: name.to_owned(),
+            index: 1,
+            total: 1,
+        });
+    }
 
     Ok(())
 }
