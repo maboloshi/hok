@@ -232,6 +232,9 @@ cmd:
   bucket_manifests: "manifests"
   bucket_updated: "updated"
   bucket_source: "source"
+  config_col_key: "key"
+  config_col_value: "value"
+  config_col_default: "default"
 cli:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"

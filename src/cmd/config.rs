@@ -1,9 +1,9 @@
 //! Get or set Scoop configuration values.
 
 use clap::{Parser, Subcommand};
-use libscoop::{config, Session};
+use libscoop::{Session, config};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Configuration management
 #[derive(Debug, Parser)]
@@ -52,7 +52,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::List { all } => {
             if all {
-                println!("{}", config::list_all(session)?);
+                // Column headers are localized in the CLI layer (i18n lives
+                // here, not in the lib); alignment accounts for their width.
+                let key = rust_i18n::t!("cmd.config_col_key");
+                let value = rust_i18n::t!("cmd.config_col_value");
+                let default = rust_i18n::t!("cmd.config_col_default");
+                let table = config::list_all_with_headers(session, &key, &value, &default)?;
+                println!("{table}");
             } else {
                 let config_json = config::list(session)?;
                 output::info(session.config().path.display().to_string());

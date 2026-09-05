@@ -1004,6 +1004,17 @@ pub fn list(session: &crate::Session) -> Fallible<String> {
 ///
 /// Returns an error if the config is currently borrowed elsewhere.
 pub fn list_all(session: &crate::Session) -> Fallible<String> {
+    list_all_with_headers(session, "key", "value", "default")
+}
+
+/// Like list_all but with localized column headers supplied by the caller.
+/// The CLI layer owns i18n; alignment accounts for the header widths.
+pub fn list_all_with_headers(
+    session: &crate::Session,
+    key_hdr: &str,
+    value_hdr: &str,
+    default_hdr: &str,
+) -> Fallible<String> {
     let config = session.config();
 
     let no = || "none".to_owned();
@@ -1161,14 +1172,17 @@ pub fn list_all(session: &crate::Session) -> Fallible<String> {
         .map(|r| r[0].len())
         .max()
         .unwrap_or(0)
-        .max("key".len());
+        .max(key_hdr.len());
     let val_w = rows
         .iter()
         .map(|r| r[1].len())
         .max()
         .unwrap_or(0)
-        .max("value".len());
-    let mut out = format!("{:<key_w$}  {:<val_w$}  default\n", "key", "value");
+        .max(value_hdr.len());
+    let mut out = format!(
+        "{:<key_w$}  {:<val_w$}  {default_hdr}\n",
+        key_hdr, value_hdr
+    );
     for row in &rows {
         out.push_str(&format!(
             "{:<key_w$}  {:<val_w$}  {}\n",

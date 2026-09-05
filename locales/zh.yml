@@ -232,6 +232,9 @@ cmd:
   bucket_manifests: "清单数"
   bucket_updated: "更新时间"
   bucket_source: "来源"
+  config_col_key: "配置项"
+  config_col_value: "当前值"
+  config_col_default: "默认值"
 cli:
   config_set: "配置 '%{key}' 已设置为 '%{value}'"
   config_unset: "配置 '%{key}' 已取消设置"
