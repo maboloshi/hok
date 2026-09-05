@@ -259,18 +259,17 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
     // them); every option already got the localized Options heading above.
     for special in &["help", "version"] {
         if cmd.get_arguments().any(|a| a.get_id() == *special) {
-            let tk = if *special == "help" {
-                "cli_help.hok.args.help"
+            // Both short (-h/-V) and long (--help/--version) render paths must
+            // show the localized text: help is used for the short view and
+            // long_help for the long view, so set both when present.
+            let txt = if *special == "help" {
+                rust_i18n::t!("cli_help.hok.args.help").to_string()
             } else {
-                "cli_help.hok.args.version"
+                rust_i18n::t!("cli_help.hok.args.version").to_string()
             };
-            let txt = rust_i18n::t!(tk).to_string();
             let h = opts_h.to_string();
             let txt2 = txt.clone();
             cmd = cmd.mut_arg(*special, move |a| {
-                // Both short (-h/-V) and long (--help/--version) render paths must
-                // show the localized text: help is used for the short view and
-                // long_help for the long view, so set both when present.
                 a.help_heading(h).help(txt).long_help(txt2)
             });
         }
@@ -280,6 +279,13 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
         .map(|s| s.get_name().to_string())
         .collect();
     for name in &sub_names {
+        if name == "help" {
+            // clap auto-adds a `help` subcommand to any command that has
+            // subcommands, with a hard-coded English about; localize it too.
+            let about = rust_i18n::t!("cli_help.help.about").to_string();
+            cmd = cmd.mut_subcommand(name, move |sub| sub.about(about));
+            continue;
+        }
         let a = args_h.to_string();
         let o = opts_h.to_string();
         cmd = cmd.mut_subcommand(name, move |sub| localize_heading_level(sub, &a, &o));
