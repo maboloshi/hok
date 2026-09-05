@@ -45,7 +45,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         result.remove(0)
     } else {
         result.sort_by_key(|p| p.ident());
-        output::info(format!("Found multiple packages named '{query}':\n"));
+        output::info(rust_i18n::t!(
+            "cmd.found",
+            count = result.len(),
+            query = query
+        ));
         for (idx, pkg) in result.iter().enumerate() {
             output::named(
                 format!("{idx}."),
