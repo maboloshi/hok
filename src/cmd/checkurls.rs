@@ -31,11 +31,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     validate_dir(&args.dir)?;
     let dir = &args.dir;
 
-    // Scoop-style header: [U]RLs [O]kay [F]ailed
-    // The ps1 prints: '[' + 'U' (cyan) + ']RLs | [' + 'O' (green) + ']kay |  | [' + 'F' (red) + ']ailed |  |  |'
+    // Scoop-style header: [U]RLs [O]kay [F]ailed. The report (header + one
+    // row per manifest + per-error detail) is this command's whole output, so
+    // it goes to stdout — stderr is reserved for actual warnings/errors.
     use crossterm::style::Stylize;
-    eprintln!("[{}] RLs   [{}] [{}]", "U".cyan(), "O".green(), "F".red(),);
-    eprintln!();
+    println!("[{}] RLs   [{}] [{}]", "U".cyan(), "O".green(), "F".red());
 
     // Stream results: each manifest is reported as soon as its URL check
     // completes, matching Scoop's per-manifest output while checking.
@@ -46,8 +46,8 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         args.timeout,
         args.skip_valid,
         |result| {
-            eprint!("[{}]", result.total_urls.to_string().cyan());
-            eprint!(
+            print!("[{}]", result.total_urls.to_string().cyan());
+            print!(
                 "[{}]",
                 if result.ok_count == result.total_urls {
                     result.ok_count.to_string().green()
@@ -57,7 +57,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     result.ok_count.to_string().yellow()
                 }
             );
-            eprint!(
+            print!(
                 "[{}]",
                 if result.failed_count == 0 {
                     result.failed_count.to_string().green()
@@ -65,10 +65,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     result.failed_count.to_string().red()
                 }
             );
-            eprintln!(" {}", result.name);
+            println!(" {}", result.name);
 
             for err in &result.errors {
-                eprintln!("        > {} ({})", err.message.clone().dark_red(), err.url);
+                println!("        > {} ({})", err.message.clone().dark_red(), err.url);
             }
         },
     ).await?;
