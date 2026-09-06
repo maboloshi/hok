@@ -649,6 +649,19 @@ pub async fn reset(
     Ok(())
 }
 
+/// Whether `reset` can actually act on `name` — i.e. a usable current (or
+/// versioned) install resolves, so `reset` will anchor and do work rather than
+/// warn "isn't installed correctly" and skip.
+///
+/// `reset --all` uses this to keep its `(k/N)` counter contiguous: genuinely
+/// not-installed-correctly apps are reported and excluded *before* counting,
+/// while repairable partial installs (a broken `current` junction but a valid
+/// versioned install, or a current manifest without `install.json`) still
+/// resolve and stay in the batch.
+pub fn reset_eligible(session: &Session, name: &str) -> bool {
+    resolve_reset_target(session, name, None).is_ok()
+}
+
 /// Resolve the package and version directory a `reset` should operate on,
 /// tolerating broken installs the same way upstream Scoop does.
 ///
@@ -934,5 +947,47 @@ mod tests {
 
         // reset must not remove the app dir.
         assert!(pkg_dir.exists(), "reset must not remove the broken app dir");
+    }
+
+    /// `reset_eligible` reports a truly broken install (version dir + manifest
+    /// but no usable current version) as ineligible, but a repairable partial
+    /// (usable `current` manifest) as eligible.
+    #[test]
+    fn reset_eligible_distinguishes_broken_from_repairable() {
+        // Not installed correctly: version dir + manifest, no install.json,
+        // no `current` junction — reset would warn and skip.
+        let root = tmpdir("reset_eligible_broken");
+        let session = test_session(&root);
+        let broken = root.join("apps").join("broken");
+        std::fs::create_dir_all(broken.join("1.0.0")).unwrap();
+        std::fs::write(
+            broken.join("1.0.0").join("manifest.json"),
+            mini_manifest("1.0.0"),
+        )
+        .unwrap();
+        assert!(
+            !reset_eligible(&session, "broken"),
+            "truly broken must be ineligible"
+        );
+
+        // Repairable partial: `current` junction exposes a manifest, so reset
+        // can resolve a version and should remain in the batch.
+        let repairable = root.join("apps").join("repairable");
+        std::fs::create_dir_all(repairable.join("2.0.0")).unwrap();
+        std::fs::write(
+            repairable.join("2.0.0").join("manifest.json"),
+            mini_manifest("2.0.0"),
+        )
+        .unwrap();
+        std::fs::create_dir_all(repairable.join("current")).unwrap();
+        std::fs::write(
+            repairable.join("current").join("manifest.json"),
+            mini_manifest("2.0.0"),
+        )
+        .unwrap();
+        assert!(
+            reset_eligible(&session, "repairable"),
+            "repairable partial must be eligible"
+        );
     }
 }

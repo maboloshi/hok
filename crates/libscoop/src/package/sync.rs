@@ -40,7 +40,7 @@ mod sync_remove;
 
 pub use sync_install::install;
 pub use sync_install::{RunningCheck, check_not_running};
-pub use sync_remove::{remove, reset};
+pub use sync_remove::{remove, reset, reset_eligible};
 
 /// Options that may be used to tweak behavior of package sync operation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

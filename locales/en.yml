@@ -226,6 +226,7 @@ cmd:
   import_err: "Import error: %{e}"
   create_creating: "Creating manifest for: %{url}"
   reset_admin_skip: "'%{name}' is a global app — admin rights are required to reset it. Skipping."
+  reset_broken_skip: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
   reset_failed: "Failed to reset '%{name}': %{e}"
   vt_malicious: "MALICIOUS — %{n}/%{total} engines flagged"
   vt_suspicious: "SUSPICIOUS — %{n}/%{total} engines suspicious"

@@ -226,6 +226,7 @@ cmd:
   import_err: "导入失败：%{e}"
   create_creating: "正在为 %{url} 创建 manifest"
   reset_admin_skip: "'%{name}' 是全局应用——重置它需要管理员权限。跳过。"
+  reset_broken_skip: "'%{name}' 未正确安装。请重新安装或修复其 manifest。"
   reset_failed: "重置 '%{name}' 失败：%{e}"
   vt_malicious: "MALICIOUS —— %{n}/%{total} 个引擎判定为恶意"
   vt_suspicious: "SUSPICIOUS —— %{n}/%{total} 个引擎判定为可疑"

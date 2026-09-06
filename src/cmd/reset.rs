@@ -49,6 +49,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     output::warn(rust_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
                     continue;
                 }
+                // A genuinely not-installed-correctly app (no usable current
+                // version) can't be reset: report it and leave it out of the
+                // (k/N) count so the numbering stays contiguous. Repairable
+                // partial installs still resolve here and remain in the batch.
+                if !package::sync::reset_eligible(session, pkg.name()) {
+                    output::warn(rust_i18n::t!("cmd.reset_broken_skip", name = pkg.name()));
+                    continue;
+                }
                 attempts.push((global, pkg.name().to_owned()));
             }
         }
