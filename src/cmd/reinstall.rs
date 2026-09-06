@@ -113,7 +113,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             Err(libscoop::Error::AppRunning(name))
                 if all_opts.contains(&SyncOption::IgnoreFailure) =>
             {
-                eprintln!("Running process detected, skip reinstalling '{name}'.");
+                output::warn(rust_i18n::t!(
+                    "reinstall.running_process",
+                    name = name
+                ));
                 hold_set.remove(&name);
             }
             Err(e) => return Err(e.into()),
@@ -127,7 +130,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Release held packages temporarily
     let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
     if !held.is_empty() {
-        output::status(format!("Releasing held packages: {}", held.join(", ")));
+        output::status(rust_i18n::t!(
+            "reinstall.releasing",
+            names = held.join(", ")
+        ));
         for name in &held {
             package::hold::hold(session, name, false)?;
         }
@@ -151,7 +157,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Re-hold packages that were held before
     if !held.is_empty() {
-        output::status(format!("Re-holding packages: {}", held.join(", ")));
+        output::status(rust_i18n::t!(
+            "reinstall.reholding",
+            names = held.join(", ")
+        ));
         for name in &held {
             package::hold::hold(session, name, true)?;
         }

@@ -100,7 +100,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 match regex::Regex::new(&combined) {
                     Ok(re) => Some(re),
                     Err(e) => {
-                        return Err(anyhow::anyhow!("invalid pattern '{}': {}", combined, e));
+                        return Err(anyhow::anyhow!(rust_i18n::t!(
+                            "cmd.shim_invalid_pattern",
+                            pattern = combined,
+                            e = e
+                        )));
                     }
                 }
             };

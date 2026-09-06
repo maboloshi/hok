@@ -31,7 +31,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     output::progress(rust_i18n::t!("cmd.downloading"), "");
     let manifest = create::create_manifest(session, url)
         .await
-        .map_err(|e| anyhow::anyhow!("create manifest failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!(rust_i18n::t!(
+            "cmd.create_failed",
+            e = e
+        )))?;
     output::ok();
 
     let output_json = serde_json::to_string_pretty(&manifest)?;

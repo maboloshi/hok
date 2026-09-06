@@ -45,8 +45,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     if results.is_empty() {
         output::info(rust_i18n::t!("cmd.cleanup_no_old"));
-    } else {
-        output::info(rust_i18n::t!("cmd.checkup_ok"));
+    } else if apps.is_empty() {
+        // Sweep-all success tail (Scoop prints this for the non-verbose
+        // `--all` form); named-app cleans already reported per-app counts.
+        output::done(rust_i18n::t!("cmd.cleanup_all_done"));
     }
 
     if args.cache {

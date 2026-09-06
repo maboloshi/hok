@@ -23,8 +23,11 @@ pub async fn execute(_: Args, session: &Session) -> Result<()> {
         for issue in &issues {
             output::named(issue.name.as_str(), &issue.message);
         }
-        output::warn(format!("{} issue(s) found.", issues.len()));
-        output::status(rust_i18n::t!("cmd.run_reset"));
+        output::info(rust_i18n::t!(
+            "cmd.checkup_issue_count",
+            count = issues.len()
+        ));
+        output::info(rust_i18n::t!("cmd.run_reset"));
     }
 
     Ok(())

@@ -76,7 +76,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         } else {
             output::status(format!("  {} ({} -> {})", r.stem, r.current, ver));
             if r.autoupdate_available {
-                output::status("    autoupdate available");
+                output::status(format!("    {}", rust_i18n::t!("cmd.checkver_autoupdate")));
             }
             if r.updated {
                 output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));

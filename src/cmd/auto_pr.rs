@@ -149,7 +149,7 @@ fn render_checkver_report(report: &CheckverReport) {
             report.stem, report.current, ver
         ));
         if report.autoupdate_available {
-            output::status("    autoupdate available");
+            output::status(format!("    {}", rust_i18n::t!("cmd.checkver_autoupdate")));
         }
         if report.updated {
             output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
