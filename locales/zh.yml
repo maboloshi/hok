@@ -198,7 +198,7 @@ cmd:
   header_upgraded: "以下包将被升级:"
   header_replaced: "以下包将被替换:"
   header_removed: "以下包将被移除:"
-  vt_skip: "跳过（请设置 VT_API_KEY 环境变量）"
+  vt_no_key: "未配置 VirusTotal API key。请用 hok config virustotal_api_key <API key> 设置，或设置 VT_API_KEY 环境变量。"
   holding: "正在锁定"
   unholding: "正在解锁"
   unhold_failed: "无法解锁 '%{name}'。"
