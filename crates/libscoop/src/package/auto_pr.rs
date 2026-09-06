@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::Fallible as Result;
+use crate::error::{Error, Fallible};
 
 use crate::Session;
 use crate::internal::github;
@@ -81,22 +81,22 @@ pub async fn run_auto_pr(
     config: AutoPrConfig,
     session: &Session,
     mut on_report: Option<impl FnMut(&CheckverReport)>,
-) -> Result<()> {
+) -> Fallible<()> {
     // Validate token
     if config.token.is_empty() {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             rust_i18n::t!("cmd.auto_err_token").to_string(),
         ));
     }
 
     // Validate modes
     if !config.push && !config.request {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             rust_i18n::t!("cmd.auto_err_mode").to_string(),
         ));
     }
     if config.request && config.upstream_repo_nwo.is_empty() {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             rust_i18n::t!("cmd.auto_err_upstream").to_string(),
         ));
     }
@@ -123,7 +123,7 @@ pub async fn run_auto_pr(
         config.dir.clone()
     };
     if !dir.is_dir() {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             rust_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
         ));
     }
@@ -403,7 +403,7 @@ pub async fn run_auto_pr(
 // ---------------------------------------------------------------------------
 
 /// Read all JSON manifest files in `dir` into a map of `path → raw bytes`.
-fn read_manifests(session: &Session, dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
+fn read_manifests(session: &Session, dir: &Path) -> Fallible<HashMap<PathBuf, Vec<u8>>> {
     let mut map = HashMap::new();
     let manifest_paths = match manifest_walker::discover(dir) {
         Ok(paths) => paths,
@@ -452,7 +452,7 @@ fn detect_changes(before: &HashMap<PathBuf, Vec<u8>>) -> Vec<PathBuf> {
 
 /// Resolve the repository NWO (`owner/name`) from the `GITHUB_REPOSITORY`
 /// environment variable (set by GitHub Actions) or from the git remote URL.
-fn resolve_repo_nwo() -> Result<String> {
+fn resolve_repo_nwo() -> Fallible<String> {
     if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
         && !repo.is_empty()
     {
@@ -463,13 +463,13 @@ fn resolve_repo_nwo() -> Result<String> {
         .args(["remote", "get-url", "origin"])
         .output()
         .map_err(|_| {
-            crate::Error::Custom(
+            Error::Custom(
                 "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
             )
         })?;
 
     if !output.status.success() {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
         ));
     }
@@ -479,7 +479,7 @@ fn resolve_repo_nwo() -> Result<String> {
     if let Some((owner, repo)) = url::github_owner_repo(&url) {
         Ok(format!("{owner}/{repo}"))
     } else {
-        Err(crate::Error::Custom(format!(
+        Err(Error::Custom(format!(
             "Cannot parse repository NWO from remote URL: {}",
             url
         )))

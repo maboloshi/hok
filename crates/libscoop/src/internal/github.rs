@@ -21,7 +21,7 @@
 //! - On HTTP 4xx/5xx responses, an error message with the status code is returned as [`crate::Error`].
 //! - Tokens are never logged (shown as `******` in logs).
 
-use crate::error::Fallible as Result;
+use crate::error::{Error, Fallible};
 use base64::Engine as _;
 use reqwest::Method;
 
@@ -43,15 +43,15 @@ pub async fn github_api_request(
     method: &str,
     body: Option<serde_json::Value>,
     token: &str,
-) -> Result<serde_json::Value> {
+) -> Fallible<serde_json::Value> {
     let url = format!("https://api.github.com/{}", query);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| crate::Error::Custom(format!("GitHub client error: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("GitHub client error: {}", e)))?;
 
     let http_method = Method::from_bytes(method.as_bytes())
-        .map_err(|e| crate::Error::Custom(format!("Invalid method {}: {}", method, e)))?;
+        .map_err(|e| Error::Custom(format!("Invalid method {}: {}", method, e)))?;
 
     let mut req = client
         .request(http_method, &url)
@@ -68,24 +68,24 @@ pub async fn github_api_request(
     let resp = req
         .send()
         .await
-        .map_err(|e| crate::Error::Custom(format!("GitHub API error: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("GitHub API error: {}", e)))?;
 
     let status = resp.status().as_u16();
     let body_str = resp
         .text()
         .await
-        .map_err(|e| crate::Error::Custom(format!("Failed to read response body: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("Failed to read response body: {}", e)))?;
 
     let value: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(v) => v,
         Err(e) => {
             if status >= 400 {
-                return Err(crate::Error::Custom(format!(
+                return Err(Error::Custom(format!(
                     "GitHub API error (HTTP {}) with non-JSON body",
                     status
                 )));
             }
-            return Err(crate::Error::Custom(format!(
+            return Err(Error::Custom(format!(
                 "Failed to parse JSON response: {} | body: {}",
                 e,
                 &body_str[..body_str.len().min(200)]
@@ -95,7 +95,7 @@ pub async fn github_api_request(
 
     if status >= 400 {
         let msg = value["message"].as_str().unwrap_or("unknown error");
-        return Err(crate::Error::Custom(format!(
+        return Err(Error::Custom(format!(
             "GitHub API error (HTTP {}): {}",
             status, msg
         )));
@@ -105,19 +105,19 @@ pub async fn github_api_request(
 }
 
 /// Get the commit SHA of a branch head via the GitHub Refs API.
-pub async fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Result<String> {
+pub async fn get_ref_sha(repo: &str, branch: &str, token: &str) -> Fallible<String> {
     let query = format!("repos/{}/git/refs/heads/{}", repo, branch);
     let resp = github_api_request(&query, "GET", None, token).await?;
     let sha = resp["object"]["sha"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom("unexpected ref response format".to_string()))?
+        .ok_or_else(|| Error::Custom("unexpected ref response format".to_string()))?
         .to_string();
     Ok(sha)
 }
 
 /// Get the commit SHA of a branch head, returning `None` if the branch does
 /// not exist (HTTP 404), or an error for other failures.
-pub async fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Result<Option<String>> {
+pub async fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Fallible<Option<String>> {
     let query = format!("repos/{}/git/refs/heads/{}", repo, branch);
     match github_api_request(&query, "GET", None, token).await {
         Ok(resp) => {
@@ -136,7 +136,7 @@ pub async fn get_ref_sha_optional(repo: &str, branch: &str, token: &str) -> Resu
 }
 
 /// Create a new remote branch by POSTing a ref to the Refs API.
-pub async fn create_ref(repo: &str, branch: &str, sha: &str, token: &str) -> Result<()> {
+pub async fn create_ref(repo: &str, branch: &str, sha: &str, token: &str) -> Fallible<()> {
     let query = format!("repos/{}/git/refs", repo);
     let body = serde_json::json!({
         "ref": format!("refs/heads/{}", branch),
@@ -156,7 +156,7 @@ pub async fn create_pull_request(
     title: &str,
     body: &str,
     token: &str,
-) -> Result<String> {
+) -> Fallible<String> {
     let query = format!("repos/{}/pulls", upstream_repo);
     let request_body = serde_json::json!({
         "title": title,
@@ -167,7 +167,7 @@ pub async fn create_pull_request(
     let resp = github_api_request(&query, "POST", Some(request_body), token).await?;
     let pr_url = resp["html_url"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom("PR response missing html_url".to_string()))?
+        .ok_or_else(|| Error::Custom("PR response missing html_url".to_string()))?
         .to_string();
     Ok(pr_url)
 }
@@ -215,7 +215,7 @@ async fn get_authenticated_user(token: &str) -> Option<(String, u64)> {
 }
 
 /// Extract `(login, id)` from a GitHub user JSON response.
-fn user_info_from(resp: &Result<serde_json::Value>) -> Option<(String, u64)> {
+fn user_info_from(resp: &Fallible<serde_json::Value>) -> Option<(String, u64)> {
     let resp = resp.as_ref().ok()?;
     let login = resp["login"].as_str()?;
     let id = resp["id"].as_u64()?;
@@ -234,10 +234,10 @@ pub async fn graphql_commit_push(
     dco_body: &str,
     parent_sha: &str,
     token: &str,
-) -> Result<String> {
+) -> Fallible<String> {
     // Read the file and base64-encode it with normalised line endings.
     let content = std::fs::read_to_string(file_path)
-        .map_err(|e| crate::Error::Custom(format!("read file {}: {}", file_path, e)))?;
+        .map_err(|e| Error::Custom(format!("read file {}: {}", file_path, e)))?;
     let content_lf = content.replace("\r\n", "\n");
     let encoded = base64::engine::general_purpose::STANDARD.encode(content_lf.as_bytes());
 
@@ -276,7 +276,7 @@ pub async fn graphql_commit_push(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .map_err(|e| crate::Error::Custom(format!("GraphQL client error: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("GraphQL client error: {}", e)))?;
 
     let resp = client
         .post("https://api.github.com/graphql")
@@ -285,15 +285,15 @@ pub async fn graphql_commit_push(
         .json(&body)
         .send()
         .await
-        .map_err(|e| crate::Error::Custom(format!("GraphQL request failed: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("GraphQL request failed: {}", e)))?;
 
     let body_str = resp
         .text()
         .await
-        .map_err(|e| crate::Error::Custom(format!("Read GraphQL response failed: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("Read GraphQL response failed: {}", e)))?;
 
     let value: serde_json::Value = serde_json::from_str(&body_str).map_err(|e| {
-        crate::Error::Custom(format!(
+        Error::Custom(format!(
             "Parse GraphQL response failed: {} | body: {}",
             e,
             &body_str[..body_str.len().min(200)]
@@ -308,7 +308,7 @@ pub async fn graphql_commit_push(
             .filter_map(|e| e["message"].as_str())
             .map(|s| s.to_string())
             .collect();
-        return Err(crate::Error::Custom(format!(
+        return Err(Error::Custom(format!(
             "GraphQL error(s): {}",
             msgs.join("; ")
         )));
@@ -316,7 +316,7 @@ pub async fn graphql_commit_push(
 
     let commit_url = value["data"]["createCommitOnBranch"]["commit"]["url"]
         .as_str()
-        .ok_or_else(|| crate::Error::Custom("GraphQL response missing commit URL".to_string()))?
+        .ok_or_else(|| Error::Custom("GraphQL response missing commit URL".to_string()))?
         .to_string();
 
     Ok(commit_url)

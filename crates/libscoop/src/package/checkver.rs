@@ -30,7 +30,7 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::error::Fallible as Result;
+use crate::error::{Error, Fallible};
 
 use checkver_hash::download_and_hash_multi;
 
@@ -148,13 +148,13 @@ pub async fn execute(
     options: CheckverOptions,
     session: &Session,
     on_report: impl FnMut(&CheckverReport),
-) -> Result<()> {
+) -> Fallible<()> {
     let mut on_report = on_report;
     let dir = &options.dir;
 
     // Don't use --version with wildcard app pattern
     if options.version.is_some() && options.app[0] == "*" {
-        return Err(crate::Error::Custom(
+        return Err(Error::Custom(
             "checkver: --version cannot be combined with wildcard app pattern".to_string(),
         ));
     }
@@ -760,10 +760,10 @@ pub(crate) async fn apply_autoupdate(
     new_version: &str,
     captures: &[String],
     named_captures: &HashMap<String, String>,
-) -> Result<()> {
+) -> Fallible<()> {
     let content = std::fs::read_to_string(path)?;
     let mut root: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| crate::Error::Custom(format!("parse: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("parse: {}", e)))?;
 
     // Update version
     root["version"] = serde_json::Value::String(new_version.to_string());
@@ -1137,13 +1137,13 @@ async fn run_checkver_script(
     proxy: Option<&str>,
     timeout_secs: u64,
     token: &CancellationToken,
-) -> Result<Option<String>> {
+) -> Fallible<Option<String>> {
     use std::io::Read;
     use std::time::Duration;
 
     // Cooperative cancellation: bail before spawning when already cancelled.
     if token.is_cancelled() {
-        return Err(crate::Error::Custom("checkver script cancelled".to_owned()));
+        return Err(Error::Custom("checkver script cancelled".to_owned()));
     }
 
     let mut cmd = crate::internal::os::ps_command();
@@ -1164,7 +1164,7 @@ async fn run_checkver_script(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| crate::Error::Custom(format!("spawn powershell: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("spawn powershell: {}", e)))?;
 
     // Wait with a timeout, racing cooperative Ctrl-C cancellation. Both
     // timeouts and cancellation kill the child so no stray powershell lingers.
@@ -1174,7 +1174,7 @@ async fn run_checkver_script(
         if token.is_cancelled() {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(crate::Error::Custom("checkver script cancelled".to_owned()));
+            return Err(Error::Custom("checkver script cancelled".to_owned()));
         }
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -1182,7 +1182,7 @@ async fn run_checkver_script(
                 if start.elapsed() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(crate::Error::Custom(format!(
+                    return Err(Error::Custom(format!(
                         "timed out after {}s",
                         timeout_secs
                     )));
@@ -1194,7 +1194,7 @@ async fn run_checkver_script(
                     _ = tokio::time::sleep(Duration::from_millis(100)) => {}
                 }
             }
-            Err(e) => return Err(crate::Error::Custom(format!("wait: {}", e))),
+            Err(e) => return Err(Error::Custom(format!("wait: {}", e))),
         }
     }
 
@@ -1204,7 +1204,7 @@ async fn run_checkver_script(
         .take()
         .unwrap()
         .read_to_string(&mut output)
-        .map_err(|e| crate::Error::Custom(format!("read output: {}", e)))?;
+        .map_err(|e| Error::Custom(format!("read output: {}", e)))?;
 
     let mut stderr = String::new();
     if let Some(mut err) = child.stderr.take() {
