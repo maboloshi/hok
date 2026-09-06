@@ -60,6 +60,24 @@ mod scoop_handler;
 
 type Result<T> = anyhow::Result<T>;
 
+/// A nonzero process exit code a command handler may request.
+///
+/// Most failures exit with code 1; a handful of Scoop commands are defined to
+/// exit with a specific code (`which` returns 2 when the command is not
+/// found, VirusTotal combines 2/4/8/16). The handler prints its own message and
+/// returns `Err(ExitCode(n).into())`; the CLI runner propagates `n` to the
+/// process exit code without rendering an additional error line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitCode(pub i32);
+
+impl std::fmt::Display for ExitCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code {}", self.0)
+    }
+}
+
+impl std::error::Error for ExitCode {}
+
 fn error<T: Display>(input: &T) -> io::Result<()> {
     let mut stderr = io::stderr();
     stderr
@@ -99,6 +117,11 @@ fn translate_error(err: &libscoop::Error) -> String {
 }
 
 fn report(err: &anyhow::Error) {
+    // A handler that signalled an explicit exit code already printed its own
+    // message; nothing more to render.
+    if err.downcast_ref::<ExitCode>().is_some() {
+        return;
+    }
     if let Some(libscoop_err) = err.downcast_ref::<libscoop::Error>() {
         let msg = translate_error(libscoop_err);
         let msg_s: String = msg;
@@ -114,7 +137,7 @@ fn report(err: &anyhow::Error) {
     }
 }
 
-pub async fn create_app() -> bool {
+pub async fn create_app() -> i32 {
     // Cooperative cancellation (purity P2): a Ctrl-C (SIGINT) aborts the
     // whole command through a CancellationToken shared by every long-running
     // operation (downloads, scripts, waits), so temp files, subprocesses and
@@ -133,5 +156,17 @@ pub async fn create_app() -> bool {
     // + macros) in bin/hok.rs, so the CLI runs as an async entry point with
     // no manual Runtime/block_on — concurrent commands (checkver/checkup/
     // download, later install/upgrade) interleave their I/O on worker threads.
-    cmd::start(token).await.inspect_err(report).is_err()
+    match cmd::start(token).await {
+        Ok(()) => 0,
+        // A handler signalled a documented nonzero exit code (e.g. `which`
+        // exits 2 on not-found); it printed its own message, so exit with that
+        // code and report nothing here.
+        Err(err) => {
+            if let Some(code) = err.downcast_ref::<ExitCode>() {
+                return code.0;
+            }
+            report(&err);
+            1
+        }
+    }
 }
