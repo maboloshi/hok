@@ -291,6 +291,10 @@ impl ScoopHandler {
             }
             PackageStepKind::LinkCurrent => (rust_i18n::t!("step.link_current"), false),
             PackageStepKind::UnlinkCurrent => (rust_i18n::t!("step.unlink_current"), false),
+            PackageStepKind::RefreshShim => (rust_i18n::t!("step.refresh_shim", object = o), true),
+            PackageStepKind::RefreshShortcut => {
+                (rust_i18n::t!("step.refresh_shortcut", object = o), true)
+            }
             PackageStepKind::CreateShim => (rust_i18n::t!("step.create_shim", object = o), true),
             PackageStepKind::RemoveShim => (rust_i18n::t!("step.remove_shim", object = o), true),
             PackageStepKind::CreateShortcut => {

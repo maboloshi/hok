@@ -443,6 +443,11 @@ pub enum PackageStepKind {
     LinkCurrent,
     /// Dropping the `current` junction/symlink.
     UnlinkCurrent,
+    /// Refreshing a shim during `reset` (removed then recreated in place).
+    /// `object` = shim name.
+    RefreshShim,
+    /// Refreshing a shortcut during `reset`. `object` = shortcut name.
+    RefreshShortcut,
     /// Creating a shim. `object` = shim name.
     CreateShim,
     /// Removing a shim. `object` = shim name.

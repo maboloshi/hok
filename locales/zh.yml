@@ -65,6 +65,8 @@ step:
   installer: "正在运行安装程序: %{object}"
   link_current: "正在链接 current"
   unlink_current: "正在移除 current 链接"
+  refresh_shim: "正在刷新 %{object} 的 shim"
+  refresh_shortcut: "正在刷新 %{object} 的快捷方式"
   create_shim: "正在为 %{object} 创建 shim"
   remove_shim: "正在移除 %{object} 的 shim"
   create_shortcut: "正在为 %{object} 创建快捷方式"

@@ -27,6 +27,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if all {
         // Reset every installed app — local first, then global (mirrors
         // scoop-reset.ps1 `installed_apps $false` + `installed_apps $true`).
+        //
+        // First collect the ordered attempts (skipping 'scoop' and non-admin
+        // globals, which warn), so the `(k/N)` commit counter spans the whole
+        // batch instead of restarting at `(1/1)` per package.
+        let mut attempts: Vec<(bool, String)> = Vec::new();
         for global in [false, true] {
             session.set_global(global);
             // `Broken` is included so a partial install shows up and is
@@ -44,13 +49,20 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     output::warn(rust_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
                     continue;
                 }
-                // Official scoop-reset.ps1 iterates apps independently
-                // (ForEach-Object with `return`): a failing app is reported
-                // and skipped, the remaining apps keep resetting.
-                if let Err(e) = package::sync::reset(session, pkg.name(), None).await {
-                    output::err(rust_i18n::t!("cmd.reset_failed", name = pkg.name(), e = e));
-                    continue;
-                }
+                attempts.push((global, pkg.name().to_owned()));
+            }
+        }
+        let total = attempts.len();
+        for (k, (global, name)) in attempts.into_iter().enumerate() {
+            // Restore the scope this package was collected under before
+            // resetting it (paths resolve against the session's scope).
+            session.set_global(global);
+            // Official scoop-reset.ps1 iterates apps independently
+            // (ForEach-Object with `return`): a failing app is reported
+            // and skipped, the remaining apps keep resetting.
+            if let Err(e) = package::sync::reset(session, &name, None, k + 1, total).await {
+                output::err(rust_i18n::t!("cmd.reset_failed", name = name, e = e));
+                continue;
             }
         }
         // Leave the session back in the default (user-level) state.
@@ -61,7 +73,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let name = args.app.unwrap();
     let version = args.version.as_deref();
-    package::sync::reset(session, &name, version).await?;
+    package::sync::reset(session, &name, version, 1, 1).await?;
     drain_steps(session);
     Ok(())
 }

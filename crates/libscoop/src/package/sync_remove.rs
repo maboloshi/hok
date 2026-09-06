@@ -512,7 +512,17 @@ async fn commit_one_remove(
 /// Unlike `query_installed`, this does **not** require both
 /// `current\manifest.json` and `current\install.json` to exist, so a
 /// half-broken install (e.g. missing `install.json`) can still be reset.
-pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) -> Fallible<()> {
+///
+/// `index` / `total` position the package's `(k/N)` commit anchor. A
+/// single-package `hok reset <app>` passes `(1, 1)`; `reset --all` numbers
+/// each attempted package across its whole batch.
+pub async fn reset(
+    session: &Session,
+    name: &str,
+    target_version: Option<&str>,
+    index: usize,
+    total: usize,
+) -> Fallible<()> {
     let (pkg, pkg_dir, version_dir) = match resolve_reset_target(session, name, target_version) {
         Ok(r) => r,
         // A broken/partial install (app dir exists but no usable current
@@ -542,14 +552,14 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
     info!("resetting {} ({})", name, version);
 
     // Anchor the reset in the commit sequence like install/remove do: a bare
-    // `(1/1) name` header (no version arrow — a reset re-applies the current
+    // `(k/N) name` header (no version arrow — a reset re-applies the current
     // version, it doesn't transition versions) closed by `✓ name`. Emitted
     // only on the success path after the running-process/broken checks above.
     if let Some(tx) = session.emitter() {
         let _ = tx.try_send(Event::PackageCommitStart {
             name: name.to_owned(),
-            index: 1,
-            total: 1,
+            index,
+            total,
             old_version: String::new(),
             new_version: String::new(),
         });
@@ -580,9 +590,26 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
     // persist root grant as well (idempotent).
     persist::persist_permission(session, &pkg)?;
 
-    // Re-create shims + shortcuts
+    // Re-create shims + shortcuts (reported as a single "refreshing" step per
+    // item — reset removes then re-creates each in place).
+    for shim_name in shim_display_names(&pkg) {
+        emit_step(
+            session,
+            name,
+            crate::PackageStepKind::RefreshShim,
+            Some(shim_name),
+        );
+    }
     shim::remove(session, &pkg)?;
     shim::add(session, &pkg)?;
+    for shortcut_name in shortcut_display_names(&pkg) {
+        emit_step(
+            session,
+            name,
+            crate::PackageStepKind::RefreshShortcut,
+            Some(shortcut_name),
+        );
+    }
     shortcut::remove(session, &pkg)?;
     shortcut::add(session, &pkg)?;
 
@@ -614,8 +641,8 @@ pub async fn reset(session: &Session, name: &str, target_version: Option<&str>) 
     if let Some(tx) = session.emitter() {
         let _ = tx.try_send(Event::PackageCommitDone {
             name: name.to_owned(),
-            index: 1,
-            total: 1,
+            index,
+            total,
         });
     }
 
@@ -903,7 +930,7 @@ mod tests {
         .unwrap();
 
         // Must not hard-error: a broken install is reported and skipped.
-        reset(&session, "doubao", None).await.unwrap();
+        reset(&session, "doubao", None, 1, 1).await.unwrap();
 
         // reset must not remove the app dir.
         assert!(pkg_dir.exists(), "reset must not remove the broken app dir");
