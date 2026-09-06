@@ -80,7 +80,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 for name in &failed {
                     output::err(rust_i18n::t!("cmd.shim_not_found", name = name));
                 }
-                return Err(anyhow::anyhow!("shim(s) not found: {}", failed.join(", ")));
+                // Each missing shim was already reported above (localized);
+                // just exit nonzero — do not also print a hardcoded-English
+                // summary via the top-level error path.
+                return Err(crate::ExitCode(1).into());
             }
         }
         Command::List { patterns } => {
@@ -111,8 +114,8 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         Command::Info { name } => {
             let paths = package::shim::shim_paths(session, &name)?;
             if paths.is_empty() {
-                output::err(format!("shim not found: {}", name));
-                return Err(anyhow::anyhow!("shim not found: {}", name));
+                output::err(rust_i18n::t!("cmd.shim_not_found", name = name));
+                return Err(crate::ExitCode(1).into());
             }
             for (ext, path) in &paths {
                 let ty = match ext.as_str() {

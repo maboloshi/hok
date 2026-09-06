@@ -69,10 +69,7 @@ pub(super) fn hold_packages(
             }
             // I/O or serialization failure: propagate like Scoop's uncaught
             // exception in save_install_info (aborts with a non-zero code).
-            Err(err) => {
-                output::err(rust_i18n::t!("cmd.hold_err"));
-                return Err(err.into());
-            }
+            Err(err) => return Err(err.into()),
         }
     }
     Ok(())

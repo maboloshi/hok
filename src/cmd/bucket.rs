@@ -49,10 +49,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let repo = repo.as_deref().unwrap_or_default();
             match bucket::add(session, name.as_str(), repo).await {
                 Ok(..) => output::ok(),
-                Err(err) => {
-                    output::err(rust_i18n::t!("cmd.bucket_err"));
-                    return Err(err.into());
-                }
+                Err(err) => return Err(err.into()),
             }
             Ok(())
         }
@@ -121,10 +118,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 output::progress(rust_i18n::t!("cmd.removing_bucket"), &name);
                 match bucket::remove(session, name.as_str()) {
                     Ok(..) => output::ok(),
-                    Err(err) => {
-                        output::err(rust_i18n::t!("cmd.bucket_err"));
-                        return Err(err.into());
-                    }
+                    Err(err) => return Err(err.into()),
                 }
             }
             Ok(())
