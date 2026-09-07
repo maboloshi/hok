@@ -86,7 +86,7 @@ pub async fn execute(
             if has_urls || has_hashes {
                 item.status = CheckHashesStatus::Failed;
                 item.messages
-                    .push("URL and hash count mismatch".to_string());
+                    .push(rust_i18n::t!("cmd.checkhashes_count_mismatch").to_string());
                 report.failed += 1;
                 on_item(&item);
                 report.items.push(item);
@@ -102,7 +102,8 @@ pub async fn execute(
             let raw_hash = hash_str.value();
             if raw_hash.is_empty() || raw_hash == "TODO" {
                 item.status = CheckHashesStatus::Failed;
-                item.messages.push("hash skipped (empty/TODO)".to_string());
+                item.messages
+                    .push(rust_i18n::t!("cmd.checkhashes_skipped").to_string());
                 report.skipped += 1;
                 has_any_failure = true;
                 break;
@@ -122,7 +123,8 @@ pub async fn execute(
                 && let Err(e) = network::download_file(session, url, &cache_path).await
             {
                 item.status = CheckHashesStatus::Failed;
-                item.messages.push(format!("download failed: {}", e));
+                item.messages
+                    .push(rust_i18n::t!("cmd.checkhashes_download_failed", e = e).to_string());
                 has_any_failure = true;
                 break;
             }
@@ -132,7 +134,8 @@ pub async fn execute(
                     Ok(h) => h,
                     Err(e) => {
                         item.status = CheckHashesStatus::Failed;
-                        item.messages.push(format!("hash failed: {}", e));
+                        item.messages
+                            .push(rust_i18n::t!("cmd.checkhashes_hash_failed", e = e).to_string());
                         has_any_failure = true;
                         break;
                     }
@@ -188,8 +191,10 @@ pub async fn execute(
                     *obj = manifest::update_hash_preserving_style(&existing, &new_hashes, None);
                 } else {
                     item.status = CheckHashesStatus::Failed;
-                    item.messages
-                        .push(format!("path {} not found in JSON", path_prefix));
+                    item.messages.push(
+                        rust_i18n::t!("cmd.checkhashes_path_not_found", path = path_prefix)
+                            .to_string(),
+                    );
                 }
             }
             crate::internal::fs::write_json(path, &root)?;
@@ -203,14 +208,18 @@ pub async fn execute(
                     expected.value(),
                 );
                 let actual = &actual_hashes[*i];
-                item.messages.push(format!(
-                    "mismatch expected={} actual={} url={}",
-                    &expected_str[..std::cmp::min(12, expected_str.len())],
-                    &actual[..std::cmp::min(12, actual.len())],
-                    urls.get(*i)
-                        .cloned()
-                        .unwrap_or_else(|| "<unknown url>".to_owned())
-                ));
+                item.messages.push(
+                    rust_i18n::t!(
+                        "cmd.checkhashes_mismatch",
+                        expected = &expected_str[..std::cmp::min(12, expected_str.len())],
+                        actual = &actual[..std::cmp::min(12, actual.len())],
+                        url = urls
+                            .get(*i)
+                            .cloned()
+                            .unwrap_or_else(|| "<unknown url>".to_owned())
+                    )
+                    .to_string(),
+                );
             }
             item.status = CheckHashesStatus::Failed;
             report.failed += 1;
