@@ -62,11 +62,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         CheckHashesStatus::Updated => {
-            output::change(
-                rust_i18n::t!("cmd.checkhashes_mismatch_upd"),
-                "->",
-                &item.name,
-            );
+            output::done(format!(
+                "{}: {}",
+                item.name,
+                rust_i18n::t!("cmd.checkhashes_mismatch_upd")
+            ));
             for msg in &item.messages {
                 output::warn(msg);
             }
