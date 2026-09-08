@@ -20,21 +20,28 @@
 //! # Lifecycle
 //!
 //! - [PsEngine::new] spawns the worker and keeps it alive across calls.
-//! - [PsEngine::run_file] blocks until its own DONE line arrives, then reads
-//!   the capture file (returned as output lines) and removes it.
+//! - [PsEngine::run_file_captured_cancelable] runs one script file, blocking
+//!   until its DONE line arrives, then reads the capture file (returned as
+//!   output lines) and removes it. It observes a cooperative cancellation
+//!   token *while* the submission runs: a script runs in-process inside the
+//!   worker, so the only way to interrupt it mid-run is to kill the worker
+//!   itself. When the token fires, the worker is killed (terminating the
+//!   in-flight script), the outcome is flagged cancelled, and the engine
+//!   transparently respawns on the next call.
 //! - A script that calls exit N terminates the whole worker; the exit code is
 //!   surfaced and the engine transparently respawns on the next call.
-//! - [PsEngine::cancel] kills the worker (used for cooperative Ctrl-C); the
-//!   engine respawns on the next call.
 //!
 //! Not thread-safe: one submitter at a time. In an async context, callers run
-//! [PsEngine::run_file_captured] on a blocking worker and await it.
+//! [PsEngine::run_file_captured_cancelable] on a blocking worker and await it.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// Server script executed by the worker (see module docs).
 const SERVER_PS1: &str = include_str!("../../../../../asset_scripts/engine_server.ps1");
@@ -45,6 +52,16 @@ static SERVER_SEQ: AtomicU64 = AtomicU64::new(0);
 /// collide across engines or parallel test threads in one process.
 static CAPTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Outcome of one [PsEngine] submission.
+pub struct PsRunOutcome {
+    /// The script's exit code (worker-side `$LASTEXITCODE` / thrown-error 1).
+    pub code: i32,
+    /// Merged script output lines (all streams), read back from the capture file.
+    pub output: Vec<String>,
+    /// `true` when the run was cut short by cancellation (worker killed).
+    pub cancelled: bool,
+}
+
 /// A reusable, persistent PowerShell worker.
 pub struct PsEngine {
     /// Running pwsh/powershell process running [SERVER_PS1].
@@ -52,7 +69,9 @@ pub struct PsEngine {
     /// Sink for submission frames (one RUN <json> line per call).
     stdin: ChildStdin,
     /// Worker stdout: the DONE_<token>:<code> completion line per submission.
-    stdout: BufReader<ChildStdout>,
+    /// `Option` so a submission's completion watcher can temporarily own the
+    /// reader while the engine observes cancellation on the same thread.
+    stdout: Option<BufReader<ChildStdout>>,
     /// Temp path holding the server script; removed on drop.
     server_path: PathBuf,
     /// Per-engine unique token counter (also names the capture file).
@@ -93,7 +112,7 @@ impl PsEngine {
         Ok(PsEngine {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            stdout: Some(BufReader::new(stdout)),
             server_path: server_path.to_path_buf(),
             next_token: 1,
         })
@@ -115,20 +134,52 @@ impl PsEngine {
     }
 
     /// Run a script file in the engine with the given process environment,
-    /// returning its exit code (dropping captured output).
+    /// returning its exit code (dropping captured output). Test helper; the
+    /// production path uses the cancellation-aware variant.
+    #[cfg(test)]
     pub fn run_file(&mut self, path: &Path, env: &HashMap<String, String>) -> io::Result<i32> {
         self.run_file_captured(path, env).map(|(code, _)| code)
     }
 
     /// Run a script file in the engine, returning its exit code and captured
-    /// output lines (all streams merged). Blocks until the submission finishes.
+    /// output lines (all streams merged). Test helper; blocks until the
+    /// submission finishes.
+    #[cfg(test)]
     pub fn run_file_captured(
         &mut self,
         path: &Path,
         env: &HashMap<String, String>,
     ) -> io::Result<(i32, Vec<String>)> {
+        self.run_submission(path, env, None)
+            .map(|o| (o.code, o.output))
+    }
+
+    /// Run a script file in the engine while observing a cooperative
+    /// cancellation token. Blocks until the submission finishes *or* the token
+    /// fires. When the token fires mid-run, the worker is killed — terminating
+    /// the in-flight script (scripts run in-process inside the worker, so this
+    /// is the only way to interrupt them) — and the returned outcome is flagged
+    /// [`PsRunOutcome::cancelled`]. The engine respawns on the next call.
+    pub fn run_file_captured_cancelable(
+        &mut self,
+        path: &Path,
+        env: &HashMap<String, String>,
+        token: &CancellationToken,
+    ) -> io::Result<PsRunOutcome> {
+        self.run_submission(path, env, Some(token))
+    }
+
+    /// Shared submission core. Writes one RUN frame, waits for the matching
+    /// DONE line (optionally racing it against a cancellation token), reads
+    /// back the capture file, and restores the stdout reader.
+    fn run_submission(
+        &mut self,
+        path: &Path,
+        env: &HashMap<String, String>,
+        token: Option<&CancellationToken>,
+    ) -> io::Result<PsRunOutcome> {
         self.ensure_alive()?;
-        let token = self.next_token;
+        let stoken = self.next_token;
         self.next_token = self.next_token.wrapping_add(1);
 
         // Per-submission capture file for this script's merged output.
@@ -139,7 +190,7 @@ impl PsEngine {
             cseq
         ));
         let frame = serde_json::json!({
-            "t": token.to_string(),
+            "t": stoken.to_string(),
             "p": path.to_string_lossy(),
             "env": env,
             "f": capture.to_string_lossy(),
@@ -148,24 +199,88 @@ impl PsEngine {
         self.stdin.write_all(frame.as_bytes())?;
         self.stdin.flush()?;
 
-        let prefix = format!("DONE_{token}:");
-        let mut line = String::new();
-        let code = match self.stdout.read_line(&mut line) {
-            // EOF: the worker died (e.g. a script called exit N). Surface its
-            // exit status; the next call respawns.
-            Ok(0) => self.child.wait()?.code().unwrap_or(-1),
-            Ok(_) => {
-                let stripped = line.trim_end_matches(['\r', '\n']);
-                stripped
-                    .strip_prefix(&prefix)
-                    .and_then(|rest| rest.trim().parse::<i32>().ok())
-                    .unwrap_or(1)
+        let prefix = format!("DONE_{stoken}:");
+
+        // Wait for the completion line. Two shapes:
+        //  - no token: block on a plain synchronous read (cheap, no threads);
+        //  - token:     hand the reader to a watcher thread and poll the token
+        //    from here, killing the worker (and thus the in-flight script)
+        //    when it fires.
+        if token.is_none() {
+            let reader = self.stdout.as_mut().expect("engine stdout present");
+            let mut line = String::new();
+            let code = match reader.read_line(&mut line) {
+                // EOF: the worker died (e.g. a script called exit N). Surface
+                // its exit status; the next call respawns.
+                Ok(0) => self.child.wait()?.code().unwrap_or(-1),
+                Ok(_) => parse_done(&prefix, &line),
+                Err(e) => return Err(e),
+            };
+            return self.finish_submission(&capture, code, false);
+        }
+
+        // ── cancelable path: watcher thread owns the stdout reader ──
+        let mut reader = self.stdout.take().expect("engine stdout present");
+        let (tx, rx) = mpsc::channel();
+        let prefix_c = prefix.clone();
+        let watcher = std::thread::spawn(move || {
+            let mut line = String::new();
+            let parsed = match reader.read_line(&mut line) {
+                Ok(0) => None, // EOF (worker died or was killed)
+                Ok(_) => Some(parse_done(&prefix_c, &line)),
+                Err(_) => None,
+            };
+            // Hand the reader back for the next submission.
+            let _ = tx.send((parsed, reader));
+        });
+
+        let mut cancelled = false;
+        let parsed = loop {
+            if let Some(tok) = token
+                && tok.is_cancelled()
+            {
+                cancelled = true;
+                let _ = self.child.kill();
+                break None;
             }
-            Err(e) => return Err(e),
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok((parsed, reader)) => {
+                    self.stdout = Some(reader);
+                    break parsed;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                // Watcher ended without sending (should not happen); treat as
+                // EOF so the engine stays usable via respawn.
+                Err(_) => break None,
+            }
         };
 
-        // Read back the captured output, then drop the capture file.
-        let output = std::fs::read_to_string(&capture)
+        // If the token fired, the watcher sees EOF right after the kill; make
+        // sure it returned the reader so the engine stays consistent.
+        if cancelled && self.stdout.is_none() {
+            let _ = watcher.join();
+            if let Ok((_parsed, reader)) = rx.recv() {
+                self.stdout = Some(reader);
+            }
+        }
+
+        let code = match parsed {
+            Some(c) => c,
+            // EOF: worker died (exit N / killed). Surface its exit status.
+            _ => self.child.wait()?.code().unwrap_or(-1),
+        };
+        self.finish_submission(&capture, code, cancelled)
+    }
+
+    /// Read the submission's capture file into output lines, drop the file,
+    /// and assemble the outcome.
+    fn finish_submission(
+        &self,
+        capture: &Path,
+        code: i32,
+        cancelled: bool,
+    ) -> io::Result<PsRunOutcome> {
+        let output = std::fs::read_to_string(capture)
             .map(|text| {
                 text.lines()
                     .map(str::trim_end)
@@ -174,19 +289,22 @@ impl PsEngine {
                     .collect()
             })
             .unwrap_or_default();
-        let _ = std::fs::remove_file(&capture);
-
-        Ok((code, output))
+        let _ = std::fs::remove_file(capture);
+        Ok(PsRunOutcome {
+            code,
+            output,
+            cancelled,
+        })
     }
+}
 
-    /// Kill the worker. Used for cooperative cancellation (Ctrl-C): a running
-    /// script cannot be interrupted in place, so we drop the whole worker and
-    /// let [PsEngine::run_file] respawn it on the next call.
-    pub fn cancel(&mut self) -> io::Result<()> {
-        let _ = self.child.kill();
-        self.child.wait()?;
-        Ok(())
-    }
+/// Parse a worker DONE line of the form `DONE_<token>:<code>` into its exit
+/// code; falls back to 1 on a malformed line.
+fn parse_done(prefix: &str, line: &str) -> i32 {
+    line.trim_end_matches(['\r', '\n'])
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.trim().parse::<i32>().ok())
+        .unwrap_or(1)
 }
 
 impl Drop for PsEngine {

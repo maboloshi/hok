@@ -44,7 +44,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
@@ -106,6 +106,12 @@ pub struct Session {
     /// waits) so an interrupt aborts cleanly (temp files, cursor, subprocess).
     /// Defaults to a never-cancelled token when the frontend never sets one.
     cancellation: OnceLock<CancellationToken>,
+
+    /// Resident PowerShell engine slot for package scripts (the `script-engine`
+    /// config path). Lazily created on first use; `None` until a submission
+    /// runs. Accessed crate-internally by [`package::operations::script`]; the
+    /// engine is taken out for a blocking submission and put back afterwards.
+    script_engine: OnceLock<Arc<Mutex<Option<crate::package::operations::psengine::PsEngine>>>>,
 }
 
 impl std::fmt::Debug for Session {
@@ -120,6 +126,7 @@ impl std::fmt::Debug for Session {
             .field("git", &"<infra>")
             .field("archive", &"<infra>")
             .field("cancellation", &"<cancellation>")
+            .field("script_engine", &"<script-engine>")
             .finish()
     }
 }
@@ -165,6 +172,7 @@ impl Session {
                 git: OnceLock::new(),
                 archive: OnceLock::new(),
                 cancellation: OnceLock::new(),
+                script_engine: OnceLock::new(),
             };
             let _ = session.event_bus();
             return session;
@@ -183,6 +191,7 @@ impl Session {
             git: OnceLock::new(),
             archive: OnceLock::new(),
             cancellation: OnceLock::new(),
+            script_engine: OnceLock::new(),
         };
         // Initialize event bus and emit fallback warning
         let _ = session.event_bus();
@@ -223,6 +232,7 @@ impl Session {
             git: OnceLock::new(),
             archive: OnceLock::new(),
             cancellation: OnceLock::new(),
+            script_engine: OnceLock::new(),
         })
     }
 
@@ -555,6 +565,16 @@ impl Session {
         self.cancellation
             .set(token)
             .map_err(|_| Error::CancellationTokenAlreadySet)
+    }
+
+    /// The session's resident PowerShell engine slot (the `script-engine`
+    /// config path). Lazily created on first access. The caller takes the
+    /// engine out for a blocking submission and returns it afterwards.
+    pub(crate) fn script_engine_slot(
+        &self,
+    ) -> &Arc<Mutex<Option<crate::package::operations::psengine::PsEngine>>> {
+        self.script_engine
+            .get_or_init(|| Arc::new(Mutex::new(None)))
     }
 
     /// Apply a CLI `-a/--arch` value as the process-wide architecture

@@ -8,9 +8,12 @@
 # where <json> is a single-line object:
 #     { "t": token, "p": script path, "env": {NAME: value, ...}, "f": out file }
 #
-# For each frame it applies env to the *process* environment, runs the script
-# at p, capturing its full output (all streams, merged) into the file at f,
-# then reports completion on stdout with:
+# For each frame it resets the worker's process environment back to the
+# spawn-time snapshot (so env_set from one submission cannot leak into the
+# next — equivalent to Scoop spawning a fresh pwsh per script), then applies
+# the frame's `env`, runs the script at `p`, capturing its full output (all
+# streams, merged) into the file at `f`, and reports completion on stdout
+# with:
 #
 #     DONE_<token>:<exitcode>
 #
@@ -24,6 +27,27 @@
 # pipe and deadlock the worker.
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Snapshot the environment as seen at spawn. Each submission restores this
+# before applying its own env, giving fresh-process semantics.
+$baseEnv = @{}
+foreach ($prop in [Environment]::GetEnvironmentVariables().GetEnumerator()) {
+    $baseEnv[$prop.Key] = [string]$prop.Value
+}
+
+# Reset the process env to the spawn-time snapshot: unset anything a previous
+# submission added/changed and restore every snapshot key to its base value.
+function Reset-Env {
+    $current = [Environment]::GetEnvironmentVariables()
+    foreach ($prop in $current.GetEnumerator()) {
+        if (-not $baseEnv.ContainsKey($prop.Key)) {
+            [Environment]::SetEnvironmentVariable([string]$prop.Key, $null)
+        }
+    }
+    foreach ($entry in $baseEnv.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable([string]$entry.Key, [string]$entry.Value)
+    }
+}
 
 while (($line = [Console]::In.ReadLine()) -ne $null) {
     $line = $line.Trim()
@@ -43,6 +67,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     $path = [string]$o.p
     $outFile = [string]$o.f
 
+    Reset-Env
     if ($o.env) {
         foreach ($prop in $o.env.PSObject.Properties) {
             [Environment]::SetEnvironmentVariable($prop.Name, [string]$prop.Value)

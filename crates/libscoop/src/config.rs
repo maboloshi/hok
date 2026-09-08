@@ -220,6 +220,15 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     confirm: Option<bool>,
 
+    /// Route package script stages through a resident PowerShell engine
+    /// (reusing one long-lived pwsh worker across stages) instead of spawning
+    /// a fresh `pwsh -File` per stage. Defaults to `false` — the well-trodden
+    /// per-stage spawn path stays the default; the engine path is opt-in.
+    #[serde(alias = "script_engine")]
+    #[serde(rename = "script-engine")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    script_engine: Option<bool>,
+
     /// The default architecture to use (Scoop's `default_architecture`
     /// config, see `Get-DefaultArchitecture`). When set, it overrides the
     /// runtime-detected host architecture for manifest field selection.
@@ -483,6 +492,14 @@ impl Config {
         self.confirm.unwrap_or(false)
     }
 
+    /// Whether package script stages run through the resident PowerShell
+    /// engine. Defaults to `false` (each stage spawns a fresh pwsh), matching
+    /// Scoop's per-stage spawn and keeping the well-tested path as default.
+    #[inline]
+    pub fn script_engine(&self) -> bool {
+        self.script_engine.unwrap_or(false)
+    }
+
     /// Returns the cooldown duration (in seconds) remaining before the next
     /// bucket update is allowed. Returns `None` if no last update recorded.
     /// The default cooldown is 15 minutes (900 seconds).
@@ -595,6 +612,13 @@ impl Config {
                 true => self.inner.confirm = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.confirm = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
+            "script_engine" | "script-engine" => match is_unset {
+                true => self.inner.script_engine = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.script_engine = Some(v),
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
@@ -761,6 +785,7 @@ impl Default for Config {
             cache_path: default::cache_path(),
             cat_style: Default::default(),
             confirm: Default::default(),
+            script_engine: Default::default(),
             editor: Default::default(),
             default_architecture: Default::default(),
             gh_token: Default::default(),
@@ -1115,6 +1140,11 @@ pub fn list_all_with_headers(
         "false".into(),
     ]);
     rows.push([
+        "script-engine".into(),
+        fmt_bool(config.script_engine()).into(),
+        "false".into(),
+    ]);
+    rows.push([
         "no_junction".into(),
         fmt_bool(config.no_junction()).into(),
         "false".into(),
@@ -1314,6 +1344,7 @@ mod tests {
             "no_junction" => config.no_junction,
             "no-color" => config.no_color,
             "ignore_running_processes" => config.ignore_running_processes,
+            "script-engine" | "script_engine" => config.script_engine,
             _ => panic!("not a bool key: {key}"),
         }
     }
@@ -1344,7 +1375,13 @@ mod tests {
         let session = test_session("config_set_roundtrip");
 
         // bool keys
-        for key in ["no_junction", "no-color", "ignore_running_processes"] {
+        for key in [
+            "no_junction",
+            "no-color",
+            "ignore_running_processes",
+            "script-engine",
+            "script_engine",
+        ] {
             crate::config::set(&session, key, "true").unwrap();
             assert_eq!(bool_field(&session.config().inner, key), Some(true));
             crate::config::set(&session, key, "false").unwrap();

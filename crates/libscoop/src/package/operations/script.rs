@@ -1,11 +1,13 @@
 //! PowerShell script execution & installer-variable expansion primitives.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::sync::mpsc;
 use tracing::debug;
 
+use super::psengine::PsEngine;
 use crate::package::Package;
 use crate::{Error, Event, Session, error::Fallible, internal};
 
@@ -37,7 +39,7 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
     }
 }
 
-/// Apply a manifest's install-time environment to a child script process.
+/// Compute a manifest's install-time environment additions.
 ///
 /// Mirrors Scoop's `env_add_path` + `env_set` hooks (lib/install.ps1:62-63),
 /// which run *just before* `post_install` (lib/install.ps1:69) and write into
@@ -47,25 +49,25 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
 ///
 /// Only the `post_install` stage gets these, matching Scoop's ordering where
 /// `pre_install`/installer run before the env hooks.
-fn apply_install_env(
-    ps: &mut std::process::Command,
+fn install_env_additions(
+    env: &mut std::collections::HashMap<String, String>,
     session: &Session,
     package: &Package,
     working_dir: &Path,
     cmd: &str,
 ) {
     let manifest = package.manifest();
-    // env_set: set each declared variable on the child (Scoop's env_set also
-    // writes to the session env, `Set-Content env:$name`).
+    // env_set: set each declared variable (Scoop's env_set also writes to the
+    // session env, `Set-Content env:$name`).
     if let Some(env_set) = manifest.env_set() {
         for (key, value) in env_set {
             let expanded = expand_scoop_vars(&[value.as_str()], session, package, working_dir, cmd);
-            ps.env(key, &expanded[0]);
+            env.insert(key.clone(), expanded[0].clone());
         }
     }
-    // env_add_path: prepend the bin dirs to the child PATH so post_install can
-    // invoke freshly-installed binaries by name (Scoop's Add-Path updates the
-    // session PATH). Only the child is affected — the host PATH is untouched.
+    // env_add_path: prepend the bin dirs to PATH so post_install can invoke
+    // freshly-installed binaries by name (Scoop's Add-Path updates the session
+    // PATH). Only the child's PATH is affected — the host PATH is untouched.
     if let Some(add_path) = manifest.env_add_path() {
         let add_paths: Vec<String> = add_path
             .into_iter()
@@ -91,7 +93,7 @@ fn apply_install_env(
                 parts.insert(0, p);
             }
             if let Ok(path) = std::env::join_paths(parts) {
-                ps.env("PATH", path);
+                env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
             }
         }
     }
@@ -100,8 +102,7 @@ fn apply_install_env(
 /// Execute a PowerShell script defined in a package manifest.
 ///
 /// `script_lines` is an array of PowerShell command lines that will be joined
-/// and executed via `powershell.exe`. The function is a no-op if `script_lines`
-/// is `None`.
+/// and executed. The function is a no-op if `script_lines` is `None`.
 ///
 /// Environment variables set for the script:
 /// - `SCOOP` — the Scoop root directory
@@ -114,9 +115,17 @@ fn apply_install_env(
 /// - `version` — same as SCOOP_PACKAGE_VERSION (Scoop convention)
 ///
 /// For the `post_install` stage only, the manifest's `env_set` variables and
-/// `env_add_path` directories are also applied to the child (see
-/// [`apply_install_env`]), mirroring Scoop's env hooks running right before
-/// post_install (lib/install.ps1:62-63,69).
+/// `env_add_path` directories are also applied (see
+/// [`install_env_additions`]), mirroring Scoop's env hooks running right
+/// before post_install (lib/install.ps1:62-63,69).
+///
+/// Execution path is gated by the `script-engine` config (default off):
+/// - **off** (default): each stage spawns a fresh `pwsh -File`, piping output
+///   to `ScriptOutput` events with prompt Ctrl-C cancellation.
+/// - **on**: the stage runs through the session's resident [PsEngine], reusing
+///   one long-lived pwsh worker across stages; output is captured and
+///   re-emitted as `ScriptOutput`, and Ctrl-C kills the worker (respawned on
+///   the next stage).
 pub async fn run_script(
     session: &Session,
     package: &Package,
@@ -224,19 +233,27 @@ $fname = '{fname}'
     // Ensure both temp files are cleaned up on return, even via `?`
     let _guard = TempFileGuard::new(vec![script_path.clone(), marker_path.clone()]);
 
-    // Prefer pwsh.exe (PowerShell Core, faster startup)
-    let mut ps = crate::internal::os::ps_command();
-    ps.arg("-File")
-        .arg(&script_path)
-        .env("SCOOP", root_path.as_os_str())
-        .env("SCOOP_APP_DIR", pkg_dir.as_os_str())
-        .env("SCOOP_APP_ORIGINAL_DIR", original_dir.as_os_str())
-        .env("SCOOP_PACKAGE_NAME", package.name())
-        .env("SCOOP_PACKAGE_VERSION", &version)
-        .env("SCOOP_PACKAGE_BUCKET", package.bucket())
-        .env("SCOOP_PACKAGE_CMD", cmd)
-        .env("version", &version)
-        .env("HOK_EXTRACT_FILE", marker_path.as_os_str());
+    // Shared process-env map for both the fresh-spawn and resident-engine
+    // paths, so the two cannot drift.
+    let mut env = HashMap::new();
+    env.insert("SCOOP".into(), root_path.to_string_lossy().into_owned());
+    env.insert(
+        "SCOOP_APP_DIR".into(),
+        pkg_dir.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "SCOOP_APP_ORIGINAL_DIR".into(),
+        original_dir.to_string_lossy().into_owned(),
+    );
+    env.insert("SCOOP_PACKAGE_NAME".into(), package.name().to_owned());
+    env.insert("SCOOP_PACKAGE_VERSION".into(), version.clone());
+    env.insert("SCOOP_PACKAGE_BUCKET".into(), package.bucket().to_owned());
+    env.insert("SCOOP_PACKAGE_CMD".into(), cmd.to_owned());
+    env.insert("version".into(), version);
+    env.insert(
+        "HOK_EXTRACT_FILE".into(),
+        marker_path.to_string_lossy().into_owned(),
+    );
 
     // The `post_install` stage runs after Scoop's `env_add_path` + `env_set`
     // hooks (install.ps1:62-63,69), so hand it the manifest's install-time
@@ -244,8 +261,38 @@ $fname = '{fname}'
     // and their child processes inherit it. Other stages run before the env
     // hooks in Scoop, so they do not.
     if stage == "post_install" {
-        apply_install_env(&mut ps, session, package, working_dir, cmd);
+        install_env_additions(&mut env, session, package, working_dir, cmd);
     }
+
+    // Process extraction markers (P2: Rust native extraction) once the stage
+    // body has run successfully; shared by both execution paths.
+    let executed = if session.config().script_engine() {
+        run_script_engine(session, package, &script_path, &env, stage).await
+    } else {
+        run_script_spawn(session, package, &script_path, &env, stage).await
+    };
+    executed?;
+    super::extract_markers(session, working_dir).await;
+
+    Ok(())
+}
+
+/// Execute a staged script via a fresh `pwsh -File` spawn (the default path).
+///
+/// Pipes stdout/stderr and forwards every non-empty line as a `ScriptOutput`
+/// event so the frontend renders script output with its own indentation.
+/// Cooperative Ctrl-C kills the child (a lone powershell lingers otherwise);
+/// no hard timeout — Scoop scripts may legitimately run for minutes.
+async fn run_script_spawn(
+    session: &Session,
+    package: &Package,
+    script_path: &Path,
+    env: &HashMap<String, String>,
+    stage: &str,
+) -> Fallible<()> {
+    // Prefer pwsh.exe (PowerShell Core, faster startup)
+    let mut ps = crate::internal::os::ps_command();
+    ps.arg("-File").arg(script_path).envs(env);
 
     // Pipe stdout/stderr so the script output is captured and re-emitted as
     // `ScriptOutput` events — a bare inherited stdout would print at column 0
@@ -340,9 +387,82 @@ $fname = '{fname}'
         )));
     }
 
-    // Process extraction markers (P2: Rust native extraction)
-    super::extract_markers(session, working_dir).await;
+    Ok(())
+}
 
+/// Execute a staged script through the session's resident [PsEngine].
+///
+/// The engine is taken out of the session slot, runs the script on a blocking
+/// worker (so the async runtime is not starved), and is returned for reuse
+/// across stages/packages. Captured output lines (the engine captures all
+/// streams to a per-submission file) are forwarded as `ScriptOutput` events
+/// after the submission finishes. Cancellation observed mid-run kills the
+/// worker (terminating the in-flight script); the engine respawns on its next
+/// use, mirroring the fresh-spawn path's prompt abort.
+async fn run_script_engine(
+    session: &Session,
+    package: &Package,
+    script_path: &Path,
+    env: &HashMap<String, String>,
+    stage: &str,
+) -> Fallible<()> {
+    let slot = session.script_engine_slot().clone();
+    let token = session.cancellation_token();
+    let path = script_path.to_path_buf();
+    let env = env.clone();
+
+    let outcome =
+        tokio::task::spawn_blocking(move || -> std::io::Result<super::psengine::PsRunOutcome> {
+            let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+            // Lazily spawn the engine on first use; a killed/crashed worker is
+            // transparently respawned by the engine itself on its next call.
+            let mut engine = match guard.take() {
+                Some(e) => e,
+                None => PsEngine::new()?,
+            };
+            let res = engine.run_file_captured_cancelable(&path, &env, &token);
+            // On cancellation the worker was killed in place; drop the engine
+            // (a fresh one respawns on the next stage) so no dead worker lingers
+            // in the slot across a cancelled run.
+            let cancelled = res.as_ref().map(|o| o.cancelled).unwrap_or(false);
+            if !cancelled {
+                *guard = Some(engine);
+            }
+            res
+        })
+        .await
+        .map_err(|e| {
+            Error::Custom(format!(
+                "failed to run {} script for '{}': {e}",
+                stage,
+                package.name()
+            ))
+        })??;
+
+    // Forward the captured output as ScriptOutput events (after completion —
+    // a resident engine captures to a file rather than streaming live).
+    let emitter = session.emitter();
+    if let Some(tx) = emitter.as_ref() {
+        for line in &outcome.output {
+            let _ = tx.try_send(Event::ScriptOutput(line.clone()));
+        }
+    }
+
+    if outcome.cancelled {
+        return Err(Error::Custom(format!(
+            "{} script for '{}' cancelled",
+            stage,
+            package.name()
+        )));
+    }
+    if outcome.code != 0 {
+        return Err(Error::Custom(format!(
+            "{} script for '{}' exited with code {}",
+            stage,
+            package.name(),
+            outcome.code
+        )));
+    }
     Ok(())
 }
 
@@ -743,6 +863,189 @@ mod tests {
             lines.iter().any(|l| l.contains("PGDATA=[]")),
             "pre_install must not inherit env_set, got: {:?}",
             lines
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// In-flight cancellation: with `script-engine` on, cancelling the token
+    /// *while* a script runs must kill the engine worker (the only way to
+    /// interrupt an in-process script) and make run_script return promptly.
+    #[tokio::test]
+    async fn engine_path_cancel_mid_run_kills_worker() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_cancel_mid");
+        let token = tokio_util::sync::CancellationToken::new();
+        session.set_cancellation_token(token.clone()).unwrap();
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Fire the token shortly after the long script begins running.
+        let cancel_token = token.clone();
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            cancel_token.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let err = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec!["Start-Sleep -Seconds 300"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("cancelled"),
+            "expected a cancellation error, got: {err}"
+        );
+        // Aborts well before the 300s script would finish on its own.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "engine cancel must abort mid-run promptly, took {:?}",
+            start.elapsed()
+        );
+        let _ = canceller.await;
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    /// in a throwaway temp dir (config written with the flag so the resident
+    /// engine path is selected).
+    fn engine_session(name: &str) -> (crate::Session, std::path::PathBuf) {
+        let root = crate::test_utils::tmpdir(name);
+        let config_path = root.join("hok.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "script-engine": true}}"#,
+                root_escaped, cache_escaped
+            ),
+        )
+        .unwrap();
+        (crate::Session::new_with(&config_path).unwrap(), root)
+    }
+
+    fn pwsh_available() -> bool {
+        crate::internal::os::is_pwsh_available()
+            || std::process::Command::new("powershell.exe")
+                .arg("-NoProfile")
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+    }
+
+    /// With `script-engine` on, `run_script` runs the stage through the
+    /// resident engine; its captured output is forwarded as ScriptOutput
+    /// events (same frontend contract as the fresh-spawn path).
+    #[tokio::test]
+    async fn engine_path_forwards_script_output() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_output");
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec!["Write-Host 'engine-世界'", "Write-Host 'engine-done'"]),
+        )
+        .await
+        .unwrap();
+
+        let mut lines = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::ScriptOutput(line) = ev {
+                lines.push(line);
+            }
+        }
+        assert!(
+            lines.iter().any(|l| l.contains("engine-世界")),
+            "engine path must forward UTF-8 script output, got {:?}",
+            lines
+        );
+        assert!(lines.iter().any(|l| l.contains("engine-done")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With `script-engine` on, a cancelled token aborts a *running* engine
+    /// script by killing the worker: run_script returns a cancellation error
+    /// and the (dead) worker is not left lingering behind a next stage.
+    #[tokio::test]
+    async fn engine_path_cancel_kills_in_flight_script() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_cancel");
+        let token = tokio_util::sync::CancellationToken::new();
+        session.set_cancellation_token(token.clone()).unwrap();
+        // Cancel *before* the run starts; the engine must observe it at the
+        // submission boundary and abort (killing the worker) instead of
+        // running the script.
+        token.cancel();
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let err = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec!["Start-Sleep -Seconds 300"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("cancelled"),
+            "expected a cancellation error, got: {err}"
         );
 
         let _ = std::fs::remove_dir_all(&root);
