@@ -24,6 +24,8 @@
 
 mod extract;
 mod link;
+#[allow(dead_code)] // standalone until run_script engine wiring (Option B)
+mod psengine;
 mod script;
 
 // ─── Re-exports ─────────────────────────────────────────────────────────────
