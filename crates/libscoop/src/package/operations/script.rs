@@ -39,6 +39,23 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
     }
 }
 
+/// Translate a failure to *launch* the PowerShell process into a clear,
+/// actionable error.
+///
+/// Every package script runs on pwsh/powershell (both the fresh-spawn and the
+/// resident-engine path use [`internal::os::ps_command`]), so a launch failure
+/// here means no usable PowerShell could be started — it is missing, not on
+/// PATH, or a present-but-broken binary cannot start. There is deliberately no
+/// fallback between the two execution paths (both need the same shell), so the
+/// error names the requirement and the stage/package rather than surfacing a
+/// cryptic spawn `io::Error`.
+fn ps_launch_error(stage: &str, name: &str, err: std::io::Error) -> Error {
+    Error::Custom(format!(
+        "cannot run {stage} script for '{name}': could not start PowerShell \
+         (pwsh.exe or powershell.exe is missing or broken): {err}"
+    ))
+}
+
 /// Compute a manifest's install-time environment additions.
 ///
 /// Mirrors Scoop's `env_add_path` + `env_set` hooks (lib/install.ps1:62-63),
@@ -264,6 +281,13 @@ $fname = '{fname}'
         install_env_additions(&mut env, session, package, working_dir, cmd);
     }
 
+    // Every package script is a PowerShell script, so both the fresh-spawn and
+    // the resident-engine path need a working PowerShell. There is deliberately
+    // no availability probe here: each path fails at its own spawn point, and
+    // that failure is translated into a clear message there (see
+    // [run_script_spawn] and [run_script_engine]). A "downgrade" between the
+    // two paths would be meaningless anyway — both run on pwsh/powershell.
+
     // Process extraction markers (P2: Rust native extraction) once the stage
     // body has run successfully; shared by both execution paths.
     let executed = if session.config().script_engine() {
@@ -299,14 +323,9 @@ async fn run_script_spawn(
     // and break the frontend's indented alignment.
     ps.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut child = ps.spawn().map_err(|e| {
-        Error::Custom(format!(
-            "failed to run {} script for '{}': {}",
-            stage,
-            package.name(),
-            e
-        ))
-    })?;
+    let mut child = ps
+        .spawn()
+        .map_err(|e| ps_launch_error(stage, package.name(), e))?;
 
     // Drain the pipes on worker threads while the child runs; without this a
     // chatty script could fill a pipe buffer and deadlock the child against
@@ -410,17 +429,27 @@ async fn run_script_engine(
     let token = session.cancellation_token();
     let path = script_path.to_path_buf();
     let env = env.clone();
+    // Clones captured by the 'static blocking closure; the originals stay for
+    // post-await error formatting.
+    let stage_in = stage.to_owned();
+    let name_in = package.name().to_owned();
 
     let outcome =
-        tokio::task::spawn_blocking(move || -> std::io::Result<super::psengine::PsRunOutcome> {
+        tokio::task::spawn_blocking(move || -> Fallible<super::psengine::PsRunOutcome> {
             let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
             // Lazily spawn the engine on first use; a killed/crashed worker is
             // transparently respawned by the engine itself on its next call.
             let mut engine = match guard.take() {
                 Some(e) => e,
-                None => PsEngine::new()?,
+                None => PsEngine::new().map_err(|e| ps_launch_error(&stage_in, &name_in, e))?,
             };
-            let res = engine.run_file_captured_cancelable(&path, &env, &token);
+            let res = engine
+                .run_file_captured_cancelable(&path, &env, &token)
+                .map_err(|e| {
+                    Error::Custom(format!(
+                        "failed to run {stage_in} script for '{name_in}': {e}"
+                    ))
+                });
             // On cancellation the worker was killed in place; drop the engine
             // (a fresh one respawns on the next stage) so no dead worker lingers
             // in the slot across a cancelled run.
@@ -433,8 +462,7 @@ async fn run_script_engine(
         .await
         .map_err(|e| {
             Error::Custom(format!(
-                "failed to run {} script for '{}': {e}",
-                stage,
+                "failed to run {stage} script for '{}': {e}",
                 package.name()
             ))
         })??;
