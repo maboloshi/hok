@@ -99,25 +99,14 @@ pub fn is_program_available(exe: &str) -> bool {
     false
 }
 
-/// Check whether pwsh.exe (PowerShell Core 7+) is available on PATH.
-/// Result is cached via OnceLock — only checked once per process lifetime.
+/// Whether pwsh.exe (PowerShell Core 7+) is on PATH.
+///
+/// Static lookup only — no process is spawned to "confirm it runs". A shell
+/// that exists on PATH but cannot actually start (broken binary, directory
+/// placeholder) is left to surface at the real spawn point, where the failure
+/// is translated into a clear error (see `operations::script::ps_launch_error`).
 pub fn is_pwsh_available() -> bool {
-    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| {
-        // Fast path: check PATH for pwsh.exe without spawning
-        if is_program_available("pwsh.exe") {
-            return true;
-        }
-        // Confirm it actually runs (PATH scan can false-positive on dirs)
-        std::process::Command::new("pwsh.exe")
-            .arg("-NoProfile")
-            .arg("-c")
-            .arg("$null")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok()
-    })
+    is_program_available("pwsh.exe")
 }
 
 /// Construct a PowerShell `Command` (pwsh preferred), pre-configured with
