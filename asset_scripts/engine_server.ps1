@@ -6,25 +6,29 @@
 #     RUN <json>
 #
 # where <json> is a single-line object:
-#     { "t": token, "p": script path, "env": {NAME: value, ...}, "f": out file }
+#     { "t": token, "p": script path, "env": {NAME: value, ...} }
 #
 # For each frame it resets the worker's process environment back to the
 # spawn-time snapshot (so env_set from one submission cannot leak into the
 # next — equivalent to Scoop spawning a fresh pwsh per script), then applies
-# the frame's `env`, runs the script at `p`, capturing its full output (all
-# streams, merged) into the file at `f`, and reports completion on stdout
-# with:
+# the frame's `env`, runs the script at `p`, and streams every line of its
+# output (all streams, merged) to *this process's stdout* as it is produced.
+# hok drains that stdout continuously and forwards each non-terminator line
+# to its own consumer (the event bus), so a running script's output shows up
+# live rather than only when the script exits. When the script finishes the
+# engine writes a terminator line to stdout:
 #
 #     DONE_<token>:<exitcode>
 #
 # The exitcode is the script's LASTEXITCODE (0 when none). A thrown error
-# appends a marker line to the capture file and yields exitcode 1. QUIT on
-# its own line stops the loop.
+# emits a `[[HOK_SCRIPT_ERROR]] <message>` line (preserving the marker
+# semantics the capture-file design used) and yields exitcode 1. QUIT on its
+# own line stops the loop.
 #
-# Output goes to a per-submission capture file rather than this process's
-# stdout so a single shared engine can multiplex submissions without hok
-# needing to split its stdout by token, and a chatty script can never fill a
-# pipe and deadlock the worker.
+# Only one submission is in flight at a time (hok holds a single-submitter
+# mutex), so every line on stdout between a RUN and the matching DONE_<token>
+# belongs to that submission and hok need not multiplex. hok keeps reading
+# stdout until it sees DONE_<token>, so a chatty script cannot fill the pipe.
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -65,7 +69,6 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
     $token = [string]$o.t
     $path = [string]$o.p
-    $outFile = [string]$o.f
 
     Reset-Env
     if ($o.env) {
@@ -82,21 +85,29 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
     $LASTEXITCODE = 0
     $code = 1
+    $errorText = $null
     try {
-        # Capture every stream (Write-Output, Write-Host, warnings, errors)
-        # merged into the submission's capture file.
-        & $path *>&1 | Out-File -LiteralPath $outFile -Encoding utf8
+        # Stream every stream (Write-Output, Write-Host, warnings, errors)
+        # merged, line by line, to our stdout as the script produces it, so
+        # hok can forward it live. Flush each line — a line left sitting in
+        # the console buffer until the script ends would defeat streaming.
+        & $path *>&1 | ForEach-Object {
+            if ($null -ne $_) {
+                [Console]::Out.WriteLine([string]$_)
+                [Console]::Out.Flush()
+            }
+        }
         $code = $LASTEXITCODE
         if ($null -eq $code) { $code = 0 }
     } catch {
-        try {
-            Add-Content -LiteralPath $outFile -Value ('[[HOK_SCRIPT_ERROR]] ' + $_.Exception.Message) -Encoding utf8
-        } catch {
-            # capture file may be absent if even creating it failed
-        }
+        $errorText = $_.Exception.Message
         $code = 1
     }
 
+    if ($null -ne $errorText) {
+        [Console]::Out.WriteLine('[[HOK_SCRIPT_ERROR]] ' + $errorText)
+        [Console]::Out.Flush()
+    }
     [Console]::Out.WriteLine('DONE_' + $token + ':' + $code)
     [Console]::Out.Flush()
 }

@@ -140,9 +140,8 @@ fn install_env_additions(
 /// - **off** (default): each stage spawns a fresh `pwsh -File`, piping output
 ///   to `ScriptOutput` events with prompt Ctrl-C cancellation.
 /// - **on**: the stage runs through the session's resident [PsEngine], reusing
-///   one long-lived pwsh worker across stages; output is captured and
-///   re-emitted as `ScriptOutput`, and Ctrl-C kills the worker (respawned on
-///   the next stage).
+///   one long-lived pwsh worker across stages; output is streamed live as
+///   `ScriptOutput`, and Ctrl-C kills the worker (respawned on the next stage).
 pub async fn run_script(
     session: &Session,
     package: &Package,
@@ -413,11 +412,12 @@ async fn run_script_spawn(
 ///
 /// The engine is taken out of the session slot, runs the script on a blocking
 /// worker (so the async runtime is not starved), and is returned for reuse
-/// across stages/packages. Captured output lines (the engine captures all
-/// streams to a per-submission file) are forwarded as `ScriptOutput` events
-/// after the submission finishes. Cancellation observed mid-run kills the
-/// worker (terminating the in-flight script); the engine respawns on its next
-/// use, mirroring the fresh-spawn path's prompt abort.
+/// across stages/packages. The engine streams the script's merged output to
+/// the event bus as `ScriptOutput` *while it runs* (the same live-forwarding
+/// contract as the fresh-spawn path), not in a batch after completion.
+/// Cancellation observed mid-run kills the worker (terminating the in-flight
+/// script); the engine respawns on its next use, mirroring the fresh-spawn
+/// path's prompt abort.
 async fn run_script_engine(
     session: &Session,
     package: &Package,
@@ -433,6 +433,9 @@ async fn run_script_engine(
     // post-await error formatting.
     let stage_in = stage.to_owned();
     let name_in = package.name().to_owned();
+    // Forward each streamed line inside the blocking closure so a running
+    // script's output is delivered to the event bus as it is produced.
+    let tx = session.emitter();
 
     let outcome =
         tokio::task::spawn_blocking(move || -> Fallible<super::psengine::PsRunOutcome> {
@@ -443,8 +446,16 @@ async fn run_script_engine(
                 Some(e) => e,
                 None => PsEngine::new().map_err(|e| ps_launch_error(&stage_in, &name_in, e))?,
             };
+            let sink = {
+                let tx = tx.clone();
+                move |line: String| {
+                    if let Some(tx) = tx.as_ref() {
+                        let _ = tx.try_send(Event::ScriptOutput(line));
+                    }
+                }
+            };
             let res = engine
-                .run_file_captured_cancelable(&path, &env, &token)
+                .run_file_cancelable(&path, &env, &token, sink)
                 .map_err(|e| {
                     Error::Custom(format!(
                         "failed to run {stage_in} script for '{name_in}': {e}"
@@ -467,15 +478,8 @@ async fn run_script_engine(
             ))
         })??;
 
-    // Forward the captured output as ScriptOutput events (after completion —
-    // a resident engine captures to a file rather than streaming live).
-    let emitter = session.emitter();
-    if let Some(tx) = emitter.as_ref() {
-        for line in &outcome.output {
-            let _ = tx.try_send(Event::ScriptOutput(line.clone()));
-        }
-    }
-
+    // Output was already streamed live during the run; only the terminal state
+    // (code / cancellation) is checked here.
     if outcome.cancelled {
         return Err(Error::Custom(format!(
             "{} script for '{}' cancelled",
@@ -1032,7 +1036,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// With `script-engine` on, a cancelled token aborts a *running* engine
+    /// True streaming on the engine path: a script that writes a first line
+    /// then sleeps must deliver that line to the event bus *while the run is
+    /// still in flight* (well before the sleep finishes), not batched until
+    /// completion. Guards against regressing to the old capture-file model.
+    #[tokio::test]
+    async fn engine_path_streams_output_live() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_stream_live");
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Background bus watcher: timestamp when 'live-first' and 'live-last'
+        // arrive on the event bus, stopping once 'live-last' (the script's end)
+        // is seen. Only holds the receiver, so it is safe to spawn.
+        let watcher = tokio::spawn(async move {
+            let mut first: Option<std::time::Instant> = None;
+            let mut last: Option<std::time::Instant> = None;
+            while let Some(ev) = rx.recv().await {
+                if let Event::ScriptOutput(l) = ev {
+                    let now = std::time::Instant::now();
+                    if l.contains("live-first-世界") && first.is_none() {
+                        first = Some(now);
+                    }
+                    if l.contains("live-last") {
+                        last = Some(now);
+                        break;
+                    }
+                }
+            }
+            (first, last)
+        });
+
+        // A long tail after 'first' lets the watcher observe 'first' arriving
+        // on the bus while the script is still sleeping.
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec![
+                "Write-Output 'live-first-世界'",
+                "Start-Sleep -Milliseconds 2500",
+                "Write-Output 'live-last'",
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let (first, last) = watcher.await.unwrap();
+        let first = first.expect("live-first should stream to the bus");
+        let last = last.expect("live-last should stream to the bus");
+        let gap = last.duration_since(first);
+        assert!(
+            gap >= std::time::Duration::from_millis(1500),
+            "expected ~2.5s gap between live-first and live-last if streamed live, \
+             got {gap:?} (a batch-at-end engine would deliver both ~simultaneously)"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// script by killing the worker: run_script returns a cancellation error
     /// and the (dead) worker is not left lingering behind a next stage.
     #[tokio::test]
