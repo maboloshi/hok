@@ -12,9 +12,10 @@
 //!   RUN <json>   # {t: token, p: script path, env: {NAME: value, ...}}
 //!
 //! The worker applies env, runs the script at p, and streams the script's
-//! output (all streams merged) to the worker's stdout *as it is produced*.
-//! hok drains that stdout continuously and forwards every non-terminator
-//! line to the per-call sink, until a single terminator
+//! output (all PowerShell streams) to the worker's stdout *as it is produced*,
+//! each content line prefixed with a stream tag (`O:` / `W:` / `E:`). hok
+//! drains that stdout continuously and forwards every non-terminator line to
+//! the per-call sink with its [PsChannel], until a single terminator
 //!
 //!   DONE_<token>:<exitcode>
 //!
@@ -62,7 +63,34 @@ pub struct PsRunOutcome {
     pub code: i32,
     /// `true` when the run was cut short by cancellation (worker killed).
     pub cancelled: bool,
+    /// The thrown error's message (`[[HOK_SCRIPT_ERROR]]` payload), when the
+    /// script aborted on a terminating error. `None` otherwise.
+    pub error: Option<String>,
 }
+
+/// Which PowerShell stream a forwarded line belongs to. The worker tags every
+/// content line (`O:` / `W:` / `E:`); [PsEngine] strips the tag and reports
+/// the stream here so callers can route it to the right event / colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsChannel {
+    /// Success / information stream (Write-Output, Write-Host, results).
+    Stdout,
+    /// Warning stream (Write-Warning).
+    Warning,
+    /// Error stream (Write-Error, terminating throws surfaced as errors).
+    Error,
+}
+
+/// Content-line tags the worker prefixes to every script line (see
+/// `asset_scripts/engine_server.ps1`).
+const CONTENT_TAGS: &[(&str, PsChannel)] = &[
+    ("O:", PsChannel::Stdout),
+    ("W:", PsChannel::Warning),
+    ("E:", PsChannel::Error),
+];
+
+/// Untagged control line carrying a terminating error's message.
+const ERR_MARKER: &str = "[[HOK_SCRIPT_ERROR]] ";
 
 /// A reusable, persistent PowerShell worker.
 pub struct PsEngine {
@@ -155,29 +183,31 @@ impl PsEngine {
         env: &HashMap<String, String>,
     ) -> io::Result<(i32, Vec<String>)> {
         let mut lines = Vec::new();
-        let outcome = self.run_submission(path, env, None, |line| lines.push(line))?;
+        let outcome = self.run_submission(path, env, None, |_ch, text| lines.push(text))?;
         Ok((outcome.code, lines))
     }
 
     /// Run a script file in the engine while observing a cooperative
-    /// cancellation token, streaming each merged output line to `on_line` as
-    /// it is produced. Blocks until the submission finishes *or* the token
-    /// fires. When the token fires mid-run, the worker is killed — terminating
-    /// the in-flight script (scripts run in-process inside the worker, so this
-    /// is the only way to interrupt them) — and the returned outcome is flagged
-    /// [`PsRunOutcome::cancelled`]. The engine respawns on the next call.
+    /// cancellation token, streaming each forwarded line to `on_line` (with the
+    /// stream it came from) as it is produced. Blocks until the submission
+    /// finishes *or* the token fires. When the token fires mid-run, the worker
+    /// is killed — terminating the in-flight script (scripts run in-process
+    /// inside the worker, so this is the only way to interrupt them) — and the
+    /// returned outcome is flagged [`PsRunOutcome::cancelled`]. The engine
+    /// respawns on the next call.
     pub fn run_file_cancelable(
         &mut self,
         path: &Path,
         env: &HashMap<String, String>,
         token: &CancellationToken,
-        on_line: impl FnMut(String),
+        on_line: impl FnMut(PsChannel, String),
     ) -> io::Result<PsRunOutcome> {
         self.run_submission(path, env, Some(token), on_line)
     }
 
     /// Shared submission core. Writes one RUN frame, drains the worker's
-    /// stdout line by line, forwarding each non-terminator line to `on_line`
+    /// stdout line by line, classifying each content line (stream tag) and
+    /// forwarding it to `on_line`, capturing a terminating error's message,
     /// until the `DONE_<token>` terminator arrives (optionally racing it
     /// against a cancellation token, which kills the worker), restores the
     /// stdout reader, and assembles the outcome.
@@ -193,7 +223,7 @@ impl PsEngine {
         mut on_line: F,
     ) -> io::Result<PsRunOutcome>
     where
-        F: FnMut(String),
+        F: FnMut(PsChannel, String),
     {
         self.ensure_alive()?;
         let stoken = self.next_token;
@@ -213,7 +243,8 @@ impl PsEngine {
         // ── sync path (no token): drain inline on this thread ──
         if token.is_none() {
             let reader = self.stdout.as_mut().expect("engine stdout present");
-            let done_code = drain_until_done(reader, &prefix, &mut on_line)?;
+            let mut err = None;
+            let done_code = drain_until_done(reader, &prefix, &mut on_line, &mut err)?;
             let code = match done_code {
                 Some(c) => c,
                 // EOF: the worker died (e.g. a script called exit N). Surface
@@ -223,6 +254,7 @@ impl PsEngine {
             return Ok(PsRunOutcome {
                 code,
                 cancelled: false,
+                error: err,
             });
         }
 
@@ -232,20 +264,31 @@ impl PsEngine {
         let (tx, rx) = mpsc::channel();
         let prefix_c = prefix.clone();
         let watcher = std::thread::spawn(move || {
-            let done_code = drain_until_done(&mut reader, &prefix_c, &mut |line| {
-                // The channel is unbounded, so this only fails once the
-                // receiver has been dropped (main loop gave up on cancel);
-                // drain_until_done then stops and the reader comes back via End.
-                let _ = tx.send(ReaderMsg::Line(line));
-            })
+            let mut err = None;
+            let done_code = drain_until_done(
+                &mut reader,
+                &prefix_c,
+                &mut |ch, line| {
+                    // The channel is unbounded, so this only fails once the
+                    // receiver has been dropped (main loop gave up on cancel);
+                    // drain_until_done then stops and the reader comes back via End.
+                    let _ = tx.send(ReaderMsg::Line(ch, line));
+                },
+                &mut err,
+            )
             .ok()
             .flatten();
             // Hand the reader back for the next submission.
-            let _ = tx.send(ReaderMsg::End { done_code, reader });
+            let _ = tx.send(ReaderMsg::End {
+                done_code,
+                reader,
+                error: err,
+            });
         });
 
         let mut cancelled = false;
         let mut code = 0;
+        let mut error = None;
         loop {
             if let Some(tok) = token
                 && tok.is_cancelled()
@@ -255,14 +298,19 @@ impl PsEngine {
                 break;
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(ReaderMsg::Line(line)) => on_line(line),
-                Ok(ReaderMsg::End { done_code, reader }) => {
+                Ok(ReaderMsg::Line(ch, line)) => on_line(ch, line),
+                Ok(ReaderMsg::End {
+                    done_code,
+                    reader,
+                    error: err,
+                }) => {
                     self.stdout = Some(reader);
                     code = match done_code {
                         Some(c) => c,
                         // EOF: worker died (exit N / killed). Surface its status.
                         None => self.child.wait()?.code().unwrap_or(-1),
                     };
+                    error = err;
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -288,7 +336,11 @@ impl PsEngine {
             code = self.child.wait()?.code().unwrap_or(-1);
         }
 
-        Ok(PsRunOutcome { code, cancelled })
+        Ok(PsRunOutcome {
+            code,
+            cancelled,
+            error,
+        })
     }
 }
 
@@ -296,29 +348,33 @@ impl PsEngine {
 /// loop: a forwarded output line, or the terminal DONE/EOF result plus the
 /// (returned) stdout reader.
 enum ReaderMsg {
-    /// A non-terminator output line forwarded from the worker.
-    Line(String),
+    /// A forwarded output line (its stream channel + text) from the worker.
+    Line(PsChannel, String),
     /// The submission ended: its exit code, or `None` for EOF (worker died /
-    /// killed). Carries the reader back for the next submission.
+    /// killed). Carries the reader back for the next submission plus any
+    /// terminating-error message captured along the way.
     End {
         done_code: Option<i32>,
         reader: BufReader<ChildStdout>,
+        error: Option<String>,
     },
 }
 
-/// Read lines from `reader`, invoking `on_line` for each non-empty
-/// non-terminator line, until this submission's `DONE_<token>:<code>`
-/// terminator (returning its exit code) or EOF (returning `None`). Shared by
-/// the sync and cancelable-watcher drain loops; keeps reading continuously so
-/// a chatty worker can never fill the pipe while we wait.
+/// Read lines from `reader`, classifying each (stream tag) and invoking
+/// `on_line`, capturing a terminating error's message into `err_out`, until
+/// this submission's `DONE_<token>:<code>` terminator (returning its exit
+/// code) or EOF (returning `None`). Shared by the sync and cancelable-watcher
+/// drain loops; keeps reading continuously so a chatty worker can never fill
+/// the pipe while we wait.
 fn drain_until_done<R, F>(
     reader: &mut BufReader<R>,
     prefix: &str,
     on_line: &mut F,
+    err_out: &mut Option<String>,
 ) -> io::Result<Option<i32>>
 where
     R: std::io::Read,
-    F: FnMut(String),
+    F: FnMut(PsChannel, String),
 {
     let mut buf = Vec::new();
     loop {
@@ -330,12 +386,37 @@ where
                     return Ok(Some(code));
                 }
                 if let Some(line) = clean_output_line(&buf) {
-                    on_line(line);
+                    route_line(line, on_line, err_out);
                 }
             }
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Classify a cleaned worker line by its stream tag and route it to `on_line`,
+/// or recognise the terminating-error marker (capturing its message).
+fn route_line<F>(line: String, on_line: &mut F, err_out: &mut Option<String>)
+where
+    F: FnMut(PsChannel, String),
+{
+    for (tag, channel) in CONTENT_TAGS {
+        if let Some(rest) = line.strip_prefix(tag) {
+            on_line(*channel, rest.to_owned());
+            return;
+        }
+    }
+    if let Some(msg) = line.strip_prefix(ERR_MARKER) {
+        let msg = msg.trim();
+        if !msg.is_empty() {
+            // Surface the thrown message as an error line (red) and record it.
+            on_line(PsChannel::Error, msg.to_owned());
+            *err_out = Some(msg.to_owned());
+        }
+        return;
+    }
+    // Untagged non-control line (legacy/defensive): treat as plain output.
+    on_line(PsChannel::Stdout, line);
 }
 
 /// Parse a worker terminator `DONE_<token>:<code>` from raw line bytes
@@ -473,6 +554,90 @@ mod tests {
         assert!(engine.child.try_wait().unwrap().is_none());
     }
 
+    /// A terminating error not only yields exit code 1 but is surfaced as a
+    /// structured [`PsRunOutcome::error`] (and as an error-channel line), so
+    /// the caller can show the actual reason rather than just a code.
+    #[test]
+    fn thrown_error_message_is_captured() {
+        if !shell_available() {
+            return;
+        }
+        let dir = crate::test_utils::tmpdir("psengine_throw_msg");
+        let bad = write_script(&dir, "bad.ps1", "throw 'exploded-reason'");
+        let mut engine = PsEngine::new().unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let mut err_lines = Vec::new();
+        let outcome = engine
+            .run_file_cancelable(&bad, &HashMap::new(), &token, |ch, line| {
+                if ch == PsChannel::Error {
+                    err_lines.push(line);
+                }
+            })
+            .unwrap();
+        assert_eq!(outcome.code, 1);
+        let err = outcome
+            .error
+            .expect("thrown error message must be captured");
+        assert!(
+            err.contains("exploded-reason"),
+            "expected the throw message, got: {err:?}"
+        );
+        assert!(
+            err_lines.iter().any(|l| l.contains("exploded-reason")),
+            "thrown message must also stream as an error line, got: {err_lines:?}"
+        );
+    }
+
+    /// Streamed lines are routed to the correct [PsChannel] (success vs
+    /// warning vs error), and script-embedded content survives verbatim.
+    #[test]
+    fn streamed_lines_are_routed_by_stream() {
+        if !shell_available() {
+            return;
+        }
+        let dir = crate::test_utils::tmpdir("psengine_routing");
+        let script = write_script(
+            &dir,
+            "s.ps1",
+            "Write-Output 'plain-line'\nWrite-Warning 'warn-line'\nWrite-Error 'err-line'",
+        );
+        let mut engine = PsEngine::new().unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let mut out = Vec::new();
+        let mut warns = Vec::new();
+        let mut errs = Vec::new();
+        engine
+            .run_file_cancelable(&script, &HashMap::new(), &token, |ch, line| match ch {
+                PsChannel::Stdout => out.push(line),
+                PsChannel::Warning => warns.push(line),
+                PsChannel::Error => errs.push(line),
+            })
+            .unwrap();
+        assert!(
+            out.iter().any(|l| l.contains("plain-line")),
+            "plain output must route to Stdout, got: {out:?}"
+        );
+        assert!(
+            warns.iter().any(|l| l.contains("warn-line")),
+            "warning must route to Warning, got: {warns:?}"
+        );
+        assert!(
+            errs.iter().any(|l| l.contains("err-line")),
+            "Write-Error must route to Error, got: {errs:?}"
+        );
+        // Tags must be stripped before forwarding: no content line may carry a
+        // leftover O:/W:/E: prefix.
+        let no_leak = |l: &&String| {
+            let two: String = l.chars().take(2).collect();
+            two != "O:" && two != "W:" && two != "E:"
+        };
+        let all: Vec<&String> = out.iter().chain(&warns).chain(&errs).collect();
+        assert!(
+            all.iter().all(no_leak),
+            "stream tags must be stripped, saw: {all:?}"
+        );
+    }
+
     #[test]
     fn exit_code_surfaces_and_state_does_not_leak() {
         if !shell_available() {
@@ -533,7 +698,7 @@ mod tests {
         let token = tokio_util::sync::CancellationToken::new();
         let mut seen: Vec<(std::time::Instant, String)> = Vec::new();
         engine
-            .run_file_cancelable(&script, &HashMap::new(), &token, |line| {
+            .run_file_cancelable(&script, &HashMap::new(), &token, |_ch, line| {
                 seen.push((std::time::Instant::now(), line));
             })
             .unwrap();

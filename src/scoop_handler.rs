@@ -207,9 +207,27 @@ impl EventHandler for ScoopHandler {
                 tracing::debug!("{}", rust_i18n::t!("detail.psmodule_removed"));
             }
 
-            // --- PowerShell script output ---
-            Event::ScriptOutput(line) => {
-                println!("  {line}");
+            // --- PowerShell script output (split by stream) ---
+            // Stdout/warnings/stderr render with the same two-space indent;
+            // each is coloured by its stream via the convention helper unless
+            // the line carries its own script-embedded ANSI.
+            Event::ScriptStdout(line) => {
+                println!(
+                    "  {}",
+                    output::script_line(output::ScriptStream::Info, line)
+                );
+            }
+            Event::ScriptWarning(line) => {
+                println!(
+                    "  {}",
+                    output::script_line(output::ScriptStream::Warning, line)
+                );
+            }
+            Event::ScriptStderr(line) => {
+                println!(
+                    "  {}",
+                    output::script_line(output::ScriptStream::Error, line)
+                );
             }
             Event::ScriptDone { success, stderr } => {
                 if !success && !stderr.is_empty() {

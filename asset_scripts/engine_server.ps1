@@ -53,6 +53,23 @@ function Reset-Env {
     }
 }
 
+# Stream a script output line to our stdout, tagged with which PowerShell
+# stream it came from (O: success/information, W: warning, E: error). hok
+# strips the tag and routes each line to the matching frontend event, so a
+# normal line and a warning/error can be rendered differently while the
+# line's own content (including any script-embedded ANSI) is preserved
+# verbatim. Multi-line records are split so every physical line carries its
+# own tag. Control lines (DONE_<token> / [[HOK_SCRIPT_ERROR]]) are written
+# without a tag, so a tagged content line can never collide with them.
+function Out-ScriptLine([string]$prefix, [string]$text) {
+    foreach ($ln in ($text -split "\r?\n")) {
+        if ($ln.Length -gt 0) {
+            [Console]::Out.WriteLine($prefix + $ln)
+            [Console]::Out.Flush()
+        }
+    }
+}
+
 while (($line = [Console]::In.ReadLine()) -ne $null) {
     $line = $line.Trim()
     if ($line -eq '') { continue }
@@ -87,14 +104,17 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     $code = 1
     $errorText = $null
     try {
-        # Stream every stream (Write-Output, Write-Host, warnings, errors)
-        # merged, line by line, to our stdout as the script produces it, so
-        # hok can forward it live. Flush each line — a line left sitting in
-        # the console buffer until the script ends would defeat streaming.
+        # Stream every merged record live, routing each by its PowerShell
+        # stream type (the records keep their type through *>&1), so hok can
+        # tell a plain line from a warning/error.
         & $path *>&1 | ForEach-Object {
-            if ($null -ne $_) {
-                [Console]::Out.WriteLine([string]$_)
-                [Console]::Out.Flush()
+            if ($null -eq $_) { return }
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                Out-ScriptLine 'E:' ([string]$_)
+            } elseif ($_ -is [System.Management.Automation.WarningRecord]) {
+                Out-ScriptLine 'W:' ([string]$_)
+            } else {
+                Out-ScriptLine 'O:' ([string]$_)
             }
         }
         $code = $LASTEXITCODE
@@ -105,6 +125,8 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     }
 
     if ($null -ne $errorText) {
+        # Reserved, untagged control line: hok captures its payload into the
+        # structured error AND shows the message as an error (red) line.
         [Console]::Out.WriteLine('[[HOK_SCRIPT_ERROR]] ' + $errorText)
         [Console]::Out.Flush()
     }

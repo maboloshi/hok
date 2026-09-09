@@ -7,16 +7,30 @@ use std::process::Stdio;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use super::psengine::PsEngine;
+use super::psengine::{PsChannel, PsEngine};
 use crate::package::Package;
 use crate::{Error, Event, Session, error::Fallible, internal};
 
+/// Which OS pipe a fresh-spawn reader drains. The spawn path maps its two real
+/// pipes onto the two semantic events; warnings under `pwsh -File` land on
+/// stderr (host rendering), so it cannot produce a distinct warning event.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpawnStream {
+    Stdout,
+    Stderr,
+}
+
 /// Read a captured child pipe line by line (lossy UTF-8) and forward every
-/// non-empty line to the event bus as `ScriptOutput`, so the frontend renders
-/// script output with the same indentation as its own lines. Runs on a worker
-/// thread (see `run_script`) so a chatty script cannot deadlock the child
-/// against the wait loop on a full pipe buffer.
-fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender<Event>>) {
+/// non-empty line to the event bus as a [`Event::ScriptStdout`] (stdout) or
+/// [`Event::ScriptStderr`] (stderr) event, so the frontend renders script
+/// output with the same indentation as its own lines. Runs on a worker thread
+/// (see `run_script`) so a chatty script cannot deadlock the child against the
+/// wait loop on a full pipe buffer.
+fn forward_script_pipe(
+    mut reader: BufReader<impl Read>,
+    tx: Option<mpsc::Sender<Event>>,
+    which: SpawnStream,
+) {
     let mut buf = Vec::new();
     loop {
         buf.clear();
@@ -31,7 +45,11 @@ fn forward_script_pipe(mut reader: BufReader<impl Read>, tx: Option<mpsc::Sender
                     continue;
                 }
                 if let Some(tx) = tx.as_ref() {
-                    let _ = tx.try_send(Event::ScriptOutput(line.to_owned()));
+                    let ev = match which {
+                        SpawnStream::Stdout => Event::ScriptStdout(line.to_owned()),
+                        SpawnStream::Stderr => Event::ScriptStderr(line.to_owned()),
+                    };
+                    let _ = tx.try_send(ev);
                 }
             }
             Err(_) => break,
@@ -137,11 +155,13 @@ fn install_env_additions(
 /// before post_install (lib/install.ps1:62-63,69).
 ///
 /// Execution path is gated by the `script-engine` config (default off):
-/// - **off** (default): each stage spawns a fresh `pwsh -File`, piping output
-///   to `ScriptOutput` events with prompt Ctrl-C cancellation.
+/// - **off** (default): each stage spawns a fresh `pwsh -File`, piping its
+///   stdout/stderr separately to `ScriptStdout` / `ScriptStderr` events with
+///   prompt Ctrl-C cancellation.
 /// - **on**: the stage runs through the session's resident [PsEngine], reusing
-///   one long-lived pwsh worker across stages; output is streamed live as
-///   `ScriptOutput`, and Ctrl-C kills the worker (respawned on the next stage).
+///   one long-lived pwsh worker across stages; output is streamed live,
+///   split into stdout / warning / stderr events, and Ctrl-C kills the worker
+///   (respawned on the next stage).
 pub async fn run_script(
     session: &Session,
     package: &Package,
@@ -198,12 +218,19 @@ if (Test-Path $hokScoopLib) {{
     Get-ChildItem $hokScoopLib -Filter *.ps1 | ForEach-Object {{ . $_.FullName -ErrorAction SilentlyContinue }}
 }}
 
-# Notify hok about undefined commands (missing helpers)
+# Notify hok about undefined commands (missing helpers). A bare `continue`
+# would swallow *every* terminating error (a genuine throw/abort included),
+# silently letting a failed stage "succeed". So only the CommandNotFound case
+# (a helper hok cannot provide) is notified and continued; every other
+# terminating error is rethrown (throw $_) so the stage fails and the real
+# reason reaches hok — the engine's structured-error capture or the spawn
+# path's nonzero exit.
 trap {{
     if ($_.Exception -is [System.Management.Automation.CommandNotFoundException]) {{
         Write-Host "[[HOK_MISSING_HELPER]]$($_.Exception.CommandName)"
+        continue
     }}
-    continue
+    throw $_
 }}
 
 # Scoop-compatible variables for package scripts
@@ -302,10 +329,11 @@ $fname = '{fname}'
 
 /// Execute a staged script via a fresh `pwsh -File` spawn (the default path).
 ///
-/// Pipes stdout/stderr and forwards every non-empty line as a `ScriptOutput`
-/// event so the frontend renders script output with its own indentation.
-/// Cooperative Ctrl-C kills the child (a lone powershell lingers otherwise);
-/// no hard timeout — Scoop scripts may legitimately run for minutes.
+/// Pipes stdout/stderr separately and forwards every non-empty line as a
+/// `ScriptStdout` (stdout) or `ScriptStderr` (stderr) event so the frontend
+/// renders script output with its own indentation. Cooperative Ctrl-C kills the
+/// child (a lone powershell lingers otherwise); no hard timeout — Scoop scripts
+/// may legitimately run for minutes.
 async fn run_script_spawn(
     session: &Session,
     package: &Package,
@@ -318,8 +346,8 @@ async fn run_script_spawn(
     ps.arg("-File").arg(script_path).envs(env);
 
     // Pipe stdout/stderr so the script output is captured and re-emitted as
-    // `ScriptOutput` events — a bare inherited stdout would print at column 0
-    // and break the frontend's indented alignment.
+    // ScriptStdout / ScriptStderr events — a bare inherited stdout would print
+    // at column 0 and break the frontend's indented alignment.
     ps.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = ps
@@ -328,14 +356,14 @@ async fn run_script_spawn(
 
     // Drain the pipes on worker threads while the child runs; without this a
     // chatty script could fill a pipe buffer and deadlock the child against
-    // our wait loop. Every non-empty line is forwarded as `ScriptOutput`.
+    // our wait loop. Every non-empty line is forwarded to the event bus.
     let emitter = session.emitter();
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
     let out_reader = if let Some(out) = stdout.take() {
         let tx = emitter.clone();
         Some(std::thread::spawn(move || {
-            forward_script_pipe(BufReader::new(out), tx)
+            forward_script_pipe(BufReader::new(out), tx, SpawnStream::Stdout)
         }))
     } else {
         None
@@ -343,7 +371,7 @@ async fn run_script_spawn(
     let err_reader = if let Some(err) = stderr.take() {
         let tx = emitter.clone();
         Some(std::thread::spawn(move || {
-            forward_script_pipe(BufReader::new(err), tx)
+            forward_script_pipe(BufReader::new(err), tx, SpawnStream::Stderr)
         }))
     } else {
         None
@@ -385,7 +413,7 @@ async fn run_script_spawn(
         }
     };
 
-    // Child finished — join the readers so every captured `ScriptOutput` line
+    // Child finished — join the readers so every captured script-output line
     // is flushed into the event bus before the caller emits the next event
     // (e.g. the package closure).
     if let Some(t) = out_reader {
@@ -412,9 +440,10 @@ async fn run_script_spawn(
 ///
 /// The engine is taken out of the session slot, runs the script on a blocking
 /// worker (so the async runtime is not starved), and is returned for reuse
-/// across stages/packages. The engine streams the script's merged output to
-/// the event bus as `ScriptOutput` *while it runs* (the same live-forwarding
-/// contract as the fresh-spawn path), not in a batch after completion.
+/// across stages/packages. The engine streams the script's classified output
+/// (stdout / warning / stderr, from the worker's stream tags) to the event bus
+/// *while it runs* (the same live-forwarding contract as the fresh-spawn
+/// path), not in a batch after completion.
 /// Cancellation observed mid-run kills the worker (terminating the in-flight
 /// script); the engine respawns on its next use, mirroring the fresh-spawn
 /// path's prompt abort.
@@ -448,9 +477,14 @@ async fn run_script_engine(
             };
             let sink = {
                 let tx = tx.clone();
-                move |line: String| {
+                move |ch: PsChannel, line: String| {
                     if let Some(tx) = tx.as_ref() {
-                        let _ = tx.try_send(Event::ScriptOutput(line));
+                        let ev = match ch {
+                            PsChannel::Stdout => Event::ScriptStdout(line),
+                            PsChannel::Warning => Event::ScriptWarning(line),
+                            PsChannel::Error => Event::ScriptStderr(line),
+                        };
+                        let _ = tx.try_send(ev);
                     }
                 }
             };
@@ -488,12 +522,20 @@ async fn run_script_engine(
         )));
     }
     if outcome.code != 0 {
-        return Err(Error::Custom(format!(
-            "{} script for '{}' exited with code {}",
-            stage,
-            package.name(),
-            outcome.code
-        )));
+        // A thrown error's message is preferred over a bare exit code so the
+        // caller sees *why* the script failed; otherwise fall back to the code
+        // (e.g. a script that called exit N and produced no throw message).
+        let msg = if let Some(e) = &outcome.error {
+            format!("{} script for '{}' failed: {}", stage, package.name(), e)
+        } else {
+            format!(
+                "{} script for '{}' exited with code {}",
+                stage,
+                package.name(),
+                outcome.code
+            )
+        };
+        return Err(Error::Custom(msg));
     }
     Ok(())
 }
@@ -743,7 +785,7 @@ mod tests {
     use super::*;
 
     /// A script's stdout (here a Chinese Write-Host line) is captured and
-    /// re-emitted as ScriptOutput events, so the frontend renders it with
+    /// re-emitted as ScriptStdout events, so the frontend renders it with
     /// the same indentation as its own lines instead of a bare column-0 print.
     /// Also guards the UTF-8 preamble setting so non-ASCII survives the pipe.
     #[tokio::test]
@@ -780,7 +822,7 @@ mod tests {
 
         let mut lines = vec![];
         while let Ok(ev) = rx.try_recv() {
-            if let Event::ScriptOutput(line) = ev {
+            if let Event::ScriptStdout(line) = ev {
                 lines.push(line);
             }
         }
@@ -834,7 +876,7 @@ mod tests {
 
         let mut lines = vec![];
         while let Ok(ev) = rx.try_recv() {
-            if let Event::ScriptOutput(line) = ev {
+            if let Event::ScriptStdout(line) = ev {
                 lines.push(line);
             }
         }
@@ -887,7 +929,7 @@ mod tests {
 
         let mut lines = vec![];
         while let Ok(ev) = rx.try_recv() {
-            if let Event::ScriptOutput(line) = ev {
+            if let Event::ScriptStdout(line) = ev {
                 lines.push(line);
             }
         }
@@ -985,7 +1027,7 @@ mod tests {
     }
 
     /// With `script-engine` on, `run_script` runs the stage through the
-    /// resident engine; its captured output is forwarded as ScriptOutput
+    /// resident engine; its captured output is forwarded as ScriptStdout
     /// events (same frontend contract as the fresh-spawn path).
     #[tokio::test]
     async fn engine_path_forwards_script_output() {
@@ -1022,7 +1064,7 @@ mod tests {
 
         let mut lines = vec![];
         while let Ok(ev) = rx.try_recv() {
-            if let Event::ScriptOutput(line) = ev {
+            if let Event::ScriptStdout(line) = ev {
                 lines.push(line);
             }
         }
@@ -1032,6 +1074,219 @@ mod tests {
             lines
         );
         assert!(lines.iter().any(|l| l.contains("engine-done")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On the engine path, each PowerShell stream is routed to its own event
+    /// (the worker's `O:`/`W:`/`E:` tags are stripped and classified), so the
+    /// frontend can render stdout / warning / stderr with distinct colours.
+    #[tokio::test]
+    async fn engine_path_routes_stdout_warning_stderr() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_stream_split");
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Write-Error / Write-Warning are non-terminating, so the run itself
+        // succeeds; only their routing is under test.
+        let _ = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec![
+                "Write-Output 'stdout-x'",
+                "Write-Warning 'warn-y'",
+                "Write-Error 'err-z'",
+            ]),
+        )
+        .await;
+
+        let mut out = vec![];
+        let mut warns = vec![];
+        let mut errs = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                Event::ScriptStdout(l) => out.push(l),
+                Event::ScriptWarning(l) => warns.push(l),
+                Event::ScriptStderr(l) => errs.push(l),
+                _ => {}
+            }
+        }
+        assert!(
+            out.iter().any(|l| l.contains("stdout-x")),
+            "stdout must route to ScriptStdout, got: {out:?} | {warns:?} | {errs:?}"
+        );
+        assert!(
+            warns.iter().any(|l| l.contains("warn-y")),
+            "warning must route to ScriptWarning, got: {out:?} | {warns:?} | {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|l| l.contains("err-z")),
+            "error must route to ScriptStderr, got: {out:?} | {warns:?} | {errs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The fresh-spawn path maps its real stderr pipe onto `ScriptStderr`, so a
+    /// script's `Write-Error` is distinguishable from normal stdout output.
+    #[tokio::test]
+    async fn spawn_path_routes_stderr() {
+        if !pwsh_available() {
+            return;
+        }
+        let root = crate::test_utils::tmpdir("script_spawn_stderr");
+        let session = crate::test_utils::test_session(&root);
+        let bus = session.event_bus();
+        let mut rx = bus.receiver().expect("fresh event bus receiver");
+
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        // Non-terminating Write-Error → stderr pipe; the run still succeeds.
+        let _ = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec![
+                "Write-Output 'spawn-out'",
+                "Write-Error 'spawn-err-line'",
+            ]),
+        )
+        .await;
+
+        let mut out = vec![];
+        let mut errs = vec![];
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                Event::ScriptStdout(l) => out.push(l),
+                Event::ScriptStderr(l) => errs.push(l),
+                _ => {}
+            }
+        }
+        assert!(
+            out.iter().any(|l| l.contains("spawn-out")),
+            "stdout must route to ScriptStdout, got: {out:?} | {errs:?}"
+        );
+        assert!(
+            errs.iter().any(|l| l.contains("spawn-err-line")),
+            "stderr must route to ScriptStderr, got: {out:?} | {errs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A package script that throws must fail the stage on the engine path and
+    /// surface the *real* reason in the returned error (not be swallowed by the
+    /// preamble's missing-helper trap). Guards the trap fix end to end.
+    #[tokio::test]
+    async fn engine_path_throw_fails_stage_with_reason() {
+        if !pwsh_available() {
+            return;
+        }
+        let (session, root) = engine_session("script_engine_throw");
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let err = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec!["throw 'boom-real-msg'"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("boom-real-msg"),
+            "the real throw reason must surface, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("failed"),
+            "expected a failed-with-reason error, got: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Same trap fix on the fresh-spawn path: a throw makes `pwsh -File` exit
+    /// nonzero, so the stage reports an exit-code failure instead of silently
+    /// succeeding.
+    #[tokio::test]
+    async fn spawn_path_throw_fails_stage() {
+        if !pwsh_available() {
+            return;
+        }
+        let root = crate::test_utils::tmpdir("script_spawn_throw");
+        let session = crate::test_utils::test_session(&root);
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+
+        let err = run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "install",
+            "install",
+            Some(vec!["throw 'boom'"]),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("exited with code"),
+            "a throw must fail the spawn stage via a nonzero exit, got: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1068,7 +1323,7 @@ mod tests {
             let mut first: Option<std::time::Instant> = None;
             let mut last: Option<std::time::Instant> = None;
             while let Some(ev) = rx.recv().await {
-                if let Event::ScriptOutput(l) = ev {
+                if let Event::ScriptStdout(l) = ev {
                     let now = std::time::Instant::now();
                     if l.contains("live-first-世界") && first.is_none() {
                         first = Some(now);

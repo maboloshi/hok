@@ -117,6 +117,37 @@ pub fn err(msg: impl AsRef<str>) {
     eprintln!("{} {m}", "ERROR".red().bold(), m = msg.as_ref());
 }
 
+/// Which PowerShell stream a script output line belongs to (drives its colour).
+#[derive(Clone, Copy)]
+pub enum ScriptStream {
+    /// Success / information stream — shown in the default foreground.
+    Info,
+    /// Warning stream — shown in yellow.
+    Warning,
+    /// Error stream / stderr — shown in red.
+    Error,
+}
+
+/// Colour a single script output line by the stream it came from, for the
+/// `  {line}` rendering the frontend uses for package scripts.
+///
+/// A line that already carries script-embedded ANSI (contains `ESC`) is passed
+/// through untouched so we never double-wrap and corrupt the script's own
+/// colours; only lines without their own colour get the conventional colour
+/// for their stream (error red / warning yellow / stdout stays default).
+pub fn script_line(stream: ScriptStream, text: impl AsRef<str>) -> String {
+    let text = text.as_ref();
+    if text.contains('\x1b') {
+        text.to_string()
+    } else {
+        match stream {
+            ScriptStream::Info => text.to_string(),
+            ScriptStream::Warning => text.yellow().to_string(),
+            ScriptStream::Error => text.red().to_string(),
+        }
+    }
+}
+
 /// Status/note line (grey), with a trailing ellipsis for live progress feel.
 pub fn status(msg: impl AsRef<str>) {
     println!("{}", status_line(msg));

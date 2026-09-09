@@ -340,8 +340,22 @@ pub enum Event {
     /// A standalone download operation (`download_apps`) has finished.
     DownloadDone,
 
-    /// PowerShell script emitted output (stdout line).
-    ScriptOutput(String),
+    /// PowerShell script emitted a line on its success / information stream.
+    ///
+    /// Separate from [`Event::ScriptStderr`] / [`Event::ScriptWarning`] so the
+    /// frontend can render each PowerShell stream with its own convention
+    /// colour (and still pass script-embedded ANSI through untouched).
+    ScriptStdout(String),
+
+    /// PowerShell script emitted a line on its warning stream.
+    ///
+    /// Only the resident-engine path can distinguish this from stderr (the
+    /// fresh-spawn path folds warnings into stderr); see
+    /// `package::operations::psengine`.
+    ScriptWarning(String),
+
+    /// PowerShell script emitted a line on its error stream (or stderr).
+    ScriptStderr(String),
 
     /// A download was satisfied from local cache.
     PackageCacheHit(String),
