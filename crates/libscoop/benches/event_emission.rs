@@ -13,7 +13,8 @@
 //! of `EventBus`'s outbound channel (`EVENT_BUS_CAPACITY`). A drainer thread
 //! consumes from the other end, standing in for the CLI event loop.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use tokio::sync::mpsc;
 
 use libscoop::Event;

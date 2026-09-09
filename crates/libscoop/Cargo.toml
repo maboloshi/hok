@@ -94,7 +94,7 @@ broken_intra_doc_links = "deny"
 [dev-dependencies]
 # Guardrail benchmarks for the key pure functions (phase 5). Dev-only — never
 # affects release builds. `cargo bench` runs them.
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "pure_functions"

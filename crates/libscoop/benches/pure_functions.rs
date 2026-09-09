@@ -6,7 +6,8 @@
 //! Async operations (checkver / download / bucket update) are exercised by the
 //! vs-Scoop script benchmark (`scripts/benchmark_vs_scoop.ps1`) instead.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use libscoop::compare_versions;
 use libscoop::hash::ChecksumBuilder;
