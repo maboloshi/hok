@@ -84,7 +84,7 @@ fn ensure_in_psmodulepath(session: &Session) -> Fallible<()> {
     let current = if current.is_empty() && !session.is_global() {
         // Upstream defaults to the per-user PowerShell modules folder when
         // PSModulePath is unset for the user scope.
-        dirs::home_dir()
+        internal::path::home_dir()
             .map(|h| {
                 h.join("Documents")
                     .join("WindowsPowerShell")

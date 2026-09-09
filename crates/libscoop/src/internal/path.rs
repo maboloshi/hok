@@ -20,6 +20,31 @@ pub(crate) fn is_version_dir(s: &str) -> bool {
     s == "current" || s.chars().any(|c| c.is_ascii_digit())
 }
 
+// ─── User environment directories ────────────────────────────────────────
+// `dirs`-compatible helpers backed by environment variables only. Three call
+// sites used `dirs`, which dragged in `dirs-sys` + `windows-sys 0.48`; the
+// lookups below are Windows-first with a generic fallback, so no `cfg` branch
+// is needed. A missing variable yields `None` so callers fall back instead of
+// panicking (service accounts, stripped environments).
+
+/// User home directory: `%USERPROFILE%`, falling back to `$HOME`.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Per-user configuration directory: `%APPDATA%` (Roaming) on Windows,
+/// `$XDG_CONFIG_HOME` or `$HOME/.config` elsewhere.
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".config")))
+}
+
 /// Return the Leaf, i.e. file name (with extension), or directory name
 /// of given path.
 #[inline(always)]

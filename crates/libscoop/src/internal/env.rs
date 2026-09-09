@@ -48,7 +48,6 @@ mod windows {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
-    use std::sync::LazyLock;
     use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RegType};
     use winreg::{RegKey, RegValue};
 
@@ -56,10 +55,18 @@ mod windows {
     use crate::internal::env::EnvScope;
 
     /// `HKEY_CURRENT_USER` registry key handle.
-    static HKCU: LazyLock<RegKey> = LazyLock::new(|| RegKey::predef(HKEY_CURRENT_USER));
+    ///
+    /// `RegKey` wraps a raw handle and is neither `Send` nor `Sync` in winreg
+    /// 0.56, so the predefined handle is wrapped on demand instead of being
+    /// cached in a `static`. Constructing it performs no registry access.
+    fn hkcu() -> RegKey {
+        RegKey::predef(HKEY_CURRENT_USER)
+    }
 
-    /// `HKEY_LOCAL_MACHINE` registry key handle.
-    static HKLM: LazyLock<RegKey> = LazyLock::new(|| RegKey::predef(HKEY_LOCAL_MACHINE));
+    /// `HKEY_LOCAL_MACHINE` registry key handle (see [`hkcu`]).
+    fn hklm() -> RegKey {
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+    }
 
     /// Registry path of the machine-wide environment variables.
     const GLOBAL_ENV_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
@@ -67,8 +74,8 @@ mod windows {
     /// Open the `Environment` subkey for reading.
     fn open_env_key(scope: EnvScope) -> Fallible<RegKey> {
         match scope {
-            EnvScope::User => Ok(HKCU.open_subkey(Path::new("Environment"))?),
-            EnvScope::Global => Ok(HKLM.open_subkey(Path::new(GLOBAL_ENV_KEY))?),
+            EnvScope::User => Ok(hkcu().open_subkey(Path::new("Environment"))?),
+            EnvScope::Global => Ok(hklm().open_subkey(Path::new(GLOBAL_ENV_KEY))?),
         }
     }
 
@@ -78,11 +85,11 @@ mod windows {
     fn create_env_key(scope: EnvScope) -> Fallible<RegKey> {
         match scope {
             EnvScope::User => {
-                let (env, _) = HKCU.create_subkey(Path::new("Environment"))?;
+                let (env, _) = hkcu().create_subkey(Path::new("Environment"))?;
                 Ok(env)
             }
             EnvScope::Global => {
-                let (env, _) = HKLM.create_subkey(Path::new(GLOBAL_ENV_KEY)).map_err(|e| {
+                let (env, _) = hklm().create_subkey(Path::new(GLOBAL_ENV_KEY)).map_err(|e| {
                     let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
                         " — global installs require administrator privileges"
                     } else {
@@ -131,7 +138,7 @@ mod windows {
                     RegType::REG_SZ
                 };
                 let raw = RegValue {
-                    bytes: to_utf16_bytes(value),
+                    bytes: to_utf16_bytes(value).into(),
                     vtype,
                 };
                 env.set_raw_value(key, &raw)?;

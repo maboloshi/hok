@@ -892,7 +892,7 @@ pub(crate) fn possible_config_paths() -> Vec<PathBuf> {
 mod default {
     use std::path::{Path, PathBuf};
 
-    use crate::internal::path::normalize_path;
+    use crate::internal::path::{home_dir, normalize_path};
 
     /// Join the given `path` to `$HOME` and return a new [`PathBuf`].
     ///
@@ -901,7 +901,7 @@ mod default {
     /// then reverts to defaults instead of panicking.
     #[inline]
     fn home_join<P: AsRef<Path>>(path: P) -> PathBuf {
-        dirs::home_dir()
+        home_dir()
             .map(|p| p.join(path.as_ref()))
             .unwrap_or_default()
     }

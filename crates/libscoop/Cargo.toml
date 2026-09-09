@@ -13,7 +13,6 @@ readme = "README.md"
 
 [dependencies]
 # curl = { version = "0.4", features = ["static-curl"] }
-dirs = "5.0.1"
 time = { workspace = true, features = ["formatting", "parsing", "macros", "local-offset"] }
 # Phase 4 (方案 B): async traits + reqwest (真 async I/O) + concurrency.
 async-trait = "0.1"
@@ -57,11 +56,13 @@ bzip2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
-winreg = "0.52"
+# 0.56 accepts `windows-sys >=0.59, <=0.61`, so it unifies with the direct
+# dependency below instead of pulling a second copy.
+winreg = "0.56"
 # Native Windows ACL APIs (GetNamedSecurityInfoW/SetEntriesInAclW/
 # SetNamedSecurityInfoW) for `permission::grant_users_write_inherit` —
 # keeps the ACL grant a pure-Rust call instead of shelling out to icacls.
-windows-sys = { version = "0.52", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
