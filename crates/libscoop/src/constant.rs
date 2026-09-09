@@ -12,10 +12,7 @@
 //!   [`LazyLock`] so they are compiled/allocated once on first access.
 //! - **Single source of truth**: All magic strings and magic numbers that
 //!   appear in multiple modules should be defined here.
-//! - **`#[allow(dead_code)]`**: Some constants are defined for completeness
-//!   (matching Scoop's behaviour) but may not yet be referenced by Hok.
 
-#![allow(dead_code)]
 use regex::{Regex, RegexBuilder};
 use std::collections::HashSet;
 use std::iter::FromIterator;
@@ -44,6 +41,10 @@ pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> =
     LazyLock::new(|| KNOWN_BUCKETS.to_vec());
 
 /// Bucket lookup priority (same key order as `assets/buckets.json`).
+///
+/// Only consumed by `bucket::tests::bucket_priority_matches_known_keys` today;
+/// kept as the anchor for the pending bucket-priority ordering feature.
+#[allow(dead_code)]
 pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| BUCKET_PRIORITY_ORDER.to_vec());
 
@@ -72,11 +73,6 @@ pub static REGEX_HASH: LazyLock<Regex> = LazyLock::new(|| {
 
 pub static REGEX_ARCHIVE_7Z: LazyLock<Regex> = LazyLock::new(|| {
     let pattern = r"\.((7z)|(t?gz)|(tar)|(lzma)|(bz2?)|(rar)|(iso)|(xz)|(lzh)|(nupkg))$";
-    RegexBuilder::new(pattern).build().unwrap()
-});
-
-static REGEX_ARCHIVE_ZSTD: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"\.(zst)$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 
