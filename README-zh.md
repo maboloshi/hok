@@ -70,7 +70,6 @@
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
 - **native shim** —— 10KB `#![no_std]` 原生 exe shim，嵌入 hok 二进制，零外部依赖
 - **i18n 国际化** —— 全部用户消息迁移到 `rust_i18n`，支持中英文切换
-- **可切换输出风格** —— `hok config set output-style pacman`，Scoop/Pacman 两种风格
 - **列表表格化** —— `hok list` 表格显示，支持 CJK 对齐、可更新版本提示
 - **安装器文件** —— 支持 `installer.file`/`uninstaller.file` manifest 格式
 - **`--global/-g`** —— 全局安装支持（install/cleanup/uninstall/hold/unhold）
@@ -130,19 +129,6 @@ hok config set LANG en
 
 目前已内置 `zh`（中文）和 `en`（英文）两种语言，全部用户界面消息均已迁移到 `rust_i18n` 框架。CLI 帮助信息（`--help`/`-h`）也支持多语言，通过 `hok-i18n-derive` proc-macro 自动生成翻译键。
 
-### 输出风格切换
-
-```bash
-# 切换为 Pacman 风格
-hok config set output-style pacman
-
-# 恢复 Scoop 风格
-hok config set output-style scoop
-```
-
-Scoop 风格（默认）：`  Extracting... done` 逐步进度。
-Pacman 风格：`::` 标题前缀、`✓`/`⚠`/`✗` 状态符号，粗体标签 + 普通信息内容。
-
 ### 配置参考（Settings）
 
 hok 的配置文件位于 `~/.config/hok/config.json`（与 Scoop 的 `config.json` 格式兼容）。首次运行时会把受支持的键从 Scoop 配置文件迁移过来，之后只读写 hok 自己的文件。
@@ -172,7 +158,6 @@ hok config --help         # 完整设置参考（含默认值与取值样式）
 | `last_update` | 字符串 | *(空)* | 上次 bucket 更新时间戳（由 hok 管理，仅可编辑文件） |
 | `no-color` | bool | `false` | 禁用彩色输出 |
 | `no_junction` | bool | `false` | 不使用 `current` 目录联接；shim 直接指向版本目录 |
-| `output-style` | `scoop`\|`pacman` | `scoop` | 进度与状态消息的输出样式 |
 | `private_hosts` | 数组 | *(空)* | 需要额外认证头的私有主机（仅可编辑文件） |
 | `proxy` | 字符串 | `none` | 代理：`none` \| `default` \| `currentuser` \| `[username:password@]host:port` |
 | `root_path` | 路径 | `$SCOOP` 或 `~/scoop` | Scoop 根目录 |

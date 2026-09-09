@@ -410,8 +410,6 @@ cli_help:
             Disable colored output.
       no_junction: bool, default false
             Do not use the 'current' junction; shims point to version dirs instead.
-      output-style: scoop|pacman, default scoop
-            Output style of progress and status messages.
       private_hosts: array, edit file
             Private hosts needing extra auth headers; edit the config file directly.
       proxy: string, default none

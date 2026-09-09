@@ -112,7 +112,6 @@ hok config --help         # full settings reference with defaults
 | `last_update` | string | *(empty)* | Timestamp of the last bucket update (managed by hok; edit the file only) |
 | `no-color` | bool | `false` | Disable colored output |
 | `no_junction` | bool | `false` | Do not use the `current` junction; shims point to version dirs instead |
-| `output-style` | `scoop`\|`pacman` | `scoop` | Output style of progress and status messages |
 | `private_hosts` | array | *(empty)* | Private hosts needing extra auth headers (edit the file only) |
 | `proxy` | string | `none` | Proxy: `none` \| `default` \| `currentuser` \| `[username:password@]host:port` |
 | `root_path` | path | `$SCOOP` or `~/scoop` | Scoop root directory |

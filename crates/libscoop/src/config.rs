@@ -200,10 +200,6 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     editor: Option<String>,
 
-    #[serde(alias = "output-style")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output_style: Option<String>,
-
     #[serde(alias = "language")]
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
@@ -468,12 +464,6 @@ impl Config {
         self.inner.editor.as_deref()
     }
 
-    /// Get the `output_style` config ("scoop" or "pacman").
-    #[inline]
-    pub fn output_style(&self) -> &str {
-        self.output_style.as_deref().unwrap_or("scoop")
-    }
-
     /// Get the `language` config ("auto", "en", or "zh").
     #[inline]
     pub fn language(&self) -> &str {
@@ -624,12 +614,6 @@ impl Config {
             },
             "editor" => {
                 self.inner.editor = match is_unset {
-                    true => None,
-                    false => Some(value.to_string()),
-                }
-            }
-            "output_style" | "output-style" => {
-                self.inner.output_style = match is_unset {
                     true => None,
                     false => Some(value.to_string()),
                 }
@@ -798,7 +782,6 @@ impl Default for Config {
             use_isolated_path: Default::default(),
             use_sqlite_cache: Default::default(),
             no_junction: Default::default(),
-            output_style: Default::default(),
             language: Default::default(),
             no_color: Default::default(),
             private_hosts: Default::default(),
@@ -1150,11 +1133,6 @@ pub fn list_all_with_headers(
         "false".into(),
     ]);
     rows.push([
-        "output-style".into(),
-        config.output_style().to_owned(),
-        "scoop".into(),
-    ]);
-    rows.push([
         "private_hosts".into(),
         config
             .private_hosts()
@@ -1492,7 +1470,6 @@ mod tests {
             "last_update",
             "no-color",
             "no_junction",
-            "output-style",
             "private_hosts",
             "proxy",
             "root_path",

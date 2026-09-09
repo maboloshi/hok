@@ -410,8 +410,6 @@ cli_help:
             禁用彩色输出。
       no_junction: bool，默认 false
             不使用 'current' 目录联接；shim 直接指向版本目录。
-      output-style: scoop|pacman，默认 scoop
-            进度与状态消息的输出样式。
       private_hosts: 数组，编辑文件
             需要额外认证头的私有主机；请直接编辑配置文件。
       proxy: 字符串，默认 none
