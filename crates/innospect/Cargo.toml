@@ -29,7 +29,9 @@ indexing_slicing = "deny"
 
 [dependencies]
 bitflags = "2.13.0"
-goblin = "0.10.7"
+# `codepage` only pulls encoding_rs with `default-features = false`, which
+# removes the `alloc`-gated `decode*` methods used by `records/language.rs`;
+# the direct dependency re-enables them.
 encoding_rs = "0.8.35"
 codepage = "0.1.2"
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
