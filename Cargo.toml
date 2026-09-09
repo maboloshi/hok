@@ -11,6 +11,25 @@ readme = "README.md"
 [workspace]
 members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crates/innospect"]
 
+# Shared dependency declarations. Members opt in with `{ workspace = true }`
+# and add only the extra features they need; keeping versions (and especially
+# decoder backends such as `flate2/zlib-rs`) in one place prevents silent
+# feature drift across crates.
+[workspace.dependencies]
+bzip2 = "0.6.1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
+md-5 = "0.11"
+regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
+rust-i18n = "3.1.5"
+serde_json = "1.0.120"
+sha1 = "0.11"
+sha2 = "0.11"
+time = "0.3"
+tokio = "1"
+tokio-util = "0.7"
+tracing = "0.1"
+
 [lib]
 path = "src/lib.rs"
 
@@ -21,25 +40,25 @@ clap-verbosity-flag = { version = "3.0.1", features = ["tracing"], default-featu
 clap_complete = "4.5.38"
 crossterm = "0.28"
 indicatif = "0.17.9"
-regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
-serde_json = { version = "1.0.120", features = ["preserve_order"] }
+regex = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-tracing = "0.1"
+tracing = { workspace = true }
 
-rust-i18n = "3.1.5"
+rust-i18n = { workspace = true }
 sys-locale = "0.3"
 
 # Async runtime for the CLI (phase 4: operations async-ification).
 # `rt-multi-thread` + `macros` for the #[tokio::main] async entry point in `bin/hok.rs`;
 # `sync` for concurrency primitives used by concurrent commands.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal"] }
 # Cooperative cancellation (P2): CancellationToken + Ctrl-C wiring in `create_app()`.
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { workspace = true, features = ["rt"] }
 
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
 [build-dependencies]
-time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+time = { workspace = true, features = ["formatting", "macros", "local-offset"] }
 
 [dependencies.libscoop]
 version = "0.2.0"

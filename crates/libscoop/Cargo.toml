@@ -14,22 +14,22 @@ readme = "README.md"
 [dependencies]
 # curl = { version = "0.4", features = ["static-curl"] }
 dirs = "5.0.1"
-time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
+time = { workspace = true, features = ["formatting", "parsing", "macros", "local-offset"] }
 # Phase 4 (方案 B): async traits + reqwest (真 async I/O) + concurrency.
 async-trait = "0.1"
 futures = "0.3"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
 # Cooperative cancellation (P2): CancellationToken threaded through downloads,
 # scripts and waits so Ctrl-C aborts cleanly (temp files, cursor, subprocesses).
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { workspace = true, features = ["rt"] }
 git2 = "0.19.0"
 rayon = "1.7.0"
-regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
+regex = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0.120", features = ["preserve_order"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = "2"
-tracing = "0.1.41"
+tracing = { workspace = true }
 # Async HTTP client (phase 4): async `Network` impl + GitHub / VirusTotal APIs.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
 jsonpath-rust = "1.0"
@@ -37,10 +37,10 @@ json5 = "0.4"
 sxd-document = "0.3"
 sxd-xpath = "0.4"
 base64 = "0.22"
-rust-i18n = "3.1.5"
-md-5 = "0.11"
-sha1 = "0.11"
-sha2 = "0.11"
+rust-i18n = { workspace = true }
+md-5 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
@@ -49,11 +49,11 @@ tar = { version = "0.4", default-features = false }
 # flate2 unified on the pure-Rust zlib-rs backend across the workspace
 # (libscoop, upstream nsis 0.4, vendored innospect, zip), so miniz_oxide
 # stays out of the tree entirely.
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization", "xz"] }
+flate2 = { workspace = true }
+lzma-rust2 = { workspace = true, features = ["xz"] }
 unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
-bzip2 = "0.6.1"
+bzip2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
@@ -79,7 +79,7 @@ shortcuts-rs = "1.1.1"
 
 [build-dependencies]
 hok-shim = { path = "../hok-shim" }
-serde_json = "1.0"
+serde_json = { workspace = true }
 
 [features]
 default = []
