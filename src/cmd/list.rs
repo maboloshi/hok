@@ -10,11 +10,11 @@
 //! arrow into Info because it has no Latest column.
 
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{QueryOption, Session, package};
 
 use crate::cmd::status_info_word;
 use crate::format::{pad_visual, visual_width};
+use crate::output::style;
 use crate::{Result, output};
 
 /// List installed package(s)
@@ -115,11 +115,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             stats.upgradable += 1;
         }
 
-        let info = if words.is_empty() {
-            String::new()
-        } else {
-            words.join(" · ").red().to_string()
-        };
+        // The Info column is styled at render time (attention words danger
+        // red, continuation notes dim), so it is built as plain text here.
+        let info = words.join(" · ");
 
         rows.push(Row {
             name: pkg.name().to_owned(),
@@ -185,7 +183,7 @@ fn continuation(version: &str, note: impl AsRef<str>) -> Row {
         name: String::new(),
         version: version.to_owned(),
         source: String::new(),
-        info: note.as_ref().to_string().dark_grey().to_string(),
+        info: note.as_ref().to_string(),
         dimmed: true,
     }
 }
@@ -209,17 +207,17 @@ fn render(rows: &[Row]) {
 
     println!(
         "  {}  {}  {}  {}",
-        pad_visual(&hdr_name, w_name).bold(),
-        pad_visual(&hdr_ver, w_ver).bold(),
-        pad_visual(&hdr_src, w_src).bold(),
-        hdr_info.bold(),
+        style::emphasis(pad_visual(&hdr_name, w_name)),
+        style::emphasis(pad_visual(&hdr_ver, w_ver)),
+        style::emphasis(pad_visual(&hdr_src, w_src)),
+        style::emphasis(hdr_info),
     );
     println!(
         "  {}  {}  {}  {}",
-        "-".repeat(w_name).dark_grey(),
-        "-".repeat(w_ver).dark_grey(),
-        "-".repeat(w_src).dark_grey(),
-        "-".repeat(w_info).dark_grey(),
+        style::dim("-".repeat(w_name)),
+        style::dim("-".repeat(w_ver)),
+        style::dim("-".repeat(w_src)),
+        style::dim("-".repeat(w_info)),
     );
 
     for row in rows {
@@ -233,19 +231,21 @@ fn render(rows: &[Row]) {
         };
 
         let (name, version, source) = if row.dimmed {
-            (
-                name.dark_grey().to_string(),
-                version.dark_grey().to_string(),
-                source.dark_grey().to_string(),
-            )
+            (style::dim(name), style::dim(version), style::dim(source))
         } else {
-            (name.dark_cyan().to_string(), version, source)
+            (style::emphasis(name), version, source)
+        };
+        // Attention words are danger red; a continuation row's note is dim.
+        let info = if row.dimmed {
+            style::dim(&row.info)
+        } else {
+            style::danger(&row.info)
         };
 
         if row.info.is_empty() {
             println!("  {}  {}  {}", name, version, source);
         } else {
-            println!("  {}  {}  {}  {}", name, version, source, row.info);
+            println!("  {}  {}  {}  {}", name, version, source, info);
         }
     }
 }

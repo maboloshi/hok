@@ -1,7 +1,6 @@
 //! Manage buckets.
 
 use clap::{ArgAction, Parser, Subcommand};
-use crossterm::style::Stylize;
 use libscoop::{Session, bucket};
 
 use crate::{Result, output};
@@ -65,7 +64,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 for (name, repo) in &known_buckets {
                     println!(
                         "  {}  {}",
-                        format!("{:<1$}", name, max_name).dark_cyan(),
+                        output::style::emphasis(format!("{:<1$}", name, max_name)),
                         repo
                     );
                 }
@@ -107,7 +106,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             for (name, repo) in &known_buckets {
                 println!(
                     "  {}  {}",
-                    format!("{:<1$}", name, max_name).dark_cyan(),
+                    output::style::emphasis(format!("{:<1$}", name, max_name)),
                     repo
                 );
             }

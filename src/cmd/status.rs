@@ -1,11 +1,11 @@
 //! Show status and check for new package versions.
 
 use clap::{ArgAction, Parser};
-use crossterm::style::Stylize;
 use libscoop::{Session, package};
 
 use crate::cmd::status_info_word;
 use crate::format::{pad_visual, visual_width};
+use crate::output::style;
 use crate::{Result, output};
 
 /// Show the status of all installed apps
@@ -52,32 +52,46 @@ fn render(rows: &[Row]) {
 
     println!(
         "  {}  {}  {}  {}  {}  {}",
-        pad_visual(&hdr_name, w_name).bold(),
-        pad_visual(&hdr_source, w_source).bold(),
-        pad_visual(&hdr_installed, w_installed).bold(),
-        pad_visual(&hdr_latest, w_latest).bold(),
-        pad_visual(&hdr_missing, w_missing).bold(),
-        hdr_info.bold(),
+        style::emphasis(pad_visual(&hdr_name, w_name)),
+        style::emphasis(pad_visual(&hdr_source, w_source)),
+        style::emphasis(pad_visual(&hdr_installed, w_installed)),
+        style::emphasis(pad_visual(&hdr_latest, w_latest)),
+        style::emphasis(pad_visual(&hdr_missing, w_missing)),
+        style::emphasis(hdr_info),
     );
     println!(
         "  {}  {}  {}  {}  {}  {}",
-        "-".repeat(w_name).dark_grey(),
-        "-".repeat(w_source).dark_grey(),
-        "-".repeat(w_installed).dark_grey(),
-        "-".repeat(w_latest).dark_grey(),
-        "-".repeat(w_missing).dark_grey(),
-        "-".repeat(w_info).dark_grey(),
+        style::dim("-".repeat(w_name)),
+        style::dim("-".repeat(w_source)),
+        style::dim("-".repeat(w_installed)),
+        style::dim("-".repeat(w_latest)),
+        style::dim("-".repeat(w_missing)),
+        style::dim("-".repeat(w_info)),
     );
 
     for row in rows {
+        // Empty optional columns must not emit an empty coloured span (that
+        // would leak stray SGR escapes into piped output).
+        let latest = pad_visual(&row.latest, w_latest);
+        let latest = if row.latest.is_empty() {
+            latest
+        } else {
+            style::success(latest)
+        };
+        let info = if row.info.is_empty() {
+            String::new()
+        } else {
+            style::danger(&row.info)
+        };
+
         println!(
             "  {}  {}  {}  {}  {}  {}",
-            pad_visual(&row.name, w_name).dark_cyan(),
+            style::emphasis(pad_visual(&row.name, w_name)),
             pad_visual(&row.source, w_source),
             pad_visual(&row.installed, w_installed),
-            pad_visual(&row.latest, w_latest).green(),
+            latest,
             pad_visual(&row.missing, w_missing),
-            row.info.clone().red(),
+            info,
         );
     }
 }

@@ -34,12 +34,6 @@
 //!
 //! See `cmd/mod.rs` for details.
 
-use crossterm::{
-    style::{Color, Print, SetForegroundColor},
-    ExecutableCommand,
-};
-use std::{fmt::Display, io};
-
 rust_i18n::i18n!("locales");
 
 // ─── CLI framework infrastructure ────────────────────────────────────────
@@ -78,17 +72,6 @@ impl std::fmt::Display for ExitCode {
 
 impl std::error::Error for ExitCode {}
 
-fn error<T: Display>(input: &T) -> io::Result<()> {
-    let mut stderr = io::stderr();
-    stderr
-        .execute(SetForegroundColor(Color::Red))?
-        .execute(Print("ERROR "))?
-        .execute(SetForegroundColor(Color::Reset))?
-        .execute(Print(input))?
-        .execute(Print("\n"))?;
-    Ok(())
-}
-
 fn translate_error(err: &libscoop::Error) -> String {
     match err {
         libscoop::Error::BucketNotFound(name) => {
@@ -123,11 +106,9 @@ fn report(err: &anyhow::Error) {
         return;
     }
     if let Some(libscoop_err) = err.downcast_ref::<libscoop::Error>() {
-        let msg = translate_error(libscoop_err);
-        let msg_s: String = msg;
-        let _ = error(&msg_s);
+        output::err(translate_error(libscoop_err));
     } else {
-        let _ = error(err);
+        output::err(err.to_string());
     }
     if let Some(cause) = err.source() {
         eprintln!("\nCaused by:");

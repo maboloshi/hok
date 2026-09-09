@@ -18,7 +18,7 @@
 //! - **Thread-safe**: `RowUI` can be driven from any thread; `indicatif`
 //!   handles internal synchronisation.
 
-use crossterm::style::Stylize;
+use crate::output::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -91,7 +91,11 @@ impl RowUI {
         if let Some(bar) = self.bars.remove(id) {
             self.labels.remove(id);
             bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-            bar.finish_with_message(format!("{} {}", "✓".green(), msg.as_ref()));
+            bar.finish_with_message(format!(
+                "{} {}",
+                style::success("✓"),
+                style::success(msg.as_ref())
+            ));
         }
     }
 
@@ -100,7 +104,12 @@ impl RowUI {
         if let Some(bar) = self.bars.remove(id) {
             let label = self.labels.remove(id).unwrap_or_else(|| id.to_owned());
             bar.set_style(ProgressStyle::with_template("{msg}").unwrap());
-            bar.finish_with_message(format!("{} {} ({})", "✗".red(), label, err));
+            bar.finish_with_message(format!(
+                "{} {} ({})",
+                style::danger_bold("✗"),
+                style::emphasis(label),
+                style::danger(err)
+            ));
         }
     }
 
@@ -256,21 +265,21 @@ impl DownloadBar {
                 let p = (*d * 100) / (*t).max(1);
                 // 只取 '/' 之后的部分作为包名，若无 '/' 则保留原字符串
                 let pkg_name = id.split_once('/').map(|(_, name)| name).unwrap_or(id);
-                format!("{} {p}%", pkg_name.cyan())
+                format!("{} {p}%", style::accent(pkg_name))
             })
             .collect::<Vec<_>>()
             .join(" \u{00b7} ");
 
         let label = rust_i18n::t!("cmd.downloading").to_string();
 
-        // Bar: filled cyan blocks + dark-grey remaining.
+        // Bar: accent-filled blocks + dim remaining.
         const BAR_W: u64 = 16;
-        let filled = ((pct as u64) * BAR_W) / 100;
+        let filled = (pct * BAR_W) / 100;
         let filled = filled.min(BAR_W);
         let bar_txt = format!(
             "{}{}",
-            "█".repeat(filled as usize).cyan(),
-            "░".repeat((BAR_W - filled) as usize).dark_grey(),
+            style::accent("█".repeat(filled as usize)),
+            style::dim("░".repeat((BAR_W - filled) as usize)),
         );
 
         let total_bytes = crate::format::humansize(grand, true);

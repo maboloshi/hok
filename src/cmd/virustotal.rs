@@ -3,8 +3,7 @@
 use clap::Parser;
 use libscoop::{QueryOption, Session, package};
 
-use crossterm::style::Stylize;
-
+use crate::output::style;
 use crate::{ExitCode, Result, output};
 
 /// Check a package's download URL against VirusTotal
@@ -61,47 +60,36 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         match package::virustotal::check_url(url, key).await {
             // A finding is result *data*: print it to stdout (colour-coded by
             // severity) so redirecting stdout keeps the full report, and set the
-            // Scoop "unsafe" exit bit (2) for automation/CI.
+            // Scoop "unsafe" exit bit (2) for automation/CI. The name is
+            // emphasized, the verdict carries the severity role.
             Ok(stats) if stats.malicious > 0 => {
                 exit_code |= 2;
                 println!(
-                    "{}",
-                    format!(
-                        "{}: {}",
-                        pkg.name(),
-                        rust_i18n::t!(
-                            "cmd.vt_malicious",
-                            n = stats.malicious,
-                            total = stats.total
-                        )
-                    )
-                    .red()
+                    "  {}: {}",
+                    style::emphasis(pkg.name()),
+                    style::danger(rust_i18n::t!(
+                        "cmd.vt_malicious",
+                        n = stats.malicious,
+                        total = stats.total
+                    ))
                 );
             }
             Ok(stats) if stats.suspicious > 0 => {
                 exit_code |= 2;
                 println!(
-                    "{}",
-                    format!(
-                        "{}: {}",
-                        pkg.name(),
-                        rust_i18n::t!(
-                            "cmd.vt_suspicious",
-                            n = stats.suspicious,
-                            total = stats.total
-                        )
-                    )
-                    .yellow()
+                    "  {}: {}",
+                    style::emphasis(pkg.name()),
+                    style::warning(rust_i18n::t!(
+                        "cmd.vt_suspicious",
+                        n = stats.suspicious,
+                        total = stats.total
+                    ))
                 );
             }
             Ok(stats) => println!(
-                "{}",
-                format!(
-                    "{}: {}",
-                    pkg.name(),
-                    rust_i18n::t!("cmd.vt_clean", total = stats.total)
-                )
-                .green()
+                "  {}: {}",
+                style::emphasis(pkg.name()),
+                style::success(rust_i18n::t!("cmd.vt_clean", total = stats.total))
             ),
             // A request exception is a real failure (Scoop bit 4).
             Err(e) => {
