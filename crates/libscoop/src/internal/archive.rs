@@ -1189,7 +1189,7 @@ fn extract_innosetup_or_fallback(
             )));
         }
     };
-    if matches!(innospect::InnoInstaller::from_bytes(&data), Ok(_)) {
+    if innospect::InnoInstaller::from_bytes(&data).is_ok() {
         extract_innosetup(src, dest, filter, emitter)
     } else {
         extract_pseudo_7z(src, dest, filter, emitter)
@@ -1335,11 +1335,11 @@ fn extract_nsis(
                         payload.to_vec()
                     };
                     let target_path = dest.join(target);
-                    if let Some(parent) = target_path.parent() {
-                        if let Err(e) = crate::internal::fs::ensure_dir(parent) {
-                            errors_ref.lock().unwrap().push(e.to_string());
-                            continue;
-                        }
+                    if let Some(parent) = target_path.parent()
+                        && let Err(e) = crate::internal::fs::ensure_dir(parent)
+                    {
+                        errors_ref.lock().unwrap().push(e.to_string());
+                        continue;
                     }
                     if let Err(e) = std::fs::write(&target_path, &content) {
                         errors_ref.lock().unwrap().push(e.to_string());

@@ -200,7 +200,7 @@ fn owner_from_bytes(bytes: &[u8]) -> Option<String> {
 /// (ASCII), replace anything else with a segment separator.
 fn utf16_ascii_view(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() / 2);
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         out.push(if pair[1] == 0 { pair[0] } else { 0 });
     }
     out

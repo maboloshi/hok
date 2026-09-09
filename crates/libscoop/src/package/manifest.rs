@@ -1788,7 +1788,11 @@ mod tests {
         // written through verbatim by the structure-preserving helper.
         let new_hash = format!("sha512:{}", "a".repeat(128));
         let existing = serde_json::json!("sha512:old");
-        let v = update_hash_preserving_style(&existing, &[new_hash.clone()], Some(&sub_noop));
+        let v = update_hash_preserving_style(
+            &existing,
+            std::slice::from_ref(&new_hash),
+            Some(&sub_noop),
+        );
         assert_eq!(v, serde_json::Value::String(new_hash));
     }
 
@@ -1798,7 +1802,11 @@ mod tests {
             { "url": "https://example.com/a.zip", "hash": "sha1:old" }
         ]);
         let new_hash = format!("sha1:{}", "b".repeat(40));
-        let v = update_hash_preserving_style(&existing, &[new_hash.clone()], Some(&sub_noop));
+        let v = update_hash_preserving_style(
+            &existing,
+            std::slice::from_ref(&new_hash),
+            Some(&sub_noop),
+        );
         assert_eq!(
             v,
             serde_json::json!([

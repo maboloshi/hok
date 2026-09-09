@@ -117,9 +117,9 @@ struct PkgDownloadOutcome {
 /// Each package writes only its own cache files, so concurrent tasks never
 /// collide.
 #[allow(clippy::too_many_arguments)]
-async fn download_one_package<'a, 'b>(
+async fn download_one_package<'a>(
     session: &'a Session,
-    cache: &'b PackageCache<'a>,
+    cache: &PackageCache<'a>,
     cache_root: &Path,
     base_opts: &internal::network::RequestOptions<'_>,
     net: &Arc<dyn internal::network::Network + Send + Sync>,
@@ -558,7 +558,7 @@ impl<'a> PackageSet<'a> {
         // never collide. Fully-cached packages are skipped (their cache-hit
         // events are still emitted) and packages whose download fails are
         // reported per-package, matching the sequential semantics.
-        let jobs = jobs.max(1) as usize;
+        let jobs = jobs.max(1);
 
         // Tell the frontend which packages are about to be downloaded and their
         // total bytes, so it can render one aggregate progress bar (count and
@@ -700,7 +700,8 @@ impl<'a> PackageSet<'a> {
         let net = self.session.network();
 
         // Collect every (url, filename, ident, cookie) as an owned HEAD task.
-        let tasks: Vec<(String, String, String, Option<HashMap<String, String>>)> = self
+        type HeadTask = (String, String, String, Option<HashMap<String, String>>);
+        let tasks: Vec<HeadTask> = self
             .packages
             .iter()
             .map(|&pkg| pkg.upgradable().unwrap_or(pkg))

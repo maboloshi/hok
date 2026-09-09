@@ -94,7 +94,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let config = session.config();
     let style = config.cat_style();
     let used_bat = !style.is_empty() && os::is_program_available("bat.exe");
-    if used_bat && run_bat(&json, &style).is_ok() {
+    if used_bat && run_bat(&json, style).is_ok() {
         return Ok(());
     }
 

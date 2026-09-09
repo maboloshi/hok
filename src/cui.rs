@@ -252,11 +252,7 @@ impl DownloadBar {
         let running_count = running.len();
 
         // Overall percent.
-        let pct = if grand > 0 {
-            (done_sum * 100) / grand
-        } else {
-            0
-        };
+        let pct = (done_sum * 100).checked_div(grand).unwrap_or(0);
 
         // In-progress package list: `git 78% · node 44%`.
         let list = running

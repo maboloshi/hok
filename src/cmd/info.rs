@@ -49,12 +49,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // for the full detail. When nothing is installed, list the candidates
     // compactly (capped) instead of dumping a field block per match.
     match length {
-        0 => {
-            return Err(anyhow::anyhow!(rust_i18n::t!(
-                "cmd.info_not_found",
-                query = query
-            )));
-        }
+        0 => Err(anyhow::anyhow!(rust_i18n::t!(
+            "cmd.info_not_found",
+            query = query
+        ))),
         1 => {
             print_package(&packages[0]);
             Ok(())
