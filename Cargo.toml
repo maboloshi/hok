@@ -28,7 +28,6 @@ hok-i18n = { path = "./crates/hok-i18n" }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
 md-5 = "0.11"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
-rust-i18n = "3.1.5"
 serde_json = "1.0.120"
 sha1 = "0.11"
 sha2 = "0.11"
@@ -58,7 +57,6 @@ tracing = { workspace = true }
 hok-i18n = { workspace = true }
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
-rust-i18n = { workspace = true }
 sys-locale = "0.3"
 
 # Async runtime for the CLI (phase 4: operations async-ification).
