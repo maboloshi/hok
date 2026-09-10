@@ -186,7 +186,6 @@ cmd:
   home_not_found: "找不到名为 '%{query}' 的包。"
   home_multiple: "找到多个名为 '%{query}' 的包:"
   home_invalid: "无效输入。"
-  header_buckets: "正在更新仓库"
   header_installed: "以下包将被安装:"
   header_upgraded: "以下包将被升级:"
   header_replaced: "以下包将被替换:"

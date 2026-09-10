@@ -186,7 +186,6 @@ cmd:
   home_not_found: "Could not find package named '%{query}'."
   home_multiple: "Found multiple packages named '%{query}':"
   home_invalid: "Invalid input."
-  header_buckets: "Updating buckets"
   header_installed: "The following packages will be INSTALLED:"
   header_upgraded: "The following packages will be UPGRADED:"
   header_replaced: "The following packages will be REPLACED:"

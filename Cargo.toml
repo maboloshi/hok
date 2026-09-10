@@ -9,7 +9,13 @@ edition = "2024"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crates/innospect"]
+members = [
+    "crates/libscoop",
+    "crates/hok-shim",
+    "crates/hok-i18n",
+    "crates/hok-i18n-derive",
+    "crates/innospect",
+]
 
 # Shared dependency declarations. Members opt in with `{ workspace = true }`
 # and add only the extra features they need; keeping versions (and especially
@@ -18,6 +24,7 @@ members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crat
 [workspace.dependencies]
 bzip2 = "0.6.1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+hok-i18n = { path = "./crates/hok-i18n" }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
 md-5 = "0.11"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
@@ -45,6 +52,12 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing = { workspace = true }
 
+# In-house translation runtime, shared with `libscoop` so both translate
+# against the same build-time-generated locale tables. `hok-i18n-derive` only
+# patches the clap help tree, so it stays a CLI-side dependency.
+hok-i18n = { workspace = true }
+hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
+
 rust-i18n = { workspace = true }
 sys-locale = "0.3"
 
@@ -54,8 +67,6 @@ sys-locale = "0.3"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal"] }
 # Cooperative cancellation (P2): CancellationToken + Ctrl-C wiring in `create_app()`.
 tokio-util = { workspace = true, features = ["rt"] }
-
-hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
 [build-dependencies]
 time = { workspace = true, features = ["formatting", "macros", "local-offset"] }
