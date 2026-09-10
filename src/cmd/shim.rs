@@ -65,20 +65,20 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 .strip_prefix(["--".to_string()].as_slice())
                 .unwrap_or(&parts[2..]);
             add_custom(session, name, target, args)?;
-            output::done(rust_i18n::t!("cmd.shim_added", name = name));
+            output::done(hok_i18n::t!("cmd.shim_added", name = name));
         }
         Command::Remove { names } => {
             let mut failed = Vec::new();
             for name in &names {
                 if remove_by_name(session, name)? {
-                    output::done(rust_i18n::t!("cmd.shim_removed_by_name", name = name));
+                    output::done(hok_i18n::t!("cmd.shim_removed_by_name", name = name));
                 } else {
                     failed.push(name.clone());
                 }
             }
             if !failed.is_empty() {
                 for name in &failed {
-                    output::err(rust_i18n::t!("cmd.shim_not_found", name = name));
+                    output::err(hok_i18n::t!("cmd.shim_not_found", name = name));
                 }
                 // Each missing shim was already reported above (localized);
                 // just exit nonzero — do not also print a hardcoded-English
@@ -89,7 +89,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         Command::List { patterns } => {
             let shims = list_all_shims(session)?;
             if shims.is_empty() {
-                output::warn(rust_i18n::t!("cmd.shim_no_dir"));
+                output::warn(hok_i18n::t!("cmd.shim_no_dir"));
                 return Ok(());
             }
             // Compile the combined regex (Scoop joins patterns with `|`).
@@ -100,7 +100,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 match regex::Regex::new(&combined) {
                     Ok(re) => Some(re),
                     Err(e) => {
-                        return Err(anyhow::anyhow!(rust_i18n::t!(
+                        return Err(anyhow::anyhow!(hok_i18n::t!(
                             "cmd.shim_invalid_pattern",
                             pattern = combined,
                             e = e
@@ -118,7 +118,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         Command::Info { name } => {
             let paths = package::shim::shim_paths(session, &name)?;
             if paths.is_empty() {
-                output::err(rust_i18n::t!("cmd.shim_not_found", name = name));
+                output::err(hok_i18n::t!("cmd.shim_not_found", name = name));
                 return Err(crate::ExitCode(1).into());
             }
             for (ext, path) in &paths {

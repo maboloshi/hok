@@ -21,7 +21,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `*` is a shorthand for `-a/--all` (Scoop: `$apps -eq '*' -or $all`)
     let all = args.all || args.app.as_deref() == Some("*");
     if args.app.is_none() && !all {
-        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.reset_app_missing")));
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.reset_app_missing")));
     }
 
     if all {
@@ -46,7 +46,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 // Official warns and skips global apps without admin rights.
                 if global && !session.is_admin() {
-                    output::warn(rust_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
+                    output::warn(hok_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
                     continue;
                 }
                 // A genuinely not-installed-correctly app (no usable current
@@ -54,7 +54,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 // (k/N) count so the numbering stays contiguous. Repairable
                 // partial installs still resolve here and remain in the batch.
                 if !package::sync::reset_eligible(session, pkg.name()) {
-                    output::warn(rust_i18n::t!("cmd.reset_broken_skip", name = pkg.name()));
+                    output::warn(hok_i18n::t!("cmd.reset_broken_skip", name = pkg.name()));
                     continue;
                 }
                 attempts.push((global, pkg.name().to_owned()));
@@ -69,7 +69,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             // (ForEach-Object with `return`): a failing app is reported
             // and skipped, the remaining apps keep resetting.
             if let Err(e) = package::sync::reset(session, &name, None, k + 1, total).await {
-                output::err(rust_i18n::t!("cmd.reset_failed", name = name, e = e));
+                output::err(hok_i18n::t!("cmd.reset_failed", name = name, e = e));
                 continue;
             }
         }

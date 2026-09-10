@@ -34,9 +34,9 @@ pub async fn execute(args: Args) -> Result<()> {
     }
 
     if report.formatted == 0 && report.errors.is_empty() {
-        output::info(rust_i18n::t!("cmd.formatjson_none"));
+        output::info(hok_i18n::t!("cmd.formatjson_none"));
     } else {
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.formatjson_count",
             count = report.formatted
         ));

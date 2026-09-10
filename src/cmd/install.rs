@@ -137,9 +137,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if args.download_only {
-        output::done(rust_i18n::t!("output.downloaded_only"));
+        output::done(hok_i18n::t!("output.downloaded_only"));
     } else {
-        output::done(rust_i18n::t!("output.ok_all"));
+        output::done(hok_i18n::t!("output.ok_all"));
     }
 
     Ok(())

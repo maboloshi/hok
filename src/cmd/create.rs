@@ -23,15 +23,15 @@ pub struct Args {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let url = args.url.trim();
     if url.is_empty() {
-        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.create_url_required")));
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.create_url_required")));
     }
 
-    output::info(rust_i18n::t!("cmd.create_creating", url = url));
+    output::info(hok_i18n::t!("cmd.create_creating", url = url));
 
-    output::progress(rust_i18n::t!("cmd.downloading"), "");
+    output::progress(hok_i18n::t!("cmd.downloading"), "");
     let manifest = create::create_manifest(session, url)
         .await
-        .map_err(|e| anyhow::anyhow!(rust_i18n::t!(
+        .map_err(|e| anyhow::anyhow!(hok_i18n::t!(
             "cmd.create_failed",
             e = e
         )))?;
@@ -42,7 +42,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match &args.output {
         Some(path) => {
             fs::write(path, output_json.as_bytes())?;
-            output::done(rust_i18n::t!(
+            output::done(hok_i18n::t!(
                 "cmd.create_manifest_saved",
                 path = path.display()
             ));

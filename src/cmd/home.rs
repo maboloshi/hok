@@ -22,7 +22,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     match result.len() {
         0 => {
-            return Err(anyhow::anyhow!(rust_i18n::t!(
+            return Err(anyhow::anyhow!(hok_i18n::t!(
                 "cmd.home_not_found",
                 query = query
             )));
@@ -35,7 +35,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         _ => {
             result.sort_by_key(|p| p.ident());
 
-            output::info(rust_i18n::t!("cmd.home_multiple", query = query));
+            output::info(hok_i18n::t!("cmd.home_multiple", query = query));
             for (idx, pkg) in result.iter().enumerate() {
                 println!(
                     "  {idx}. {}/{} ({})",
@@ -45,7 +45,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 );
             }
             let index = output::prompt_select(result.len())
-                .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.home_invalid")))?;
+                .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.home_invalid")))?;
             let package = &result[index];
             let url = package.homepage();
             libscoop::os::open_url(url)?;

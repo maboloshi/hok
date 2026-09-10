@@ -54,8 +54,6 @@
 #[macro_use]
 extern crate serde;
 
-rust_i18n::i18n!("../../locales");
-
 pub mod bucket;
 pub mod cache;
 pub mod config;

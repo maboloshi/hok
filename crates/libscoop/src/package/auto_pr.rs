@@ -85,19 +85,19 @@ pub async fn run_auto_pr(
     // Validate token
     if config.token.is_empty() {
         return Err(Error::Custom(
-            rust_i18n::t!("cmd.auto_err_token").to_string(),
+            hok_i18n::t!("cmd.auto_err_token").to_string(),
         ));
     }
 
     // Validate modes
     if !config.push && !config.request {
         return Err(Error::Custom(
-            rust_i18n::t!("cmd.auto_err_mode").to_string(),
+            hok_i18n::t!("cmd.auto_err_mode").to_string(),
         ));
     }
     if config.request && config.upstream_repo_nwo.is_empty() {
         return Err(Error::Custom(
-            rust_i18n::t!("cmd.auto_err_upstream").to_string(),
+            hok_i18n::t!("cmd.auto_err_upstream").to_string(),
         ));
     }
 
@@ -106,7 +106,7 @@ pub async fn run_auto_pr(
 
     let origin_owner = repo_nwo.split('/').next().unwrap_or("").to_string();
 
-    session.output().header(rust_i18n::t!("cmd.auto_pr_header"));
+    session.output().header(hok_i18n::t!("cmd.auto_pr_header"));
     session.output().named("Repository", &repo_nwo);
     session.output().named("Branch", &config.origin_branch);
     if config.request {
@@ -124,7 +124,7 @@ pub async fn run_auto_pr(
     };
     if !dir.is_dir() {
         return Err(Error::Custom(
-            rust_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
+            hok_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
         ));
     }
 
@@ -187,7 +187,7 @@ pub async fn run_auto_pr(
     if changed.is_empty() {
         session
             .output()
-            .info(rust_i18n::t!("cmd.auto_pr_no_changes"));
+            .info(hok_i18n::t!("cmd.auto_pr_no_changes"));
         return Ok(());
     }
     session

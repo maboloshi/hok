@@ -232,7 +232,7 @@ pub async fn execute(
                     Ok(()) => report.updated = true,
                     Err(e) => {
                         report.message =
-                            Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                            Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
                         report.severity = ReportSeverity::Error;
                     }
                 }
@@ -273,7 +273,7 @@ pub async fn execute(
                 None => {
                     let mut report = CheckverReport::new(stem, current);
                     report.message =
-                        Some(rust_i18n::t!("cmd.checkver_sourceforge_err").to_string());
+                        Some(hok_i18n::t!("cmd.checkver_sourceforge_err").to_string());
                     report.severity = ReportSeverity::Error;
                     on_report(&report);
                     continue;
@@ -285,7 +285,7 @@ pub async fn execute(
                 Some(api_url) => api_url,
                 None => {
                     let mut report = CheckverReport::new(stem, current);
-                    report.message = Some(rust_i18n::t!("cmd.checkver_github_err").to_string());
+                    report.message = Some(hok_i18n::t!("cmd.checkver_github_err").to_string());
                     report.severity = ReportSeverity::Error;
                     on_report(&report);
                     continue;
@@ -296,7 +296,7 @@ pub async fn execute(
             let hp = manifest.homepage().to_string();
             if hp.is_empty() {
                 let mut report = CheckverReport::new(stem, current);
-                report.message = Some(rust_i18n::t!("cmd.checkver_no_url").to_string());
+                report.message = Some(hok_i18n::t!("cmd.checkver_no_url").to_string());
                 report.severity = ReportSeverity::Error;
                 on_report(&report);
                 continue;
@@ -438,19 +438,19 @@ pub async fn execute(
         let raw = match fetch {
             CheckverFetch::Page(content) => content,
             CheckverFetch::DownloadError(e) => {
-                report.message = Some(rust_i18n::t!("cmd.err_download", e = e).to_string());
+                report.message = Some(hok_i18n::t!("cmd.err_download", e = e).to_string());
                 report.severity = ReportSeverity::Error;
                 on_report(&report);
                 continue;
             }
             CheckverFetch::ScriptNoVersion => {
-                report.message = Some(rust_i18n::t!("cmd.checkver_no_version").to_string());
+                report.message = Some(hok_i18n::t!("cmd.checkver_no_version").to_string());
                 report.severity = ReportSeverity::Warn;
                 on_report(&report);
                 continue;
             }
             CheckverFetch::ScriptError(e) => {
-                report.message = Some(rust_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                report.message = Some(hok_i18n::t!("cmd.checkver_script_err", e = e).to_string());
                 report.severity = ReportSeverity::Error;
                 on_report(&report);
                 continue;
@@ -470,7 +470,7 @@ pub async fn execute(
         let (mut ver, captures, named_captures) = match extract_result {
             Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
             None => {
-                report.message = Some(rust_i18n::t!("cmd.checkver_no_extract").to_string());
+                report.message = Some(hok_i18n::t!("cmd.checkver_no_extract").to_string());
                 report.severity = ReportSeverity::Error;
                 on_report(&report);
                 continue;
@@ -501,7 +501,7 @@ pub async fn execute(
                     Ok(()) => report.updated = true,
                     Err(e) => {
                         report.message =
-                            Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                            Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
                         report.severity = ReportSeverity::Error;
                     }
                 }
@@ -512,7 +512,7 @@ pub async fn execute(
                 Ok(()) => report.updated = true,
                 Err(e) => {
                     report.message =
-                        Some(rust_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                        Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
                     report.severity = ReportSeverity::Error;
                 }
             }

@@ -15,21 +15,21 @@ pub struct Args {
 
 /// Print a package's detail block (the info body).
 fn print_package(pkg: &package::Package) {
-    output::field(rust_i18n::t!("output.field_identity"), pkg.ident());
-    output::field(rust_i18n::t!("output.field_name"), pkg.name());
-    output::field(rust_i18n::t!("output.field_bucket"), pkg.bucket());
+    output::field(hok_i18n::t!("output.field_identity"), pkg.ident());
+    output::field(hok_i18n::t!("output.field_name"), pkg.name());
+    output::field(hok_i18n::t!("output.field_bucket"), pkg.bucket());
     output::field(
-        rust_i18n::t!("output.field_description"),
+        hok_i18n::t!("output.field_description"),
         pkg.description().unwrap_or("<no description>"),
     );
-    output::field(rust_i18n::t!("output.field_version"), pkg.version());
-    output::field(rust_i18n::t!("output.field_homepage"), pkg.homepage());
+    output::field(hok_i18n::t!("output.field_version"), pkg.version());
+    output::field(hok_i18n::t!("output.field_homepage"), pkg.homepage());
     output::field(
-        rust_i18n::t!("output.field_license"),
+        hok_i18n::t!("output.field_license"),
         pkg.license().to_string(),
     );
     output::field(
-        rust_i18n::t!("output.field_shims"),
+        hok_i18n::t!("output.field_shims"),
         pkg.shims()
             .map(|v| v.join(","))
             .unwrap_or("<no shims>".to_owned()),
@@ -49,7 +49,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // for the full detail. When nothing is installed, list the candidates
     // compactly (capped) instead of dumping a field block per match.
     match length {
-        0 => Err(anyhow::anyhow!(rust_i18n::t!(
+        0 => Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.info_not_found",
             query = query
         ))),
@@ -78,13 +78,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 Ok(())
             } else {
-                output::info(rust_i18n::t!("cmd.found", count = length, query = query));
+                output::info(hok_i18n::t!("cmd.found", count = length, query = query));
                 const CAP: usize = 30;
                 for pkg in packages.iter().take(CAP) {
                     println!("  {}  {}", pkg.ident(), pkg.version());
                 }
                 if length > CAP {
-                    output::info(rust_i18n::t!("cmd.info_more", n = length - CAP));
+                    output::info(hok_i18n::t!("cmd.info_more", n = length - CAP));
                 }
                 Ok(())
             }

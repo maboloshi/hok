@@ -86,7 +86,7 @@ pub async fn execute(
             if has_urls || has_hashes {
                 item.status = CheckHashesStatus::Failed;
                 item.messages
-                    .push(rust_i18n::t!("cmd.checkhashes_count_mismatch").to_string());
+                    .push(hok_i18n::t!("cmd.checkhashes_count_mismatch").to_string());
                 report.failed += 1;
                 on_item(&item);
                 report.items.push(item);
@@ -103,7 +103,7 @@ pub async fn execute(
             if raw_hash.is_empty() || raw_hash == "TODO" {
                 item.status = CheckHashesStatus::Failed;
                 item.messages
-                    .push(rust_i18n::t!("cmd.checkhashes_skipped").to_string());
+                    .push(hok_i18n::t!("cmd.checkhashes_skipped").to_string());
                 report.skipped += 1;
                 has_any_failure = true;
                 break;
@@ -124,7 +124,7 @@ pub async fn execute(
             {
                 item.status = CheckHashesStatus::Failed;
                 item.messages
-                    .push(rust_i18n::t!("cmd.checkhashes_download_failed", e = e).to_string());
+                    .push(hok_i18n::t!("cmd.checkhashes_download_failed", e = e).to_string());
                 has_any_failure = true;
                 break;
             }
@@ -135,7 +135,7 @@ pub async fn execute(
                     Err(e) => {
                         item.status = CheckHashesStatus::Failed;
                         item.messages
-                            .push(rust_i18n::t!("cmd.checkhashes_hash_failed", e = e).to_string());
+                            .push(hok_i18n::t!("cmd.checkhashes_hash_failed", e = e).to_string());
                         has_any_failure = true;
                         break;
                     }
@@ -192,7 +192,7 @@ pub async fn execute(
                 } else {
                     item.status = CheckHashesStatus::Failed;
                     item.messages.push(
-                        rust_i18n::t!("cmd.checkhashes_path_not_found", path = path_prefix)
+                        hok_i18n::t!("cmd.checkhashes_path_not_found", path = path_prefix)
                             .to_string(),
                     );
                 }
@@ -209,7 +209,7 @@ pub async fn execute(
                 );
                 let actual = &actual_hashes[*i];
                 item.messages.push(
-                    rust_i18n::t!(
+                    hok_i18n::t!(
                         "cmd.checkhashes_mismatch",
                         expected = &expected_str[..std::cmp::min(12, expected_str.len())],
                         actual = &actual[..std::cmp::min(12, actual.len())],

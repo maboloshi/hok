@@ -80,9 +80,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     .await?;
 
     if report.total_manifests == 0 {
-        output::info(rust_i18n::t!("cmd.checkurls_no_manifests"));
+        output::info(hok_i18n::t!("cmd.checkurls_no_manifests"));
     } else {
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.checkurls_summary",
             total = report.total_urls,
             valid = report.total_valid,

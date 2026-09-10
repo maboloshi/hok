@@ -266,7 +266,7 @@ impl DownloadBar {
             .collect::<Vec<_>>()
             .join(" \u{00b7} ");
 
-        let label = rust_i18n::t!("cmd.downloading").to_string();
+        let label = hok_i18n::t!("cmd.downloading").to_string();
 
         // Bar: accent-filled blocks + dim remaining.
         const BAR_W: u64 = 16;

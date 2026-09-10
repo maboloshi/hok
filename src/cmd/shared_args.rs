@@ -116,7 +116,7 @@ impl SyncArgs {
 pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crate::Result<()> {
     session.set_global(global);
     if global && !session.is_admin() {
-        return Err(anyhow::anyhow!(rust_i18n::t!(
+        return Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.admin_rights_required",
             verb = verb
         )));
@@ -136,7 +136,7 @@ pub(crate) fn validate_dir(dir: &Path) -> crate::Result<()> {
     if dir.is_dir() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(rust_i18n::t!(
+        Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.dir_not_found",
             path = dir.display()
         )))

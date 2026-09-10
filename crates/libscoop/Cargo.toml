@@ -41,7 +41,9 @@ json5 = "0.4"
 sxd-document = "0.3"
 sxd-xpath = "0.4"
 base64 = "0.22"
-rust-i18n = { workspace = true }
+# Shared in-house i18n runtime: the locale tables are generated once, inside
+# `hok-i18n`, so the CLI and this library translate against one copy of them.
+hok-i18n = { workspace = true }
 md-5 = { workspace = true }
 sha1 = { workspace = true }
 sha2 = { workspace = true }

@@ -44,7 +44,7 @@ pub enum Command {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Add { name, repo } => {
-            output::progress(rust_i18n::t!("cmd.adding_bucket"), &name);
+            output::progress(hok_i18n::t!("cmd.adding_bucket"), &name);
             let repo = repo.as_deref().unwrap_or_default();
             match bucket::add(session, name.as_str(), repo).await {
                 Ok(..) => output::ok(),
@@ -60,7 +60,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     .map(|&(n, _)| n.len())
                     .max()
                     .unwrap_or(4);
-                output::header(rust_i18n::t!("cmd.header_buckets_list"));
+                output::header(hok_i18n::t!("cmd.header_buckets_list"));
                 for (name, repo) in &known_buckets {
                     println!(
                         "  {}  {}",
@@ -76,17 +76,17 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                         for bucket in buckets {
                             output::named(bucket.name(), "");
                             output::field(
-                                format!(" ├─{}", rust_i18n::t!("cmd.bucket_manifests")),
+                                format!(" ├─{}", hok_i18n::t!("cmd.bucket_manifests")),
                                 bucket.manifest_count().to_string(),
                             );
                             if let Some(updated) = bucket.updated_at() {
                                 output::field(
-                                    format!(" ├─{}", rust_i18n::t!("cmd.bucket_updated")),
+                                    format!(" ├─{}", hok_i18n::t!("cmd.bucket_updated")),
                                     updated,
                                 );
                             }
                             output::field(
-                                format!(" └─{}", rust_i18n::t!("cmd.bucket_source")),
+                                format!(" └─{}", hok_i18n::t!("cmd.bucket_source")),
                                 bucket.source(),
                             );
                         }
@@ -102,7 +102,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 .map(|&(n, _)| n.len())
                 .max()
                 .unwrap_or(4);
-            output::header(rust_i18n::t!("cmd.header_buckets_list"));
+            output::header(hok_i18n::t!("cmd.header_buckets_list"));
             for (name, repo) in &known_buckets {
                 println!(
                     "  {}  {}",
@@ -114,7 +114,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Remove { name } => {
             for name in name {
-                output::progress(rust_i18n::t!("cmd.removing_bucket"), &name);
+                output::progress(hok_i18n::t!("cmd.removing_bucket"), &name);
                 match bucket::remove(session, name.as_str()) {
                     Ok(..) => output::ok(),
                     Err(err) => return Err(err.into()),

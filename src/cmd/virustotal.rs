@@ -25,7 +25,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let pkgs = package::query::query(session, queries, options, false)?;
 
     if pkgs.is_empty() {
-        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.no_pkgs_found")));
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.no_pkgs_found")));
     }
 
     // Get API key: env var > config > none
@@ -36,7 +36,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Scoop aborts with exit 16 when no API key is configured (it cannot do
     // any work); mirror that instead of silently skipping every package.
     if api_key.is_none() {
-        output::err(rust_i18n::t!("cmd.vt_no_key"));
+        output::err(hok_i18n::t!("cmd.vt_no_key"));
         return Err(ExitCode(16).into());
     }
 
@@ -47,7 +47,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     for pkg in &pkgs {
         let urls = pkg.manifest().url();
         if urls.is_empty() {
-            output::named(pkg.name(), rust_i18n::t!("cmd.no_download_urls"));
+            output::named(pkg.name(), hok_i18n::t!("cmd.no_download_urls"));
             continue;
         }
 
@@ -67,7 +67,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 println!(
                     "  {}: {}",
                     style::emphasis(pkg.name()),
-                    style::danger(rust_i18n::t!(
+                    style::danger(hok_i18n::t!(
                         "cmd.vt_malicious",
                         n = stats.malicious,
                         total = stats.total
@@ -79,7 +79,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 println!(
                     "  {}: {}",
                     style::emphasis(pkg.name()),
-                    style::warning(rust_i18n::t!(
+                    style::warning(hok_i18n::t!(
                         "cmd.vt_suspicious",
                         n = stats.suspicious,
                         total = stats.total
@@ -89,7 +89,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             Ok(stats) => println!(
                 "  {}: {}",
                 style::emphasis(pkg.name()),
-                style::success(rust_i18n::t!("cmd.vt_clean", total = stats.total))
+                style::success(hok_i18n::t!("cmd.vt_clean", total = stats.total))
             ),
             // A request exception is a real failure (Scoop bit 4).
             Err(e) => {

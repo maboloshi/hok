@@ -103,7 +103,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Mirrors scoop-update.ps1: `--global` is invalid without an explicit
     // <app> — reject it instead of silently ignoring the flag.
     if args.global {
-        return Err(anyhow::anyhow!(rust_i18n::t!("cmd.update_global_no_app")));
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.update_global_no_app")));
     }
     update_buckets(session, args.force).await
 }
@@ -149,7 +149,7 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
         ui.finish_all();
     });
 
-    output::header(rust_i18n::t!("cmd.header_buckets"));
+    output::header(hok_i18n::t!("cmd.header_buckets"));
     let changes = bucket::update(session).await?;
     handle.await.unwrap();
 
@@ -172,13 +172,13 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) {
     if std::io::stdout().is_terminal() {
         let mut ui = cui::RowUI::new();
-        ui.set_spin("manifest-cache", rust_i18n::t!("cmd.refresh_cache"));
+        ui.set_spin("manifest-cache", hok_i18n::t!("cmd.refresh_cache"));
         package::manifest_cache::refresh(session, changes);
-        ui.done_with("manifest-cache", rust_i18n::t!("cmd.cache_done"));
+        ui.done_with("manifest-cache", hok_i18n::t!("cmd.cache_done"));
     } else {
-        output::status(rust_i18n::t!("cmd.refresh_cache"));
+        output::status(hok_i18n::t!("cmd.refresh_cache"));
         package::manifest_cache::refresh(session, changes);
-        output::done(rust_i18n::t!("cmd.cache_done"));
+        output::done(hok_i18n::t!("cmd.cache_done"));
     }
 }
 
@@ -223,7 +223,7 @@ pub async fn execute_upgrade(
         )?;
         let installed = package::query::query_installed(session, &queries, &[])?;
         if !missing_target && upgradable.is_empty() && !installed.is_empty() {
-            output::info(rust_i18n::t!("cmd.outdated"));
+            output::info(hok_i18n::t!("cmd.outdated"));
             return Ok(());
         }
     } else {
@@ -240,7 +240,7 @@ pub async fn execute_upgrade(
     }
     sync_result?;
 
-    output::done(rust_i18n::t!("output.ok_all"));
+    output::done(hok_i18n::t!("output.ok_all"));
 
     Ok(())
 }

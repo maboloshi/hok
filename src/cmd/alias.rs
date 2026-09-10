@@ -48,7 +48,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let aliases = config.aliases();
             match aliases {
                 Some(map) if !map.is_empty() => {
-                    output::header(rust_i18n::t!("cmd.header_aliases"));
+                    output::header(hok_i18n::t!("cmd.header_aliases"));
                     let mut sorted: Vec<_> = map.iter().collect();
                     sorted.sort_by_key(|(k, _)| *k);
                     for (name, cmd) in sorted {
@@ -62,20 +62,20 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     }
                 }
                 _ => {
-                    output::warn(rust_i18n::t!("cmd.no_aliases"));
+                    output::warn(hok_i18n::t!("cmd.no_aliases"));
                 }
             }
         }
         Some(Command::Add { name, value }) => {
             match config::alias_add(session, &name, &value) {
-                Ok(_) => output::info(rust_i18n::t!("cmd.alias_added", name = name, value = value)),
-                Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
+                Ok(_) => output::info(hok_i18n::t!("cmd.alias_added", name = name, value = value)),
+                Err(e) => output::err(format!("{}: {e}", hok_i18n::t!("output.error"))),
             }
         }
         Some(Command::Remove { name }) => {
             match config::alias_remove(session, &name) {
-                Ok(_) => output::info(rust_i18n::t!("cmd.alias_removed", name = name)),
-                Err(e) => output::err(format!("{}: {e}", rust_i18n::t!("output.error"))),
+                Ok(_) => output::info(hok_i18n::t!("cmd.alias_removed", name = name)),
+                Err(e) => output::err(format!("{}: {e}", hok_i18n::t!("output.error"))),
             }
         }
     }

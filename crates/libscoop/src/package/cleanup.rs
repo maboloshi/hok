@@ -98,7 +98,7 @@ pub fn cleanup(
         for ver in &old_dirs {
             let ver_dir = pkg_dir.join(ver);
             if let Err(e) = internal::fs::remove_dir(&ver_dir) {
-                let msg = rust_i18n::t!("cmd.cleanup_remove_failed", name = name, ver = ver, e = e)
+                let msg = hok_i18n::t!("cmd.cleanup_remove_failed", name = name, ver = ver, e = e)
                     .to_string();
                 if ignore_failure {
                     session.output().error(msg);

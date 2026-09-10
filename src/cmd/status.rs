@@ -29,12 +29,12 @@ struct Row {
 
 /// Render the status table.
 fn render(rows: &[Row]) {
-    let hdr_name = rust_i18n::t!("cmd.status_header_name").to_string();
-    let hdr_source = rust_i18n::t!("cmd.status_header_source").to_string();
-    let hdr_installed = rust_i18n::t!("cmd.status_header_installed").to_string();
-    let hdr_latest = rust_i18n::t!("cmd.status_header_latest").to_string();
-    let hdr_missing = rust_i18n::t!("cmd.status_header_missing").to_string();
-    let hdr_info = rust_i18n::t!("cmd.status_header_info").to_string();
+    let hdr_name = hok_i18n::t!("cmd.status_header_name").to_string();
+    let hdr_source = hok_i18n::t!("cmd.status_header_source").to_string();
+    let hdr_installed = hok_i18n::t!("cmd.status_header_installed").to_string();
+    let hdr_latest = hok_i18n::t!("cmd.status_header_latest").to_string();
+    let hdr_missing = hok_i18n::t!("cmd.status_header_missing").to_string();
+    let hdr_info = hok_i18n::t!("cmd.status_header_info").to_string();
 
     let mut w_name = visual_width(&hdr_name);
     let mut w_source = visual_width(&hdr_source);
@@ -107,11 +107,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         .collect();
 
     if shown.is_empty() {
-        output::info(rust_i18n::t!("cmd.install_ok"));
+        output::info(hok_i18n::t!("cmd.install_ok"));
         return Ok(());
     }
 
-    output::header(rust_i18n::t!("cmd.header_status"));
+    output::header(hok_i18n::t!("cmd.header_status"));
     let rows = shown
         .iter()
         .map(|s| {
@@ -152,7 +152,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         .filter(|s| s.attention() == package::status::Attention::Updatable)
         .count();
     println!();
-    output::info(rust_i18n::t!(
+    output::info(hok_i18n::t!(
         "cmd.status_attention",
         count = attention,
         broken = broken,

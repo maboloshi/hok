@@ -20,9 +20,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         // Check if the app directory exists at all (without /current)
         let base_dir = session.app_dir(&args.package);
         let msg = if base_dir.exists() {
-            rust_i18n::t!("cmd.prefix_installed", pkg = args.package)
+            hok_i18n::t!("cmd.prefix_installed", pkg = args.package)
         } else {
-            rust_i18n::t!("cmd.prefix_no_pkg", pkg = args.package)
+            hok_i18n::t!("cmd.prefix_no_pkg", pkg = args.package)
         };
         return Err(anyhow::anyhow!(msg));
     }

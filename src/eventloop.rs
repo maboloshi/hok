@@ -127,7 +127,7 @@ pub fn run_event_loop(
                 // plain println that would share (and corrupt) the bar line.
                 Event::PackageCacheHit(ref filename) => {
                     if dlprogress.is_active() {
-                        dlprogress.note(output::status_line(rust_i18n::t!(
+                        dlprogress.note(output::status_line(hok_i18n::t!(
                             "detail.loading_cache",
                             filename = filename
                         )));
@@ -151,7 +151,7 @@ pub fn run_event_loop(
                     let _ = std::io::stdout().execute(cursor::Show);
                     let index = tokio::task::spawn_blocking(move || {
                         loop {
-                            output::prompt(rust_i18n::t!("output.select_prompt"));
+                            output::prompt(hok_i18n::t!("output.select_prompt"));
                             std::io::stdout().flush().unwrap();
                             let mut input = String::new();
                             // EOF/read error (piped/no input): fall back to the
@@ -220,7 +220,7 @@ pub fn run_event_loop(
 /// the confirmation gate is enabled.
 fn print_transaction_plan(transaction: &Transaction) {
     if let Some(install) = transaction.install_view() {
-        output::header(rust_i18n::t!("cmd.header_installed"));
+        output::header(hok_i18n::t!("cmd.header_installed"));
         let out = install
             .iter()
             .map(|p| format!("{}-{}", p.ident(), p.version()))
@@ -233,7 +233,7 @@ fn print_transaction_plan(transaction: &Transaction) {
         if transaction.install_view().is_some() {
             println!();
         }
-        output::header(rust_i18n::t!("cmd.header_upgraded"));
+        output::header(hok_i18n::t!("cmd.header_upgraded"));
         let out = upgrade
             .iter()
             // With `--force` packages at their current version
@@ -257,7 +257,7 @@ fn print_transaction_plan(transaction: &Transaction) {
         {
             println!();
         }
-        output::header(rust_i18n::t!("cmd.header_replaced"));
+        output::header(hok_i18n::t!("cmd.header_replaced"));
         let out = replace
             .iter()
             .map(|p| format!("{}/{}", p.bucket(), p.name()))
@@ -273,7 +273,7 @@ fn print_transaction_plan(transaction: &Transaction) {
         {
             println!();
         }
-        output::header(rust_i18n::t!("cmd.header_removed"));
+        output::header(hok_i18n::t!("cmd.header_removed"));
         let out = remove
             .iter()
             .map(|p| format!("{}-{}", p.ident(), p.version()))

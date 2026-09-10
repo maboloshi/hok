@@ -134,30 +134,30 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 .filter(|v| !v.is_current && v.version != pkg.version());
 
             if versions.is_empty() {
-                rows.push(continuation("-", rust_i18n::t!("cmd.list_no_versions")));
+                rows.push(continuation("-", hok_i18n::t!("cmd.list_no_versions")));
             }
 
             for ver in retained {
                 stats.retained += 1;
                 rows.push(continuation(
                     &ver.version,
-                    rust_i18n::t!("cmd.list_version_old"),
+                    hok_i18n::t!("cmd.list_version_old"),
                 ));
             }
         }
     }
 
-    output::header(rust_i18n::t!("cmd.header_installed_apps"));
+    output::header(hok_i18n::t!("cmd.header_installed_apps"));
 
     if rows.is_empty() {
-        output::info(rust_i18n::t!("cmd.list_no_match"));
+        output::info(hok_i18n::t!("cmd.list_no_match"));
         return Ok(());
     }
 
     render(&rows);
 
     println!();
-    output::info(rust_i18n::t!(
+    output::info(hok_i18n::t!(
         "cmd.list_summary",
         count = stats.shown,
         held = stats.held,
@@ -167,7 +167,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         isolated = stats.isolated,
     ));
     if args.versions && stats.retained > 0 {
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.list_summary_versions",
             versions = stats.retained,
             apps = stats.shown,
@@ -190,10 +190,10 @@ fn continuation(version: &str, note: impl AsRef<str>) -> Row {
 
 /// Render the table: bold header, dashed rule, then one line per row.
 fn render(rows: &[Row]) {
-    let hdr_name = rust_i18n::t!("cmd.list_header_name").to_string();
-    let hdr_ver = rust_i18n::t!("cmd.list_header_version").to_string();
-    let hdr_src = rust_i18n::t!("cmd.list_header_source").to_string();
-    let hdr_info = rust_i18n::t!("cmd.list_header_info").to_string();
+    let hdr_name = hok_i18n::t!("cmd.list_header_name").to_string();
+    let hdr_ver = hok_i18n::t!("cmd.list_header_version").to_string();
+    let hdr_src = hok_i18n::t!("cmd.list_header_source").to_string();
+    let hdr_info = hok_i18n::t!("cmd.list_header_info").to_string();
 
     let mut w_name = visual_width(&hdr_name);
     let mut w_ver = visual_width(&hdr_ver);

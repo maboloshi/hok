@@ -74,7 +74,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             if all {
                 match cache::remove(session, "*") {
                     Ok(_) => {
-                        output::info(rust_i18n::t!("cmd.cache_all_removed"));
+                        output::info(hok_i18n::t!("cmd.cache_all_removed"));
                         return Ok(());
                     }
                     Err(e) => return Err(e.into()),
@@ -85,9 +85,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 match cache::remove(session, query.as_str()) {
                     Ok(_) => {
                         if query == "*" {
-                            output::info(rust_i18n::t!("cmd.cache_all_removed"));
+                            output::info(hok_i18n::t!("cmd.cache_all_removed"));
                         } else {
-                            output::info(rust_i18n::t!("cmd.cache_matching_removed", query = query));
+                            output::info(hok_i18n::t!("cmd.cache_matching_removed", query = query));
                         }
                     }
                     Err(e) => return Err(e.into()),

@@ -65,7 +65,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             output::done(format!(
                 "{}: {}",
                 item.name,
-                rust_i18n::t!("cmd.checkhashes_mismatch_upd")
+                hok_i18n::t!("cmd.checkhashes_mismatch_upd")
             ));
             for msg in &item.messages {
                 output::warn(msg);
@@ -79,7 +79,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
     }).await?;
 
-    output::info(rust_i18n::t!(
+    output::info(hok_i18n::t!(
         "cmd.checkhashes_summary",
         total = report.total,
         passed = report.passed,

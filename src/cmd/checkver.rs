@@ -71,15 +71,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         if ver == &r.current {
             output::status(format!("  {} ({})", r.stem, ver));
             if r.updated {
-                output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+                output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         } else {
             output::status(format!("  {} ({} -> {})", r.stem, r.current, ver));
             if r.autoupdate_available {
-                output::status(format!("    {}", rust_i18n::t!("cmd.checkver_autoupdate")));
+                output::status(format!("    {}", hok_i18n::t!("cmd.checkver_autoupdate")));
             }
             if r.updated {
-                output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+                output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         }
     }).await?;

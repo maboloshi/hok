@@ -90,7 +90,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             // otherwise run both phases with zero queries and merely
             // report "all apps are up to date".
             _ => {
-                return Err(anyhow::anyhow!(rust_i18n::t!(
+                return Err(anyhow::anyhow!(hok_i18n::t!(
                     "cmd.reinstall_not_installed",
                     name = q
                 )));
@@ -113,7 +113,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             Err(libscoop::Error::AppRunning(name))
                 if all_opts.contains(&SyncOption::IgnoreFailure) =>
             {
-                output::warn(rust_i18n::t!(
+                output::warn(hok_i18n::t!(
                     "reinstall.running_process",
                     name = name
                 ));
@@ -130,14 +130,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Release held packages temporarily
     let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
     if !held.is_empty() {
-        output::status(rust_i18n::t!(
+        output::status(hok_i18n::t!(
             "reinstall.releasing",
             names = held.join(", ")
         ));
         for name in &held {
             package::hold::hold(session, name, false)?;
         }
-        output::done(rust_i18n::t!("reinstall.released"));
+        output::done(hok_i18n::t!("reinstall.released"));
     }
 
     let queries: Vec<&str> = exact_queries.iter().map(|s| s.as_str()).collect();
@@ -157,17 +157,17 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Re-hold packages that were held before
     if !held.is_empty() {
-        output::status(rust_i18n::t!(
+        output::status(hok_i18n::t!(
             "reinstall.reholding",
             names = held.join(", ")
         ));
         for name in &held {
             package::hold::hold(session, name, true)?;
         }
-        output::done(rust_i18n::t!("reinstall.reheld"));
+        output::done(hok_i18n::t!("reinstall.reheld"));
     }
 
-    output::done(rust_i18n::t!("output.ok_all"));
+    output::done(hok_i18n::t!("output.ok_all"));
 
     Ok(())
 }

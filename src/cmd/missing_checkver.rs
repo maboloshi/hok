@@ -34,14 +34,14 @@ pub async fn execute(args: Args) -> Result<()> {
             output::named(&item.name, format!("({})", item.issues.join(", ")));
         }
 
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.missing_checkver_scan",
             total = report.total,
             missing = report.missing_checkver,
             noauto = report.missing_autoupdate
         ));
         if report.missing_checkver == 0 && report.missing_autoupdate == 0 {
-            output::info(rust_i18n::t!("cmd.missing_checkver_all"));
+            output::info(hok_i18n::t!("cmd.missing_checkver_all"));
         }
     }
 

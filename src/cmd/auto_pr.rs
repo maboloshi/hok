@@ -141,7 +141,7 @@ fn render_checkver_report(report: &CheckverReport) {
     if ver == &report.current {
         output::status(format!("  {} ({})", report.stem, ver));
         if report.updated {
-            output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+            output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
         }
     } else {
         output::status(format!(
@@ -149,10 +149,10 @@ fn render_checkver_report(report: &CheckverReport) {
             report.stem, report.current, ver
         ));
         if report.autoupdate_available {
-            output::status(format!("    {}", rust_i18n::t!("cmd.checkver_autoupdate")));
+            output::status(format!("    {}", hok_i18n::t!("cmd.checkver_autoupdate")));
         }
         if report.updated {
-            output::done(rust_i18n::t!("cmd.checkver_updated_to", ver = ver));
+            output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
         }
     }
 }

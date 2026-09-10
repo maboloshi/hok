@@ -36,24 +36,24 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     for (name, count, failed) in &results {
         let msg = if *failed > 0 {
-            rust_i18n::t!("cmd.cleanup_removed_failed", count = *count, failed = *failed)
+            hok_i18n::t!("cmd.cleanup_removed_failed", count = *count, failed = *failed)
         } else {
-            rust_i18n::t!("cmd.cleanup_removed", count = *count)
+            hok_i18n::t!("cmd.cleanup_removed", count = *count)
         };
         output::named(name.as_str(), msg);
     }
 
     if results.is_empty() {
-        output::info(rust_i18n::t!("cmd.cleanup_no_old"));
+        output::info(hok_i18n::t!("cmd.cleanup_no_old"));
     } else if apps.is_empty() {
         // Sweep-all success tail (Scoop prints this for the non-verbose
         // `--all` form); named-app cleans already reported per-app counts.
-        output::done(rust_i18n::t!("cmd.cleanup_all_done"));
+        output::done(hok_i18n::t!("cmd.cleanup_all_done"));
     }
 
     if args.cache {
         cache::remove(session, "*")?;
-        output::info(rust_i18n::t!("cmd.cache_cleaned"));
+        output::info(hok_i18n::t!("cmd.cache_cleaned"));
     }
 
     Ok(())

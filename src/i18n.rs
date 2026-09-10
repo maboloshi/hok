@@ -1,7 +1,7 @@
-//! Language detection and initialisation for `rust-i18n`.
+//! Language detection and initialisation for `hok-i18n`.
 //!
 //! Handles detecting the user's preferred language from CLI args, the
-//! environment, and the system locale, and initialises the `rust_i18n`
+//! environment, and the system locale, and initialises the `hok_i18n`
 //! backend accordingly.
 //!
 //! # Design
@@ -11,7 +11,7 @@
 //!   *after* parsing (when the user's explicit `--lang` value or config
 //!   setting is available). See [`cmd::start()`] for the full flow.
 //! - **Atomic global state**: The selected language is stored in a
-//!   `AtomicU8` and read by `init_language()` to call into `rust_i18n`.
+//!   `AtomicU8` and read by `init_language()` to call into `hok_i18n`.
 //! - **Auto-detection**: `LanguageChoice::Auto` probes the `LANG` env
 //!   var and the Windows system UI language, falling back to English.
 
@@ -59,7 +59,7 @@ pub fn init_language(choice: LanguageChoice) -> Language {
         LanguageChoice::En => Language::English,
         LanguageChoice::Zh => Language::Chinese,
     };
-    rust_i18n::set_locale(lang.code());
+    hok_i18n::set_locale(lang.code());
     SELECTED_LANGUAGE.store(
         match lang {
             Language::English => LANG_EN,

@@ -23,28 +23,28 @@ impl EventHandler for ScoopHandler {
         match event {
             // --- Resolve phase ---
             Event::PackageResolveStart => {
-                output::status(rust_i18n::t!("status.resolving"));
+                output::status(hok_i18n::t!("status.resolving"));
             }
             Event::PackageResolveDone => {}
 
             // --- Download sizing ---
             Event::PackageDownloadSizingStart => {
-                output::status(rust_i18n::t!("status.sizing"));
+                output::status(hok_i18n::t!("status.sizing"));
             }
             Event::PackageDownloadSizingDone => {}
 
             // --- Download ---
             Event::PackageDownloadStart => {
-                output::status(rust_i18n::t!("status.downloading"));
+                output::status(hok_i18n::t!("status.downloading"));
             }
             Event::PackageDownloadDone => {}
 
             // --- Integrity check ---
             Event::PackageIntegrityCheckStart => {
-                output::status(rust_i18n::t!("status.checking_hash"));
+                output::status(hok_i18n::t!("status.checking_hash"));
             }
             Event::PackageIntegrityCheckProgress(ctx) => {
-                output::status(rust_i18n::t!("detail.checking_hash_item", ctx = ctx));
+                output::status(hok_i18n::t!("detail.checking_hash_item", ctx = ctx));
             }
             Event::PackageIntegrityCheckDone => {}
 
@@ -58,7 +58,7 @@ impl EventHandler for ScoopHandler {
                 self.extracting = Some(ctx.clone());
                 print!(
                     "\r\x1b[2K  {}",
-                    rust_i18n::t!("detail.extracting", ctx = ctx)
+                    hok_i18n::t!("detail.extracting", ctx = ctx)
                 );
                 let _ = std::io::stdout().flush();
             }
@@ -75,7 +75,7 @@ impl EventHandler for ScoopHandler {
                 };
                 print!(
                     "\r\x1b[2K  {}",
-                    rust_i18n::t!("detail.extracting", ctx = ctx)
+                    hok_i18n::t!("detail.extracting", ctx = ctx)
                 );
                 let _ = std::io::stdout().flush();
             }
@@ -109,102 +109,102 @@ impl EventHandler for ScoopHandler {
             // --- Shim operations ---
             Event::PackageShimRemoveStart => {}
             Event::PackageShimRemoveProgress(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_shim", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_shim", ctx = ctx));
             }
             Event::PackageShimRemoveDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.shim_removed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.shim_removed"));
             }
 
             Event::PackageShimAddStart(_) => {}
             Event::PackageShimAddProgress(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.creating_shim", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.creating_shim", ctx = ctx));
             }
             Event::PackageShimAddDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.shim_done"));
+                tracing::debug!("{}", hok_i18n::t!("detail.shim_done"));
             }
 
             // --- Shim warnings ---
             Event::PackageShimConflict(path) => {
-                output::warn(rust_i18n::t!("detail.shim_conflict", path = path));
+                output::warn(hok_i18n::t!("detail.shim_conflict", path = path));
             }
 
             // --- Shortcut operations ---
             Event::PackageShortcutRemoveStart => {}
             Event::PackageShortcutRemoveProgress(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_shortcut", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_shortcut", ctx = ctx));
             }
             Event::PackageShortcutRemoveDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.shortcut_removed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.shortcut_removed"));
             }
 
             Event::PackageShortcutAddStart => {}
             Event::PackageShortcutAddProgress(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.creating_shortcut", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.creating_shortcut", ctx = ctx));
             }
             Event::PackageShortcutAddDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.shortcut_done"));
+                tracing::debug!("{}", hok_i18n::t!("detail.shortcut_done"));
             }
 
             // --- Shortcut warnings ---
             Event::PackageShortcutConflict(path) => {
-                output::warn(rust_i18n::t!("detail.shortcut_conflict", path = path));
+                output::warn(hok_i18n::t!("detail.shortcut_conflict", path = path));
             }
             Event::PackageShortcutNotFound(path) => {
-                output::warn(rust_i18n::t!("detail.shortcut_not_found", path = path));
+                output::warn(hok_i18n::t!("detail.shortcut_not_found", path = path));
             }
 
             // --- Session warnings ---
             Event::ConfigLoadFallback => {
-                output::warn(rust_i18n::t!("detail.config_fallback"));
+                output::warn(hok_i18n::t!("detail.config_fallback"));
             }
 
             // --- Environment operations ---
             Event::PackageEnvPathAddStart => {
-                tracing::debug!("{}", rust_i18n::t!("detail.adding_env_path"));
+                tracing::debug!("{}", hok_i18n::t!("detail.adding_env_path"));
             }
             Event::PackageEnvPathAddDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.env_path_added"));
+                tracing::debug!("{}", hok_i18n::t!("detail.env_path_added"));
             }
             Event::PackageEnvPathRemoveStart => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_env_path"));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_env_path"));
             }
             Event::PackageEnvPathRemoveDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.env_path_removed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.env_path_removed"));
             }
 
             Event::PackageEnvVarSetStart => {
-                tracing::debug!("{}", rust_i18n::t!("detail.setting_env_var"));
+                tracing::debug!("{}", hok_i18n::t!("detail.setting_env_var"));
             }
             Event::PackageEnvVarSetDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.env_var_set"));
+                tracing::debug!("{}", hok_i18n::t!("detail.env_var_set"));
             }
             Event::PackageEnvVarRemoveStart => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_env_var"));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_env_var"));
             }
             Event::PackageEnvVarRemoveDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.env_var_removed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.env_var_removed"));
             }
 
             // --- Persist ---
             Event::PackagePersistPurgeStart => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_persist"));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_persist"));
             }
             Event::PackagePersistPurgeDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.persist_done"));
+                tracing::debug!("{}", hok_i18n::t!("detail.persist_done"));
             }
 
             // --- PS module ---
             Event::PackagePsModuleAddStart(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.installing_psmodule", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.installing_psmodule", ctx = ctx));
             }
             Event::PackagePsModuleAddDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.psmodule_installed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.psmodule_installed"));
             }
             Event::PackagePsModuleRemoveStart(ctx) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.removing_psmodule", ctx = ctx));
+                tracing::debug!("{}", hok_i18n::t!("detail.removing_psmodule", ctx = ctx));
             }
             Event::PackagePsModuleRemoveDone => {
-                tracing::debug!("{}", rust_i18n::t!("detail.psmodule_removed"));
+                tracing::debug!("{}", hok_i18n::t!("detail.psmodule_removed"));
             }
 
             // --- PowerShell script output (split by stream) ---
@@ -253,20 +253,20 @@ impl EventHandler for ScoopHandler {
 
             // --- Cache hit ---
             Event::PackageCacheHit(filename) => {
-                output::status(rust_i18n::t!("detail.loading_cache", filename = filename));
+                output::status(hok_i18n::t!("detail.loading_cache", filename = filename));
             }
 
             // --- Symlink operations ---
             Event::PackageSymlinkRemove(path) => {
-                tracing::debug!("{}", rust_i18n::t!("detail.unlinking", path = path));
+                tracing::debug!("{}", hok_i18n::t!("detail.unlinking", path = path));
             }
             Event::PackageSymlinkCreate { from, to } => {
-                tracing::debug!("{}", rust_i18n::t!("detail.linking", from = from, to = to));
+                tracing::debug!("{}", hok_i18n::t!("detail.linking", from = from, to = to));
             }
 
             // --- Held package skipped ---
             Event::PackageHeld { name, version } => {
-                output::warn(rust_i18n::t!(
+                output::warn(hok_i18n::t!(
                     "cmd.held_skip",
                     name = name,
                     version = version
@@ -299,46 +299,43 @@ impl ScoopHandler {
     /// the object in the default foreground and greys the rest. Phrase-only
     /// kinds carry no object and render fully grey.
     fn render_step(&self, kind: PackageStepKind, object: Option<&str>) {
-        use std::borrow::Cow;
         let o = object.unwrap_or("");
-        let (sentence, highlight): (Cow<'_, str>, bool) = match kind {
-            PackageStepKind::Extract => (rust_i18n::t!("step.extract", object = o), true),
-            PackageStepKind::RunHookScript => (rust_i18n::t!("step.hook_script", object = o), true),
-            PackageStepKind::RunInstallerFile => {
-                (rust_i18n::t!("step.installer", object = o), true)
-            }
-            PackageStepKind::LinkCurrent => (rust_i18n::t!("step.link_current"), false),
-            PackageStepKind::UnlinkCurrent => (rust_i18n::t!("step.unlink_current"), false),
-            PackageStepKind::RefreshShim => (rust_i18n::t!("step.refresh_shim", object = o), true),
+        let (sentence, highlight): (String, bool) = match kind {
+            PackageStepKind::Extract => (hok_i18n::t!("step.extract", object = o), true),
+            PackageStepKind::RunHookScript => (hok_i18n::t!("step.hook_script", object = o), true),
+            PackageStepKind::RunInstallerFile => (hok_i18n::t!("step.installer", object = o), true),
+            PackageStepKind::LinkCurrent => (hok_i18n::t!("step.link_current"), false),
+            PackageStepKind::UnlinkCurrent => (hok_i18n::t!("step.unlink_current"), false),
+            PackageStepKind::RefreshShim => (hok_i18n::t!("step.refresh_shim", object = o), true),
             PackageStepKind::RefreshShortcut => {
-                (rust_i18n::t!("step.refresh_shortcut", object = o), true)
+                (hok_i18n::t!("step.refresh_shortcut", object = o), true)
             }
-            PackageStepKind::CreateShim => (rust_i18n::t!("step.create_shim", object = o), true),
-            PackageStepKind::RemoveShim => (rust_i18n::t!("step.remove_shim", object = o), true),
+            PackageStepKind::CreateShim => (hok_i18n::t!("step.create_shim", object = o), true),
+            PackageStepKind::RemoveShim => (hok_i18n::t!("step.remove_shim", object = o), true),
             PackageStepKind::CreateShortcut => {
-                (rust_i18n::t!("step.create_shortcut", object = o), true)
+                (hok_i18n::t!("step.create_shortcut", object = o), true)
             }
             PackageStepKind::RemoveShortcut => {
-                (rust_i18n::t!("step.remove_shortcut", object = o), true)
+                (hok_i18n::t!("step.remove_shortcut", object = o), true)
             }
-            PackageStepKind::AddPsModule => (rust_i18n::t!("step.add_psmodule", object = o), true),
+            PackageStepKind::AddPsModule => (hok_i18n::t!("step.add_psmodule", object = o), true),
             PackageStepKind::RemovePsModule => {
-                (rust_i18n::t!("step.remove_psmodule", object = o), true)
+                (hok_i18n::t!("step.remove_psmodule", object = o), true)
             }
-            PackageStepKind::AddEnvPath => (rust_i18n::t!("step.add_env_path", object = o), true),
+            PackageStepKind::AddEnvPath => (hok_i18n::t!("step.add_env_path", object = o), true),
             PackageStepKind::RemoveEnvPath => {
-                (rust_i18n::t!("step.remove_env_path", object = o), true)
+                (hok_i18n::t!("step.remove_env_path", object = o), true)
             }
-            PackageStepKind::SetEnvVar => (rust_i18n::t!("step.set_env_var", object = o), true),
+            PackageStepKind::SetEnvVar => (hok_i18n::t!("step.set_env_var", object = o), true),
             PackageStepKind::RemoveEnvVar => {
-                (rust_i18n::t!("step.remove_env_var", object = o), true)
+                (hok_i18n::t!("step.remove_env_var", object = o), true)
             }
-            PackageStepKind::PersistLink => (rust_i18n::t!("step.persist_link", object = o), true),
+            PackageStepKind::PersistLink => (hok_i18n::t!("step.persist_link", object = o), true),
             PackageStepKind::PersistUnlink => {
-                (rust_i18n::t!("step.persist_unlink", object = o), true)
+                (hok_i18n::t!("step.persist_unlink", object = o), true)
             }
-            PackageStepKind::RemoveDir => (rust_i18n::t!("step.remove_dir", object = o), true),
-            PackageStepKind::PersistPurge => (rust_i18n::t!("step.persist_purge"), false),
+            PackageStepKind::RemoveDir => (hok_i18n::t!("step.remove_dir", object = o), true),
+            PackageStepKind::PersistPurge => (hok_i18n::t!("step.persist_purge"), false),
             _ => return, // non_exhaustive: ignore future kinds until rendered
         };
         let obj = if highlight && !o.is_empty() {

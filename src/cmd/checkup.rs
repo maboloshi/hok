@@ -13,21 +13,21 @@ pub async fn execute(_: Args, session: &Session) -> Result<()> {
     let issues = checkup::check_installed(session);
 
     if issues.is_empty() {
-        output::info(rust_i18n::t!("cmd.no_issues"));
+        output::info(hok_i18n::t!("cmd.no_issues"));
     } else {
         let apps_dir = session.apps_dir();
         if !apps_dir.exists() {
-            output::warn(rust_i18n::t!("cmd.no_apps_found"));
+            output::warn(hok_i18n::t!("cmd.no_apps_found"));
             return Ok(());
         }
         for issue in &issues {
             output::named(issue.name.as_str(), &issue.message);
         }
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.checkup_issue_count",
             count = issues.len()
         ));
-        output::info(rust_i18n::t!("cmd.run_reset"));
+        output::info(hok_i18n::t!("cmd.run_reset"));
     }
 
     Ok(())

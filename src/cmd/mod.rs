@@ -40,7 +40,6 @@ use clap::{
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
 use libscoop::Session;
-use rust_i18n::t;
 use std::ffi::OsString;
 use tracing_subscriber::{
     EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
@@ -63,20 +62,20 @@ use crate::Result;
 pub(crate) fn status_info_word(kind: libscoop::package::status::InfoKind) -> String {
     match kind {
         libscoop::package::status::InfoKind::InstallFailed => {
-            rust_i18n::t!("cmd.status_install_failed").to_string()
+            hok_i18n::t!("cmd.status_install_failed").to_string()
         }
-        libscoop::package::status::InfoKind::Held => rust_i18n::t!("cmd.status_held").to_string(),
+        libscoop::package::status::InfoKind::Held => hok_i18n::t!("cmd.status_held").to_string(),
         libscoop::package::status::InfoKind::Deprecated => {
-            rust_i18n::t!("cmd.status_deprecated").to_string()
+            hok_i18n::t!("cmd.status_deprecated").to_string()
         }
         libscoop::package::status::InfoKind::Orphaned => {
-            rust_i18n::t!("cmd.status_removed").to_string()
+            hok_i18n::t!("cmd.status_removed").to_string()
         }
         libscoop::package::status::InfoKind::BucketMissing => {
-            rust_i18n::t!("cmd.status_bucket_missing").to_string()
+            hok_i18n::t!("cmd.status_bucket_missing").to_string()
         }
         libscoop::package::status::InfoKind::SourceUnknown => {
-            rust_i18n::t!("cmd.status_source_unknown").to_string()
+            hok_i18n::t!("cmd.status_source_unknown").to_string()
         }
     }
 }
@@ -224,8 +223,8 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
 /// Must run *after* the command tree is built so the auto-generated
 /// -h/--help and -V/--version args exist to be labelled.
 fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
-    let args_h = rust_i18n::t!("cli_help.heading.arguments").to_string();
-    let opts_h = rust_i18n::t!("cli_help.heading.options").to_string();
+    let args_h = hok_i18n::t!("cli_help.heading.arguments").to_string();
+    let opts_h = hok_i18n::t!("cli_help.heading.options").to_string();
     cmd.build();
     localize_heading_level(cmd, &args_h, &opts_h)
 }
@@ -263,9 +262,9 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
             // show the localized text: help is used for the short view and
             // long_help for the long view, so set both when present.
             let txt = if *special == "help" {
-                rust_i18n::t!("cli_help.hok.args.help").to_string()
+                hok_i18n::t!("cli_help.hok.args.help").to_string()
             } else {
-                rust_i18n::t!("cli_help.hok.args.version").to_string()
+                hok_i18n::t!("cli_help.hok.args.version").to_string()
             };
             let h = opts_h.to_string();
             let txt2 = txt.clone();
@@ -282,7 +281,7 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
         if name == "help" {
             // clap auto-adds a `help` subcommand to any command that has
             // subcommands, with a hard-coded English about; localize it too.
-            let about = rust_i18n::t!("cli_help.help.about").to_string();
+            let about = hok_i18n::t!("cli_help.help.about").to_string();
             cmd = cmd.mut_subcommand(name, move |sub| sub.about(about));
             continue;
         }

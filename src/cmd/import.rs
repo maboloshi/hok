@@ -17,7 +17,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let content = match fs::read_to_string(&args.file) {
         Ok(c) => c,
         Err(e) => {
-            return Err(anyhow::anyhow!(rust_i18n::t!(
+            return Err(anyhow::anyhow!(hok_i18n::t!(
                 "cmd.import_read_err",
                 file = args.file,
                 e = e
@@ -28,19 +28,16 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let packages = match package::import::parse_import_json(&content) {
         Ok(v) => v,
         Err(e) => {
-            return Err(anyhow::anyhow!(rust_i18n::t!(
-                "cmd.import_parse_err",
-                e = e
-            )));
+            return Err(anyhow::anyhow!(hok_i18n::t!("cmd.import_parse_err", e = e)));
         }
     };
 
     if packages.is_empty() {
-        output::warn(rust_i18n::t!("cmd.import_no_pkgs"));
+        output::warn(hok_i18n::t!("cmd.import_no_pkgs"));
         return Ok(());
     }
 
-    output::info(rust_i18n::t!("cmd.import_found", count = packages.len()));
+    output::info(hok_i18n::t!("cmd.import_found", count = packages.len()));
 
     let queries: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
     // Non-interactive restore: always assume yes, and always tolerate
@@ -48,8 +45,8 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let options = vec![SyncOption::AssumeYes, SyncOption::IgnoreFailure];
 
     match package::sync::sync(session, queries, options).await {
-        Ok(_) => output::info(rust_i18n::t!("cmd.import_complete")),
-        Err(e) => return Err(anyhow::anyhow!(rust_i18n::t!("cmd.import_err", e = e))),
+        Ok(_) => output::info(hok_i18n::t!("cmd.import_complete")),
+        Err(e) => return Err(anyhow::anyhow!(hok_i18n::t!("cmd.import_err", e = e))),
     }
 
     Ok(())

@@ -34,8 +34,6 @@
 //!
 //! See `cmd/mod.rs` for details.
 
-rust_i18n::i18n!("locales");
-
 // ─── CLI framework infrastructure ────────────────────────────────────────
 
 mod cmd;
@@ -75,25 +73,25 @@ impl std::error::Error for ExitCode {}
 fn translate_error(err: &libscoop::Error) -> String {
     match err {
         libscoop::Error::BucketNotFound(name) => {
-            rust_i18n::t!("error.bucket_not_found", name = name).to_string()
+            hok_i18n::t!("error.bucket_not_found", name = name).to_string()
         }
         libscoop::Error::BucketAlreadyExists(name) => {
-            rust_i18n::t!("error.bucket_already_exists", name = name).to_string()
+            hok_i18n::t!("error.bucket_already_exists", name = name).to_string()
         }
         libscoop::Error::PackageNotFound(name) => {
-            rust_i18n::t!("error.package_not_found", name = name).to_string()
+            hok_i18n::t!("error.package_not_found", name = name).to_string()
         }
         libscoop::Error::ConfigKeyInvalid(key) => {
-            rust_i18n::t!("error.config_key_invalid", key = key).to_string()
+            hok_i18n::t!("error.config_key_invalid", key = key).to_string()
         }
         libscoop::Error::ConfigValueInvalid(value) => {
-            rust_i18n::t!("error.config_value_invalid", value = value).to_string()
+            hok_i18n::t!("error.config_value_invalid", value = value).to_string()
         }
         libscoop::Error::AppRunning(name) => {
-            rust_i18n::t!("error.app_running", name = name).to_string()
+            hok_i18n::t!("error.app_running", name = name).to_string()
         }
         libscoop::Error::ExtractionFailed(reason) => {
-            rust_i18n::t!("error.extraction_failed", reason = reason).to_string()
+            hok_i18n::t!("error.extraction_failed", reason = reason).to_string()
         }
         _ => err.to_string(),
     }

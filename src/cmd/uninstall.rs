@@ -68,7 +68,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
     sync_result?;
 
-    output::done(rust_i18n::t!("output.ok_all"));
+    output::done(hok_i18n::t!("output.ok_all"));
 
     Ok(())
 }

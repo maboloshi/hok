@@ -315,7 +315,7 @@ pub fn closure_fail(pkg: impl AsRef<str>, err: impl AsRef<str>) {
 
 /// Print "ok".
 pub fn ok() {
-    println!("  {}", style::success(rust_i18n::t!("output.ok")));
+    println!("  {}", style::success(hok_i18n::t!("output.ok")));
 }
 
 /// Named entity + message (name emphasized).
@@ -351,7 +351,7 @@ pub fn action(k: usize, n: usize, verb: impl AsRef<str>, pkg: impl AsRef<str>) {
 /// Prompt user to continue or not.
 pub fn prompt_yes_no() -> bool {
     loop {
-        print!("\n{} ", rust_i18n::t!("output.confirm_continue"));
+        print!("\n{} ", hok_i18n::t!("output.confirm_continue"));
         std::io::stdout().flush().unwrap();
         let mut input = String::new();
         // EOF (piped/no input) or a read error must not spin forever — a
@@ -389,7 +389,7 @@ pub fn prompt_select(count: usize) -> Option<usize> {
     if count == 0 {
         return None;
     }
-    print!("\n{} ", rust_i18n::t!("output.select_prompt"));
+    print!("\n{} ", hok_i18n::t!("output.select_prompt"));
     let _ = std::io::stdout().flush();
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {

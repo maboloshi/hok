@@ -34,7 +34,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let mut result = package::query::query(session, queries, options, false)?;
 
     if result.is_empty() {
-        return Err(anyhow::anyhow!(rust_i18n::t!(
+        return Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.depends_not_found",
             query = query
         )));
@@ -45,7 +45,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         result.remove(0)
     } else {
         result.sort_by_key(|p| p.ident());
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.found",
             count = result.len(),
             query = query
@@ -57,7 +57,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             );
         }
         let idx = output::prompt_select(result.len())
-            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.depends_invalid")))?;
+            .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.depends_invalid")))?;
         result.remove(idx)
     };
 
@@ -71,7 +71,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 "{:indent$} {} {}",
                 "",
                 node.name,
-                rust_i18n::t!("cmd.depends_already"),
+                hok_i18n::t!("cmd.depends_already"),
                 indent = node.depth * 2
             );
         } else {

@@ -30,7 +30,7 @@ fn pretty_manifest(pkg: &package::Package) -> Result<String> {
     } else {
         manifest
             .to_pretty_json()
-            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.cat_render_failed")))?
+            .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.cat_render_failed")))?
     };
     match serde_json::from_str::<serde_json::Value>(&content) {
         Ok(value) => Ok(serde_json::to_string_pretty(&value).unwrap_or(content)),
@@ -65,7 +65,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     )?;
 
     let pkg = if result.is_empty() {
-        return Err(anyhow::anyhow!(rust_i18n::t!(
+        return Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.cat_not_found",
             query = query
         )));
@@ -73,7 +73,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         result.remove(0)
     } else {
         result.sort_by_key(|p| p.ident());
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.found",
             count = result.len(),
             query = query
@@ -82,7 +82,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             println!("  {idx}. {}/{}", pkg.bucket(), pkg.name());
         }
         let index = output::prompt_select(result.len())
-            .ok_or_else(|| anyhow::anyhow!(rust_i18n::t!("cmd.cat_invalid")))?;
+            .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.cat_invalid")))?;
         result.remove(index)
     };
 

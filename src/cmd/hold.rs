@@ -40,9 +40,9 @@ pub(super) fn hold_packages(
             // "'$app' is already held." / "'$app' is not held." and move on.
             Ok(package::hold::HoldResult::Unchanged) => {
                 let msg = if flag {
-                    rust_i18n::t!("cmd.already_held", name = name)
+                    hok_i18n::t!("cmd.already_held", name = name)
                 } else {
-                    rust_i18n::t!("cmd.not_held", name = name)
+                    hok_i18n::t!("cmd.not_held", name = name)
                 };
                 output::info(msg);
             }
@@ -51,18 +51,18 @@ pub(super) fn hold_packages(
             // packages — Scoop uses error+continue for both, exiting 0.
             Err(Error::PackageHoldNotInstalled(_)) => {
                 let msg = if session.is_global() {
-                    rust_i18n::t!("cmd.hold_not_installed_global", name = name)
+                    hok_i18n::t!("cmd.hold_not_installed_global", name = name)
                 } else {
-                    rust_i18n::t!("cmd.hold_not_installed", name = name)
+                    hok_i18n::t!("cmd.hold_not_installed", name = name)
                 };
                 output::err(msg);
                 continue;
             }
             Err(Error::PackageHoldBrokenInstall(_)) => {
                 let msg = if flag {
-                    rust_i18n::t!("cmd.hold_failed", name = name)
+                    hok_i18n::t!("cmd.hold_failed", name = name)
                 } else {
-                    rust_i18n::t!("cmd.unhold_failed", name = name)
+                    hok_i18n::t!("cmd.unhold_failed", name = name)
                 };
                 output::err(msg);
                 continue;
@@ -77,5 +77,5 @@ pub(super) fn hold_packages(
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "hold")?;
-    hold_packages(session, &args.package, true, rust_i18n::t!("cmd.holding"))
+    hold_packages(session, &args.package, true, hok_i18n::t!("cmd.holding"))
 }

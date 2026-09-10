@@ -54,9 +54,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             if all {
                 // Column headers are localized in the CLI layer (i18n lives
                 // here, not in the lib); alignment accounts for their width.
-                let key = rust_i18n::t!("cmd.config_col_key");
-                let value = rust_i18n::t!("cmd.config_col_value");
-                let default = rust_i18n::t!("cmd.config_col_default");
+                let key = hok_i18n::t!("cmd.config_col_key");
+                let value = hok_i18n::t!("cmd.config_col_value");
+                let default = hok_i18n::t!("cmd.config_col_default");
                 let table = config::list_all_with_headers(session, &key, &value, &default)?;
                 println!("{table}");
             } else {
@@ -68,12 +68,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
         Command::Set { key, value } => {
             config::set(session, key.as_str(), value.as_str())?;
-            output::info(rust_i18n::t!("cmd.config_set", key = key, value = value));
+            output::info(hok_i18n::t!("cmd.config_set", key = key, value = value));
             Ok(())
         }
         Command::Unset { key } => {
             config::set(session, key.as_str(), "")?;
-            output::info(rust_i18n::t!("cmd.config_unset", key = key));
+            output::info(hok_i18n::t!("cmd.config_unset", key = key));
             Ok(())
         }
     }

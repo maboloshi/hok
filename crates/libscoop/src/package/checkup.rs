@@ -69,7 +69,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         if !current.exists() {
             issues.push(CheckupIssue {
                 name: name.to_string(),
-                message: rust_i18n::t!("cmd.no_current_symlink").to_string(),
+                message: hok_i18n::t!("cmd.no_current_symlink").to_string(),
             });
             continue;
         }
@@ -78,7 +78,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         if !install_json.exists() {
             issues.push(CheckupIssue {
                 name: name.to_string(),
-                message: rust_i18n::t!("cmd.missing_install_json").to_string(),
+                message: hok_i18n::t!("cmd.missing_install_json").to_string(),
             });
         }
 
@@ -86,7 +86,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         if !manifest_json.exists() {
             issues.push(CheckupIssue {
                 name: name.to_string(),
-                message: rust_i18n::t!("cmd.missing_manifest_json").to_string(),
+                message: hok_i18n::t!("cmd.missing_manifest_json").to_string(),
             });
         }
     }
