@@ -30,7 +30,12 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = "2"
 tracing = { workspace = true }
 # Async HTTP client (phase 4): async `Network` impl + GitHub / VirusTotal APIs.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+# TLS uses `native-tls` = schannel on Windows: the OS certificate store and
+# proxy configuration, matching what official Scoop gets through PowerShell.
+# It also keeps `ring`/`rustls`/`webpki-roots` (and their `getrandom 0.2`
+# pin) out of the tree. hok is Windows-only, so no non-Windows TLS backend
+# is needed.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream", "json", "gzip"] }
 jsonpath-rust = "1.0"
 json5 = "0.4"
 sxd-document = "0.3"

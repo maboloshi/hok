@@ -455,6 +455,30 @@ mod tests {
         match_private_hosts(entries.iter().map(|(p, h)| (p.as_str(), h.as_str())), url)
     }
 
+    /// End-to-end HTTPS smoke check for the configured TLS backend.
+    ///
+    /// Ignored by default: it needs outbound network access. Run it manually
+    /// after touching the `reqwest` TLS features:
+    /// `cargo test -p libscoop --lib tls_https_smoke -- --ignored`
+    #[tokio::test]
+    #[ignore = "requires network access (manual TLS backend smoke check)"]
+    async fn tls_https_smoke() {
+        let opts = RequestOptions {
+            timeout_secs: 30,
+            // api.github.com answers 403 to requests without a User-Agent.
+            user_agent: Some("hok-tls-smoke/0.1"),
+            ..Default::default()
+        };
+        let body = download("https://api.github.com/", &opts)
+            .await
+            .expect("HTTPS request must succeed with the configured TLS backend");
+        assert!(
+            body.len() > 16,
+            "unexpected body length: {}",
+            body.len()
+        );
+    }
+
     #[test]
     fn matching_is_case_insensitive_like_powershell_match() {
         let h = match_url(
