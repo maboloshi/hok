@@ -69,12 +69,24 @@ pub struct RequestOptions<'a> {
 
 /// Build a [`reqwest::Client`] from the proxy and timeout in `opts`.
 pub(crate) fn build_client<'a>(opts: &RequestOptions<'a>) -> Result<reqwest::Client, String> {
+    build_client_with_redirects(opts, true)
+}
+
+/// [`build_client`] with the redirect policy made explicit: `follow = false`
+/// returns the 3xx response itself instead of chasing the `Location` header.
+fn build_client_with_redirects<'a>(
+    opts: &RequestOptions<'a>,
+    follow: bool,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(opts.timeout_secs))
         .danger_accept_invalid_certs(false);
     if let Some(proxy_url) = opts.proxy {
         let p = reqwest::Proxy::all(proxy_url).map_err(|e| e.to_string())?;
         builder = builder.proxy(p);
+    }
+    if !follow {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
     }
     builder.build().map_err(|e| e.to_string())
 }
@@ -202,6 +214,23 @@ pub async fn head(url: &str, opts: &RequestOptions<'_>) -> HeadResult {
             content_length: None,
         },
     }
+}
+
+/// Perform a HEAD request **without** following redirects, returning the
+/// response so the caller can inspect the 3xx status and its headers.
+///
+/// Used by the metalink hash probe, which mirrors Scoop's
+/// `AllowAutoRedirect = $false` + `Digest` header read in
+/// `find_hash_in_headers` (lib/autoupdate.ps1:181-206).
+pub(crate) async fn head_no_redirect(
+    url: &str,
+    opts: &RequestOptions<'_>,
+) -> Result<reqwest::Response, String> {
+    let client = build_client_with_redirects(opts, false)?;
+    apply_headers(client.head(url), opts)
+        .send()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Download a URL's content as bytes via HTTP GET with full option control.

@@ -4,6 +4,8 @@
 //! download-and-hash, RDF/metalink/page hash extraction, mode detection,
 //! and hash formatting/normalisation.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use crate::internal::url;
@@ -282,12 +284,8 @@ async fn fetch_metalink_hash(
     //   1. HEAD request → check Digest header for SHA-256=...
     //   2. Fallback: fetch $url.meta4 and extract hash via regex
     //
-    // Step 1: HEAD with Digest header check
-    let proxy = {
-        let config = session.config();
-        config.proxy().map(|s| s.to_owned())
-    };
-    if let Ok(digest) = head_digest_sha256(url, proxy.as_deref(), 30).await {
+    // Step 1: HEAD with Digest header check (Scoop probes with a 2 s timeout)
+    if let Ok(digest) = head_digest_sha256(session, url, 2).await {
         return Ok(digest);
     }
 
@@ -326,46 +324,75 @@ fn find_hash_in_rdf(content: &str, _basename: &str) -> Option<String> {
     if !hash.is_empty() { Some(hash) } else { None }
 }
 
-/// Perform a HEAD request and extract SHA-256 digest from the Digest header.
-async fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -> Fallible<String> {
+/// Digest parameter regexes, in Scoop's `-or` evaluation order
+/// (`lib/autoupdate.ps1:193`): `SHA-256=`, then `SHA=`, then `MD5=`.
+static DIGEST_SHA256: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"SHA-256=([^,]+)").unwrap());
+static DIGEST_SHA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"SHA=([^,]+)").unwrap());
+static DIGEST_MD5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"MD5=([^,]+)").unwrap());
+
+/// Turn a `Digest` response header value into a lowercase-hex hash.
+///
+/// Mirrors Scoop's `find_hash_in_headers` (lib/autoupdate.ps1:193-194):
+/// the first parameter that matches — `SHA-256=`, `SHA=`, `MD5=` — wins
+/// (`[^,]+` stops at the next parameter), and its base64 payload is rendered
+/// as lowercase hex, exactly like `Convert.FromBase64String` followed by
+/// `$_.ToString('x2')`.
+///
+/// Returns `None` when no parameter matches or the payload is not valid
+/// base64. Official Scoop instead lets the `FormatException` escape
+/// (`catch [System.Net.WebException]` does not cover it), which aborts the
+/// whole checkver run; hok treats it as "no digest" so the documented
+/// `.meta4` fallback still runs.
+fn digest_header_hash(header: &str) -> Option<String> {
+    [&*DIGEST_SHA256, &*DIGEST_SHA, &*DIGEST_MD5]
+        .into_iter()
+        .find_map(|re| re.captures(header))
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str())
+        .and_then(|b64| crate::internal::base64::decode(b64).ok())
+        .map(|bytes| crate::internal::base64::to_lower_hex(&bytes))
+}
+
+/// Probe `url` with HEAD and read the hash from the `Digest` header.
+///
+/// Request shape mirrors Scoop's `find_hash_in_headers`:
+/// - redirects are **not** followed (`AllowAutoRedirect = $false`), so the
+///   `Digest` header of the 3xx response itself is the one inspected
+/// - `Digest` is only consulted on a 3xx status; a direct 200 is ignored
+/// - 2 s timeout, `Referer = strip_filename(url)`, Scoop's user agent
+///
+/// The caller falls back to `$url.meta4` when this returns `Err`.
+async fn head_digest_sha256(session: &Session, url: &str, timeout_secs: u64) -> Fallible<String> {
+    let proxy = {
+        let config = session.config();
+        config.proxy().map(|s| s.to_owned())
+    };
+    let user_agent = session.user_agent().map(|s| s.to_owned());
+    let referer = crate::internal::network::strip_filename(url);
     let opts = crate::internal::network::RequestOptions {
-        proxy,
+        proxy: proxy.as_deref(),
         timeout_secs,
+        user_agent: user_agent.as_deref(),
+        referer: Some(referer.as_str()),
         ..crate::internal::network::RequestOptions::default()
     };
-    let client = crate::internal::network::build_client(&opts)
-        .map_err(|e| Error::Custom(format!("proxy: {}", e)))?;
-    let resp = client
-        .head(url)
-        .send()
+    let resp = crate::internal::network::head_no_redirect(url, &opts)
         .await
         .map_err(|e| Error::Custom(format!("HEAD {}: {}", url, e)))?;
 
-    // Scoop checks for Digest header: SHA-256=..., SHA=..., MD5=...
-    let digest_val = resp
-        .headers()
-        .get("Digest")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_owned());
-
-    if let Some(ref digest_val) = digest_val {
-        // SHA-256=<base64>
-        let re = Regex::new(r"SHA-256=([^,]+)").ok();
-        if let Some(r) = re
-            && let Some(caps) = r.captures(digest_val)
-            && let Some(b64) = caps.get(1)
-        {
-            // Decode standard base64 to hex (Scoop: Convert.FromBase64String
-            // + `$_.ToString('x2')`).
-            if let Ok(bytes) = crate::internal::base64::decode(b64.as_str()) {
-                return Ok(crate::internal::base64::to_lower_hex(&bytes));
-            }
-        }
+    let status = resp.status().as_u16();
+    if !(300..400).contains(&status) {
+        return Err(Error::Custom(format!(
+            "HEAD {}: HTTP {} is not a redirect",
+            url, status
+        )));
     }
 
-    Err(Error::Custom(
-        "no Digest header with SHA-256".to_string(),
-    ))
+    resp.headers()
+        .get("Digest")
+        .and_then(|v| v.to_str().ok())
+        .and_then(digest_header_hash)
+        .ok_or_else(|| Error::Custom(format!("no usable Digest header (HTTP {})", status)))
 }
 
 /// Normalize hash format to match Scoop's format_hash behavior:
@@ -464,6 +491,182 @@ fn is_hex_hash(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::internal::base64;
+
+    // ── digest_header_hash ───────────────────────────────────────────────────
+    // Scoop: lib/autoupdate.ps1:193-194 (`find_hash_in_headers`)
+
+    #[test]
+    fn digest_header_reads_sha256_parameter() {
+        let payload = base64::encode(&[0xab; 32]);
+        let header = format!("SHA-256={payload}");
+        assert_eq!(digest_header_hash(&header), Some("ab".repeat(32)));
+    }
+
+    #[test]
+    fn digest_header_ignores_whitespace_inside_payload() {
+        // .NET's FromBase64String ignores whitespace anywhere.
+        let payload = base64::encode(&[0xab; 32]);
+        let spaced = format!("{} {}", &payload[..8], &payload[8..]);
+        assert_eq!(
+            digest_header_hash(&format!("SHA-256={spaced}")),
+            Some("ab".repeat(32))
+        );
+    }
+
+    #[test]
+    fn digest_header_stops_at_next_parameter() {
+        // `([^,]+)` is not greedy across the comma-separated parameter list.
+        let payload = base64::encode(&[0xab; 32]);
+        let other = base64::encode(&[0xcd; 32]);
+        let header = format!("SHA-256={payload}, SHA={other}");
+        assert_eq!(digest_header_hash(&header), Some("ab".repeat(32)));
+    }
+
+    #[test]
+    fn digest_header_prefers_sha256_over_earlier_parameters() {
+        let sha256 = base64::encode(&[0xab; 32]);
+        let md5 = base64::encode(&[0xcd; 16]);
+        let header = format!("MD5={md5}, SHA-256={sha256}");
+        assert_eq!(digest_header_hash(&header), Some("ab".repeat(32)));
+    }
+
+    #[test]
+    fn digest_header_falls_back_to_sha_then_md5() {
+        let sha1 = base64::encode(&[0x0a; 20]);
+        assert_eq!(
+            digest_header_hash(&format!("SHA={sha1}")),
+            Some("0a".repeat(20))
+        );
+        let md5 = base64::encode(&[0x0b; 16]);
+        assert_eq!(
+            digest_header_hash(&format!("MD5={md5}")),
+            Some("0b".repeat(16))
+        );
+    }
+
+    #[test]
+    fn digest_header_rejects_invalid_base64() {
+        assert_eq!(digest_header_hash("SHA-256=!!!!"), None);
+        // A `SHA-256=` parameter that cannot be decoded is *not* allowed to
+        // fall through to another parameter: official Scoop throws from the
+        // decode instead of trying `SHA=`/`MD5=`.
+        let md5 = base64::encode(&[0x0b; 16]);
+        assert_eq!(digest_header_hash(&format!("SHA-256=!!, MD5={md5}")), None);
+    }
+
+    #[test]
+    fn digest_header_without_known_parameters_is_none() {
+        assert_eq!(digest_header_hash(""), None);
+        assert_eq!(digest_header_hash("foo=bar"), None);
+    }
+
+    // ── head_digest_sha256 (status gate + no redirects) ──────────────────────
+
+    /// Minimal loopback HTTP server answering every HEAD with a fixed status
+    /// line and optional `Digest` header.
+    struct HeadServer {
+        addr: std::net::SocketAddr,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl HeadServer {
+        fn url(&self, path: &str) -> String {
+            format!("http://{}{}", self.addr, path)
+        }
+
+        fn shutdown(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(h) = self.handle.take() {
+                h.join().unwrap();
+            }
+        }
+    }
+
+    fn spawn_head_server(status: u16, digest: Option<String>) -> HeadServer {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop_thread = std::sync::Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            while !stop_thread.load(Ordering::SeqCst) {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                };
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                // Drain the request head so the client never sees a reset.
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let digest_header = digest
+                    .as_ref()
+                    .map(|d| format!("Digest: {d}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nLocation: /moved\r\n{digest_header}Connection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        HeadServer {
+            addr,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    #[tokio::test]
+    async fn head_digest_probe_reads_digest_from_the_redirect() {
+        let root = crate::test_utils::tmpdir("head_digest_redirect");
+        let session = crate::test_utils::test_session(&root);
+        let payload = base64::encode(&[0xab; 32]);
+        let mut server = spawn_head_server(302, Some(format!("SHA-256={payload}")));
+
+        let hash = head_digest_sha256(&session, &server.url("/pkg.zip"), 5)
+            .await
+            .unwrap();
+        assert_eq!(hash, "ab".repeat(32));
+        server.shutdown();
+    }
+
+    #[tokio::test]
+    async fn head_digest_probe_ignores_a_direct_200() {
+        // Scoop only inspects `Digest` on a 3xx response; a direct 200 means
+        // "no digest here" and the caller falls back to `$url.meta4`.
+        let root = crate::test_utils::tmpdir("head_digest_200");
+        let session = crate::test_utils::test_session(&root);
+        let payload = base64::encode(&[0xab; 32]);
+        let mut server = spawn_head_server(200, Some(format!("SHA-256={payload}")));
+
+        assert!(
+            head_digest_sha256(&session, &server.url("/pkg.zip"), 5)
+                .await
+                .is_err()
+        );
+        server.shutdown();
+    }
+
+    #[tokio::test]
+    async fn head_digest_probe_errors_on_a_redirect_without_digest() {
+        let root = crate::test_utils::tmpdir("head_digest_missing");
+        let session = crate::test_utils::test_session(&root);
+        let mut server = spawn_head_server(302, None);
+
+        assert!(
+            head_digest_sha256(&session, &server.url("/pkg.zip"), 5)
+                .await
+                .is_err()
+        );
+        server.shutdown();
+    }
+
     // ── format_hash ──────────────────────────────────────────────────────────
 
     #[test]
