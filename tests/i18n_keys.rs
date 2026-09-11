@@ -5,7 +5,7 @@
 //! loop. `tests/cli_help_i18n.rs` is the end-to-end half (it spawns the
 //! binary and renders every command's help).
 //!
-//! Reconciliation of four invariants to prevent drift between the translation
+//! Reconciliation of five invariants to prevent drift between the translation
 //! files, the build-time flattening and the source code:
 //! 1. en.yml and zh.yml must have exactly the same leaf keys (a missing
 //!    translation or a dropped key fails the test);
@@ -20,7 +20,13 @@
 //!    block scalars, `\n` escapes, flow sequences) -- see
 //!    [`yaml_flattening_survives_the_build_script`]. `build.rs` is a build
 //!    script, so cargo never compiles it as a test target: this test checks its
-//!    *product* through the public `hok_i18n::t!` API instead.
+//!    *product* through the public `hok_i18n::t!` API instead;
+//! 5. every long description a Rust doc comment documents has a `long_about`
+//!    key in both tables (see [`documented_long_help_is_translated`]). Without
+//!    the key the derive patches `long_about` with the translated short
+//!    `about`, so the doc comment's second paragraph is rendered in *neither*
+//!    locale -- which is how `create`, `search`, `auto_pr`, `virustotal` and
+//!    `shim add` silently lost theirs.
 //!
 //! Design trade-offs:
 //! - Pure std implementation (no regex dependency); self-contained and fast;
@@ -312,4 +318,210 @@ fn yaml_flattening_survives_the_build_script() {
     // on that shape rather than on rendering `[s]`.
     assert_eq!(hok_i18n::t!("cli_alias.search"), "");
     assert_eq!(hok_i18n::t!("cli_alias.bucket.List"), "");
+}
+
+// ── Invariant 5: every documented long description has a `long_about` key ────
+
+/// `(variant, module, paragraphs)` for every `Command` variant shaped
+/// `Name(module::Args)` — the shape `hok-i18n-derive` treats as a command and
+/// resolves to `src/cmd/<module>.rs`.
+fn command_variants(mod_src: &str) -> Vec<(String, String, Vec<String>)> {
+    let lines: Vec<&str> = mod_src.lines().collect();
+    let mut out = Vec::new();
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw.trim();
+        if line.starts_with("//") || line.starts_with('#') {
+            continue;
+        }
+        let Some(open) = line.find('(') else { continue };
+        let variant = &line[..open];
+        if !variant
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase())
+            || !variant.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            continue;
+        }
+        let inner = line[open + 1..].trim();
+        let Some(close) = inner.find("::Args") else {
+            continue;
+        };
+        let module = inner[..close].trim();
+        if module.is_empty()
+            || !module
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+        {
+            continue;
+        }
+        out.push((
+            variant.to_string(),
+            module.to_string(),
+            doc_paragraphs(&lines, i),
+        ));
+    }
+    out
+}
+
+/// Doc-comment paragraphs of the item declared on `lines[item]`, flattened to
+/// one line per paragraph. Walks back over the `///` lines and skips the
+/// `#[...]` attribute lines that may sit between them and the item.
+fn doc_paragraphs(lines: &[&str], item: usize) -> Vec<String> {
+    let mut doc: Vec<String> = Vec::new();
+    let mut i = item;
+    while i > 0 {
+        let prev = lines[i - 1].trim_start();
+        if let Some(text) = prev.strip_prefix("///") {
+            doc.push(text.trim().to_string());
+            i -= 1;
+        } else if prev.starts_with("#[") {
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    doc.reverse();
+
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in doc {
+        if line.is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(&line);
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs
+}
+
+/// Doc-comment paragraphs of the command's `Args` struct, if it declares one.
+fn args_doc_paragraphs(src: &str) -> Vec<String> {
+    let lines: Vec<&str> = src.lines().collect();
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw.trim_start();
+        if line.starts_with("pub struct Args") || line.starts_with("pub(crate) struct Args") {
+            return doc_paragraphs(&lines, i);
+        }
+    }
+    Vec::new()
+}
+
+/// `(variant, paragraphs)` for the nested subcommand variants of one command
+/// file. Variants are indented by exactly four spaces and start with an
+/// upper-case letter; struct fields share the indent but start lower-case.
+fn nested_variants(src: &str) -> Vec<(String, Vec<String>)> {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = Vec::new();
+    for (i, raw) in lines.iter().enumerate() {
+        if !raw.starts_with("    ") || raw.starts_with("     ") {
+            continue;
+        }
+        let line = raw.trim_start();
+        let name: String = line
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            continue;
+        }
+        let rest = &line[name.len()..];
+        if !(rest.starts_with('{') || rest.starts_with('(') || rest.starts_with(',')) {
+            continue;
+        }
+        let paragraphs = doc_paragraphs(&lines, i);
+        if paragraphs.len() > 1 {
+            out.push((name, paragraphs));
+        }
+    }
+    out
+}
+
+/// `CiAutoPr` -> `ci-auto-pr`, matching the derive's key conversion.
+fn to_kebab(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    for (i, c) in name.char_indices() {
+        if i > 0 && c.is_ascii_uppercase() {
+            out.push('-');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// The derive patches `long_about` with the translated short `about` whenever
+/// the `long_about` key is missing, so a doc comment that documents a long
+/// description silently renders in neither locale unless the key exists. This
+/// walks every command (and every nested subcommand) and requires the key in
+/// both tables — how `create`, `search`, `auto_pr`, `virustotal` and
+/// `shim add` lost theirs.
+#[test]
+fn documented_long_help_is_translated() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |file: &str| {
+        fs::read_to_string(manifest_dir.join(file))
+            .unwrap_or_else(|e| panic!("cannot read {file}: {e}"))
+    };
+    let en_keys = extract_leaf_keys(&read("locales/en.yml"));
+    let zh_keys = extract_leaf_keys(&read("locales/zh.yml"));
+    let mod_src = read("src/cmd/mod.rs");
+
+    let mut failures = Vec::new();
+    let mut checked = 0usize;
+    let require = |key: &str, source: &str, failures: &mut Vec<String>| {
+        for (locale, keys) in [("en", &en_keys), ("zh", &zh_keys)] {
+            if !keys.contains(key) {
+                failures.push(format!(
+                    "{locale}.yml: missing `{key}` (documented in {source})"
+                ));
+            }
+        }
+    };
+
+    for (_variant, module, variant_doc) in command_variants(&mod_src) {
+        let file = format!("src/cmd/{module}.rs");
+        let Ok(src) = fs::read_to_string(manifest_dir.join(&file)) else {
+            continue;
+        };
+        // Either doc comment can carry the long description: clap renders the
+        // `Args` struct's second paragraph, and the variant's own doc is the
+        // fallback the derive overrides.
+        let args_doc = args_doc_paragraphs(&src);
+        if variant_doc.len() > 1 || args_doc.len() > 1 {
+            checked += 1;
+            require(
+                &format!("cli_help.{module}.long_about"),
+                &file,
+                &mut failures,
+            );
+        }
+        for (variant, paragraphs) in nested_variants(&src) {
+            checked += 1;
+            require(
+                &format!("cli_help.{module}.args.{}.long_about", to_kebab(&variant)),
+                &format!("{file} ({variant}, {} paragraphs)", paragraphs.len()),
+                &mut failures,
+            );
+        }
+    }
+
+    assert!(
+        checked >= 5,
+        "the scanner found only {checked} documented long descriptions; if the \
+         source layout changed, fix the scanner instead of letting this guard go vacuous"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} documented long description(s) without a translation key:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

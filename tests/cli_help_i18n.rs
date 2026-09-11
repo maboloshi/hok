@@ -19,6 +19,14 @@
 //! Deliberately ASCII descriptions (syntax markers such as `[default: 5]` and
 //! the positional placeholder itself) are skipped, as are the multi-line
 //! examples some `long_about` blocks carry — those are covered by check 1.
+//!
+//! Cost control: each command path is rendered three times (`zh -h`,
+//! `zh --help`, `en -h`) instead of once per check. The English long help is
+//! not rendered at all because the two tables expose identical key sets (see
+//! `tests/i18n_keys.rs` and `hok-i18n`'s own unit test), so a raw-key leak
+//! cannot be locale-specific — and the long path is already covered by the
+//! Chinese rendering. `en -h` is kept for the English description check 3
+//! compares against.
 
 use std::process::Command;
 
@@ -110,20 +118,27 @@ fn cli_help_is_fully_localized() {
             format!("hok {}", path.join(" "))
         };
 
+        // The three renderings every check below works from.
+        let zh_short = help(path, "-h", "zh");
+        let zh_long = help(path, "--help", "zh");
+        let en_short = help(path, "-h", "en");
+
         // 1. No raw translation key may ever be rendered.
-        for flag in ["-h", "--help"] {
-            for lang in ["en", "zh"] {
-                for line in help(path, flag, lang).lines() {
-                    if line.contains("cli_help.") {
-                        failures.push(format!("{name} {flag} [{lang}]: raw key: {line:?}"));
-                    }
+        for (lang, flag, text) in [
+            ("zh", "-h", &zh_short),
+            ("zh", "--help", &zh_long),
+            ("en", "-h", &en_short),
+        ] {
+            for line in text.lines() {
+                if line.contains("cli_help.") {
+                    failures.push(format!("{name} {flag} [{lang}]: raw key: {line:?}"));
                 }
             }
         }
 
         // 2. Every option/positional description in the Chinese short help is
         //    translated (ASCII-only descriptions are the unpatched fallback).
-        for line in help(path, "-h", "zh").lines() {
+        for line in zh_short.lines() {
             let trimmed = line.trim_start();
             if !(trimmed.starts_with('-') || trimmed.starts_with('<')) {
                 continue;
@@ -144,13 +159,8 @@ fn cli_help_is_fully_localized() {
         }
 
         // 3. The Chinese long help must not show the English description.
-        let english_about = help(path, "-h", "en")
-            .lines()
-            .nth(1)
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_string();
-        if !english_about.is_empty() && help(path, "--help", "zh").contains(&english_about) {
+        let english_about = en_short.lines().nth(1).map(str::trim).unwrap_or_default();
+        if !english_about.is_empty() && zh_long.contains(english_about) {
             failures.push(format!(
                 "{name} --help [zh]: English description leaked: {english_about:?}"
             ));
