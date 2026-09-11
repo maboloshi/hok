@@ -350,15 +350,20 @@ cli_help:
       version: "Print version"
   alias:
     args:
-      command: "Command: list (default), add, rm"
-      name: Alias name (for add/rm)
-      value: Alias command (for add)
+      add: Add a new alias
+      add.name: Alias name
+      add.value: Command to execute
+      list: List all aliases (default)
+      remove: Remove an alias
+      remove.name: Alias name to remove
     about: "List, add, or remove Scoop aliases"
     long_about: "List, add, or remove Scoop aliases\n\nExamples:\n  hok alias list                   list all aliases\n  hok alias add <name> <command>   add an alias\n  hok alias rm  <name>            remove an alias"
   bucket:
     about: Manage manifest buckets
     args:
       add: Add a bucket
+      add.name: The bucket name
+      add.repo: The bucket repository url (optional for known buckets)
       list: List buckets
       list.known: List known buckets
       known: "List known buckets (Scoop: scoop bucket known)"
@@ -368,8 +373,10 @@ cli_help:
     about: Package cache management
     args:
       list: List download caches
+      list.query: List caches matching the query
       remove: Remove download caches
       remove.all: Remove all caches
+      remove.query: Remove caches matching the query
   cat:
     args:
       package: Name of the package to be inspected
@@ -381,6 +388,8 @@ cli_help:
       cache: Use cache directory for downloaded files
       dir: Bucket directory to scan for manifests
       force: Force update manifest even when hash matches (re-hash)
+      keep_cache: Keep downloaded files in cache after check completes
+      skip_correct: Suppress output for manifests with correct hashes
       update: Update manifest with correct hash when mismatch found
   checkup:
     about: Check for potential problems with installed packages
@@ -474,7 +483,10 @@ cli_help:
       list: "List all settings in key-value (--all also shows defaults)"
       list.all: Also show the effective default value of every setting
       set: Add a new setting to the config file
+      set.key: The key of the config
+      set.value: The value of the setting
       unset: Remove a setting from config file
+      unset.key: The key of the setting
   create:
     about: "Create a manifest from a download URL"
     args:
@@ -518,6 +530,7 @@ cli_help:
   hold:
     about: Hold package(s) to disable changes
     args:
+      global: Hold globally installed app (from $SCOOP_GLOBAL)
       package: The package(s) to be held
   home:
     args:
@@ -587,6 +600,7 @@ cli_help:
   reinstall:
     about: Reinstall a package
     args:
+      global: Install globally (to $SCOOP_GLOBAL)
       ignore_cache: Ignore cache and force download
       ignore_failure: Ignore failures to ensure a complete transaction
       no_hash_check: Skip package integrity check
@@ -610,18 +624,14 @@ cli_help:
     long_about: |-
       Manipulate Scoop shims (add / remove / list / inspect).
 
-      Subcommands:
-        add <name> <target> [args...]  Add a custom shim pointing at an
-                                       arbitrary command path (or a name
-                                       resolved through PATH)
-        rm <name>...                   Remove shims (CAUTION: this may
-                                       remove shims created by an app
-                                       manifest)
-        list [<regex_pattern>...]      List all shims or matching shims
-        info <name>                    Show a shim's information
-
-      Options:
-        -g, --global  Manipulate global shim(s)
+      Examples:
+        hok shim add <name> <target> [args...]  add a custom shim pointing at an
+                                                arbitrary command path (or a name
+                                                resolved through PATH)
+        hok shim rm <name>...                   remove shims (CAUTION: may remove
+                                                shims created by an app manifest)
+        hok shim list [<regex_pattern>...]      list all shims or matching shims
+        hok shim info <name>                    show a shim's information
 
       HINT: the first `--`, if any, is treated as the POSIX-style command
       option terminator and is NOT included in the shim arguments, so pass
@@ -644,14 +654,18 @@ cli_help:
   unhold:
     about: Unhold package(s) to enable changes
     args:
+      global: Unhold globally installed app (from $SCOOP_GLOBAL)
       package: The package(s) to be unheld
   uninstall:
     about: Uninstall package(s)
     args:
+      assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow changes on held package(s)
+      global: Uninstall a globally installed app (from $SCOOP_GLOBAL)
       ignore_failure: Ignore failures to ensure a complete transaction
       no_hash_check: Skip package integrity check
       package: The package(s) to uninstall
+      purge: Remove all persistent data
   update:
     about: "Fetch and update subscribed buckets, or upgrade installed package(s)"
     long_about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
@@ -672,8 +686,10 @@ cli_help:
   upgrade:
     about: Upgrade installed package(s)
     args:
+      all: Update all installed packages (alternative to '*')
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
+      global: Install globally (to $SCOOP_GLOBAL)
       ignore_failure: Ignore failures to ensure a complete transaction
       no_hash_check: Skip package integrity check
       offline: Leverage cache and suppress network access
@@ -684,6 +700,8 @@ cli_help:
       app: Package name(s) to check
   which:
     about: Show the shim location(s) of a command
+    args:
+      command: Command name to search for
   auto_pr:
     about: "Auto-update manifests and create pull-requests via GitHub API (zero external binary, CI mode)"
     args:

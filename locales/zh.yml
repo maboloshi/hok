@@ -350,15 +350,20 @@ cli_help:
       version: "打印版本信息"
   alias:
     args:
-      command: "命令: list（默认），add，rm"
-      name: 别名名称（用于 add/rm）
-      value: 别名命令（用于 add）
+      add: 添加新别名
+      add.name: 别名名称
+      add.value: 要执行的命令
+      list: 列出所有别名（默认）
+      remove: 删除别名
+      remove.name: 要删除的别名名称
     about: "列出、添加或删除 Scoop 别名"
     long_about: "列出、添加或删除 Scoop 别名\n\n示例:\n  hok alias list                   列出所有别名\n  hok alias add <名称> <命令>      添加别名\n  hok alias rm  <名称>             删除别名"
   bucket:
     about: 管理清单仓库
     args:
       add: 添加仓库
+      add.name: 仓库名称
+      add.repo: 仓库 URL（已知仓库可省略）
       list: 列出仓库
       list.known: 列出已知仓库
       known: "列出已知仓库（Scoop: scoop bucket known）"
@@ -368,8 +373,10 @@ cli_help:
     about: 包缓存管理
     args:
       list: 列出下载缓存
+      list.query: 列出匹配该查询的缓存
       remove: 删除下载缓存
       remove.all: 删除所有缓存
+      remove.query: 删除匹配该查询的缓存
   cat:
     args:
       package: 要检查的包名称
@@ -381,6 +388,8 @@ cli_help:
       cache: 对下载的文件使用缓存目录
       dir: 要扫描清单的仓库目录
       force: 即使哈希匹配也强制更新清单（重新哈希）
+      keep_cache: 检查完成后将下载的文件保留在缓存中
+      skip_correct: 不输出哈希正确的清单
       update: 发现不匹配时用正确哈希更新清单
   checkup:
     about: 检查已安装包的潜在问题
@@ -473,7 +482,10 @@ cli_help:
       list: "以键值对形式列出所有设置（--all 同时显示默认值）"
       list.all: 同时显示每个设置生效的默认值
       set: 向配置文件添加新设置
+      set.key: 配置项名称
+      set.value: 设置值
       unset: 从配置文件删除设置
+      unset.key: 要删除的配置项名称
   create:
     about: "从下载 URL 创建清单  下载文件、计算哈希并生成清单骨架。"
     args:
@@ -516,6 +528,7 @@ cli_help:
   hold:
     about: 锁定包以禁止更改
     args:
+      global: 锁定全局安装的应用（来自 $SCOOP_GLOBAL）
       package: 要锁定的包
   home:
     args:
@@ -584,6 +597,7 @@ cli_help:
   reinstall:
     about: 重新安装包
     args:
+      global: 全局安装（到 $SCOOP_GLOBAL）
       ignore_cache: 忽略缓存并强制下载
       ignore_failure: 忽略错误以确保事务完成
       no_hash_check: 跳过包完整性检查
@@ -607,15 +621,12 @@ cli_help:
     long_about: |-
       管理 Scoop shims（添加 / 移除 / 列出 / 检查）。
 
-      子命令:
-        add <名称> <目标> [参数...]  添加自定义 shim，指向任意命令路径
-                                     （或通过 PATH 解析的命令名）
-        rm <名称>...                 移除 shims（注意: 可能移除应用清单创建的 shim）
-        list [<正则模式>...]         列出所有 shims 或匹配的 shims
-        info <名称>                   显示 shim 的信息
-
-      选项:
-        -g, --global  操作全局 shim(s)
+      示例:
+        hok shim add <名称> <目标> [参数...]  添加自定义 shim，指向任意命令路径
+                                              （或通过 PATH 解析的命令名）
+        hok shim rm <名称>...                 移除 shims（注意: 可能移除应用清单创建的 shim）
+        hok shim list [<正则模式>...]         列出所有 shims 或匹配的 shims
+        hok shim info <名称>                  显示 shim 的信息
 
       提示: 第一个 `--`（若有）被当作 POSIX 风格选项终止符，不会包含在
       shim 参数中；请把 `-` 开头的参数放在它后面:
@@ -637,14 +648,18 @@ cli_help:
   unhold:
     about: 解锁包以允许更改
     args:
+      global: 解锁全局安装的应用（来自 $SCOOP_GLOBAL）
       package: 要解锁的包
   uninstall:
     about: 卸载包
     args:
+      assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许更改被锁定的包
+      global: 卸载全局安装的应用（来自 $SCOOP_GLOBAL）
       ignore_failure: 忽略错误以确保事务完成
       no_hash_check: 跳过包完整性检查
       package: 要卸载的包
+      purge: 删除所有持久化数据
   update:
     about: "获取并更新已订阅的仓库，或升级已安装的包"
     long_about: "获取并更新已订阅的仓库，或升级已安装的包\n\n示例:\n  hok update            仅更新仓库\n  hok update <应用>     升级特定包（兼容 Scoop）\n  hok update *          升级所有包"
@@ -665,8 +680,10 @@ cli_help:
   upgrade:
     about: 升级已安装的包
     args:
+      all: 升级所有已安装的包（相当于 '*'）
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
+      global: 全局安装（到 $SCOOP_GLOBAL）
       ignore_failure: 忽略错误以确保事务完成
       no_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
@@ -677,6 +694,8 @@ cli_help:
       app: 要检查的包名称
   which:
     about: 显示命令的 shim 位置
+    args:
+      command: 要查找的命令名称
   auto_pr:
     about: "通过 GitHub API 自动更新 manifest 并创建 Pull-Request（零外部二进制，CI 模式）"
     args:
