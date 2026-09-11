@@ -329,12 +329,6 @@ impl Session {
         self.effective_root_path().join("apps").join(name)
     }
 
-    /// Get the `current` junction directory of a package: `<root>/apps/<name>/current`.
-    #[inline]
-    pub fn current_dir(&self, name: &str) -> std::path::PathBuf {
-        self.app_dir(name).join("current")
-    }
-
     /// Get the directory a package's current install actually lives in:
     /// `<root>/apps/<name>/current` when junctions are enabled, otherwise the
     /// resolved version dir.
@@ -343,8 +337,9 @@ impl Session {
     /// `NO_JUNCTION` branch resolves the version through
     /// `Select-CurrentVersion` and returns the version dir, because there is
     /// no junction to point at. Callers that need "the install dir of this
-    /// package" (upstream's `$dir`) must use this rather than
-    /// [`Session::current_dir`], which is the junction path and does not exist
+    /// package" (upstream's `$dir`, e.g. `prefix`, `hold`) must use this:
+    /// building `<root>/apps/<name>/current` by hand is the same mistake as
+    /// assuming a junction, and it silently targets a path that does not exist
     /// under `NO_JUNCTION`.
     ///
     /// Returns `None` when no version resolves (not installed, or a broken
@@ -383,8 +378,9 @@ impl Session {
     ///
     /// This is the *real* per-version directory — extraction target,
     /// `link_current` target, and uninstall/removal location. It is distinct
-    /// from [`Session::current_dir`] (the junction path) and
-    /// [`Session::current_dir_name`] (the runtime entry directory name).
+    /// from [`Session::app_current_dir`] (the entry directory, which is the
+    /// `current` junction only in junction mode) and
+    /// [`Session::current_dir_name`] (the runtime entry directory *name*).
     #[inline]
     pub fn versioned_dir(&self, name: &str, version: &str) -> std::path::PathBuf {
         self.app_dir(name).join(version)
