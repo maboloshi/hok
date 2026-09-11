@@ -62,7 +62,9 @@ pub(super) async fn download_and_hash_multi(
                             .map_err(|e| {
                                 Error::Custom(format!("fetch hash page {}: {}", page_url, e))
                             })?;
-                        extract_hash_from_page(&page, ext)?
+                        // Scoop's find_hash_in_textfile converts a base64 hash
+                        // value to hex before returning it (autoupdate.ps1:82-92).
+                        convert_base64_hash_value(&extract_hash_from_page(&page, ext)?)
                     }
                     // ── json: fetch JSON + jsonpath extraction ──────────────────────
                     "json" if has_jp || has_url => {
@@ -395,6 +397,40 @@ async fn head_digest_sha256(session: &Session, url: &str, timeout_secs: u64) -> 
         .ok_or_else(|| Error::Custom(format!("no usable Digest header (HTTP {})", status)))
 }
 
+/// Render a hash found in a hash file as hex.
+///
+/// Scoop's `find_hash_in_textfile` (`lib/autoupdate.ps1:82-92`): when the
+/// extracted value is well-formed padded base64, is not pure hex and has none
+/// of the plain hash lengths (32/40/64/128), decode it and render the bytes as
+/// lowercase hex; if the decode throws, the value is kept unchanged.  Hash
+/// files that publish base64 digests would otherwise reach the manifest
+/// undecoded and never match a downloaded file.
+fn convert_base64_hash_value(hash: &str) -> String {
+    // Scoop's shape test:
+    // '^(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=|[A-Za-z0-9+\/]{4})$'
+    static BASE64_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$",
+        )
+        .unwrap()
+    });
+
+    if !BASE64_SHAPE.is_match(hash) {
+        return hash.to_string();
+    }
+    if hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return hash.to_string();
+    }
+    if matches!(hash.len(), 32 | 40 | 64 | 128) {
+        return hash.to_string();
+    }
+    // The shape check already guarantees decodable input; the fallback
+    // mirrors Scoop's defensive `catch { $hash = $hash }`.
+    crate::internal::base64::decode(hash)
+        .map(|bytes| crate::internal::base64::to_lower_hex(&bytes))
+        .unwrap_or_else(|_| hash.to_string())
+}
+
 /// Normalize hash format to match Scoop's format_hash behavior:
 /// - Lowercase
 /// - Strip 'sha256:' prefix
@@ -665,6 +701,40 @@ mod tests {
                 .is_err()
         );
         server.shutdown();
+    }
+
+    // ── convert_base64_hash_value ────────────────────────────────────────────
+    // Scoop: lib/autoupdate.ps1:82-92
+
+    #[test]
+    fn base64_hash_file_value_is_decoded_to_hex() {
+        // A base64-encoded SHA-256 digest: 44 chars in, 64 hex chars out.
+        let payload = base64::encode(&[0x0a; 32]);
+        assert_eq!(payload.len(), 44);
+        assert_eq!(convert_base64_hash_value(&payload), "0a".repeat(32));
+    }
+
+    #[test]
+    fn plain_hex_hash_file_values_are_untouched() {
+        // MD5 (also valid base64 shape), SHA-1 and SHA-256 lengths.
+        assert_eq!(convert_base64_hash_value(&"a1".repeat(16)), "a1".repeat(16));
+        assert_eq!(convert_base64_hash_value(&"b2".repeat(20)), "b2".repeat(20));
+        assert_eq!(convert_base64_hash_value(&"c3".repeat(32)), "c3".repeat(32));
+        assert_eq!(convert_base64_hash_value(&"d4".repeat(64)), "d4".repeat(64));
+    }
+
+    #[test]
+    fn base64_hash_value_with_a_plain_hash_length_is_untouched() {
+        // 40 base64 chars = 30 bytes; Scoop's length guard leaves it alone.
+        let payload = base64::encode(&[0x7f; 30]);
+        assert_eq!(payload.len(), 40);
+        assert_eq!(convert_base64_hash_value(&payload), payload);
+    }
+
+    #[test]
+    fn non_base64_hash_values_are_untouched() {
+        assert_eq!(convert_base64_hash_value("not a hash"), "not a hash");
+        assert_eq!(convert_base64_hash_value(""), "");
     }
 
     // ── format_hash ──────────────────────────────────────────────────────────
