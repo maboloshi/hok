@@ -30,8 +30,8 @@ use crate::{
 };
 
 use super::install_state::{
-    fill_install_state, load_bucket_manifest, maybe_fill_upgradable, parse_install_info,
-    select_current_version,
+    CurrentVersionSource, fill_install_state, load_bucket_manifest, maybe_fill_upgradable,
+    parse_install_info, resolve_current_version,
 };
 use super::query_matcher::{QueryOption, build_matchers, manifest_matches, name_prefiltered_out};
 use super::{InstallState, InstallStateInstalled, Manifest, Package, manifest_cache};
@@ -81,54 +81,42 @@ pub fn query_installed(
                         }
 
                         let pkg_dir = apps_dir.join(name);
-                        // Resolve the installed version dir. In junction mode
-                        // the `current` junction points at the active version dir,
-                        // so when it carries valid metadata we read it directly
-                        // (matching Scoop's normal `current\manifest.json` path).
-                        // But an interrupted upgrade can leave `current` pointing
-                        // at an incomplete version dir with no `manifest.json` /
-                        // `install.json`; Scoop then falls back to the version dir
-                        // whose `install.json` is newest (`Select-CurrentVersion` +
-                        // `Get-InstalledVersion`) and still reports the last good
-                        // version as outdated/upgradable. Mirror that: if `current`
-                        // is unusable, fall back to `select_current_version`.
-                        let current_dir = pkg_dir.join("current");
-                        let current_ok = current_dir.join("manifest.json").exists()
-                            && current_dir.join("install.json").exists();
-                        // In junction mode a `current` that exists but carries no
-                        // metadata means the install is damaged (e.g. an interrupted
-                        // upgrade left the junction pointing at an incomplete version
-                        // dir). We still resolve the last good version dir below so
-                        // the app can be upgraded, but remember the damage so the
-                        // package is flagged install-failed (surfaced by `list`)
-                        // rather than appearing healthy. Under NO_JUNCTION there is
-                        // no `current` link, so `current_ok` is naturally false and
-                        // that is NOT damage.
-                        let current_broken = !no_junction && !current_ok;
-                        let meta_dir = if no_junction || !current_ok {
-                            match select_current_version(&pkg_dir) {
-                                Some(v) => pkg_dir.join(v),
-                                None => {
-                                    if include_broken {
-                                        return broken_package(name, &pkg_dir);
-                                    }
-                                    return None;
-                                }
+                        // Resolve the installed version dir through the one
+                        // shared resolver (upstream `Select-CurrentVersion`).
+                        // In junction mode an intact `current` resolves to
+                        // itself; when `current` carries no usable metadata —
+                        // an interrupted upgrade left the junction pointing at
+                        // an incomplete version dir — the resolver falls back
+                        // to the newest version dir, exactly as upstream does,
+                        // so the last good version is still reported as
+                        // upgradable. The `VersionDirs` source is the signal
+                        // that this happened: a junction install resolving
+                        // that way is damaged. Under NO_JUNCTION it is the
+                        // normal path and therefore not damage.
+                        let resolved = resolve_current_version(&pkg_dir, no_junction);
+                        let current_broken = !no_junction
+                            && resolved
+                                .as_ref()
+                                .is_some_and(|r| r.source == CurrentVersionSource::VersionDirs);
+                        let Some(resolved) = resolved else {
+                            if include_broken {
+                                return broken_package(name, &pkg_dir, no_junction);
                             }
+                            return None;
+                        };
+                        // The metadata lives in the junction when the junction
+                        // itself resolved, and in the resolved version dir
+                        // otherwise (NO_JUNCTION, or a damaged `current` —
+                        // upstream reads `installed_manifest` there).
+                        let meta_dir = if no_junction
+                            || resolved.source == CurrentVersionSource::VersionDirs
+                        {
+                            pkg_dir.join(&resolved.version)
                         } else {
-                            current_dir
+                            pkg_dir.join("current")
                         };
                         let manifest_path = meta_dir.join("manifest.json");
                         let install_info_path = meta_dir.join("install.json");
-                        let is_not_broken = manifest_path.exists() && install_info_path.exists();
-
-                        if !is_not_broken {
-                            if include_broken {
-                                return broken_package(name, &pkg_dir);
-                            }
-                            return None;
-                        }
-
                         if let Ok(manifest) = parse_file(manifest_path)
                             && let Ok(install_info) = parse_install_info(&install_info_path)
                         {
@@ -187,7 +175,7 @@ pub fn query_installed(
                             return Some(package);
                         } else if include_broken {
                             // manifest/install exist but failed to parse.
-                            return broken_package(name, &pkg_dir);
+                            return broken_package(name, &pkg_dir, no_junction);
                         }
                     }
                     None
@@ -205,8 +193,8 @@ pub fn query_installed(
 /// Version and bucket are best-effort: the version directory name is used
 /// as the version when resolvable, and the bucket is read from any
 /// `install.json` found under `current/` (or the resolved version dir).
-fn broken_package(name: &str, pkg_dir: &std::path::Path) -> Option<Package> {
-    let current = select_current_version(pkg_dir);
+fn broken_package(name: &str, pkg_dir: &std::path::Path, no_junction: bool) -> Option<Package> {
+    let current = resolve_current_version(pkg_dir, no_junction).map(|resolved| resolved.version);
     let version = current.clone().unwrap_or_default();
 
     // Best-effort bucket: prefer the resolved version dir, then `current`,

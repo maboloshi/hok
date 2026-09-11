@@ -663,17 +663,15 @@ async fn commit_one_install(
             old_version
         );
         let version = session.current_dir_name(old_version);
-        // Locate the old manifest: with junctions, `current` still points at
-        // the old version; without junctions, use the versioned dir directly.
-        // Fall back to the new manifest if the old one can't be read.
-        let old_manifest_path = if no_junction {
-            apps_dir
-                .join(pkg.name())
-                .join(old_version)
-                .join("manifest.json")
-        } else {
-            session.current_dir(pkg.name()).join("manifest.json")
-        };
+        // Locate the old manifest in the *real* version directory: `current`
+        // still points at the old version here (link_current runs later), but
+        // it is only a junction to this dir — going through it would mean
+        // re-resolving a version we already know, and would land on a
+        // different dir if the junction is stale. Fall back to the new
+        // manifest if the old one can't be read.
+        let old_manifest_path = session
+            .versioned_dir(pkg.name(), old_version)
+            .join("manifest.json");
         let old_manifest = crate::package::manifest::parse_file(old_manifest_path).ok();
         match old_manifest {
             Some(m) => env::remove_with_manifest(session, pkg, &m, version)?,

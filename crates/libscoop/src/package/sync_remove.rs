@@ -204,9 +204,10 @@ async fn commit_one_remove(
     // resolves (broken install), upstream still proceeds to the old-version
     // cleanup loop below, so this is `Option` — the current-version block is
     // skipped and removal falls through to the old-version loop.
-    let version_dir = install_state::select_current_version(&app_dir)
-        .or_else(|| package.installed_version().map(str::to_owned))
-        .map(|v| app_dir.join(&v));
+    let version_dir =
+        install_state::resolve_current_version(&app_dir, session.config().no_junction())
+            .map(|resolved| app_dir.join(resolved.version))
+            .or_else(|| package.installed_version().map(|v| app_dir.join(v)));
 
     // A broken/partial install (e.g. install failed before `current` was
     // linked, or `manifest.json`/`install.json` is missing) carries no
@@ -668,7 +669,7 @@ pub fn reset_eligible(session: &Session, name: &str) -> bool {
 /// - `apps/<name>` missing or version unresolvable → [`Error::PackageNotFound`]
 /// - explicit `target_version` → that version directory (must exist; rejected
 ///   if it contains path separators or `..`)
-/// - otherwise → [`select_current_version`]
+/// - otherwise → [`resolve_current_version`]
 /// - manifest is parsed from the **version directory** (`installed_manifest`),
 ///   not from `current/`, so a stale/broken `current` junction doesn't matter
 /// - `install.json` is optional (`install_info` returns `$null` when missing);
@@ -690,10 +691,12 @@ fn resolve_reset_target(
             }
             v.to_owned()
         }
-        None => match install_state::select_current_version(&pkg_dir) {
-            Some(v) => v,
-            None => return Err(Error::PackageNotFound(name.to_owned())),
-        },
+        None => {
+            match install_state::resolve_current_version(&pkg_dir, session.config().no_junction()) {
+                Some(resolved) => resolved.version,
+                None => return Err(Error::PackageNotFound(name.to_owned())),
+            }
+        }
     };
     let version_dir = pkg_dir.join(&version);
     if !version_dir.is_dir() {
@@ -736,7 +739,7 @@ fn resolve_reset_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::package::install_state::select_current_version;
+    use crate::package::install_state::resolve_current_version;
     use crate::test_utils::{test_session, tmpdir};
     use std::path::Path;
     use std::time::SystemTime;
@@ -755,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn select_current_version_reads_current_manifest() {
+    fn resolve_current_version_reads_current_manifest() {
         let root = tmpdir("reset_current_manifest");
         let pkg_dir = root.join("apps").join("app");
         std::fs::create_dir_all(pkg_dir.join("current")).unwrap();
@@ -765,11 +768,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(select_current_version(&pkg_dir).as_deref(), Some("13.24.5"));
+        assert_eq!(
+            resolve_current_version(&pkg_dir, false).map(|r| r.version),
+            Some("13.24.5".to_owned())
+        );
     }
 
     #[test]
-    fn select_current_version_falls_back_to_newest_version_dir() {
+    fn resolve_current_version_falls_back_to_newest_version_dir() {
         let root = tmpdir("reset_fallback");
         let pkg_dir = root.join("apps").join("app");
         for v in ["1.0.0", "2.0.0"] {
@@ -783,16 +789,27 @@ mod tests {
         set_modified(&pkg_dir.join("1.0.0").join("install.json"), old);
         set_modified(&pkg_dir.join("2.0.0").join("install.json"), new);
 
-        assert_eq!(select_current_version(&pkg_dir).as_deref(), Some("2.0.0"));
+        assert_eq!(
+            resolve_current_version(&pkg_dir, false).map(|r| r.version),
+            Some("2.0.0".to_owned())
+        );
     }
 
+    /// Under NO_JUNCTION a leftover `current` dir is stale, and no version dir
+    /// carries `install.json` — so nothing resolves (upstream reads the
+    /// manifest only when junctions are enabled).
     #[test]
-    fn select_current_version_none_without_versions() {
+    fn resolve_current_version_none_without_versions() {
         let root = tmpdir("reset_none");
         let pkg_dir = root.join("apps").join("app");
-        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::create_dir_all(pkg_dir.join("current")).unwrap();
+        std::fs::write(
+            pkg_dir.join("current").join("manifest.json"),
+            mini_manifest("9.9.9"),
+        )
+        .unwrap();
 
-        assert_eq!(select_current_version(&pkg_dir), None);
+        assert_eq!(resolve_current_version(&pkg_dir, true), None);
     }
 
     /// The exact broken-install case from the report: version dir + manifest

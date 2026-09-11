@@ -6,7 +6,7 @@
 //! in `query.rs`.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tracing::{info, warn};
 
@@ -37,32 +37,112 @@ pub(crate) fn parse_install_info(path: &Path) -> Fallible<InstallInfo> {
     Ok(info)
 }
 
-/// Resolve the current installed version of an app, mirroring upstream
-/// `Select-CurrentVersion` (lib/versions.ps1):
+/// Where a resolved current version came from — the upstream
+/// `Select-CurrentVersion` branch that produced it.
 ///
-/// 1. `current\manifest.json`'s `version` — a `nightly` version resolves to
-///    the junction target's directory name;
-/// 2. otherwise, the version directory whose `install.json` was most recently
-///    modified (`Get-InstalledVersion`, excluding `current` and `_*.old*`).
-///
-/// Under `NO_JUNCTION` there is no `current` junction, so step 1 fails and
-/// the mtime fallback of step 2 (which scans the versioned dirs) applies.
-pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
-    // 1. current\manifest.json version
-    if let Ok(manifest) = parse_file(pkg_dir.join("current").join("manifest.json")) {
-        let version = manifest.version().to_owned();
-        if version == "nightly" {
-            if let Ok(target) = std::fs::read_link(pkg_dir.join("current"))
-                && let Some(name) = target.file_name().and_then(|s| s.to_str())
-            {
-                return Some(name.to_owned());
-            }
-        } else {
-            return Some(version);
+/// Callers that only need the version string can ignore this; callers that
+/// must distinguish "resolved from an intact install" from "fell back to a
+/// version dir" (the broken-install detection in `query.rs`) match on it
+/// instead of re-implementing the resolution to find out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CurrentVersionSource {
+    /// `current\manifest.json` carried a concrete (non-`nightly`) version.
+    CurrentManifest,
+    /// `current\manifest.json` said `nightly`; the version is the junction
+    /// target's directory name.
+    NightlyJunction,
+    /// Versions were resolved from the version dirs' `install.json` mtimes
+    /// (`Get-InstalledVersion` fallback). Reached when the metadata under
+    /// `current\` is absent or unreadable, and always under `NO_JUNCTION`,
+    /// which has no `current` junction at all.
+    VersionDirs,
+}
+
+/// A resolved current version plus the branch it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentVersion {
+    /// The resolved version directory name.
+    pub(crate) version: String,
+    /// Which `Select-CurrentVersion` branch resolved it.
+    pub(crate) source: CurrentVersionSource,
+}
+
+impl CurrentVersion {
+    fn manifest(version: String) -> Self {
+        Self {
+            version,
+            source: CurrentVersionSource::CurrentManifest,
         }
     }
 
-    // 2. version dirs with install.json, newest by modification time
+    fn nightly(version: String) -> Self {
+        Self {
+            version,
+            source: CurrentVersionSource::NightlyJunction,
+        }
+    }
+
+    fn fallback(version: String) -> Self {
+        Self {
+            version,
+            source: CurrentVersionSource::VersionDirs,
+        }
+    }
+}
+
+/// The single entry point for answering "which version of this package is
+/// current?" — the hok counterpart of upstream `Select-CurrentVersion`
+/// (lib/versions.ps1:31-69).
+///
+/// `no_junction` carries upstream's mode switch (`versions.ps1:53`), and the
+/// switch lives **inside** this function exactly as it does upstream; no
+/// caller may re-derive it. Resolving one version one way in some flows and
+/// another way in others is how a package ends up with two different
+/// "current" answers (and is why `cleanup` could delete the live version
+/// dir — see the module tests).
+///
+/// The branches, in upstream order:
+///
+/// 1. `current\manifest.json`'s `version`, read **only when junctions are
+///    enabled**. A `nightly` version — or a junction sitting there without a
+///    usable manifest (an interrupted upgrade) — resolves to the junction
+///    target's directory name when it can be read.
+/// 2. Otherwise the version dir whose `install.json` was modified most
+///    recently, excluding `current` and `_*.old*` (upstream
+///    `Get-InstalledVersion`, `versions.ps1:71-105`).
+///
+/// Returns `None` when neither branch yields a version (nothing installed, or
+/// an app dir whose version dirs carry no `install.json`).
+///
+/// Divergence from upstream, deliberately not emulated: when several version
+/// dirs share one `install.json` mtime, upstream's order comes out of
+/// `Sort-Object` and its pipeline plumbing (observed to reverse enumeration
+/// order, `1.0.0,2.0.0` → last `1.0.0`); here the last enumerated dir wins.
+/// Same predicate, nondeterministic order — not a semantic to pin.
+pub(crate) fn resolve_current_version(pkg_dir: &Path, no_junction: bool) -> Option<CurrentVersion> {
+    // 1. `current\manifest.json` — upstream reads it only when the junction
+    //    mode is on (`versions.ps1:53`). Under NO_JUNCTION a leftover
+    //    `current` directory is a stale artifact, not the active version.
+    if !no_junction && let Ok(manifest) = parse_file(pkg_dir.join("current").join("manifest.json"))
+    {
+        let version = manifest.version().to_owned();
+        if version != "nightly" {
+            return Some(CurrentVersion::manifest(version));
+        }
+        if let Ok(target) = std::fs::read_link(pkg_dir.join("current"))
+            && let Some(name) = target.file_name().and_then(|s| s.to_str())
+        {
+            return Some(CurrentVersion::nightly(name.to_owned()));
+        }
+    }
+
+    // 2. version dirs with `install.json`, newest by modification time
+    newest_version_dir(pkg_dir).map(CurrentVersion::fallback)
+}
+
+/// The version dir whose `install.json` was modified most recently, excluding
+/// `current` and `_*.old*` (upstream `Get-InstalledVersion`).
+fn newest_version_dir(pkg_dir: &Path) -> Option<String> {
     let mut candidates: Vec<(SystemTime, String)> = vec![];
     if let Ok(entries) = std::fs::read_dir(pkg_dir) {
         for entry in entries.flatten() {
@@ -81,6 +161,21 @@ pub(crate) fn select_current_version(pkg_dir: &Path) -> Option<String> {
     candidates.pop().map(|(_, v)| v)
 }
 
+/// The version dir a package's metadata lives in: `current` under junctions,
+/// otherwise the resolved version dir (upstream `currentdir`, core.ps1:355).
+pub(crate) fn current_meta_dir(
+    pkg_dir: &Path,
+    no_junction: bool,
+) -> Option<(PathBuf, CurrentVersionSource)> {
+    let resolved = resolve_current_version(pkg_dir, no_junction)?;
+    let dir = if no_junction {
+        pkg_dir.join(&resolved.version)
+    } else {
+        pkg_dir.join("current")
+    };
+    Some((dir, resolved.source))
+}
+
 pub(crate) fn load_install_state(
     apps_dir: &Path,
     name: &str,
@@ -88,13 +183,9 @@ pub(crate) fn load_install_state(
 ) -> Option<InstallState> {
     let pkg_dir = apps_dir.join(name);
     // Under NO_JUNCTION there is no `current` junction: resolve the current
-    // version via the `Select-CurrentVersion` fallback and read the versioned
-    // dir's metadata (upstream `currentdir`, lib/core.ps1).
-    let meta_dir = if no_junction {
-        pkg_dir.join(select_current_version(&pkg_dir)?)
-    } else {
-        pkg_dir.join("current")
-    };
+    // version via the shared resolver and read the versioned dir's metadata
+    // (upstream `currentdir`, lib/core.ps1).
+    let (meta_dir, _) = current_meta_dir(&pkg_dir, no_junction)?;
     let install_info = parse_install_info(&meta_dir.join("install.json")).ok()?;
     let install_manifest = parse_file(meta_dir.join("manifest.json")).ok()?;
 
@@ -170,6 +261,226 @@ pub(crate) fn maybe_fill_upgradable(
 mod tests {
     use super::*;
     use crate::test_utils;
+    use std::time::{Duration, SystemTime};
+
+    fn mini_manifest(version: &str) -> String {
+        format!(
+            r#"{{"version": "{}", "homepage": "https://example.com", "license": "MIT"}}"#,
+            version
+        )
+    }
+
+    /// Create a package dir under a fresh temp root and return both.
+    fn test_pkg(test_name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = test_utils::tmpdir(test_name);
+        let pkg_dir = root.join("apps").join("app");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        (root, pkg_dir)
+    }
+
+    /// Create `apps/app/<version>/{manifest,install}.json` with a pinned
+    /// `install.json` mtime (the resolver's ordering key).
+    fn add_version(pkg_dir: &Path, version: &str, mtime_secs: u64) {
+        let dir = pkg_dir.join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), mini_manifest(version)).unwrap();
+        std::fs::write(
+            dir.join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "test"}"#,
+        )
+        .unwrap();
+        set_modified(
+            &dir.join("install.json"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_secs),
+        );
+    }
+
+    /// Create `apps/app/<version>` with no metadata at all.
+    fn add_bare_version(pkg_dir: &Path, version: &str) {
+        std::fs::create_dir_all(pkg_dir.join(version)).unwrap();
+    }
+
+    fn set_modified(path: &Path, time: SystemTime) {
+        use std::fs::{File, FileTimes};
+        let f = File::options().write(true).open(path).unwrap();
+        f.set_times(FileTimes::new().set_modified(time)).unwrap();
+    }
+
+    fn write_manifest(dir: &Path, version: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), mini_manifest(version)).unwrap();
+    }
+
+    fn assert_resolved(
+        actual: Option<CurrentVersion>,
+        version: &str,
+        source: CurrentVersionSource,
+    ) {
+        let actual = actual.expect("expected a resolved current version");
+        assert_eq!(actual.version, version);
+        assert_eq!(actual.source, source);
+    }
+
+    // Fixture results below are pinned against upstream Scoop's
+    // `Select-CurrentVersion` / `Get-InstalledVersion`, executed on Windows
+    // PowerShell 5.1 over the same fixture shapes (see the official ground
+    // truth table in docs/reports/optimization-audit-2026-09.md).
+
+    /// Junction mode, intact `current\manifest.json` → its `version`.
+    /// Official: `J1-junction-normal` → `1.2.3`.
+    #[test]
+    fn junction_mode_reads_current_manifest() {
+        let (root, pkg_dir) = test_pkg("resolve_junction_manifest");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "1.2.3", 2_000);
+        crate::internal::fs::symlink_dir(pkg_dir.join("1.2.3"), pkg_dir.join("current")).unwrap();
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "1.2.3",
+            CurrentVersionSource::CurrentManifest,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Junction mode, `nightly` manifest → the junction target's dir name.
+    /// Official: `J2-junction-nightly` → `1.2.3-nightly`.
+    #[test]
+    fn junction_mode_nightly_follows_link_target() {
+        let (root, pkg_dir) = test_pkg("resolve_junction_nightly");
+        add_version(&pkg_dir, "1.2.3-nightly", 1_000);
+        crate::internal::fs::symlink_dir(pkg_dir.join("1.2.3-nightly"), pkg_dir.join("current"))
+            .unwrap();
+        write_manifest(&pkg_dir.join("current"), "nightly");
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "1.2.3-nightly",
+            CurrentVersionSource::NightlyJunction,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Junction mode, `current` exists with no `manifest.json` (interrupted
+    /// upgrade) → mtime fallback, flagged as such. Official:
+    /// `J3-junction-no-manifest` → `2.0.0`.
+    #[test]
+    fn junction_mode_broken_current_falls_back_to_version_dirs() {
+        let (root, pkg_dir) = test_pkg("resolve_junction_no_manifest");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "2.0.0", 2_000);
+        crate::internal::fs::symlink_dir(pkg_dir.join("2.0.0"), pkg_dir.join("current")).unwrap();
+        std::fs::remove_file(pkg_dir.join("current").join("manifest.json")).unwrap();
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "2.0.0",
+            CurrentVersionSource::VersionDirs,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Junction mode, unparseable manifest → mtime fallback (upstream `warn`s
+    /// and falls through). Official: `J4-junction-garbage` → `2.0.0`.
+    #[test]
+    fn junction_mode_garbage_manifest_falls_back_to_version_dirs() {
+        let (root, pkg_dir) = test_pkg("resolve_junction_garbage");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "2.0.0", 2_000);
+        crate::internal::fs::symlink_dir(pkg_dir.join("2.0.0"), pkg_dir.join("current")).unwrap();
+        std::fs::write(pkg_dir.join("current").join("manifest.json"), "{ not json").unwrap();
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "2.0.0",
+            CurrentVersionSource::VersionDirs,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// NO_JUNCTION, two version dirs → newest `install.json` mtime.
+    /// Official: `NJ5-two-versions` → `2.0.0`.
+    #[test]
+    fn no_junction_picks_newest_version_dir() {
+        let (root, pkg_dir) = test_pkg("resolve_no_junction_newest");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "2.0.0", 2_000);
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, true),
+            "2.0.0",
+            CurrentVersionSource::VersionDirs,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// NO_JUNCTION ignores a leftover `current\manifest.json` — it is a stale
+    /// artifact, not the active version. Official: `NJ4-stale-current` →
+    /// `2.0.0` (0.9.9 ignored). Before the mode switch moved inside the
+    /// resolver, hok answered `0.9.9` here, and `cleanup`/`reset` acted on it.
+    #[test]
+    fn no_junction_ignores_stale_current_manifest() {
+        let (root, pkg_dir) = test_pkg("resolve_no_junction_stale_current");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "2.0.0", 2_000);
+        write_manifest(&pkg_dir.join("current"), "0.9.9");
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, true),
+            "2.0.0",
+            CurrentVersionSource::VersionDirs,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Neither branch yields a version: no `install.json` anywhere.
+    #[test]
+    fn resolve_current_version_none_without_candidates() {
+        let (root, pkg_dir) = test_pkg("resolve_none");
+        add_bare_version(&pkg_dir, "6.0.20261.7291");
+
+        assert_eq!(resolve_current_version(&pkg_dir, false), None);
+        assert_eq!(resolve_current_version(&pkg_dir, true), None);
+        assert_eq!(current_meta_dir(&pkg_dir, false), None);
+        assert_eq!(current_meta_dir(&pkg_dir, true), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Equal mtimes are order-nondeterministic upstream (not a semantic worth
+    /// pinning); assert only that a real candidate resolves.
+    #[test]
+    fn resolve_current_version_tolerates_equal_mtimes() {
+        let (root, pkg_dir) = test_pkg("resolve_tie_mtime");
+        add_version(&pkg_dir, "1.0.0", 1_000);
+        add_version(&pkg_dir, "2.0.0", 1_000);
+
+        let resolved = resolve_current_version(&pkg_dir, true).unwrap();
+        assert!(
+            resolved.version == "1.0.0" || resolved.version == "2.0.0",
+            "unexpected version {}",
+            resolved.version
+        );
+        assert_eq!(resolved.source, CurrentVersionSource::VersionDirs);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `current_meta_dir` points at the junction under junctions and at the
+    /// resolved version dir under NO_JUNCTION.
+    #[test]
+    fn current_meta_dir_follows_mode() {
+        let (root, pkg_dir) = test_pkg("resolve_meta_dir");
+        add_version(&pkg_dir, "1.2.3", 1_000);
+        crate::internal::fs::symlink_dir(pkg_dir.join("1.2.3"), pkg_dir.join("current")).unwrap();
+
+        let (junction_dir, junction_source) = current_meta_dir(&pkg_dir, false).unwrap();
+        assert_eq!(junction_dir, pkg_dir.join("current"));
+        assert_eq!(junction_source, CurrentVersionSource::CurrentManifest);
+
+        let (version_dir, version_source) = current_meta_dir(&pkg_dir, true).unwrap();
+        assert_eq!(version_dir, pkg_dir.join("1.2.3"));
+        assert_eq!(version_source, CurrentVersionSource::VersionDirs);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn load_install_state_no_junction_reads_version_dir() {

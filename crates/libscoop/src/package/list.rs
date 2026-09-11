@@ -38,15 +38,13 @@ pub fn list_installed_versions(session: &Session, name: &str) -> Fallible<Vec<In
         return Ok(Vec::new());
     }
 
-    let current_target = if session.config().no_junction() {
-        // No `current` junction under NO_JUNCTION: resolve via
-        // Select-CurrentVersion fallback (mtime of version dirs).
-        super::install_state::select_current_version(&apps_dir)
-    } else {
-        std::fs::read_link(apps_dir.join("current"))
-            .ok()
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-    };
+    // Which version is current comes from the one shared resolver — never
+    // from a local `read_link("current")`, which disagrees with upstream
+    // `Select-CurrentVersion` (and with the other flows) on broken/nightly
+    // installs.
+    let current_target =
+        super::install_state::resolve_current_version(&apps_dir, session.config().no_junction())
+            .map(|resolved| resolved.version);
 
     let mut versions: Vec<String> = std::fs::read_dir(&apps_dir)
         .map(|entries| {

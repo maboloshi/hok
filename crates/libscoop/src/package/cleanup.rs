@@ -51,19 +51,13 @@ pub fn cleanup(
             continue;
         }
 
-        // Determine current version: read the "current" symlink target, or
-        // under NO_JUNCTION resolve via Select-CurrentVersion fallback.
-        let current_version = if session.config().no_junction() {
-            super::install_state::select_current_version(&pkg_dir)
-        } else {
-            (|| -> Option<String> {
-                let current_link = pkg_dir.join("current");
-                std::fs::read_link(&current_link)
-                    .ok()?
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-            })()
-        };
+        // Determine the current version through the one shared resolver
+        // (upstream `Select-CurrentVersion`) — a local `read_link("current")`
+        // diverges from it on broken/nightly installs, and deleting the wrong
+        // dir here is destructive.
+        let current_version =
+            super::install_state::resolve_current_version(&pkg_dir, session.config().no_junction())
+                .map(|resolved| resolved.version);
 
         let Some(ref current_ver) = current_version else {
             // No install info — skip broken package
@@ -138,13 +132,21 @@ mod tests {
     }
 
     /// Create `apps/<name>/<version>/` dirs and point `apps/<name>/current`
-    /// at `<version>` via a directory symlink.
+    /// at `<version>` via a directory symlink, writing the junction's
+    /// `manifest.json` the way a real install does — upstream
+    /// `Select-CurrentVersion` (and this crate's resolver) reads the current
+    /// version from there, not from the link target.
     fn install_versions(root: &std::path::Path, name: &str, versions: &[&str], current: &str) {
         let pkg_dir = root.join("apps").join(name);
         for v in versions {
             std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
         }
         internal::fs::symlink_dir(pkg_dir.join(current), pkg_dir.join("current")).unwrap();
+        std::fs::write(
+            pkg_dir.join("current").join("manifest.json"),
+            format!(r#"{{"version": "{}"}}"#, current),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -214,5 +216,75 @@ mod tests {
         let results = cleanup(&session, &["app".to_owned()], false).unwrap();
 
         assert!(results.is_empty(), "broken package skipped");
+    }
+
+    fn session_with_no_junction(root: &std::path::Path) -> Session {
+        let config_path = root.join("hok.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": true}}"#,
+                root_escaped, cache_escaped
+            ),
+        )
+        .unwrap();
+        Session::new_with(&config_path).unwrap()
+    }
+
+    /// Under NO_JUNCTION a leftover `current` directory is stale — upstream
+    /// `Select-CurrentVersion` never reads it there. Resolving through it (the
+    /// pre-unification behaviour) made cleanup delete **both** live version
+    /// dirs while keeping the stale one; `_*.old*` dirs are never kept either.
+    #[test]
+    fn cleanup_no_junction_ignores_stale_current() {
+        let root = crate::test_utils::tmpdir("cleanup_no_junction_stale_current");
+        let session = session_with_no_junction(&root);
+        let pkg_dir = root.join("apps").join("app");
+        // Real installs carry `install.json` in every version dir — that file
+        // is the resolver's ordering key under NO_JUNCTION.
+        for v in ["1.0.0", "2.0.0", "_1.0.0.old"] {
+            std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
+            std::fs::write(
+                pkg_dir.join(v).join("install.json"),
+                r#"{"architecture": "64bit", "bucket": "test"}"#,
+            )
+            .unwrap();
+        }
+        // Pin the ordering key: 2.0.0 is the most recently touched version.
+        {
+            use std::fs::{File, FileTimes};
+            let install_json = pkg_dir.join("2.0.0").join("install.json");
+            let f = File::options().write(true).open(&install_json).unwrap();
+            f.set_times(FileTimes::new().set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000),
+            ))
+            .unwrap();
+            let f = File::options()
+                .write(true)
+                .open(pkg_dir.join("1.0.0").join("install.json"))
+                .unwrap();
+            f.set_times(FileTimes::new().set_modified(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+            ))
+            .unwrap();
+        }
+        // A stale `current` dir left behind by an earlier junction-mode
+        // install, claiming a version that is not installed at all.
+        std::fs::create_dir_all(pkg_dir.join("current")).unwrap();
+        std::fs::write(
+            pkg_dir.join("current").join("manifest.json"),
+            r#"{"version": "0.9.9"}"#,
+        )
+        .unwrap();
+
+        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+
+        assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
+        assert!(pkg_dir.join("2.0.0").exists(), "newest version kept");
+        assert!(!pkg_dir.join("1.0.0").exists(), "old version removed");
+        assert!(!pkg_dir.join("_1.0.0.old").exists(), "old dir removed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
