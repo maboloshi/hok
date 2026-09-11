@@ -23,6 +23,8 @@
 
 use crate::Session;
 
+use super::install_state;
+
 /// A single health issue found for an installed package.
 #[derive(Debug, Clone)]
 pub struct CheckupIssue {
@@ -55,6 +57,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         Err(_) => return issues,
     };
 
+    let no_junction = session.config().no_junction();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -64,26 +67,42 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         }
 
         let app_dir = entry.path();
-        let current = app_dir.join("current");
 
-        if !current.exists() {
-            issues.push(CheckupIssue {
-                name: name.to_string(),
-                message: hok_i18n::t!("cmd.no_current_symlink").to_string(),
-            });
-            continue;
-        }
+        // Under NO_JUNCTION there is no `current` junction to check — the
+        // runtime entry is the version dir itself (upstream `currentdir`), so
+        // the metadata is checked there. Reporting a missing junction in that
+        // mode would flag every installed app as unhealthy.
+        let meta_dir = if no_junction {
+            let Some(version) = install_state::resolve_current_version(&app_dir, no_junction)
+                .map(|resolved| resolved.version)
+            else {
+                issues.push(CheckupIssue {
+                    name: name.to_string(),
+                    message: hok_i18n::t!("cmd.missing_install_json").to_string(),
+                });
+                continue;
+            };
+            app_dir.join(version)
+        } else {
+            let current = app_dir.join("current");
+            if !current.exists() {
+                issues.push(CheckupIssue {
+                    name: name.to_string(),
+                    message: hok_i18n::t!("cmd.no_current_symlink").to_string(),
+                });
+                continue;
+            }
+            current
+        };
 
-        let install_json = current.join("install.json");
-        if !install_json.exists() {
+        if !meta_dir.join("install.json").exists() {
             issues.push(CheckupIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_install_json").to_string(),
             });
         }
 
-        let manifest_json = current.join("manifest.json");
-        if !manifest_json.exists() {
+        if !meta_dir.join("manifest.json").exists() {
             issues.push(CheckupIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_manifest_json").to_string(),
@@ -117,5 +136,76 @@ mod tests {
             let _ = check_installed(&session);
         }));
         assert!(result.is_ok(), "check_installed should not panic");
+    }
+
+    fn session_with_no_junction(root: &std::path::Path, no_junction: bool) -> Session {
+        let config_path = root.join("hok.json");
+        let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+        let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": {}}}"#,
+                root_escaped, cache_escaped, no_junction
+            ),
+        )
+        .unwrap();
+        Session::new_with(&config_path).unwrap()
+    }
+
+    /// Under NO_JUNCTION the version dir *is* the runtime entry — an install
+    /// with complete metadata must not be reported as having no `current`
+    /// symlink.
+    #[test]
+    fn check_installed_no_junction_accepts_version_dir_without_current() {
+        let root = crate::test_utils::tmpdir("checkup_no_junction");
+        let session = session_with_no_junction(&root, true);
+        let vdir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+        std::fs::write(vdir.join("install.json"), r#"{"architecture": "64bit"}"#).unwrap();
+
+        let issues = check_installed(&session);
+        assert!(issues.is_empty(), "healthy install flagged: {:?}", issues);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Under NO_JUNCTION, metadata that really is missing must still be found
+    /// (the message is the missing file, not the absent junction).
+    #[test]
+    fn check_installed_no_junction_reports_missing_metadata() {
+        let root = crate::test_utils::tmpdir("checkup_no_junction_missing");
+        let session = session_with_no_junction(&root, true);
+        let vdir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+
+        let issues = check_installed(&session);
+        assert_eq!(issues.len(), 1, "issues: {:?}", issues);
+        assert_eq!(issues[0].name, "app");
+        assert!(
+            issues[0].message.contains("install.json"),
+            "unexpected message: {}",
+            issues[0].message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Junction mode keeps the junction check: no `current` link is an issue.
+    #[test]
+    fn check_installed_junction_mode_reports_missing_current() {
+        let root = crate::test_utils::tmpdir("checkup_junction_missing_current");
+        let session = session_with_no_junction(&root, false);
+        std::fs::create_dir_all(root.join("apps").join("app").join("1.0.0")).unwrap();
+
+        let issues = check_installed(&session);
+        assert_eq!(issues.len(), 1, "issues: {:?}", issues);
+        assert_eq!(issues[0].name, "app");
+        assert!(
+            issues[0].message.contains("current"),
+            "unexpected message: {}",
+            issues[0].message
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
