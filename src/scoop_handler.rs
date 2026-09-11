@@ -224,7 +224,7 @@ impl EventHandler for ScoopHandler {
             }
             Event::ScriptDone { success, stderr } => {
                 if !success && !stderr.is_empty() {
-                    eprintln!("  script failed: {stderr}");
+                    eprintln!("  {}", hok_i18n::t!("cmd.script_failed", stderr = stderr));
                 }
             }
 

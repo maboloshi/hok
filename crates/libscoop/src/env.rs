@@ -291,10 +291,9 @@ pub fn ensure_install_dir_not_in_path(
         paths.iter().filter(|p| is_in_or_sub(p)).cloned().collect();
     if !removed.is_empty() {
         for p in &removed {
-            session.output().info(format!(
-                "Installer added '{}' to path. Removing.",
-                p.display()
-            ));
+            session
+                .output()
+                .info(hok_i18n::t!("cmd.installer_added_path", path = p.display()));
         }
         paths.retain(|p| !is_in_or_sub(p));
         let updated = std::env::join_paths(&paths).map_err(|e| Error::Custom(e.to_string()))?;
@@ -305,10 +304,9 @@ pub fn ensure_install_dir_not_in_path(
         && let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global)
         && let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p))
     {
-        session.output().warn(format!(
-            "Installer added '{}' to system path. You might want to remove this manually \
-                     (requires admin permission).",
-            p.display()
+        session.output().warn(hok_i18n::t!(
+            "cmd.installer_added_system_path",
+            path = p.display()
         ));
     }
 

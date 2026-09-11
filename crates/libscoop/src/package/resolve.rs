@@ -119,11 +119,11 @@ pub(crate) async fn resolve_dependencies(
                     match matched.len() {
                         0 => {
                             if ignore_failure {
-                                session.output().error(format!(
-                                    "failed to resolve dependency '{}' of '{}': {}",
-                                    query,
-                                    pkg.name(),
-                                    Error::PackageNotFound(query.to_owned())
+                                session.output().error(hok_i18n::t!(
+                                    "cmd.failed_resolve_dependency",
+                                    query = query,
+                                    pkg = pkg.name(),
+                                    error = Error::PackageNotFound(query.to_owned())
                                 ));
                                 failed = true;
                                 break;
@@ -155,11 +155,11 @@ pub(crate) async fn resolve_dependencies(
                                     Ok(()) => {}
                                     Err(e) => {
                                         if ignore_failure {
-                                            session.output().error(format!(
-                                                "failed to resolve dependency '{}' of '{}': {}",
-                                                query,
-                                                pkg.name(),
-                                                e
+                                            session.output().error(hok_i18n::t!(
+                                                "cmd.failed_resolve_dependency",
+                                                query = query,
+                                                pkg = pkg.name(),
+                                                error = e
                                             ));
                                             failed = true;
                                             break;

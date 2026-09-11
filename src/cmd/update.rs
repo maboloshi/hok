@@ -3,9 +3,9 @@
 use std::io::IsTerminal;
 
 use clap::{ArgAction, Parser};
-use libscoop::{bucket, package, Event, Session, SyncOption};
+use libscoop::{Event, Session, SyncOption, bucket, package};
 
-use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags, ensure_global};
 use crate::{Result, cui, output};
 
 /// Fetch and update subscribed buckets, or upgrade installed package(s)
@@ -111,13 +111,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 /// Update all buckets with simple inline status.
 async fn update_buckets(session: &Session, force: bool) -> Result<()> {
     // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
-    if !force
-        && let Some(remaining) = session.config().update_cooldown_remaining() {
-            output::status(format!(
-                "Buckets recently updated. Next update allowed in ~{remaining}s. Use --force to update now."
-            ));
-            return Ok(());
-        }
+    if !force && let Some(remaining) = session.config().update_cooldown_remaining() {
+        output::status(hok_i18n::t!("cmd.bucket_cooldown", remaining = remaining));
+        return Ok(());
+    }
 
     let mut rx = session
         .event_bus()

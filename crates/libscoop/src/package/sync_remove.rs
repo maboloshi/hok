@@ -48,10 +48,10 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
         )?;
         if matched.is_empty() {
             if ignore_failure {
-                session.output().error(format!(
-                    "failed to remove '{}': {}",
-                    name,
-                    Error::PackageNotFound(name.to_string())
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_remove",
+                    name = name,
+                    error = Error::PackageNotFound(name.to_string())
                 ));
                 continue;
             }
@@ -157,13 +157,13 @@ async fn commit_remove(
                 // App is still running: skip this package and continue with
                 // the rest (its process-in-use failure is covered by
                 // `ignore_failures`). Without it, the whole batch aborts.
-                session.output().warn(format!(
-                    "Running process detected, skip uninstalling '{}'.",
-                    package.name()
+                session.output().warn(hok_i18n::t!(
+                    "cmd.running_process_uninstall",
+                    name = package.name()
                 ));
                 continue;
             }
-            let msg = format!("failed to remove '{}': {}", package.name(), e);
+            let msg = hok_i18n::t!("cmd.failed_remove", name = package.name(), error = e);
             if ignore_failure {
                 session.output().error(msg);
                 continue;
@@ -249,7 +249,7 @@ async fn commit_one_remove(
         // (mirrors scoop-uninstall.ps1: pre_uninstall hook runs first, then
         // test_running_process). An AppRunning error is handled by the caller
         // (commit_remove) which skips this package and continues the batch.
-        check_not_running(session, package.name(), "uninstalling")?;
+        check_not_running(session, package.name(), &hok_i18n::t!("action.uninstall"))?;
 
         if let Some(uninstaller) = package.manifest().uninstaller() {
             match uninstaller.file() {
@@ -530,9 +530,9 @@ pub async fn reset(
         // it as "isn't installed" and moves on). Warn so the user knows how
         // to recover instead of hard-erroring.
         Err(Error::PackageNotFound(_)) if session.app_dir(name).exists() => {
-            session.output().warn(format!(
-                "'{name}' is not installed correctly. Reinstall it or fix the manifest."
-            ));
+            session
+                .output()
+                .warn(hok_i18n::t!("cmd.not_installed_correctly", name = name));
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -544,7 +544,7 @@ pub async fn reset(
     // per-package only: when `ignore_running_processes` is enabled, print a
     // warning (with the process list, already done by check_not_running) and
     // proceed with the reset; without it, AppRunning aborts.
-    match check_not_running(session, name, "resetting") {
+    match check_not_running(session, name, &hok_i18n::t!("action.reset")) {
         Ok(_) => {}
         Err(e) => return Err(e),
     }

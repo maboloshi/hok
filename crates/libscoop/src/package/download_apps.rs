@@ -39,37 +39,36 @@ pub async fn download_apps(
             Ok(pkg) => {
                 let version = pkg.version();
                 if version.is_empty() {
-                    session.output().error(format!(
-                        "Manifest for '{}' doesn't specify a version.",
-                        query
-                    ));
+                    session
+                        .output()
+                        .error(hok_i18n::t!("cmd.manifest_no_version", name = query));
                     continue;
                 }
                 if !version
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
                 {
-                    session.output().error(format!(
-                        "Manifest version for '{}' has an unsupported character.",
-                        query
-                    ));
+                    session
+                        .output()
+                        .error(hok_i18n::t!("cmd.manifest_version_invalid", name = query));
                     continue;
                 }
                 // Architecture support: no download URLs for the effective
                 // architecture (upstream `Get-SupportedArchitecture`).
                 if pkg.download_urls().is_empty() {
-                    session.output().error(format!(
-                        "'{}' doesn't support the current architecture!",
-                        pkg.name()
-                    ));
+                    session
+                        .output()
+                        .error(hok_i18n::t!("cmd.arch_unsupported", name = pkg.name()));
                     continue;
                 }
                 packages.push(pkg);
             }
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("failed to resolve '{}': {}", query, e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_resolve",
+                    query = query,
+                    error = e
+                ));
             }
         }
     }
@@ -94,10 +93,10 @@ pub async fn download_apps(
 
         for pkg in &refs {
             if !failed.contains(&pkg.ident()) {
-                session.output().info(format!(
-                    "'{}' ({}) was downloaded successfully!",
-                    pkg.name(),
-                    pkg.version()
+                session.output().info(hok_i18n::t!(
+                    "cmd.downloaded_success",
+                    name = pkg.name(),
+                    version = pkg.version()
                 ));
             }
         }
@@ -107,9 +106,9 @@ pub async fn download_apps(
             // aggregate error so the CLI exits non-zero (scripts/CI can tell).
             let mut failed: Vec<_> = failed.into_iter().collect();
             failed.sort();
-            return Err(Error::Custom(format!(
-                "download failed for: {}",
-                failed.join(", ")
+            return Err(Error::Custom(hok_i18n::t!(
+                "cmd.download_failed_list",
+                names = failed.join(", ")
             )));
         }
 

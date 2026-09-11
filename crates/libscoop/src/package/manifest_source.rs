@@ -138,13 +138,15 @@ pub(crate) async fn generate_user_manifest(
         return Ok(resolved);
     }
 
-    session.output().warn(format!(
-        "Given version ({version}) does not match manifest ({})",
-        resolved.manifest.version()
+    session.output().warn(hok_i18n::t!(
+        "cmd.version_mismatch",
+        given = version,
+        manifest = resolved.manifest.version()
     ));
-    session.output().warn(format!(
-        "Attempting to generate manifest for '{}' ({version})",
-        resolved.name
+    session.output().warn(hok_i18n::t!(
+        "cmd.generating_manifest",
+        name = resolved.name,
+        version = version
     ));
 
     if resolved.manifest.autoupdate().is_none() {
@@ -229,9 +231,11 @@ fn find_bucket_manifest(
                     Err(e) => {
                         // A broken bucket must not silently read as "no
                         // manifest" (that would misreport PackageNotFound).
-                        session
-                            .output()
-                            .warn(format!("failed to scan bucket '{}': {}", name, e));
+                        session.output().warn(hok_i18n::t!(
+                            "cmd.failed_scan_bucket",
+                            name = name,
+                            error = e
+                        ));
                         vec![]
                     }
                 }

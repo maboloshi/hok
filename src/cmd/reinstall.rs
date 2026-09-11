@@ -108,15 +108,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let mut keep = Vec::new();
     for q in &exact_queries {
         let name = q.rsplit('/').next().unwrap_or(q.as_str());
-        match package::sync::check_not_running(session, name, "reinstalling") {
+        match package::sync::check_not_running(session, name, &hok_i18n::t!("action.reinstall")) {
             Ok(_) => keep.push(q.clone()),
             Err(libscoop::Error::AppRunning(name))
                 if all_opts.contains(&SyncOption::IgnoreFailure) =>
             {
-                output::warn(hok_i18n::t!(
-                    "reinstall.running_process",
-                    name = name
-                ));
+                output::warn(hok_i18n::t!("reinstall.running_process", name = name));
                 hold_set.remove(&name);
             }
             Err(e) => return Err(e.into()),
@@ -130,10 +127,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Release held packages temporarily
     let held: Vec<&str> = hold_set.iter().map(|s| s.as_str()).collect();
     if !held.is_empty() {
-        output::status(hok_i18n::t!(
-            "reinstall.releasing",
-            names = held.join(", ")
-        ));
+        output::status(hok_i18n::t!("reinstall.releasing", names = held.join(", ")));
         for name in &held {
             package::hold::hold(session, name, false)?;
         }
@@ -157,10 +151,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Re-hold packages that were held before
     if !held.is_empty() {
-        output::status(hok_i18n::t!(
-            "reinstall.reholding",
-            names = held.join(", ")
-        ));
+        output::status(hok_i18n::t!("reinstall.reholding", names = held.join(", ")));
         for name in &held {
             package::hold::hold(session, name, true)?;
         }

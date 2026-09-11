@@ -10,10 +10,10 @@
 //! `libscoop::operation` and `libscoop::package::sync`.
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::{Session, package};
 
-use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
-use crate::{output, Result};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags, ensure_global};
+use crate::{Result, output};
 
 /// Install package(s)
 #[derive(Debug, Parser)]
@@ -107,7 +107,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // Prune already-installed packages (matching PS1's prune_installed behavior)
     let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
     for name in &already_installed {
-        output::warn(format!("'{name}' is already installed. Skipping."));
+        output::warn(hok_i18n::t!("cmd.already_installed_skip", name = name));
     }
     if to_install.is_empty() {
         return Ok(());
@@ -130,9 +130,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let suggestions = package::query::suggest(session, &to_install)?;
     for entry in &suggestions {
         let joined = entry.candidates.join("' or '");
-        output::info(format!(
-            "'{}' suggests installing '{}'.",
-            entry.package, joined
+        output::info(hok_i18n::t!(
+            "cmd.suggests_install",
+            pkg = entry.package,
+            names = joined
         ));
     }
 

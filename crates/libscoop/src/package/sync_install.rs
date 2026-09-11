@@ -117,16 +117,16 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                 // user is told how to recover.
                 let broken = query::query_installed(session, &[q], &[QueryOption::Broken])?;
                 if !broken.is_empty() {
-                    session.output().warn(format!(
-                        "'{q}' is not installed correctly. Reinstall it or fix the manifest."
-                    ));
+                    session
+                        .output()
+                        .warn(hok_i18n::t!("cmd.not_installed_correctly", name = q));
                     continue;
                 }
                 if ignore_failure {
-                    session.output().error(format!(
-                        "failed to resolve '{}': {}",
-                        q,
-                        Error::PackageNotFound(q.to_owned())
+                    session.output().error(hok_i18n::t!(
+                        "cmd.failed_resolve",
+                        query = q,
+                        error = Error::PackageNotFound(q.to_owned())
                     ));
                     continue;
                 }
@@ -180,9 +180,11 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                 Ok(None) => regular.push(query),
                 Err(e) => {
                     if ignore_failure {
-                        session
-                            .output()
-                            .error(format!("failed to resolve '{}': {}", query, e));
+                        session.output().error(hok_i18n::t!(
+                            "cmd.failed_resolve",
+                            query = query,
+                            error = e
+                        ));
                         continue;
                     }
                     return Err(e);
@@ -217,10 +219,10 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
             match matched.len() {
                 0 => {
                     if ignore_failure {
-                        session.output().error(format!(
-                            "failed to resolve '{}': {}",
-                            query,
-                            Error::PackageNotFound(query.to_owned())
+                        session.output().error(hok_i18n::t!(
+                            "cmd.failed_resolve",
+                            query = query,
+                            error = Error::PackageNotFound(query.to_owned())
                         ));
                         continue;
                     }
@@ -253,9 +255,11 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                     .await
                     {
                         if ignore_failure {
-                            session
-                                .output()
-                                .error(format!("failed to resolve '{}': {}", query, e));
+                            session.output().error(hok_i18n::t!(
+                                "cmd.failed_resolve",
+                                query = query,
+                                error = e
+                            ));
                             continue;
                         }
                         return Err(e);
@@ -444,7 +448,7 @@ fn filter_not_running(
     let filter = |packages: Vec<Package>| -> Fallible<Vec<Package>> {
         let mut kept = Vec::new();
         for pkg in packages {
-            match check_not_running(session, pkg.name(), "updating") {
+            match check_not_running(session, pkg.name(), &hok_i18n::t!("action.update")) {
                 // Not running, or running but ignored (warning printed):
                 // update proceeds either way (matches Scoop's
                 // IGNORE_RUNNING_PROCESSES branch, which continues).
@@ -452,7 +456,7 @@ fn filter_not_running(
                 Err(Error::AppRunning(name)) if ignore_failure => {
                     session
                         .output()
-                        .warn(format!("Running process detected, skip updating '{name}'."));
+                        .warn(hok_i18n::t!("cmd.running_process_update", name = name));
                 }
                 Err(e) => return Err(e),
             }
@@ -471,6 +475,10 @@ fn filter_not_running(
 /// running processes and returns `Ok(RunningCheck::Ignored)` instead — the
 /// caller decides whether to proceed or skip the package (matches PS1's
 /// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
+///
+/// `action` is the already-localized verb phrase the caller is performing
+/// (`t!("action.update")` and friends); it is interpolated into that warning
+/// verbatim, so callers must translate it rather than pass English.
 pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
     // Process enumeration failure must not be silently treated as "nothing
@@ -495,9 +503,11 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
             .map(|p| format!("  {} (pid {})", p.name, p.pid))
             .collect::<Vec<_>>()
             .join("\n");
-        session.output().warn(format!(
-            "'{name}' is still running. hok is configured to ignore this condition \
-             (ignore_running_processes), continuing to {action}.\n{procs}"
+        session.output().warn(hok_i18n::t!(
+            "cmd.running_ignore_continue",
+            name = name,
+            action = action,
+            procs = procs
         ));
         return Ok(RunningCheck::Ignored);
     }
@@ -523,7 +533,7 @@ async fn commit_install(
                     error: e.to_string(),
                 });
             }
-            let msg = format!("failed to install '{}': {}", pkg.name(), e);
+            let msg = hok_i18n::t!("cmd.failed_install", name = pkg.name(), error = e);
             if ignore_failure {
                 session.output().error(msg);
                 continue;

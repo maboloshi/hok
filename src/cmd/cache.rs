@@ -1,9 +1,9 @@
 //! Manage the download cache.
 
 use clap::{ArgAction, Parser, Subcommand};
-use libscoop::{cache, Session};
+use libscoop::{Session, cache};
 
-use crate::{format, output, Result};
+use crate::{Result, format, output};
 
 /// Package cache management
 #[derive(Debug, Parser)]
@@ -62,10 +62,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
 
             println!(
-                "{:>8} {} files, {}",
-                "Total:",
-                total_count,
-                format::humansize(total_size, true)
+                "{:>8} {}",
+                hok_i18n::t!("cmd.cache_total_label"),
+                hok_i18n::t!(
+                    "cmd.cache_total",
+                    count = total_count,
+                    size = format::humansize(total_size, true)
+                )
             );
 
             Ok(())

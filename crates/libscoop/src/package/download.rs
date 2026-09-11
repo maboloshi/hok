@@ -373,9 +373,11 @@ async fn download_one_package<'a>(
 
     if let Some(err) = pkg_error {
         if ignore_failure {
-            session
-                .output()
-                .error(format!("failed to download '{}': {}", ident, err));
+            session.output().error(hok_i18n::t!(
+                "cmd.failed_download",
+                name = ident,
+                error = err
+            ));
             return Ok(PkgDownloadOutcome {
                 filepaths,
                 chunk_file_map,
@@ -644,9 +646,11 @@ impl<'a> PackageSet<'a> {
             })();
             if let Err(e) = reassembled {
                 if self.ignore_failure {
-                    self.session
-                        .output()
-                        .error(format!("failed to reassemble '{}': {}", ident, e));
+                    self.session.output().error(hok_i18n::t!(
+                        "cmd.failed_reassemble",
+                        name = ident,
+                        error = e
+                    ));
                     failed.push(ident.clone());
                 } else {
                     return Err(e);
@@ -658,9 +662,11 @@ impl<'a> PackageSet<'a> {
         for (tmp, path, ident) in filepaths.iter() {
             if let Err(e) = std::fs::rename(tmp, path) {
                 if self.ignore_failure {
-                    self.session
-                        .output()
-                        .error(format!("failed to move download of '{}': {}", ident, e));
+                    self.session.output().error(hok_i18n::t!(
+                        "cmd.failed_move_download",
+                        name = ident,
+                        error = e
+                    ));
                     failed.push(ident.clone());
                 } else {
                     return Err(e.into());

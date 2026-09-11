@@ -134,10 +134,10 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
                     // Already gone — treat as success (Scoop's
                     // Remove-Item -Force semantics).
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        session.output().error(format!(
-                            "failed to remove cache '{}': {}",
-                            path.display(),
-                            e
+                        session.output().error(hok_i18n::t!(
+                            "cmd.failed_remove_cache",
+                            path = path.display(),
+                            error = e
                         ));
                     }
                 }
@@ -150,10 +150,10 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
                 if let Err(e) = std::fs::remove_file(f.path())
                     && e.kind() != std::io::ErrorKind::NotFound
                 {
-                    session.output().error(format!(
-                        "failed to remove cache '{}': {}",
-                        f.path().display(),
-                        e
+                    session.output().error(hok_i18n::t!(
+                        "cmd.failed_remove_cache",
+                        path = f.path().display(),
+                        error = e
                     ));
                 }
             }

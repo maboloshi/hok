@@ -91,9 +91,7 @@ pub async fn run_auto_pr(
 
     // Validate modes
     if !config.push && !config.request {
-        return Err(Error::Custom(
-            hok_i18n::t!("cmd.auto_err_mode").to_string(),
-        ));
+        return Err(Error::Custom(hok_i18n::t!("cmd.auto_err_mode").to_string()));
     }
     if config.request && config.upstream_repo_nwo.is_empty() {
         return Err(Error::Custom(
@@ -129,14 +127,20 @@ pub async fn run_auto_pr(
     }
 
     // Snapshot manifests before running checkver
-    session.output().progress("Snapshoting", "manifests");
+    session.output().progress(
+        hok_i18n::t!("cmd.auto_pr_snapshotting"),
+        hok_i18n::t!("cmd.auto_pr_manifests"),
+    );
     let before = read_manifests(session, &dir)?;
     session.output().ok();
 
     // Run checkver to update all manifests. Reports stream to the caller's
     // callback; without one, the compact progress/ok pair is shown instead.
     if on_report.is_none() {
-        session.output().progress("Checking", "for updates");
+        session.output().progress(
+            hok_i18n::t!("cmd.auto_pr_checking"),
+            hok_i18n::t!("cmd.auto_pr_for_updates"),
+        );
     }
     let cv_args = crate::package::checkver::CheckverOptions {
         dir: dir.clone(),
@@ -160,7 +164,9 @@ pub async fn run_auto_pr(
     // Force-update special manifests
     for name in &config.special {
         if on_report.is_none() {
-            session.output().progress("Forcing", name);
+            session
+                .output()
+                .progress(hok_i18n::t!("cmd.auto_pr_forcing"), name);
         }
         let cv_args = crate::package::checkver::CheckverOptions {
             dir: dir.clone(),
@@ -192,7 +198,7 @@ pub async fn run_auto_pr(
     }
     session
         .output()
-        .info(format!("{} manifest(s) updated", changed.len()));
+        .info(hok_i18n::t!("cmd.manifests_updated", count = changed.len()));
 
     // Process each changed manifest
     let mut success_count = 0u32;
@@ -202,27 +208,32 @@ pub async fn run_auto_pr(
         let manifest_str = match std::fs::read_to_string(manifest_path) {
             Ok(s) => s,
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("read {}: {}", manifest_path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_read_file",
+                    path = manifest_path.display(),
+                    error = e
+                ));
                 continue;
             }
         };
         let json: serde_json::Value = match serde_json::from_str(&manifest_str) {
             Ok(v) => v,
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("parse {}: {}", manifest_path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_parse_file",
+                    path = manifest_path.display(),
+                    error = e
+                ));
                 continue;
             }
         };
         let version = match json["version"].as_str() {
             Some(v) => v.to_string(),
             None => {
-                session
-                    .output()
-                    .error(format!("{}: no version field", manifest_path.display()));
+                session.output().error(hok_i18n::t!(
+                    "cmd.manifest_no_version_field",
+                    path = manifest_path.display()
+                ));
                 continue;
             }
         };
@@ -244,17 +255,20 @@ pub async fn run_auto_pr(
 
         if config.push {
             // Push mode: commit directly to origin branch
-            session
-                .output()
-                .progress("Pushing", format!("{} ({})", app, version));
+            session.output().progress(
+                hok_i18n::t!("cmd.auto_pr_pushing"),
+                format!("{} ({})", app, version),
+            );
 
             let parent_sha =
                 match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
-                        session
-                            .output()
-                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session.output().error(hok_i18n::t!(
+                            "cmd.auto_pr_head_sha_failed",
+                            app = app,
+                            error = e
+                        ));
                         continue;
                     }
                 };
@@ -273,15 +287,20 @@ pub async fn run_auto_pr(
             .await
             {
                 Ok(url) => {
-                    session
-                        .output()
-                        .done(format!("{} ({}) -> {}", app, version, url));
+                    session.output().done(hok_i18n::t!(
+                        "cmd.auto_pr_pushed",
+                        app = app,
+                        version = version,
+                        url = url
+                    ));
                     success_count += 1;
                 }
                 Err(e) => {
-                    session
-                        .output()
-                        .error(format!("{}: commit failed: {}", app, e));
+                    session.output().error(hok_i18n::t!(
+                        "cmd.auto_pr_commit_failed",
+                        app = app,
+                        error = e
+                    ));
                 }
             }
         } else {
@@ -292,25 +311,29 @@ pub async fn run_auto_pr(
             if let Ok(Some(_)) =
                 github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token).await
             {
-                session.output().warn(format!(
-                    "{} ({}): branch already exists, skipping",
-                    app, version
+                session.output().warn(hok_i18n::t!(
+                    "cmd.auto_pr_branch_exists",
+                    app = app,
+                    version = version
                 ));
                 skip_count += 1;
                 continue;
             }
 
-            session
-                .output()
-                .progress("Creating", format!("{} ({})", app, version));
+            session.output().progress(
+                hok_i18n::t!("cmd.auto_pr_creating"),
+                format!("{} ({})", app, version),
+            );
 
             let parent_sha =
                 match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
-                        session
-                            .output()
-                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session.output().error(hok_i18n::t!(
+                            "cmd.auto_pr_head_sha_failed",
+                            app = app,
+                            error = e
+                        ));
                         continue;
                     }
                 };
@@ -318,9 +341,11 @@ pub async fn run_auto_pr(
             if let Err(e) =
                 github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token).await
             {
-                session
-                    .output()
-                    .error(format!("{}: create branch failed: {}", app, e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.auto_pr_create_branch_failed",
+                    app = app,
+                    error = e
+                ));
                 continue;
             }
 
@@ -337,9 +362,11 @@ pub async fn run_auto_pr(
             )
             .await
             {
-                session
-                    .output()
-                    .error(format!("{}: commit failed: {}", app, e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.auto_pr_commit_failed",
+                    app = app,
+                    error = e
+                ));
                 continue;
             }
 
@@ -365,15 +392,20 @@ pub async fn run_auto_pr(
             .await
             {
                 Ok(pr_url) => {
-                    session
-                        .output()
-                        .done(format!("{} ({}) -> PR: {}", app, version, pr_url));
+                    session.output().done(hok_i18n::t!(
+                        "cmd.auto_pr_pr_created",
+                        app = app,
+                        version = version,
+                        url = pr_url
+                    ));
                     success_count += 1;
                 }
                 Err(e) => {
-                    session
-                        .output()
-                        .error(format!("{}: create PR failed: {}", app, e));
+                    session.output().error(hok_i18n::t!(
+                        "cmd.auto_pr_create_pr_failed",
+                        app = app,
+                        error = e
+                    ));
                 }
             }
         }
@@ -381,17 +413,17 @@ pub async fn run_auto_pr(
 
     // Summary
     if config.push {
-        session.output().info(format!(
-            "ci-auto-pr completed: {} pushed, {} skipped",
-            success_count,
-            changed.len() - success_count as usize
+        session.output().info(hok_i18n::t!(
+            "cmd.auto_pr_completed_push",
+            pushed = success_count,
+            skipped = changed.len() - success_count as usize
         ));
     } else {
-        session.output().info(format!(
-            "ci-auto-pr completed: {} PRs created, {} skipped, {} already existed",
-            success_count,
-            changed.len() - success_count as usize - skip_count as usize,
-            skip_count
+        session.output().info(hok_i18n::t!(
+            "cmd.auto_pr_completed_pr",
+            created = success_count,
+            skipped = changed.len() - success_count as usize - skip_count as usize,
+            existed = skip_count
         ));
     }
 
@@ -408,9 +440,11 @@ fn read_manifests(session: &Session, dir: &Path) -> Fallible<HashMap<PathBuf, Ve
     let manifest_paths = match manifest_walker::discover(dir) {
         Ok(paths) => paths,
         Err(e) => {
-            session
-                .output()
-                .error(format!("read dir {}: {}", dir.display(), e));
+            session.output().error(hok_i18n::t!(
+                "cmd.failed_read_dir",
+                path = dir.display(),
+                error = e
+            ));
             return Ok(map);
         }
     };
@@ -421,9 +455,11 @@ fn read_manifests(session: &Session, dir: &Path) -> Fallible<HashMap<PathBuf, Ve
                 map.insert(path, content);
             }
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("read {}: {}", path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_read_file",
+                    path = path.display(),
+                    error = e
+                ));
             }
         }
     }
@@ -463,9 +499,7 @@ fn resolve_repo_nwo() -> Fallible<String> {
         .args(["remote", "get-url", "origin"])
         .output()
         .map_err(|_| {
-            Error::Custom(
-                "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
-            )
+            Error::Custom("Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string())
         })?;
 
     if !output.status.success() {

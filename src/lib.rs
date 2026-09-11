@@ -109,7 +109,7 @@ fn report(err: &anyhow::Error) {
         output::err(err.to_string());
     }
     if let Some(cause) = err.source() {
-        eprintln!("\nCaused by:");
+        eprintln!("\n{}", hok_i18n::t!("error.caused_by"));
         for (i, e) in std::iter::successors(Some(cause), |e| e.source()).enumerate() {
             eprintln!("   {}: {}", i, e);
         }

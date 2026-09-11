@@ -142,7 +142,7 @@ pub fn run_event_loop(
                     // Non-empty by construction: resolve.rs only emits this
                     // when there is more than one candidate.
                     let name = pkgs[0].split_once('/').map(|x| x.1).unwrap_or(&pkgs[0]);
-                    println!("Found multiple candidates for package '{}':\n", name);
+                    println!("{}\n", hok_i18n::t!("cmd.multiple_candidates", name = name));
                     for (i, pkg) in pkgs.iter().enumerate() {
                         println!("  {}: {}", i, pkg);
                     }
@@ -252,9 +252,7 @@ fn print_transaction_plan(transaction: &Transaction) {
     }
 
     if let Some(replace) = transaction.replace_view() {
-        if transaction.install_view().is_some()
-            || transaction.upgrade_view().is_some()
-        {
+        if transaction.install_view().is_some() || transaction.upgrade_view().is_some() {
             println!();
         }
         output::header(hok_i18n::t!("cmd.header_replaced"));
@@ -286,12 +284,15 @@ fn print_transaction_plan(transaction: &Transaction) {
         let out = format::humansize(download_size.total, true);
         if download_size.total > 0 {
             if download_size.estimated {
-                println!("\nTotal download size: {out} (estimated)");
+                println!(
+                    "\n{}",
+                    hok_i18n::t!("cmd.total_download_size_estimated", size = out)
+                );
             } else {
-                println!("\nTotal download size: {}", out);
+                println!("\n{}", hok_i18n::t!("cmd.total_download_size", size = out));
             }
         } else {
-            println!("\nNothing to download, all cached.");
+            println!("\n{}", hok_i18n::t!("cmd.nothing_to_download"));
         }
     }
 }

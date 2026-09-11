@@ -74,10 +74,9 @@ pub(crate) fn verify_downloads(
                 // `check_hash` (lib/download.ps1) warns and continues
                 // without verification instead of failing hard.
                 if matches!(hash, crate::package::manifest::HashString::Empty) {
-                    session.output().warn(format!(
-                        "no hash in manifest for '{}', skipping verification",
-                        pkg.name()
-                    ));
+                    session
+                        .output()
+                        .warn(hok_i18n::t!("cmd.no_hash_skip", name = pkg.name()));
                     continue;
                 }
 
@@ -119,9 +118,11 @@ pub(crate) fn verify_downloads(
         if let Err(e) = result {
             if ignore_failure {
                 failed.insert(pkg.ident());
-                session
-                    .output()
-                    .error(format!("failed to verify '{}': {}", pkg.name(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_verify",
+                    name = pkg.name(),
+                    error = e
+                ));
             } else {
                 return Err(e);
             }
