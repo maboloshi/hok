@@ -487,7 +487,8 @@ cli_help:
       unset: 从配置文件删除设置
       unset.key: 要删除的配置项名称
   create:
-    about: "从下载 URL 创建清单  下载文件、计算哈希并生成清单骨架。"
+    about: "从下载 URL 创建清单"
+    long_about: "下载文件、计算哈希并生成清单骨架。"
     args:
       url: 下载 URL
       output: "输出文件路径（可选，默认为 stdout）"
@@ -611,6 +612,7 @@ cli_help:
     about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
   search:
     about: "搜索可用包"
+    long_about: "从已同步的仓库中搜索可用包。默认按包名匹配；使用 --with-description 或 --with-binary 可同时搜索包的描述或可执行文件。"
     args:
       explicit: 关闭正则并使用精确匹配
       query: 查询字符串（默认支持正则）
@@ -634,6 +636,7 @@ cli_help:
     args:
       global: 操作全局 shim(s)
       add: 添加自定义 shim
+      add.long_about: "`hok shim add <名称> <目标> [参数...]` — 以 `-` 开头的参数必须放在 `--`（POSIX 风格选项终止符）之后。"
       add.parts: "`<名称> <目标> [参数...]` — 名称，然后是目标命令路径（或通过 PATH 解析的命令名），再后是任意参数"
       remove: "移除 shims（注意: 可能移除应用清单创建的 shim）"
       remove.names: Shim 名称
@@ -690,6 +693,10 @@ cli_help:
       package: "要升级的包（默认为全部，被锁定的除外）"
   virustotal:
     about: "检查包下载 URL 是否被 VirusTotal 标记"
+    long_about: |-
+      需要 VirusTotal API key。设置方式:
+        hok config virustotal_api_key <key>
+      或设置 $VT_API_KEY 环境变量。
     args:
       app: 要检查的包名称
   which:
@@ -698,6 +705,7 @@ cli_help:
       command: 要查找的命令名称
   auto_pr:
     about: "通过 GitHub API 自动更新 manifest 并创建 Pull-Request（零外部二进制，CI 模式）"
+    long_about: 该命令在 CI 环境（例如 GitHub Actions）中运行，仅使用 GitHub API——不需要 git/hub 二进制。
     args:
       dir: 要扫描 manifest 的 bucket 目录
       upstream: "上游仓库及目标分支 (<user>/<repo>:<branch>)"

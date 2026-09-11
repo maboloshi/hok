@@ -489,6 +489,7 @@ cli_help:
       unset.key: The key of the setting
   create:
     about: "Create a manifest from a download URL"
+    long_about: Downloads the file, computes its hash, and generates a manifest skeleton.
     args:
       url: Download URL
       output: "Optional output file (default: stdout)"
@@ -614,6 +615,7 @@ cli_help:
     about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
   search:
     about: "Search available package(s)"
+    long_about: "Search available package(s) from synced buckets. The query is performed against package names by default, use --with-description or --with-binary to search through package descriptions or binaries."
     args:
       explicit: Turn regex off and use explicit matching
       query: The query string (regex supported by default)
@@ -640,6 +642,7 @@ cli_help:
     args:
       global: Manipulate global shim(s)
       add: Add a custom shim
+      add.long_about: "`hok shim add <name> <target> [args...]` — arguments starting with `-` must follow a `--` (POSIX-style option terminator)."
       add.parts: "`<name> <target> [args...]` — name, then the target command path (or a name resolved through PATH), then any args"
       remove: "Remove shims (CAUTION: may remove shims created by an app manifest)"
       remove.names: Shim name
@@ -696,6 +699,10 @@ cli_help:
       package: "The package(s) to be upgraded (default: all except held)"
   virustotal:
     about: "Check a package's download URL against VirusTotal"
+    long_about: |-
+      Requires a VirusTotal API key. Set it with:
+        hok config virustotal_api_key <key>
+      Or set the $VT_API_KEY environment variable.
     args:
       app: Package name(s) to check
   which:
@@ -704,6 +711,7 @@ cli_help:
       command: Command name to search for
   auto_pr:
     about: "Auto-update manifests and create pull-requests via GitHub API (zero external binary, CI mode)"
+    long_about: This command runs in CI environments (e.g., GitHub Actions) and uses the GitHub API exclusively — no git/hub binary required.
     args:
       dir: Bucket directory to scan for manifests
       upstream: "Upstream repository with target branch (<user>/<repo>:<branch>)"
