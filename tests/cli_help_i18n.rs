@@ -1,4 +1,6 @@
-//! Guards the localization of CLI help output.
+//! Guards the CLI help surfaces: their localization (`cli_help_is_fully_localized`)
+//! and their very existence (`every_command_help_exits_cleanly`,
+//! `argument_routing_is_not_shifted`).
 //!
 //! Help text is patched at runtime from `locales/*.yml` by
 //! `hok-i18n-derive`, so a rename, a new argument or a command that groups
@@ -30,9 +32,10 @@
 
 use std::process::Command;
 
-/// Run `<path...> <flag> --lang <lang>` and return help from stdout *and*
-/// stderr (clap writes some help/errors to stderr).
-fn help(path: &[String], flag: &str, lang: &str) -> String {
+/// Run `<path...> <flag> --lang <lang>` and return the exit code together with
+/// the help text from stdout *and* stderr (clap writes some help/errors to
+/// stderr).
+fn help_status(path: &[String], flag: &str, lang: &str) -> (i32, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_hok"))
         .args(path)
         .arg(flag)
@@ -42,7 +45,13 @@ fn help(path: &[String], flag: &str, lang: &str) -> String {
         .expect("run hok");
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    text
+    (out.status.code().unwrap_or(-1), text)
+}
+
+/// Run `<path...> <flag> --lang <lang>` and return help from stdout *and*
+/// stderr (clap writes some help/errors to stderr).
+fn help(path: &[String], flag: &str, lang: &str) -> String {
+    help_status(path, flag, lang).1
 }
 
 /// Subcommand names listed directly under the `Subcommands:` heading. Names
@@ -170,6 +179,148 @@ fn cli_help_is_fully_localized() {
     assert!(
         failures.is_empty(),
         "{} CLI help localization gap(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Every command's `-h` and `--help` must exit 0 and print something, in both
+/// locales.
+///
+/// Regression guard for a clap argument-cache corruption: the structural help
+/// headings used to be patched with `Command::mut_arg` *after* the command tree
+/// had been built, and `mut_arg` removes + pushes an argument without updating
+/// the name → index map clap caches on the first build. `checkver` and `reset`
+/// — the only two commands declaring an argument of their own named `version` —
+/// therefore resolved `--help` to that argument and answered with
+/// "a value is required for '--version <VERSION>'".
+///
+/// Both flags are probed because `-h` and `--help` are distinct keys in clap's
+/// map (`Short('h')` / `Long("help")`), and every surface is probed in both
+/// locales because the localized headings are what the patch installs.
+#[test]
+fn every_command_help_exits_cleanly() {
+    let mut failures: Vec<String> = Vec::new();
+    for path in all_command_paths() {
+        let name = if path.is_empty() {
+            "hok".to_string()
+        } else {
+            format!("hok {}", path.join(" "))
+        };
+        for lang in ["en", "zh"] {
+            for flag in ["-h", "--help"] {
+                let (code, text) = help_status(&path, flag, lang);
+                if code != 0 || text.trim().is_empty() {
+                    failures.push(format!("{name} {flag} [lang={lang}]: exit {code}"));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} CLI help surface(s) did not render:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The same cache corruption silently shifted *parsing* as well: `hok reset -a`
+/// died with "a value is required for '--lang <LANGUAGE>'", `hok checkver
+/// --version 1.2.3` was fed to `--timeout`'s `u64` parser and `hok checkver
+/// --timeout abc` was reported against `--lang`. This probes the arguments
+/// whose lookups moved.
+///
+/// `--help` is appended to the successful probes so clap answers them while
+/// parsing instead of running the command: `hok reset -a` would really reset
+/// every installed app.
+#[test]
+fn argument_routing_is_not_shifted() {
+    /// `<label>`, `<argv>`, expected exit code, expected stderr fragment.
+    struct Probe {
+        label: &'static str,
+        argv: &'static [&'static str],
+        code: i32,
+        contains: Option<&'static str>,
+        rejects: Option<&'static str>,
+    }
+
+    let probes = [
+        Probe {
+            label: "reset -a / --all parses",
+            argv: &["reset", "-a", "--help"],
+            code: 0,
+            contains: None,
+            rejects: None,
+        },
+        Probe {
+            label: "reset --all parses",
+            argv: &["reset", "--all", "--help"],
+            code: 0,
+            contains: None,
+            rejects: None,
+        },
+        Probe {
+            label: "checkver --version takes a version string",
+            argv: &["checkver", "--version", "1.2.3", "--help"],
+            code: 0,
+            contains: None,
+            rejects: None,
+        },
+        Probe {
+            label: "checkver --timeout keeps its own parser",
+            argv: &["checkver", "--timeout", "abc"],
+            code: 2,
+            contains: Some("--timeout"),
+            rejects: Some("--lang"),
+        },
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for probe in &probes {
+        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
+            .arg("--lang")
+            .arg("en")
+            .args(probe.argv)
+            .output()
+            .expect("run hok");
+        let code = out.status.code().unwrap_or(-1);
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if code != probe.code {
+            failures.push(format!(
+                "{}: `hok {}` exited {code}, expected {}",
+                probe.label,
+                probe.argv.join(" "),
+                probe.code
+            ));
+            continue;
+        }
+        if let Some(needle) = probe.contains
+            && !text.contains(needle)
+        {
+            failures.push(format!(
+                "{}: `hok {}` did not mention {needle:?}",
+                probe.label,
+                probe.argv.join(" ")
+            ));
+        }
+        if let Some(needle) = probe.rejects
+            && text.contains(needle)
+        {
+            failures.push(format!(
+                "{}: `hok {}` wrongly blamed {needle:?}",
+                probe.label,
+                probe.argv.join(" ")
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} argument routing regression(s):\n{}",
         failures.len(),
         failures.join("\n")
     );
