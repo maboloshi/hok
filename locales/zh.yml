@@ -406,8 +406,8 @@ cli_help:
       app: "要检查的特定应用（支持通配符，默认为全部）"
       dir: 要扫描清单的仓库目录
       update: 用新版本更新清单并触发自动更新
-      force-update: 即使版本不变也强制更新（用于哈希更新场景）
-      skip-updated: 跳过已是最新的清单
+      force_update: 即使版本不变也强制更新（用于哈希更新场景）
+      skip_updated: 跳过已是最新的清单
       version: 更新清单到指定版本（跳过版本检测）
       timeout: 请求超时秒数
   cleanup:

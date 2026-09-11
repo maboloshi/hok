@@ -406,8 +406,8 @@ cli_help:
       app: "Specific app(s) to check (supports wildcards, default: all)"
       dir: Bucket directory to scan for manifests
       update: Update manifest with new version and trigger autoupdate
-      force-update: Force update even when version is unchanged (useful for hash updates)
-      skip-updated: Skip manifests that are already up-to-date
+      force_update: Force update even when version is unchanged (useful for hash updates)
+      skip_updated: Skip manifests that are already up-to-date
       version: Update manifest to specific version (skip version detection)
       timeout: Request timeout in seconds
   cleanup:
