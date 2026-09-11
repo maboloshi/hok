@@ -174,7 +174,10 @@ pub async fn execute(
 
         if options.update || options.force {
             let content = std::fs::read_to_string(path)?;
-            let mut root: serde_json::Value = serde_json::from_str(&content)?;
+            // Tolerant read: upstream `bin/checkhashes.ps1:65` reads the
+            // manifest through `parse_json`, so a BOM/JSON5 manifest that
+            // passed the hash check must also parse for the rewrite.
+            let mut root: serde_json::Value = crate::internal::json::parse_str(&content)?;
             let mut path_map: std::collections::HashMap<&str, Vec<usize>> =
                 std::collections::HashMap::new();
             for (i, entry) in entries.iter().enumerate() {

@@ -216,7 +216,8 @@ pub async fn run_auto_pr(
                 continue;
             }
         };
-        let json: serde_json::Value = match serde_json::from_str(&manifest_str) {
+        // Tolerant read: upstream `bin/auto-pr.ps1:190` uses `parse_json`.
+        let json: serde_json::Value = match crate::internal::json::parse_str(&manifest_str) {
             Ok(v) => v,
             Err(e) => {
                 session.output().error(hok_i18n::t!(

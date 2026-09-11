@@ -272,8 +272,7 @@ pub async fn execute(
                 }
                 None => {
                     let mut report = CheckverReport::new(stem, current);
-                    report.message =
-                        Some(hok_i18n::t!("cmd.checkver_sourceforge_err").to_string());
+                    report.message = Some(hok_i18n::t!("cmd.checkver_sourceforge_err").to_string());
                     report.severity = ReportSeverity::Error;
                     on_report(&report);
                     continue;
@@ -762,7 +761,10 @@ pub(crate) async fn apply_autoupdate(
     named_captures: &HashMap<String, String>,
 ) -> Fallible<()> {
     let content = std::fs::read_to_string(path)?;
-    let mut root: serde_json::Value = serde_json::from_str(&content)
+    // Tolerant read, matching the manifest parse that produced `manifest`:
+    // the rewrite must not fail on a manifest that installed fine (upstream
+    // `Invoke-AutoUpdate` works on the already-parsed `$manifest`).
+    let mut root: serde_json::Value = crate::internal::json::parse_str(&content)
         .map_err(|e| Error::Custom(format!("parse: {}", e)))?;
 
     // Update version
@@ -1182,10 +1184,7 @@ async fn run_checkver_script(
                 if start.elapsed() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(Error::Custom(format!(
-                        "timed out after {}s",
-                        timeout_secs
-                    )));
+                    return Err(Error::Custom(format!("timed out after {}s", timeout_secs)));
                 }
                 // Async sleep so the runtime is not blocked; race it against
                 // cancellation so a Ctrl-C is noticed promptly.

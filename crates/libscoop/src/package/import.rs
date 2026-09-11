@@ -26,9 +26,11 @@ use crate::error::Fallible;
 ///
 /// # Errors
 ///
-/// Returns an error if the content is not valid JSON.
+/// Returns an error if the content is neither valid JSON nor JSON5 (see
+/// [`crate::internal::json`]); upstream reads the same file with
+/// `parse_json` (`libexec/scoop-import.ps1:19`).
 pub fn parse_import_json(content: &str) -> Fallible<Vec<String>> {
-    let root: Value = serde_json::from_str(content)?;
+    let root: Value = crate::internal::json::parse_str(content)?;
 
     let mut packages = Vec::new();
     for key in ["apps", "buckets"] {
@@ -93,5 +95,14 @@ mod tests {
     #[test]
     fn parse_invalid_json_errors() {
         assert!(parse_import_json("{ not json").is_err());
+    }
+
+    /// Upstream reads this file with `parse_json`, so hand-edited syntax (a
+    /// BOM, comments, trailing commas) must not be rejected here. The
+    /// tolerance contract itself lives in [`crate::internal::json`].
+    #[test]
+    fn parse_accepts_hand_edited_syntax() {
+        let content = "\u{FEFF}{\n  // exported by scoop\n  \"apps\": { \"main\": { \"7zip\": \"24.09\", } }\n}";
+        assert_eq!(parse_import_json(content).unwrap(), vec!["main/7zip"]);
     }
 }
