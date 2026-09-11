@@ -33,16 +33,20 @@ pub enum HoldResult {
 ///
 /// [1]: crate::Error::PackageHoldBrokenInstall
 pub fn hold(session: &Session, name: &str, flag: bool) -> Fallible<HoldResult> {
-    let mut path = session.effective_root_path();
-    path.push("apps");
-    path.push(name);
-
-    if !path.exists() {
+    let app_dir = session.app_dir(name);
+    if !app_dir.exists() {
         return Err(Error::PackageHoldNotInstalled(name.to_owned()));
     }
 
-    path.push("current");
-    path.push("install.json");
+    // Upstream scoop-hold.ps1/scoop-unhold.ps1 write
+    // `versiondir $app (NO_JUNCTION ? Select-CurrentVersion : 'current')` —
+    // i.e. the resolved version dir when there is no junction to write
+    // through. `install.json` therefore lives outside `current` under
+    // NO_JUNCTION.
+    let Some(meta_dir) = session.app_current_dir(name) else {
+        return Err(Error::PackageHoldBrokenInstall(name.to_owned()));
+    };
+    let path = meta_dir.join("install.json");
 
     match parse_install_info(&path) {
         Ok(mut install_info) => {
@@ -147,6 +151,48 @@ mod tests {
         let err = hold(&session, "app", true).unwrap_err();
 
         assert!(matches!(err, Error::PackageHoldBrokenInstall(name) if name == "app"));
+    }
+
+    /// Under NO_JUNCTION there is no `current` junction, so `install.json`
+    /// lives in the version dir — upstream writes
+    /// `versiondir $app (Select-CurrentVersion)` there. Hardcoding `current`
+    /// made `hold`/`unhold` fail on every no-junction install.
+    #[test]
+    fn hold_no_junction_writes_version_dir_install_json() {
+        let root = crate::test_utils::tmpdir("hold_no_junction");
+        let session = crate::test_utils::test_session_with_junctions(&root, true);
+        let vdir = root.join("apps").join("app").join("1.2.3");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(
+            vdir.join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "main"}"#,
+        )
+        .unwrap();
+        std::fs::write(vdir.join("manifest.json"), r#"{"version": "1.2.3"}"#).unwrap();
+
+        assert_eq!(hold(&session, "app", true).unwrap(), HoldResult::Changed);
+
+        let info = parse_install_info(&vdir.join("install.json")).unwrap();
+        assert!(info.is_held(), "held flag must land in the version dir");
+        assert!(
+            !root.join("apps/app/current").exists(),
+            "no junction should be created"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A no-junction app whose version dir carries no `install.json` cannot be
+    /// held — reported as a broken install, not as "not installed".
+    #[test]
+    fn hold_no_junction_missing_metadata_is_broken() {
+        let root = crate::test_utils::tmpdir("hold_no_junction_broken");
+        let session = crate::test_utils::test_session_with_junctions(&root, true);
+        std::fs::create_dir_all(root.join("apps").join("app").join("1.2.3")).unwrap();
+
+        let err = hold(&session, "app", true).unwrap_err();
+
+        assert!(matches!(err, Error::PackageHoldBrokenInstall(name) if name == "app"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

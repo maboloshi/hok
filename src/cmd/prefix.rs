@@ -14,9 +14,12 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    let app_dir = session.current_dir(&args.package);
+    // Upstream `scoop prefix` prints `currentdir $app` (libexec/scoop-prefix.ps1),
+    // which under NO_JUNCTION is the resolved version dir — there is no
+    // `current` junction to print.
+    let app_dir = session.app_current_dir(&args.package);
 
-    if !app_dir.exists() {
+    let Some(app_dir) = app_dir.filter(|dir| dir.exists()) else {
         // Check if the app directory exists at all (without /current)
         let base_dir = session.app_dir(&args.package);
         let msg = if base_dir.exists() {
@@ -25,7 +28,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             hok_i18n::t!("cmd.prefix_no_pkg", pkg = args.package)
         };
         return Err(anyhow::anyhow!(msg));
-    }
+    };
 
     println!("{}", app_dir.display());
     Ok(())

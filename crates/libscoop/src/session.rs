@@ -335,6 +335,33 @@ impl Session {
         self.app_dir(name).join("current")
     }
 
+    /// Get the directory a package's current install actually lives in:
+    /// `<root>/apps/<name>/current` when junctions are enabled, otherwise the
+    /// resolved version dir.
+    ///
+    /// Mirrors upstream `currentdir` (lib/core.ps1:355-362) verbatim: the
+    /// `NO_JUNCTION` branch resolves the version through
+    /// `Select-CurrentVersion` and returns the version dir, because there is
+    /// no junction to point at. Callers that need "the install dir of this
+    /// package" (upstream's `$dir`) must use this rather than
+    /// [`Session::current_dir`], which is the junction path and does not exist
+    /// under `NO_JUNCTION`.
+    ///
+    /// Returns `None` when no version resolves (not installed, or a broken
+    /// install with no version dir).
+    ///
+    /// Upstream divergence, deliberate: when `Select-CurrentVersion` returns
+    /// `$null` upstream still builds `"$appdir\"` (a half-empty path); here
+    /// the caller gets `None` and reports a broken install instead.
+    pub fn app_current_dir(&self, name: &str) -> Option<std::path::PathBuf> {
+        let pkg_dir = self.app_dir(name);
+        if !self.config().no_junction() {
+            return Some(pkg_dir.join("current"));
+        }
+        crate::package::install_state::resolve_current_version(&pkg_dir, true)
+            .map(|resolved| pkg_dir.join(resolved.version))
+    }
+
     /// Get the directory name a package's runtime entries (shims, shortcuts,
     /// env) should resolve to: `current` when junctions are enabled,
     /// otherwise the actual version directory name.
@@ -667,5 +694,27 @@ mod tests {
         .unwrap();
         let session = Session::new_with(&config_path).unwrap();
         assert_eq!(session.current_dir_name("1.2.3"), "1.2.3");
+    }
+
+    /// `app_current_dir` mirrors upstream `currentdir`: the junction path in
+    /// junction mode, the resolved version dir under NO_JUNCTION.
+    #[test]
+    fn app_current_dir_follows_junction_mode() {
+        let root = test_utils::tmpdir("session_app_current_dir");
+        let session = test_utils::test_session(&root);
+        assert_eq!(
+            session.app_current_dir("git"),
+            Some(root.join("apps/git/current"))
+        );
+
+        let no_junction_root = test_utils::tmpdir("session_app_current_dir_no_junction");
+        let no_junction_session = test_utils::test_session_with_junctions(&no_junction_root, true);
+        let vdir = no_junction_root.join("apps").join("git").join("1.2.3");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("install.json"), r#"{"architecture": "64bit"}"#).unwrap();
+
+        assert_eq!(no_junction_session.app_current_dir("git"), Some(vdir));
+        // No resolvable version dir → broken, not a fabricated path.
+        assert_eq!(no_junction_session.app_current_dir("ghost"), None);
     }
 }

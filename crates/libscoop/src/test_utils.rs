@@ -55,6 +55,27 @@ pub fn test_session(root: &std::path::Path) -> crate::Session {
     crate::Session::new_with(&config_path).unwrap()
 }
 
+/// Like [`test_session`], but with `no_junction` pinned in the config.
+///
+/// Install-layout behaviour that branches on junction mode (current-version
+/// resolution, `currentdir`-shaped paths, metadata location) needs the session
+/// to actually be in that mode — a plain `test_session` is always
+/// junction-mode.
+pub fn test_session_with_junctions(root: &std::path::Path, no_junction: bool) -> crate::Session {
+    let config_path = root.join("hok.json");
+    let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+    let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": {}}}"#,
+            root_escaped, cache_escaped, no_junction
+        ),
+    )
+    .unwrap();
+    crate::Session::new_with(&config_path).unwrap()
+}
+
 /// Write a Scoop manifest into `<root>/buckets/<bucket>/bucket/<name>.json`,
 /// making it visible to `query_synced` / `query_installed`.
 pub fn write_bucket_manifest(root: &std::path::Path, bucket: &str, name: &str, json: &str) {
