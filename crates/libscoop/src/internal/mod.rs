@@ -4,6 +4,7 @@
 //!
 //! - [`arch`] — Runtime OS architecture detection (Scoop-compatible)
 //! - [`archive`] — Archive extraction (7z, zip, tar, ...)
+//! - [`base64`] — Base64 codec (.NET-compatible decode, standard encode)
 //! - [`dag`] — Directed Acyclic Graph for dependency resolution
 //! - `env` — Windows Registry-backed environment variable management
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
@@ -30,6 +31,7 @@
 
 pub(crate) mod arch;
 pub(crate) mod archive;
+pub(crate) mod base64;
 pub(crate) mod dag;
 pub(crate) mod env;
 pub(crate) mod fs;

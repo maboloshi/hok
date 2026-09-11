@@ -355,10 +355,10 @@ async fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -
             && let Some(caps) = r.captures(digest_val)
             && let Some(b64) = caps.get(1)
         {
-            // Decode standard base64 to hex
-            if let Ok(bytes) = simple_base64_decode(b64.as_str()) {
-                let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                return Ok(hex);
+            // Decode standard base64 to hex (Scoop: Convert.FromBase64String
+            // + `$_.ToString('x2')`).
+            if let Ok(bytes) = crate::internal::base64::decode(b64.as_str()) {
+                return Ok(crate::internal::base64::to_lower_hex(&bytes));
             }
         }
     }
@@ -366,65 +366,6 @@ async fn head_digest_sha256(url: &str, proxy: Option<&str>, timeout_secs: u64) -
     Err(Error::Custom(
         "no Digest header with SHA-256".to_string(),
     ))
-}
-
-/// Minimal standard base64 decoder (RFC 4648) without external dependencies.
-fn simple_base64_decode(input: &str) -> Fallible<Vec<u8>> {
-    let input = input.trim();
-    let len = input.len();
-    if len == 0 {
-        return Ok(Vec::new());
-    }
-    // Validate length (must be multiple of 4 after stripping padding)
-    let padding = input.chars().rev().take(2).filter(|&c| c == '=').count();
-    let cleaned = input.trim_end_matches('=');
-    if !cleaned.len().is_multiple_of(4) && padding == 0 {
-        return Err(Error::Custom("invalid base64 length".to_string()));
-    }
-
-    let decode_char = |c: char| -> Option<u8> {
-        match c {
-            'A'..='Z' => Some(c as u8 - b'A'),
-            'a'..='z' => Some(c as u8 - b'a' + 26),
-            '0'..='9' => Some(c as u8 - b'0' + 52),
-            '+' => Some(62),
-            '/' => Some(63),
-            '=' => Some(0),
-            _ => None,
-        }
-    };
-
-    let chars: Vec<u8> = input
-        .chars()
-        .filter_map(|c| if c == '=' { Some(0u8) } else { decode_char(c) })
-        .collect();
-
-    if chars.len() < 4 {
-        return Err(Error::Custom("invalid base64 input".to_string()));
-    }
-
-    let mut result = Vec::with_capacity(chars.len() / 4 * 3);
-    for chunk in chars.chunks(4) {
-        if chunk.len() < 4 {
-            break;
-        }
-        let b0 = chunk[0];
-        let b1 = chunk[1];
-        let b2 = chunk[2];
-        let b3 = chunk[3];
-        result.push((b0 << 2) | (b1 >> 4));
-        result.push(((b1 & 0x0F) << 4) | (b2 >> 2));
-        result.push(((b2 & 0x03) << 6) | b3);
-    }
-
-    // Remove padding bytes
-    let out_len = if padding > 0 {
-        result.len() - padding
-    } else {
-        result.len()
-    };
-    result.truncate(out_len);
-    Ok(result)
 }
 
 /// Normalize hash format to match Scoop's format_hash behavior:

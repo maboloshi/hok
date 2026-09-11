@@ -22,7 +22,6 @@
 //! - Tokens are never logged (shown as `******` in logs).
 
 use crate::error::{Error, Fallible};
-use base64::Engine as _;
 use reqwest::Method;
 
 // ---------------------------------------------------------------------------
@@ -239,7 +238,7 @@ pub async fn graphql_commit_push(
     let content = std::fs::read_to_string(file_path)
         .map_err(|e| Error::Custom(format!("read file {}: {}", file_path, e)))?;
     let content_lf = content.replace("\r\n", "\n");
-    let encoded = base64::engine::general_purpose::STANDARD.encode(content_lf.as_bytes());
+    let encoded = crate::internal::base64::encode(content_lf.as_bytes());
 
     let query = r#"
         mutation ($input: CreateCommitOnBranchInput!) {
