@@ -34,7 +34,7 @@
 //!   other crates use `RUST_LOG` or the default filter.
 
 use clap::{
-    CommandFactory, FromArgMatches, Parser, Subcommand, crate_description, crate_name,
+    ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand, crate_description, crate_name,
     crate_version,
 };
 use clap_verbosity_flag::Verbosity;
@@ -220,76 +220,111 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
 /// (per-command flags + globals + -h/--help) merge into a single localized
 /// "Options" section instead of two parallel ones.
 ///
-/// Must run *after* the command tree is built so the auto-generated
-/// -h/--help and -V/--version args exist to be labelled.
+/// The pass is split around `Command::build()` because the two halves have
+/// opposite requirements:
+///
+/// - Reordering arguments (positionals first, so the Arguments section always
+///   precedes the Options section) needs `Command::mut_arg`, which removes the
+///   argument and pushes it back. clap caches an argument-name → index map the
+///   first time a command is built and never refreshes it, so that map must not
+///   exist yet — reordering a *built* tree silently points `--help` (and every
+///   other key) at whatever argument landed in its cached slot. See
+///   [`order_positionals_first`].
+/// - clap materialises `-h/--help` (and `-V/--version` on a command that
+///   carries a version) *inside* `build()`, so their localized text can only be
+///   applied afterwards — in place, via `Command::mut_args`. See
+///   [`localize_heading_level`].
 fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
     let args_h = hok_i18n::t!("cli_help.heading.arguments").to_string();
     let opts_h = hok_i18n::t!("cli_help.heading.options").to_string();
+
+    // Phase 1, before `build()`: put each command's positionals in front of its
+    // options.
+    cmd = order_positionals_first(cmd);
+
+    // Phase 2, after `build()`: label every argument — the user args ordered
+    // above, the globals clap propagated into the subcommands, and the
+    // -h/--help / -V/--version args clap added itself.
     cmd.build();
     localize_heading_level(cmd, &args_h, &opts_h)
 }
 
-/// Assign localized headings to one command and recurse into its subcommands.
+/// Move every positional argument of every command in front of that command's
+/// options, preserving the relative order within each kind.
 ///
-/// Positionals are processed first so the Arguments section renders before
-/// the Options section regardless of declaration order.
-fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> clap::Command {
+/// Help sections are emitted in the order their heading is first seen while
+/// walking the arguments, so this is what guarantees `Arguments:` renders
+/// before `Options:` no matter how a command declares its fields (`checkver`,
+/// for one, declares `-d/--dir` before its `[APP]...` positional).
+///
+/// Two rotations are needed because `mut_arg` can only move an argument to the
+/// *end*: first the positionals, then the options, which together leave the
+/// positionals in front.
+///
+/// **Must only run before `build()`.** `mut_arg` is remove + push, which clap's
+/// cached name → index map does not track, so reordering a built command is
+/// what made `hok checkver --help` answer with "a value is required for
+/// '--version <VERSION>'".
+fn order_positionals_first(cmd: clap::Command) -> clap::Command {
     let mut cmd = cmd;
-    let pos_ids: Vec<String> = cmd
+    let ids: Vec<String> = cmd
         .get_arguments()
         .filter(|a| a.is_positional())
+        .chain(cmd.get_arguments().filter(|a| !a.is_positional()))
         .map(|a| a.get_id().to_string())
         .collect();
-    let opt_ids: Vec<String> = cmd
-        .get_arguments()
-        .filter(|a| !a.is_positional())
-        .map(|a| a.get_id().to_string())
-        .collect();
-    for id in &pos_ids {
-        let h = args_h.to_string();
-        cmd = cmd.mut_arg(id, move |a| a.help_heading(h));
+    for id in &ids {
+        cmd = cmd.mut_arg(id, |a| a);
     }
-    for id in &opt_ids {
-        let h = opts_h.to_string();
-        cmd = cmd.mut_arg(id, move |a| a.help_heading(h));
-    }
-    // Localize the descriptions of the auto-generated -h/--help and -V/--version
-    // args (they are only materialised at build time, so the derive cannot reach
-    // them); every option already got the localized Options heading above.
-    for special in &["help", "version"] {
-        if cmd.get_arguments().any(|a| a.get_id() == *special) {
-            // Both short (-h/-V) and long (--help/--version) render paths must
-            // show the localized text: help is used for the short view and
-            // long_help for the long view, so set both when present.
-            let txt = if *special == "help" {
-                hok_i18n::t!("cli_help.hok.args.help").to_string()
-            } else {
-                hok_i18n::t!("cli_help.hok.args.version").to_string()
-            };
-            let h = opts_h.to_string();
-            let txt2 = txt.clone();
-            cmd = cmd.mut_arg(*special, move |a| {
-                a.help_heading(h).help(txt).long_help(txt2)
-            });
-        }
-    }
-    let sub_names: Vec<String> = cmd
-        .get_subcommands()
-        .map(|s| s.get_name().to_string())
-        .collect();
-    for name in &sub_names {
-        if name == "help" {
+    // `mut_subcommands` maps in place, so the subcommand order — and with it the
+    // rendered `Subcommands:` section — is left untouched.
+    cmd.mut_subcommands(order_positionals_first)
+}
+
+/// Assign the localized headings to one command and recurse into its
+/// subcommands.
+///
+/// Runs on a **built** tree, so the arguments are rewritten in place with
+/// `mut_args` instead of `mut_arg`: `mut_args` keeps every argument at its
+/// index, which is what the index map cached by `build()` depends on.
+///
+/// The auto-generated `-h/--help` and `-V/--version` args are recognised by
+/// their [`ArgAction`] rather than by their id, because two commands
+/// (`checkver` and `reset`) declare an argument of their own called `version` —
+/// matching on the id used to relabel those user args with clap's own
+/// "Print version" text (and, via `mut_arg`, corrupted the command outright).
+fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> clap::Command {
+    let pos_h = args_h.to_string();
+    let opt_h = opts_h.to_string();
+    // Both short (-h/-V) and long (--help/--version) render paths must show the
+    // localized text: `help` is used for the short view and `long_help` for the
+    // long view, so set both.
+    let help_txt = hok_i18n::t!("cli_help.hok.args.help").to_string();
+    let version_txt = hok_i18n::t!("cli_help.hok.args.version").to_string();
+
+    let cmd = cmd.mut_args(move |a| match a.get_action() {
+        ArgAction::Help => a
+            .help_heading(opt_h.clone())
+            .help(help_txt.clone())
+            .long_help(help_txt.clone()),
+        ArgAction::Version => a
+            .help_heading(opt_h.clone())
+            .help(version_txt.clone())
+            .long_help(version_txt.clone()),
+        _ if a.is_positional() => a.help_heading(pos_h.clone()),
+        _ => a.help_heading(opt_h.clone()),
+    });
+
+    cmd.mut_subcommands(|sub| {
+        if sub.get_name() == "help" {
             // clap auto-adds a `help` subcommand to any command that has
             // subcommands, with a hard-coded English about; localize it too.
             let about = hok_i18n::t!("cli_help.help.about").to_string();
-            cmd = cmd.mut_subcommand(name, move |sub| sub.about(about));
-            continue;
+            sub.about(about)
+        } else {
+            localize_heading_level(sub, args_h, opts_h)
         }
-        let a = args_h.to_string();
-        let o = opts_h.to_string();
-        cmd = cmd.mut_subcommand(name, move |sub| localize_heading_level(sub, &a, &o));
-    }
-    cmd
+    })
 }
 
 /// CLI entry point
