@@ -242,8 +242,37 @@ pub fn status(msg: impl AsRef<str>) {
 ///
 /// Lets a component (e.g. the indicatif download bar `note`) render a status
 /// line through its own sink while staying visually identical to [`status`].
+///
+/// The ellipsis is appended only when the localized phrase does not already end
+/// in one (`.` / `。`): phrases own their own punctuation, so `Resolving
+/// packages...` must not become `Resolving packages......`. Sentences that
+/// already terminate (e.g. `Loading x from cache.`) are printed as-is.
 pub fn status_line(msg: impl AsRef<str>) -> String {
-    format!("  {}...", style::dim(msg.as_ref()))
+    let msg = msg.as_ref();
+    let ellipsis = if msg.ends_with('.') || msg.ends_with('。') {
+        ""
+    } else {
+        "..."
+    };
+    format!("  {}{ellipsis}", style::dim(msg))
+}
+
+/// Rewrite the current terminal line in place with a dim status phrase.
+///
+/// The progress counterpart of [`status`] for counters that tick many times a
+/// second (extraction n/total, `7z NN%`): it clears the line with `\r\x1b[2K`
+/// and redraws it so a shorter phrase leaves no tail behind. Styled exactly like
+/// [`status`] so a live progress row reads as one of the verb-status lines, and
+/// it never adds a trailing newline — the emitting stage terminates the row.
+pub fn status_in_place(msg: impl AsRef<str>) {
+    print!("{}", status_in_place_line(msg));
+    let _ = std::io::stdout().flush();
+}
+
+/// The `\r\x1b[2K  {dim msg}` in-place status row as a styled string, without
+/// printing (the testable half of [`status_in_place`]).
+pub fn status_in_place_line(msg: impl AsRef<str>) -> String {
+    format!("\r\x1b[2K  {}", style::dim(msg.as_ref()))
 }
 /// Label-value pair (label accent bold).
 pub fn field(label: impl AsRef<str>, value: impl AsRef<str>) {
@@ -506,6 +535,44 @@ mod tests {
             ] {
                 assert_eq!(styled, "pkg");
             }
+        });
+    }
+
+    /// A status phrase owns its own punctuation: the live-progress ellipsis is
+    /// appended only when the phrase has none, so nothing renders as `......`.
+    #[test]
+    fn status_line_appends_at_most_one_ellipsis() {
+        let _guard = LOCK.lock().unwrap();
+        without_color(|| {
+            assert_eq!(
+                status_line("Resolving packages..."),
+                "  Resolving packages..."
+            );
+            assert_eq!(status_line("Resolving packages"), "  Resolving packages...");
+            assert_eq!(
+                status_line("Loading x from cache."),
+                "  Loading x from cache."
+            );
+            assert_eq!(
+                status_line("无需下载，均已在缓存中。"),
+                "  无需下载，均已在缓存中。"
+            );
+        });
+    }
+
+    /// The in-place progress row (extraction counters) is a dim status line like
+    /// every other verb-status phrase, not default-foreground text.
+    #[test]
+    fn in_place_status_shares_the_status_colour() {
+        let _guard = LOCK.lock().unwrap();
+        with_color(|| {
+            let line = status_in_place_line("extracting: x 1/2");
+            assert!(line.starts_with("\r\x1b[2K  "), "clears the row first");
+            assert!(line.contains(&style::dim("extracting: x 1/2")));
+            assert!(line.contains("38;5;8m"), "dim = dark grey");
+        });
+        without_color(|| {
+            assert_eq!(status_in_place_line("x"), "\r\x1b[2K  x");
         });
     }
 }

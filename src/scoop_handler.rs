@@ -9,7 +9,6 @@
 use libscoop::{Event, EventHandler, PackageStepKind};
 
 use crate::output;
-use std::io::Write;
 
 /// Default event handler.
 pub struct ScoopHandler {
@@ -49,18 +48,16 @@ impl EventHandler for ScoopHandler {
             Event::PackageIntegrityCheckDone => {}
 
             // --- Extraction ---
-            // Progress lines are redrawn in place with `\r`; clear the whole
-            // line first (`\x1b[2K`) so a shorter name doesn't leave tail
-            // characters of the previous (longer) line behind. Progress
-            // carries a bare `n/total` counter (no filename), prefixed with
-            // the package name from the start event.
+            // Progress lines are redrawn in place with `\r`; `output::status_in_place`
+            // clears the whole line first (`\x1b[2K`) so a shorter phrase doesn't
+            // leave tail characters of the previous (longer) line behind, and
+            // styles the phrase like every other verb-status line (dim) so the
+            // row reads as a peer of "resolving/downloading/checking hash".
+            // Progress carries a bare `n/total` counter (no filename), prefixed
+            // with the package name from the start event.
             Event::PackageExtractStart(ctx) => {
                 self.extracting = Some(ctx.clone());
-                print!(
-                    "\r\x1b[2K  {}",
-                    hok_i18n::t!("detail.extracting", ctx = ctx)
-                );
-                let _ = std::io::stdout().flush();
+                output::status_in_place(hok_i18n::t!("detail.extracting", ctx = ctx));
             }
             Event::PackageExtractProgress(ctx) => {
                 // `ctx` is "n/total" for native extraction or "7z NN%" for the
@@ -73,11 +70,7 @@ impl EventHandler for ScoopHandler {
                 } else {
                     ctx.clone()
                 };
-                print!(
-                    "\r\x1b[2K  {}",
-                    hok_i18n::t!("detail.extracting", ctx = ctx)
-                );
-                let _ = std::io::stdout().flush();
+                output::status_in_place(hok_i18n::t!("detail.extracting", ctx = ctx));
             }
             Event::PackageExtractDone => {
                 // The extract progress line is redrawn with `\r` and never
