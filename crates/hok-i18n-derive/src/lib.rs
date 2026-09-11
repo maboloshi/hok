@@ -80,6 +80,8 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
         ));
     }
 
+    // Top-level args of every command (including the ones that only group
+    // subcommands, e.g. `shim -g`), plus the per-subcommand args of the latter.
     let mut plain: HashMap<String, Vec<String>> = HashMap::new();
     let mut nested: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
 
@@ -108,15 +110,14 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
             }
         });
         let Some(s) = s else { continue };
-        let is_sub = s.fields.iter().any(|f| {
-            f.attrs.iter().any(|a| {
-                if let Meta::List(MetaList { path, tokens, .. }) = &a.meta {
-                    path.is_ident("command") && tokens.to_string().contains("subcommand")
-                } else {
-                    false
-                }
-            })
-        });
+        let is_sub = s.fields.iter().any(is_subcommand_field);
+        // A command that groups subcommands still has args of its own (e.g.
+        // `shim -g/--global`); they must be patched exactly like a leaf
+        // command's, otherwise clap falls back to the English doc comment.
+        let fields = extract_field_names(&s.fields);
+        if !fields.is_empty() {
+            plain.insert(ykey.clone(), fields);
+        }
         if is_sub {
             let inner = file.items.iter().find_map(|i| {
                 if let Item::Enum(e) = i {
@@ -137,11 +138,6 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
                 }
                 nested.insert(ykey.clone(), subs);
             }
-        } else {
-            let fields = extract_field_names(&s.fields);
-            if !fields.is_empty() {
-                plain.insert(ykey.clone(), fields);
-            }
         }
     }
 
@@ -149,7 +145,11 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
     let heading_options = "cli_help.heading.options";
     let global_patches: Vec<_> = global_args.iter().map(|name| {
         let tk = format!("cli_help.hok.args.{name}");
-        quote! { .mut_arg(#name, |a| a.help(::hok_i18n::t!(#tk).to_string()).help_heading(::hok_i18n::t!(#heading_options).to_string())) }
+        quote! { .mut_arg(#name, |a| {
+            let fallback = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+            a.help(i18n_cli_text(#tk, &fallback))
+                .help_heading(::hok_i18n::t!(#heading_options).to_string())
+        }) }
     }).collect();
 
     // ── Generate subcommand patches ───────────────────────────────────────
@@ -177,7 +177,10 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
         if let Some(fs) = plain.get(ykey.as_str()) {
             for fn_ in fs {
                 let tk = format!("cli_help.{ykey}.args.{fn_}");
-                ap.push(quote! { .mut_arg(#fn_, |a| a.help(::hok_i18n::t!(#tk).to_string())) });
+                ap.push(quote! { .mut_arg(#fn_, |a| {
+                    let fallback = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+                    a.help(i18n_cli_text(#tk, &fallback))
+                }) });
             }
         }
         if let Some(subs) = nested.get(ykey.as_str()) {
@@ -188,33 +191,60 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
                     .iter()
                     .map(|fn_| {
                         let tk = format!("cli_help.{ykey}.args.{sk}.{fn_}");
-                        quote! { .mut_arg(#fn_, |a| a.help(::hok_i18n::t!(#tk).to_string())) }
+                        quote! { .mut_arg(#fn_, |a| {
+                            let fallback = a.get_help().map(|h| h.to_string()).unwrap_or_default();
+                            a.help(i18n_cli_text(#tk, &fallback))
+                        }) }
                     })
                     .collect();
-                ap.push(quote! { .mut_subcommand(#sk, |s| s
-                    .help_template(#sub_tmpl)
-                    .about(::hok_i18n::t!(#tsa).to_string())
-                    .long_about(i18n_cli_long_about(#tla_sk, #tsa))
-                    #(#sa)*
-                ) });
+                ap.push(quote! { .mut_subcommand(#sk, |s| {
+                    let about = s.get_about().map(|h| h.to_string()).unwrap_or_default();
+                    let long = s.get_long_about().map(|h| h.to_string()).unwrap_or_default();
+                    s.help_template(#sub_tmpl)
+                        .about(i18n_cli_text(#tsa, &about))
+                        .long_about(i18n_cli_long_about(#tla_sk, #tsa, &long))
+                        #(#sa)*
+                }) });
             }
         }
-        sub_patches.push(quote! { .mut_subcommand(#kebab, |s| s
-            .help_template(#sub_tmpl)
-            .subcommand_help_heading(::hok_i18n::t!(#sub_h).to_string())
-            .about(::hok_i18n::t!(#ta).to_string())
-            .long_about(i18n_cli_long_about(#tla, #ta))
-            #(#ap)*
-        ) });
+        sub_patches.push(quote! { .mut_subcommand(#kebab, |s| {
+            let about = s.get_about().map(|h| h.to_string()).unwrap_or_default();
+            let long = s.get_long_about().map(|h| h.to_string()).unwrap_or_default();
+            s.help_template(#sub_tmpl)
+                .subcommand_help_heading(::hok_i18n::t!(#sub_h).to_string())
+                .about(i18n_cli_text(#ta, &about))
+                .long_about(i18n_cli_long_about(#tla, #ta, &long))
+                #(#ap)*
+        }) });
     }
 
     let expanded = quote! {
-        fn i18n_cli_long_about(key: &str, fallback: &str) -> String {
+        /// Render the localized help text for `key`, falling back to the text
+        /// clap derived from the doc comment when the key is missing — a raw
+        /// `cli_help.*` key must never reach the user.
+        fn i18n_cli_text(key: &str, fallback: &str) -> String {
             let v = ::hok_i18n::t!(key);
             if v.starts_with("cli_help.") {
-                ::hok_i18n::t!(fallback)
+                fallback.to_string()
             } else {
                 v
+            }
+        }
+
+        /// Long help has its own key only for the commands that carry a real
+        /// long description. Everything else reuses the translated short
+        /// `about` (falling back to clap's English text only if that key is
+        /// missing too), so `--help` never silently degrades to English.
+        fn i18n_cli_long_about(key: &str, fallback_key: &str, clap_text: &str) -> String {
+            let v = ::hok_i18n::t!(key);
+            if !v.starts_with("cli_help.") {
+                return v;
+            }
+            let about = ::hok_i18n::t!(fallback_key);
+            if about.starts_with("cli_help.") {
+                clap_text.to_string()
+            } else {
+                about
             }
         }
 
@@ -283,9 +313,24 @@ fn extract_field_names(fields: &Fields) -> Vec<String> {
         Fields::Named(n) => n
             .named
             .iter()
+            .filter(|f| !is_subcommand_field(f))
             .filter_map(|f| f.ident.as_ref().map(|i| i.to_string()))
             .filter(|n| !SKIP.contains(&n.as_str()))
             .collect(),
         _ => vec![],
     }
+}
+
+/// Whether a field is the `#[command(subcommand)]` (or `#[clap(subcommand)]`)
+/// slot holding the nested command enum. It is not a CLI argument of its own,
+/// so it must not be looked up as one.
+fn is_subcommand_field(f: &syn::Field) -> bool {
+    f.attrs.iter().any(|a| {
+        if let Meta::List(MetaList { path, tokens, .. }) = &a.meta {
+            (path.is_ident("command") || path.is_ident("clap"))
+                && tokens.to_string().contains("subcommand")
+        } else {
+            false
+        }
+    })
 }
