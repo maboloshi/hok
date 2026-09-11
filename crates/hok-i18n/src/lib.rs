@@ -89,8 +89,10 @@ pub fn lookup_current(key: &str) -> Option<&'static str> {
 /// The one behaviour this cannot express: rust-i18n walked the chain *per key*,
 /// so a key missing from a more specific table fell through to the next shorter
 /// tag. That needs two tags of the same chain to have tables (say `zh-CN.yml`
-/// *and* `zh.yml`), which the shipped `en`/`zh` tables never do; see
-/// `tests/i18n_parity.rs` for the measured equivalence.
+/// *and* `zh.yml`), which the shipped `en`/`zh` tables never do — so shipping a
+/// second table for one language would silently change resolution, and this is
+/// the function to revisit before doing so. The migration itself was verified
+/// byte-for-byte against the removed reference dump (`cb34afb`).
 fn resolve_locale(locale: &str) -> usize {
     let mut candidate = locale;
     loop {
@@ -319,8 +321,9 @@ mod tests {
     }
 
     /// Locale resolution is pure apart from reading [`LOCALES`], so it is tested
-    /// directly here; the process-wide `set_locale` path is covered by
-    /// `tests/i18n_parity.rs`, which owns the global state.
+    /// directly here; the process-wide `set_locale` path is exercised
+    /// end-to-end by `tests/cli_help_i18n.rs`, which renders help in both
+    /// shipped locales.
     #[test]
     fn resolve_locale_walks_the_subtag_chain() {
         assert_eq!(resolve_locale("en"), index_of("en").unwrap());
