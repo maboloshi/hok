@@ -126,19 +126,15 @@ impl ConfigBuilder {
 /// Read a JSON config file into a [`serde_json::Value`], returning `Ok`
 /// only when the file exists and parses.
 ///
-/// Tolerant of a leading UTF-8 BOM (hand-edited config files saved by
-/// notepad) and, as a fallback, JSON5 (comments / trailing commas) —
-/// matching the manifest parse tolerance.
+/// The decode is lossy on purpose: upstream reads the config with
+/// `[System.IO.File]::ReadAllLines` (`lib/core.ps1:82-95`), whose UTF-8
+/// reader substitutes invalid bytes instead of failing. Parsing then
+/// follows the shared tolerance chain ([`internal::json::parse_str`]).
 fn read_json_file(path: &Path) -> Fallible<serde_json::Value> {
     let mut buf = vec![];
     std::fs::File::open(path)?.read_to_end(&mut buf)?;
     let text = String::from_utf8_lossy(&buf);
-    let text = text.trim_start_matches('\u{FEFF}');
-    match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(value) => Ok(value),
-        Err(strict_err) => json5::from_str::<serde_json::Value>(text)
-            .map_err(|_| crate::Error::Custom(strict_err.to_string())),
-    }
+    internal::json::parse_str(text.as_ref())
 }
 
 /// Scoop Configuration representation.

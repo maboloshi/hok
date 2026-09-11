@@ -43,6 +43,7 @@
 //! Not thread-safe: one submitter at a time. In an async context, callers run
 //! [PsEngine::run_file_cancelable] on a blocking worker and await it.
 
+use crate::internal;
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -433,9 +434,7 @@ fn parse_done(prefix: &str, buf: &[u8]) -> Option<i32> {
 /// stripped) into an owned line; `None` when it is empty after trimming.
 fn clean_output_line(buf: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(buf);
-    let s = s
-        .trim_start_matches('\u{feff}')
-        .trim_end_matches(['\r', '\n']);
+    let s = internal::string::strip_bom(&s).trim_end_matches(['\r', '\n']);
     if s.is_empty() {
         None
     } else {

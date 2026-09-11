@@ -9,6 +9,7 @@
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
 //! - [`hash`] — Hash utilities (MD5/SHA1/SHA256/SHA512) via RustCrypto
+//! - [`json`] — Tolerant JSON parsing (single entry point for JSON text)
 //! - [`network`] — HTTP networking via `reqwest` (async)
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
@@ -35,6 +36,7 @@ pub(crate) mod fs;
 pub(crate) mod git;
 pub(crate) mod github;
 pub(crate) mod hash;
+pub(crate) mod json;
 pub(crate) mod network;
 pub(crate) mod os;
 pub(crate) mod path;

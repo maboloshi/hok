@@ -27,9 +27,11 @@
 //! - Only write when the file content has actually changed (avoid unnecessary disk writes).
 //! - Supports glob wildcard filtering (`*`, `?`).
 //! - If the input file contains a BOM (`\u{FEFF}`), it will be automatically stripped.
-//! - Input is parsed tolerantly (JSON5: comments, trailing commas, single-quoted
-//!   strings, unescaped newlines, etc. are accepted) and re-serialised as
-//!   strict standard JSON — non-standard input in, standard JSON out.
+//! - Input is parsed through [`crate::internal::json`] — strict JSON first,
+//!   JSON5 fallback (comments, trailing commas, single-quoted strings and
+//!   bare keys accepted; that module records the measured tolerance
+//!   contract) — and re-serialised as strict standard JSON: non-standard
+//!   input in, standard JSON out.
 //! - Semantics match Scoop's official `bin/formatjson.ps1` (`lib/json.ps1` `ConvertToPrettyJson`):
 //!   single-element arrays collapse to scalars, multi-line strings split into arrays,
 //!   single-element arrays nested inside arrays are flattened, and empty objects/arrays
@@ -37,16 +39,16 @@
 //!   (official behavior would alter string semantics, so this is intentionally skipped).
 
 use crate::package::manifest_walker;
-use crate::{Error, error::Fallible};
+use crate::{Error, error::Fallible, internal};
 use serde::Serialize;
 use std::path::Path;
 
 /// Format a single manifest JSON file in place using Scoop conventions.
 ///
-/// Reads the file, strips any BOM, parses it tolerantly (JSON5: comments,
-/// trailing commas, etc. are accepted), then serialises with 4-space
-/// indentation and CRLF line endings into strict JSON.  Writes back only if
-/// the content changed.
+/// Reads the file, parses it through the shared tolerance chain
+/// ([`internal::json`]: BOM stripped, strict JSON first, JSON5 fallback),
+/// then serialises with 4-space indentation and CRLF line endings into
+/// strict JSON.  Writes back only if the content changed.
 ///
 /// # Returns
 ///
@@ -54,9 +56,9 @@ use std::path::Path;
 /// correctly formatted, or an error on I/O / parse failure.
 pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
     let content = std::fs::read_to_string(path)?;
-    let cleaned = content.trim_start_matches('\u{FEFF}');
-
-    let value: serde_json::Value = json5::from_str(cleaned)
+    // The path is added here: the shared entry reports the parser's own
+    // error, which does not know which file it came from.
+    let value: serde_json::Value = internal::json::parse_str(&content)
         .map_err(|e| Error::Custom(format!("{}: parse error: {}", path.display(), e)))?;
     let formatted = to_scoop_json(&value)?;
 
@@ -119,12 +121,15 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
 /// - `uninstaller` must include at least one of `file` / `script` (oneOf)
 /// - `version` matches `^[\w\.\-+_]+$`
 /// - each `shortcuts` entry has 2-4 elements
+///
+/// Best-effort by design: a manifest that cannot be read or parsed yields no
+/// warnings rather than failing the batch (see
+/// [`crate::internal::json::parse_str_or_none`]).
 fn schema_warnings(path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return vec![];
     };
-    let Ok(value) = json5::from_str::<serde_json::Value>(content.trim_start_matches('\u{FEFF}'))
-    else {
+    let Some(value) = internal::json::parse_str_or_none::<serde_json::Value>(&content) else {
         return vec![];
     };
     let name = path.display().to_string();

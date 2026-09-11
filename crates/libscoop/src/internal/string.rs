@@ -7,6 +7,10 @@
 //!
 //! - **Encoding**: [`encode_wide()`] converts UTF-8 to null-terminated
 //!   UTF-16LE for Windows FFI calls.
+//! - **BOM**: [`strip_bom()`] removes the leading UTF-8 BOM that notepad
+//!   writes ("UTF-8 with BOM"); upstream Scoop strips it while reading
+//!   (`Get-Content -Encoding UTF8`, `[System.IO.File]::ReadAllLines`), so
+//!   its parsers never see one.
 //! - **Glob matching**: [`glob_to_regex()`] turns a simple `*`/`?` glob into
 //!   an anchored regex; [`matches_any_glob()`] checks a name against a list of
 //!   glob patterns (Scoop's `checkurls -Filter` semantics).
@@ -20,6 +24,16 @@ pub fn encode_wide(s: &str) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+/// Strip a single leading UTF-8 BOM (`U+FEFF`) from `text`.
+///
+/// Only the leading BOM is an encoding marker and only one is stripped;
+/// a BOM in the middle of the text is data and is left alone, and a second
+/// leading BOM is left to the consumer to reject (upstream strips exactly
+/// one, while detecting the encoding).
+pub fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{FEFF}').unwrap_or(text)
 }
 
 /// Convert a simple glob pattern (`*`, `?`) to an anchored regex string.
@@ -97,6 +111,24 @@ pub fn normalize_jsonpath(jp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── strip_bom ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn strip_bom_removes_one_leading_bom() {
+        assert_eq!(strip_bom("\u{FEFF}{}"), "{}");
+        // Only one: what remains is left to the parser to reject.
+        assert_eq!(strip_bom("\u{FEFF}\u{FEFF}{}"), "\u{FEFF}{}");
+    }
+
+    #[test]
+    fn strip_bom_leaves_other_text_untouched() {
+        assert_eq!(strip_bom("{}"), "{}");
+        assert_eq!(strip_bom(""), "");
+        assert_eq!(strip_bom("\u{FEFF}"), "");
+        // A BOM anywhere else is data, not an encoding marker.
+        assert_eq!(strip_bom("{\"a\":\"\u{FEFF}\"}"), "{\"a\":\"\u{FEFF}\"}");
+    }
 
     // ── glob_to_regex ────────────────────────────────────────────────────────
 

@@ -38,9 +38,7 @@ fn forward_script_pipe(
             Ok(0) => break,
             Ok(_) => {
                 let cow = String::from_utf8_lossy(&buf);
-                let line = cow
-                    .trim_start_matches('\u{feff}')
-                    .trim_end_matches(['\r', '\n']);
+                let line = internal::string::strip_bom(&cow).trim_end_matches(['\r', '\n']);
                 if line.is_empty() {
                     continue;
                 }

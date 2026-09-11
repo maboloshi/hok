@@ -11,6 +11,9 @@
 //!   (e.g. a field that can be a single string or an array).
 //! - **Two-layer structure**: [`Manifest`] wraps a [`ManifestSpec`] plus
 //!   the file path and hash; `ManifestSpec` holds the actual JSON data.
+//! - **Tolerant parsing**: manifests are read through [`crate::internal::json`],
+//!   which strips a leading BOM, tries strict JSON first and falls back to
+//!   JSON5; that module documents the measured tolerance contract.
 //! - **Runtime architecture**: architecture-specific fields are selected at
 //!   runtime from the host OS (see [`crate::internal::arch`]), mirroring
 //!   Scoop's `Get-DefaultArchitecture`, not at compile time.
@@ -768,27 +771,6 @@ macro_rules! arch_accessor {
 /// Empty placeholder for manifests that omit the `license` field.
 static EMPTY_LICENSE: std::sync::LazyLock<License> = std::sync::LazyLock::new(License::default);
 
-/// Parse manifest JSON tolerantly, mirroring the tolerance of upstream
-/// Scoop's PowerShell 7 `ConvertFrom-Json` (and `hok formatjson`):
-///
-/// - a leading UTF-8 BOM (`\u{FEFF}`) is stripped (notepad "UTF-8 with
-///   BOM" manifests; upstream reads with `Get-Content -Encoding UTF8`)
-/// - strict `serde_json` is tried first — the fast path for well-formed
-///   bucket manifests, keeping the parse bottleneck fast — and JSON5
-///   (comments, trailing commas, single-quoted strings) is used only as
-///   a fallback for the rare hand-edited file
-///
-/// When both fail the strict error is returned: it points at the real
-/// problem (e.g. a type mismatch), unlike a JSON5 parse error.
-fn parse_manifest_spec(json: &str) -> Fallible<ManifestSpec> {
-    let cleaned = json.trim_start_matches('\u{FEFF}');
-    match serde_json::from_str::<ManifestSpec>(cleaned) {
-        Ok(inner) => Ok(inner),
-        Err(strict_err) => json5::from_str::<ManifestSpec>(cleaned)
-            .map_err(|_| crate::Error::Custom(strict_err.to_string())),
-    }
-}
-
 /// Parse a manifest JSON file from disk into a [`Manifest`].
 ///
 /// The file-I/O boundary for the pure [`Manifest`] type: reading, UTF-8
@@ -822,7 +804,7 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
             path.display()
         ))
     })?;
-    let inner: ManifestSpec = parse_manifest_spec(text).inspect_err(|e| {
+    let inner: ManifestSpec = internal::json::parse_str(text).inspect_err(|e| {
         warn!("failed to parse manifest {} (err: {})", path.display(), e);
     })?;
     let path = internal::path::normalize_path(path);
@@ -846,7 +828,7 @@ impl Manifest {
     /// This is used when loading manifests from the SQLite cache, where no
     /// file path is available.
     pub fn from_json(name: &str, json: &str) -> Fallible<Manifest> {
-        let inner: ManifestSpec = parse_manifest_spec(json)?;
+        let inner: ManifestSpec = internal::json::parse_str(json)?;
         let path = PathBuf::from(name);
 
         Ok(Manifest {
@@ -864,7 +846,7 @@ impl Manifest {
     /// the source is not a bucket file. The `name` is used as the virtual
     /// path (e.g. the source URL), mirroring [`Manifest::from_json`].
     pub fn parse_str(name: &str, json: &str) -> Fallible<Manifest> {
-        let inner: ManifestSpec = parse_manifest_spec(json)?;
+        let inner: ManifestSpec = internal::json::parse_str(json)?;
         let path = PathBuf::from(name);
 
         Ok(Manifest {
@@ -2209,8 +2191,9 @@ mod tests {
 
     #[test]
     fn json5_manifest_parses_as_fallback() {
-        // Comments and trailing commas (hand-edited manifests) parse via
-        // the JSON5 fallback, like PowerShell 7's ConvertFrom-Json.
+        // Comments and trailing commas (hand-edited manifests) parse via the
+        // JSON5 fallback. PS 5.1 rejects both; the full tolerance contract
+        // (including the cases hok is stricter on) is in `internal::json`.
         let m = manifest_from(
             r#"{
                 // a hand-edited comment
