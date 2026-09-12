@@ -140,10 +140,10 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
     let mut lines = vec![
         format!(
             "  {}  {}  {}  {}",
-            style::emphasis(pad_visual(hdr_name, w_name)),
-            style::emphasis(pad_visual_right(hdr_manifests, w_manifests)),
-            style::emphasis(pad_visual(hdr_updated, w_updated)),
-            style::emphasis(hdr_source),
+            style::accent_bold(pad_visual(hdr_name, w_name)),
+            style::accent_bold(pad_visual_right(hdr_manifests, w_manifests)),
+            style::accent_bold(pad_visual(hdr_updated, w_updated)),
+            style::accent_bold(hdr_source),
         ),
         format!(
             "  {}  {}  {}  {}",
@@ -183,8 +183,8 @@ fn layout_known(buckets: &[(&str, &str)], headers: [&str; 2]) -> Vec<String> {
     let mut lines = vec![
         format!(
             "  {}  {}",
-            style::emphasis(pad_visual(hdr_name, w_name)),
-            style::emphasis(hdr_repo),
+            style::accent_bold(pad_visual(hdr_name, w_name)),
+            style::accent_bold(hdr_repo),
         ),
         format!(
             "  {}  {}",

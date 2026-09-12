@@ -151,9 +151,9 @@ fn layout(rows: &[Row], headers: [&str; 3]) -> Vec<String> {
     let mut lines = vec![
         format!(
             "  {}  {}  {}",
-            style::emphasis(pad_visual(hdr_name, w_name)),
-            style::emphasis(pad_visual(hdr_version, w_version)),
-            style::emphasis(pad_visual_right(hdr_size, w_size)),
+            style::accent_bold(pad_visual(hdr_name, w_name)),
+            style::accent_bold(pad_visual(hdr_version, w_version)),
+            style::accent_bold(pad_visual_right(hdr_size, w_size)),
         ),
         format!(
             "  {}  {}  {}",

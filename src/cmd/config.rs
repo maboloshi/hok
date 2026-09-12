@@ -181,10 +181,10 @@ fn layout(rows: &[ConfigRow], headers: [String; 4]) -> Vec<String> {
     let mut lines = vec![
         format!(
             "  {}  {}  {}  {}",
-            style::emphasis(pad_visual(&hdr_key, w_key)),
-            style::emphasis(pad_visual(&hdr_value, w_value)),
-            style::emphasis(pad_visual(&hdr_default, w_default)),
-            style::emphasis(&hdr_desc),
+            style::accent_bold(pad_visual(&hdr_key, w_key)),
+            style::accent_bold(pad_visual(&hdr_value, w_value)),
+            style::accent_bold(pad_visual(&hdr_default, w_default)),
+            style::accent_bold(&hdr_desc),
         ),
         format!(
             "  {}  {}  {}  {}",

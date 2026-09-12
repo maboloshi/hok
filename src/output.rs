@@ -14,7 +14,7 @@
 //!
 //! | Role     | ANSI                     | Used for                             |
 //! |----------|--------------------------|--------------------------------------|
-//! | accent   | dark cyan (36)           | `::` headers, labels, arrows, bar    |
+//! | accent   | dark cyan (36)           | `::` headers, table headers, labels, arrows, bar |
 //! | emphasis | bold, default foreground | package / entity names               |
 //! | success  | dark green (32)          | `ok`, `✓`, versions                  |
 //! | warning  | dark yellow (33)         | `WARN` prefix, warnings              |
@@ -99,13 +99,19 @@ pub mod style {
         paint(msg.as_ref(), Some(Color::DarkCyan), false)
     }
 
-    /// Accent, bold: `::` section headers and field labels.
+    /// Accent, bold: `::` section headers, table header rows and field labels.
+    ///
+    /// Table headers use this rather than [`emphasis`]: on terminals that render
+    /// bold-on-default as plain text, a header row of only-bold cells is
+    /// indistinguishable from the data below it, while the accent colour reads
+    /// as a header on both light and dark themes.
     pub fn accent_bold(msg: impl AsRef<str>) -> String {
         paint(msg.as_ref(), Some(Color::DarkCyan), true)
     }
 
     /// Emphasis: package / entity names. Bold on the default foreground, so it
-    /// reads as black-on-light and white-on-dark.
+    /// reads as black-on-light and white-on-dark. Not for header rows (see
+    /// [`accent_bold`]).
     pub fn emphasis(msg: impl AsRef<str>) -> String {
         paint(msg.as_ref(), None, true)
     }

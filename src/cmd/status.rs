@@ -61,12 +61,12 @@ fn layout(rows: &[Row], headers: [&str; 6]) -> Vec<String> {
     let mut lines = vec![
         format!(
             "  {}  {}  {}  {}  {}  {}",
-            style::emphasis(pad_visual(hdr_name, w_name)),
-            style::emphasis(pad_visual(hdr_source, w_source)),
-            style::emphasis(pad_visual(hdr_installed, w_installed)),
-            style::emphasis(pad_visual(hdr_latest, w_latest)),
-            style::emphasis(pad_visual(hdr_missing, w_missing)),
-            style::emphasis(hdr_info),
+            style::accent_bold(pad_visual(hdr_name, w_name)),
+            style::accent_bold(pad_visual(hdr_source, w_source)),
+            style::accent_bold(pad_visual(hdr_installed, w_installed)),
+            style::accent_bold(pad_visual(hdr_latest, w_latest)),
+            style::accent_bold(pad_visual(hdr_missing, w_missing)),
+            style::accent_bold(hdr_info),
         ),
         format!(
             "  {}  {}  {}  {}  {}  {}",
