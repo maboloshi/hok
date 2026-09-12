@@ -25,6 +25,7 @@
 //! [manifest]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
 //! [official Scoop manifest schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
 
+use indexmap::IndexMap;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -190,7 +191,7 @@ pub struct ManifestSpec {
     psmodule: Option<Psmodule>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggest: Option<HashMap<String, Vectorized<String>>>,
+    pub suggest: Option<IndexMap<String, Vectorized<String>>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkver: Option<Checkver>,
@@ -952,6 +953,17 @@ impl Manifest {
         fn bin() -> Option<Vec<Vec<&str>>>, bin_for
     }
 
+    /// The generic (architecture-independent) `bin`, without consulting the
+    /// `architecture` sections.
+    ///
+    /// Mirrors Scoop's `arch_specific` when `$architecture` is `$null` — the
+    /// case `scoop info` hits for an app that is not installed
+    /// (libexec/scoop-info.ps1:229, where `$install.architecture` is `$null`):
+    /// upstream shows only the top-level field then.
+    pub fn bin_generic(&self) -> Option<Vec<Vec<&str>>> {
+        self.inner.bin.as_ref().map(|v| v.devectorize())
+    }
+
     #[inline]
     pub fn checkver(&self) -> Option<&Checkver> {
         self.inner.checkver.as_ref()
@@ -972,6 +984,16 @@ impl Manifest {
     arch_accessor! {
         /// Returns `env_add_path` defined in this manifest.
         fn env_add_path() -> Option<Vec<&str>>, env_add_path_for
+    }
+
+    /// Generic (architecture-independent) `env_add_path`; see [`Self::bin_generic`].
+    pub fn env_add_path_generic(&self) -> Option<Vec<&str>> {
+        self.inner.env_add_path.as_ref().map(|v| v.devectorize())
+    }
+
+    /// Generic (architecture-independent) `env_set`; see [`Self::bin_generic`].
+    pub fn env_set_generic(&self) -> Option<&HashMap<String, String>> {
+        self.inner.env_set.as_ref()
     }
 
     /// Pure variant: select `env_set` for an explicit architecture.
@@ -1003,8 +1025,13 @@ impl Manifest {
         self.inner.innosetup.unwrap_or(false)
     }
 
+    /// Returns `suggest` defined in this manifest.
+    ///
+    /// An order-preserving map, not a `HashMap`: upstream iterates the object's
+    /// properties, so the rendered/rewritten order is the manifest order
+    /// (libexec/scoop-info.ps1:270-276).
     #[inline]
-    pub fn suggest(&self) -> Option<&HashMap<String, Vectorized<String>>> {
+    pub fn suggest(&self) -> Option<&IndexMap<String, Vectorized<String>>> {
         self.inner.suggest.as_ref()
     }
 
@@ -1063,6 +1090,15 @@ impl Manifest {
 
     pub fn shortcuts(&self) -> Option<Vec<Vec<&str>>> {
         self.shortcuts_for(self.effective_arch())
+    }
+
+    /// Generic (architecture-independent) `shortcuts`; see [`Self::bin_generic`].
+    pub fn shortcuts_generic(&self) -> Option<Vec<Vec<&str>>> {
+        self.inner.shortcuts.as_ref().map(|v| {
+            v.iter()
+                .map(|v| v.iter().map(|s| s.as_str()).collect())
+                .collect()
+        })
     }
 
     arch_accessor! {
@@ -2142,6 +2178,35 @@ mod tests {
         );
         // Parsing succeeded is the assertion.
         assert_eq!(m.version(), "1.0.0");
+    }
+
+    #[test]
+    fn suggest_preserves_declaration_order() {
+        // `suggest` is an order-preserving map: upstream renders its properties
+        // in manifest order, and a rewritten manifest must not reorder them.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "suggest": {"zeta": ["z"], "alpha": ["a"]}
+            }"#,
+        );
+        let keys = m
+            .suggest()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["zeta", "alpha"]);
+
+        let json = m.to_pretty_json().unwrap();
+        let zeta = json.find("zeta").unwrap();
+        let alpha = json.find("alpha").unwrap();
+        assert!(
+            zeta < alpha,
+            "serialization keeps declaration order: {json}"
+        );
     }
 
     #[test]

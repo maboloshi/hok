@@ -25,6 +25,10 @@ members = [
 bzip2 = "0.6.1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 hok-i18n = { path = "./crates/hok-i18n" }
+# Order-preserving map for `manifest.suggest`: upstream renders suggestions in
+# manifest order and rewrites must keep it (already in the tree via
+# serde_json/preserve_order).
+indexmap = { version = "2", features = ["serde"] }
 lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
 md-5 = "0.11"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
