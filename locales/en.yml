@@ -263,6 +263,35 @@ cmd:
   config_col_key: "key"
   config_col_value: "value"
   config_col_default: "default"
+  config_col_desc: "description"
+  header_config: "Config"
+  config_value_unset: "unset"
+  config_value_auto: "auto"
+  config_desc_aria2_enabled: "Enable fragmented downloads"
+  config_desc_aria2_split: "Connections per fragmented download"
+  config_desc_aria2_max_connection_per_server: "Max connections to one server"
+  config_desc_jobs: "Concurrent package downloads"
+  config_desc_aria2_min_split_size: "Minimum size to fragment"
+  config_desc_cache_path: "Download cache directory"
+  config_desc_cat_style: "Show manifests through bat"
+  config_desc_editor: "Editor for manifests"
+  config_desc_default_architecture: "Preferred install architecture"
+  config_desc_global_path: "Root of global installs"
+  config_desc_gh_token: "GitHub API token"
+  config_desc_ignore_failures: "Keep going after a package fails"
+  config_desc_ignore_running_processes: "Proceed while the app is running"
+  config_desc_language: "CLI language"
+  config_desc_last_update: "Last bucket update"
+  config_desc_no_color: "Disable colored output"
+  config_desc_confirm: "Ask before running an operation"
+  config_desc_script_engine: "Reuse the resident pwsh engine"
+  config_desc_no_junction: "Skip the 'current' junction"
+  config_desc_private_hosts: "Private hosts needing auth"
+  config_desc_proxy: "Proxy settings"
+  config_desc_root_path: "Scoop root directory"
+  config_desc_use_isolated_path: "Dedicated PATH environment variable"
+  config_desc_use_sqlite_cache: "Cache manifests in SQLite"
+  config_desc_virustotal_api_key: "VirusTotal API key"
   bucket_cooldown: "Buckets recently updated. Next update allowed in ~%{remaining}s. Use --force to update now."
   multiple_candidates: "Found multiple candidates for package '%{name}':"
   script_failed: "script failed: %{stderr}"
@@ -468,10 +497,16 @@ cli_help:
             Maximum number of connections to one server per download.
       aria2-min-split-size: size, default 5M
             Minimum file size to trigger fragmented downloads (e.g. 5M, 10M).
+      jobs: int, default 4
+            Number of packages downloaded concurrently in the download phase.
       cache_path: path, default $SCOOP_CACHE or <root>/cache
             Download cache directory.
       cat_style: string, default none
             When set, use 'bat' to display manifests (requires bat installed).
+      editor: string, default none
+            Editor used by 'hok config edit' ($EDITOR then the OS handler fall back).
+      confirm: bool, default false
+            Ask for confirmation before a sync operation runs.
       default_architecture: 64bit|32bit|arm64, default auto-detected
             Preferred architecture used for installation.
       global_path: path, default $SCOOP_GLOBAL or %ProgramData%\scoop
@@ -496,6 +531,8 @@ cli_help:
             Proxy settings: none | default | currentuser | [username:password@]host:port.
       root_path: path, default $SCOOP or ~/scoop
             Scoop root directory.
+      script-engine: bool, default false
+            Reuse one resident pwsh process for installer/uninstaller scripts.
       use_isolated_path: bool|string, default none
             Store apps' PATH entries in a dedicated env var (SCOOP_PATH by default).
       use_sqlite_cache: bool, default false

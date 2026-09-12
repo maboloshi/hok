@@ -997,203 +997,213 @@ pub fn list(session: &crate::Session) -> Fallible<String> {
     config.pretty()
 }
 
-/// List every supported setting with its current value and effective default.
+/// One cell of the config listing.
 ///
-/// Returns an aligned three-column table (`key`, `value`, `default`). The
-/// current value is what hok actually uses at runtime (defaults apply when
-/// the key is unset); the default column shows the built-in default,
-/// including environment-resolved paths (`$SCOOP`, `$SCOOP_CACHE`, ...).
+/// The library never renders a config table itself: it reports *what* a value
+/// is, so the CLI can localize the placeholder cells (`Unset`, `Auto`) and
+/// print the real ones verbatim. Collapsing `Unset` into the literal `"none"`
+/// (as this module used to) made the placeholder indistinguishable from a real
+/// value — `proxy = none` is a legitimate setting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigCell {
+    /// The setting has no value.
+    Unset,
+    /// Resolved at runtime by hok (the architecture).
+    Auto,
+    /// A concrete value the user can read back and set verbatim.
+    Text(String),
+    /// A list value, rendered one element per entry.
+    List(Vec<String>),
+}
+
+impl ConfigCell {
+    fn text(value: impl Into<String>) -> ConfigCell {
+        ConfigCell::Text(value.into())
+    }
+
+    fn optional(value: Option<String>) -> ConfigCell {
+        value.map_or(ConfigCell::Unset, ConfigCell::Text)
+    }
+}
+
+/// One row of [`list_all_rows`]: the key, its current value and its built-in
+/// default. Column headers and the short description are the CLI's business
+/// (i18n lives there, not here).
+#[derive(Clone, Debug)]
+pub struct ConfigRow {
+    pub key: String,
+    pub value: ConfigCell,
+    pub default: ConfigCell,
+}
+
+/// Every supported setting with its current value and effective default.
+///
+/// The current value is what hok actually uses at runtime (defaults apply when
+/// the key is unset); the default column shows the built-in default, including
+/// environment-resolved paths (`$SCOOP`, `$SCOOP_CACHE`, ...).
 ///
 /// # Errors
 ///
 /// Returns an error if the config is currently borrowed elsewhere.
-pub fn list_all(session: &crate::Session) -> Fallible<String> {
-    list_all_with_headers(session, "key", "value", "default")
-}
-
-/// Like list_all but with localized column headers supplied by the caller.
-/// The CLI layer owns i18n; alignment accounts for the header widths.
-pub fn list_all_with_headers(
-    session: &crate::Session,
-    key_hdr: &str,
-    value_hdr: &str,
-    default_hdr: &str,
-) -> Fallible<String> {
+pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
     let config = session.config();
 
-    let no = || "none".to_owned();
-    let mut rows: Vec<[String; 3]> = vec![[
-        "aria2-enabled".into(),
-        fmt_bool(config.aria2_enabled()).into(),
-        "true".into(),
-    ]];
+    let row = |key: &str, value: ConfigCell, default: ConfigCell| ConfigRow {
+        key: key.to_owned(),
+        value,
+        default,
+    };
+    let mut rows = vec![row(
+        "aria2-enabled",
+        ConfigCell::text(fmt_bool(config.aria2_enabled())),
+        ConfigCell::text("true"),
+    )];
+    rows.push(row(
+        "aria2-split",
+        ConfigCell::text(config.aria2_split().to_string()),
+        ConfigCell::text("5"),
+    ));
+    rows.push(row(
+        "aria2-max-connection-per-server",
+        ConfigCell::text(config.aria2_max_connection_per_server().to_string()),
+        ConfigCell::text("5"),
+    ));
+    rows.push(row(
+        "jobs",
+        ConfigCell::text(config.jobs().to_string()),
+        ConfigCell::text("4"),
+    ));
+    rows.push(row(
+        "aria2-min-split-size",
+        ConfigCell::text(fmt_size(config.aria2_min_split_size())),
+        ConfigCell::text("20M"),
+    ));
+    rows.push(row(
+        "cache_path",
+        ConfigCell::text(config.cache_path().display().to_string()),
+        ConfigCell::text(default::cache_path().display().to_string()),
+    ));
 
-    rows.push([
-        "aria2-split".into(),
-        config.aria2_split().to_string(),
-        "5".into(),
-    ]);
-    rows.push([
-        "aria2-max-connection-per-server".into(),
-        config.aria2_max_connection_per_server().to_string(),
-        "5".into(),
-    ]);
-    rows.push(["jobs".into(), config.jobs().to_string(), "4".into()]);
-    rows.push([
-        "aria2-min-split-size".into(),
-        fmt_size(config.aria2_min_split_size()),
-        "20M".into(),
-    ]);
-    rows.push([
-        "cache_path".into(),
-        config.cache_path().display().to_string(),
-        default::cache_path().display().to_string(),
-    ]);
     let cat_style = config.cat_style();
-    rows.push([
-        "cat_style".into(),
+    rows.push(row(
+        "cat_style",
         if cat_style.is_empty() {
-            no()
+            ConfigCell::Unset
         } else {
-            cat_style.to_owned()
+            ConfigCell::text(cat_style)
         },
-        no(),
-    ]);
-    let editor = config.editor();
-    rows.push([
-        "editor".into(),
-        editor.map(str::to_owned).unwrap_or_else(no),
-        no(),
-    ]);
-    rows.push([
-        "default_architecture".into(),
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "editor",
+        ConfigCell::optional(config.editor().map(str::to_owned)),
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "default_architecture",
         config
             .default_architecture()
-            .unwrap_or("auto-detected")
-            .to_owned(),
-        "auto-detected".into(),
-    ]);
-    rows.push([
-        "global_path".into(),
-        config.global_path().display().to_string(),
-        default::global_path().display().to_string(),
-    ]);
-    rows.push([
-        "gh_token".into(),
-        config.gh_token.as_deref().unwrap_or("none").to_owned(),
-        no(),
-    ]);
-    rows.push([
-        "ignore-failures".into(),
-        fmt_bool(config.ignore_failures()).into(),
-        "true".into(),
-    ]);
-    rows.push([
-        "ignore_running_processes".into(),
-        fmt_bool(config.ignore_running_processes()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "language".into(),
-        config.language().to_owned(),
-        "auto".into(),
-    ]);
-    rows.push([
-        "last_update".into(),
-        config
-            .inner
-            .last_update
-            .as_deref()
-            .unwrap_or("none")
-            .to_owned(),
-        no(),
-    ]);
-    rows.push([
-        "no-color".into(),
-        fmt_bool(config.no_color()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "confirm".into(),
-        fmt_bool(config.confirm()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "script-engine".into(),
-        fmt_bool(config.script_engine()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "no_junction".into(),
-        fmt_bool(config.no_junction()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "private_hosts".into(),
-        config
-            .private_hosts()
-            .map(|v| format!("{} host(s)", v.len()))
-            .unwrap_or_else(no),
-        no(),
-    ]);
-    rows.push([
-        "proxy".into(),
-        config.proxy().unwrap_or("none").to_owned(),
-        no(),
-    ]);
-    rows.push([
-        "root_path".into(),
-        config.root_path().display().to_string(),
-        default::root_path().display().to_string(),
-    ]);
-    let isolated = config.use_isolated_path();
-    rows.push([
-        "use_isolated_path".into(),
-        match isolated {
-            None => no(),
-            Some(IsolatedPath::Boolean(b)) => fmt_bool(*b).to_owned(),
-            Some(IsolatedPath::Named(name)) => name.clone(),
+            .map_or(ConfigCell::Auto, ConfigCell::text),
+        ConfigCell::Auto,
+    ));
+    rows.push(row(
+        "global_path",
+        ConfigCell::text(config.global_path().display().to_string()),
+        ConfigCell::text(default::global_path().display().to_string()),
+    ));
+    rows.push(row(
+        "gh_token",
+        ConfigCell::optional(config.gh_token.clone()),
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "ignore-failures",
+        ConfigCell::text(fmt_bool(config.ignore_failures())),
+        ConfigCell::text("true"),
+    ));
+    rows.push(row(
+        "ignore_running_processes",
+        ConfigCell::text(fmt_bool(config.ignore_running_processes())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "language",
+        ConfigCell::text(config.language()),
+        ConfigCell::text("auto"),
+    ));
+    rows.push(row(
+        "last_update",
+        ConfigCell::optional(config.inner.last_update.clone()),
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "no-color",
+        ConfigCell::text(fmt_bool(config.no_color())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "confirm",
+        ConfigCell::text(fmt_bool(config.confirm())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "script-engine",
+        ConfigCell::text(fmt_bool(config.script_engine())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "no_junction",
+        ConfigCell::text(fmt_bool(config.no_junction())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "private_hosts",
+        // The host *match patterns* only: `headers` carries the auth tokens
+        // these hosts need, and this listing must never print them.
+        match config.private_hosts() {
+            Some(hosts) if !hosts.is_empty() => ConfigCell::List(
+                hosts
+                    .iter()
+                    .map(|host| host.match_pattern().to_owned())
+                    .collect(),
+            ),
+            _ => ConfigCell::Unset,
         },
-        no(),
-    ]);
-    rows.push([
-        "use_sqlite_cache".into(),
-        fmt_bool(config.use_sqlite_cache()).into(),
-        "false".into(),
-    ]);
-    rows.push([
-        "virustotal_api_key".into(),
-        config
-            .virustotal_api_key
-            .as_deref()
-            .unwrap_or("none")
-            .to_owned(),
-        no(),
-    ]);
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "proxy",
+        ConfigCell::optional(config.proxy().map(str::to_owned)),
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "root_path",
+        ConfigCell::text(config.root_path().display().to_string()),
+        ConfigCell::text(default::root_path().display().to_string()),
+    ));
 
-    let key_w = rows
-        .iter()
-        .map(|r| r[0].len())
-        .max()
-        .unwrap_or(0)
-        .max(key_hdr.len());
-    let val_w = rows
-        .iter()
-        .map(|r| r[1].len())
-        .max()
-        .unwrap_or(0)
-        .max(value_hdr.len());
-    let mut out = format!(
-        "{:<key_w$}  {:<val_w$}  {default_hdr}\n",
-        key_hdr, value_hdr
-    );
-    for row in &rows {
-        out.push_str(&format!(
-            "{:<key_w$}  {:<val_w$}  {}\n",
-            row[0], row[1], row[2]
-        ));
-    }
-    Ok(out)
+    let isolated = config.use_isolated_path();
+    rows.push(row(
+        "use_isolated_path",
+        match isolated {
+            None => ConfigCell::Unset,
+            Some(IsolatedPath::Boolean(b)) => ConfigCell::text(fmt_bool(*b)),
+            Some(IsolatedPath::Named(name)) => ConfigCell::text(name.clone()),
+        },
+        ConfigCell::Unset,
+    ));
+    rows.push(row(
+        "use_sqlite_cache",
+        ConfigCell::text(fmt_bool(config.use_sqlite_cache())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
+        "virustotal_api_key",
+        ConfigCell::optional(config.virustotal_api_key.clone()),
+        ConfigCell::Unset,
+    ));
+
+    Ok(rows)
 }
 
 fn fmt_bool(value: bool) -> &'static str {
@@ -1434,18 +1444,14 @@ mod tests {
         assert!(matches!(err, Error::ConfigKeyInvalid(_)));
     }
 
-    /// `list_all` shows every supported key with its current value and
-    /// effective default; after `config set` the current value updates.
+    /// `list_all_rows` covers every supported key with its current value and
+    /// effective default; a placeholder stays distinguishable from a real
+    /// value, and after `config set` the current value updates.
     #[test]
-    fn list_all_shows_supported_keys_with_current_and_default() {
+    fn list_all_rows_covers_supported_keys_with_current_and_default() {
         let session = test_session("config_list_all");
 
-        let table = crate::config::list_all(&session).unwrap();
-        // header row
-        assert!(
-            table.lines().next().unwrap().contains("default"),
-            "expected header row, got:\n{table}"
-        );
+        let rows = crate::config::list_all_rows(&session).unwrap();
         // every key reachable through `hok config set` is listed
         for key in [
             "aria2-enabled",
@@ -1469,30 +1475,45 @@ mod tests {
             "private_hosts",
             "proxy",
             "root_path",
+            "script-engine",
             "use_isolated_path",
             "use_sqlite_cache",
             "virustotal_api_key",
         ] {
             assert!(
-                table.lines().any(|l| l.starts_with(key)),
-                "missing key {key} in:\n{table}"
+                rows.iter().any(|r| r.key == key),
+                "missing key {key} in {:?}",
+                rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>()
             );
         }
 
-        // unset bool key: current value equals the default
-        assert!(no_junction_row(&table).contains("false"), "{table}");
+        // An absent setting is `Unset` — never the literal "none", which is a
+        // real `proxy` value the CLI could not tell apart from it — and an
+        // auto-detected one is `Auto`; real values stay verbatim.
+        assert_eq!(value_of(&rows, "proxy"), ConfigCell::Unset);
+        assert_eq!(value_of(&rows, "editor"), ConfigCell::Unset);
+        assert_eq!(value_of(&rows, "cat_style"), ConfigCell::Unset);
+        assert_eq!(value_of(&rows, "default_architecture"), ConfigCell::Auto);
+        assert_eq!(
+            value_of(&rows, "no_junction"),
+            ConfigCell::Text("false".to_owned())
+        );
 
         // after setting, the current value column shows the new value
         crate::config::set(&session, "no_junction", "true").unwrap();
-        let table = crate::config::list_all(&session).unwrap();
-        assert!(no_junction_row(&table).contains("true"), "{table}");
+        let rows = crate::config::list_all_rows(&session).unwrap();
+        assert_eq!(
+            value_of(&rows, "no_junction"),
+            ConfigCell::Text("true".to_owned())
+        );
     }
 
-    fn no_junction_row(table: &str) -> &str {
-        table
-            .lines()
-            .find(|l| l.starts_with("no_junction"))
-            .expect("no_junction row")
+    fn value_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
+        rows.iter()
+            .find(|r| r.key == key)
+            .unwrap_or_else(|| panic!("missing row {key}"))
+            .value
+            .clone()
     }
 
     /// Scoop-only settings that hok does not support must be rejected by the
