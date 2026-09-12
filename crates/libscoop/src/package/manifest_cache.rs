@@ -217,6 +217,11 @@ fn insert_manifest_row(
     // skips a JSON that has none (lib/database.ps1:176). A bucket directory can
     // hold unrelated JSON (`.markdownlint.json`, `appsettings.json`), which
     // must not surface as a package with an empty version.
+    //
+    // Slightly stricter than upstream: `$null -ne $manifest.version` accepts an
+    // explicitly empty string, while the parsed manifest here cannot tell
+    // "absent" from "empty", so both are skipped. No shipping bucket has been
+    // seen to rely on an empty version.
     if manifest.version().is_empty() {
         return Ok(None);
     }

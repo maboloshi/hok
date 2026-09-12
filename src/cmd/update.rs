@@ -162,50 +162,67 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 /// Refresh the SQLite manifest cache with a single-step spinner.
 ///
 /// On a terminal the refresh spins (`cui::RowUI`, indicatif) and finishes in
-/// place as `✓ <cache_done>`; on a non-terminal (piped) it falls back to the
-/// plain `status`/`done` line pair, since indicatif's `MultiProgress` is
-/// hidden and renders nothing when the output is not a TTY.
+/// place: `✓ <cache_done>`, `✓ <cache_rebuilt>`, or `✓ <cache_rescanned>`, which
+/// names the buckets that had to be re-scanned. On a non-terminal (piped) it
+/// falls back to the plain `status`/`done` line pair, since indicatif's
+/// `MultiProgress` is hidden and renders nothing when the output is not a TTY.
+/// Nothing at all is printed when the SQLite cache is disabled.
 ///
 /// A failed refresh is an error, not a silent one: the cache drops its sync
 /// markers (so a retry rebuilds it from scratch) and the command fails with a
 /// retry hint.
 fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) -> Result<()> {
-    let outcome = match package::manifest_cache::refresh(session, changes) {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            let message = hok_i18n::t!("cmd.cache_refresh_failed", e = e);
-            if std::io::stdout().is_terminal() {
-                let mut ui = cui::RowUI::new();
-                ui.fail("manifest-cache", &message);
-            } else {
-                output::err(message);
-            }
-            // The handler printed its own message; the exit code still reports
-            // the failure.
-            return Err(crate::ExitCode(1).into());
-        }
-    };
-    if outcome == package::manifest_cache::RefreshOutcome::Disabled {
+    if !session.config().use_sqlite_cache() {
         return Ok(());
     }
 
-    let done = match &outcome {
-        package::manifest_cache::RefreshOutcome::Rebuilt => hok_i18n::t!("cmd.cache_rebuilt"),
-        package::manifest_cache::RefreshOutcome::Rescanned(buckets) if !buckets.is_empty() => {
-            hok_i18n::t!("cmd.cache_rescanned", buckets = buckets.join(", "))
-        }
-        _ => hok_i18n::t!("cmd.cache_done"),
-    };
-
+    // The spinner starts *before* the work: a full rebuild can run for tens of
+    // seconds, and this row is the only feedback while it does.
     if std::io::stdout().is_terminal() {
         let mut ui = cui::RowUI::new();
         ui.set_spin("manifest-cache", hok_i18n::t!("cmd.refresh_cache"));
-        ui.done_with("manifest-cache", done);
+        match package::manifest_cache::refresh(session, changes) {
+            Ok(outcome) => {
+                ui.done_with("manifest-cache", cache_refresh_message(&outcome));
+                Ok(())
+            }
+            Err(e) => {
+                // The row prints the message; the exit code still reports the
+                // failure.
+                ui.fail(
+                    "manifest-cache",
+                    &hok_i18n::t!("cmd.cache_refresh_failed", e = e),
+                );
+                Err(crate::ExitCode(1).into())
+            }
+        }
     } else {
         output::status(hok_i18n::t!("cmd.refresh_cache"));
-        output::done(done);
+        match package::manifest_cache::refresh(session, changes) {
+            Ok(outcome) => {
+                output::done(cache_refresh_message(&outcome));
+                Ok(())
+            }
+            Err(e) => {
+                output::err(hok_i18n::t!("cmd.cache_refresh_failed", e = e));
+                Err(crate::ExitCode(1).into())
+            }
+        }
     }
-    Ok(())
+}
+
+/// The completion line for a refresh outcome.
+fn cache_refresh_message(outcome: &package::manifest_cache::RefreshOutcome) -> String {
+    use package::manifest_cache::RefreshOutcome;
+
+    match outcome {
+        RefreshOutcome::Rebuilt => hok_i18n::t!("cmd.cache_rebuilt"),
+        RefreshOutcome::Rescanned(buckets) if !buckets.is_empty() => {
+            hok_i18n::t!("cmd.cache_rescanned", buckets = buckets.join(", "))
+        }
+        // Incremental, or a `Disabled` outcome the caller already filtered out.
+        _ => hok_i18n::t!("cmd.cache_done"),
+    }
 }
 
 /// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.

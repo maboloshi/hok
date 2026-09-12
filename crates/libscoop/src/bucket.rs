@@ -574,7 +574,16 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
     // A bucket with no marker (never synced, or the marker table is new) can't
     // be diffed and is re-scanned fully instead.
     let baselines = if track_cache {
-        crate::package::manifest_cache::synced_baselines(session).unwrap_or_default()
+        match crate::package::manifest_cache::synced_baselines(session) {
+            Ok(baselines) => baselines,
+            Err(e) => {
+                // Without the markers nothing can be diffed and every bucket is
+                // re-scanned below. That is the safe direction, but it is worth
+                // saying why the work grew.
+                tracing::warn!("cannot read the manifest cache sync markers: {e}");
+                std::collections::HashMap::new()
+            }
+        }
     } else {
         std::collections::HashMap::new()
     };
