@@ -43,19 +43,27 @@ use crate::{cui, format, output};
 use crossterm::{ExecutableCommand, cursor};
 use libscoop::package::sync::Transaction;
 use libscoop::{Event, EventHandler, Session};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 /// RAII guard: hides cursor on construction, restores on drop.
+///
+/// Both edges only touch a terminal: with stdout redirected the escapes would
+/// be written into the captured output (e.g. a `hok import` log), which is the
+/// same defect as the exit-time restore in `bin/hok.rs`.
 struct CursorGuard;
 impl CursorGuard {
     fn hide() -> Self {
-        let _ = std::io::stdout().execute(cursor::Hide);
+        if std::io::stdout().is_terminal() {
+            let _ = std::io::stdout().execute(cursor::Hide);
+        }
         CursorGuard
     }
 }
 impl Drop for CursorGuard {
     fn drop(&mut self) {
-        let _ = std::io::stdout().execute(cursor::Show);
+        if std::io::stdout().is_terminal() {
+            let _ = std::io::stdout().execute(cursor::Show);
+        }
     }
 }
 
