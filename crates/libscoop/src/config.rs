@@ -1296,24 +1296,6 @@ pub fn set(session: &crate::Session, key: &str, value: &str) -> Fallible<()> {
     write(&session.config())
 }
 
-/// Add an alias to the config.
-pub fn alias_add(session: &crate::Session, name: &str, command: &str) -> Fallible<()> {
-    {
-        let mut config = session.config_mut()?;
-        config.set_alias(name, Some(command))?;
-    }
-    write(&session.config())
-}
-
-/// Remove an alias from the config.
-pub fn alias_remove(session: &crate::Session, name: &str) -> Fallible<()> {
-    {
-        let mut config = session.config_mut()?;
-        config.set_alias(name, None)?;
-    }
-    write(&session.config())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

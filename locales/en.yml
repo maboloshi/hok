@@ -79,6 +79,9 @@ action:
   reset: "reset"
 cmd:
   header_aliases: "Aliases"
+  alias_header_name: "Name"
+  alias_header_command: "Command"
+  alias_header_summary: "Summary"
   header_buckets: "Updating buckets"
   header_buckets_list: "Known buckets"
   header_installed_apps: "Installed apps"
@@ -370,6 +373,11 @@ error:
   config_in_use: "Could not alter config because it is in use."
   config_key_invalid: "invalid config key '%{key}'"
   config_value_invalid: "invalid config value '%{value}'"
+  alias_already_exists: "Alias '%{name}' already exists."
+  alias_not_found: "Alias '%{name}' doesn't exist."
+  alias_script_exists: "File '%{file}' already exists in shims directory."
+  alias_invalid_name: "invalid alias name '%{name}'"
+  alias_reserved_name: "'%{name}' is a built-in command and cannot be used as an alias"
   user_agent_already_set: "User agent already set"
   output_already_set: "Output sink already set"
   infra_already_set: "Infra implementation already set"
@@ -421,7 +429,9 @@ cli_help:
       add: Add a new alias
       add.name: Alias name
       add.value: Command to execute
+      add.description: Alias description (written as the script's `# Summary:` line)
       list: List all aliases (default)
+      list.verbose: Show the alias description column
       remove: Remove an alias
       remove.name: Alias name to remove
     about: "List, add, or remove Scoop aliases"

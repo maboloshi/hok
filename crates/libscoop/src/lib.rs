@@ -54,6 +54,7 @@
 #[macro_use]
 extern crate serde;
 
+pub mod alias;
 pub mod bucket;
 pub mod cache;
 pub mod config;

@@ -71,6 +71,29 @@ pub enum Error {
     #[error("invalid config value '{0}'")]
     ConfigValueInvalid(String),
 
+    /// Thrown when adding an alias whose name is already configured.
+    #[error("Alias '{0}' already exists.")]
+    AliasAlreadyExists(String),
+
+    /// Thrown when removing an alias that is not configured.
+    #[error("Alias '{0}' doesn't exist.")]
+    AliasNotFound(String),
+
+    /// Thrown when adding an alias whose script file is already present in the
+    /// shims directory (upstream `add_alias`'s second guard).
+    #[error("File '{0}' already exists in shims directory.")]
+    AliasScriptExists(String),
+
+    /// Thrown when an alias name cannot be used as a `scoop-<name>.ps1` script
+    /// name (empty, whitespace, or a path separator / reserved filename char).
+    #[error("invalid alias name '{0}'")]
+    AliasInvalidName(String),
+
+    /// Thrown when an alias name collides with a built-in command: clap
+    /// resolves built-ins before aliases, so such an alias is unreachable.
+    #[error("Alias '{0}' conflicts with a built-in command.")]
+    AliasReservedName(String),
+
     /// Thrown when trying to set the user agent twice.
     #[error("User agent already set")]
     UserAgentAlreadySet,
@@ -198,6 +221,11 @@ impl Error {
             Error::ConfigInUse => "error.config_in_use",
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
+            Error::AliasAlreadyExists(_) => "error.alias_already_exists",
+            Error::AliasNotFound(_) => "error.alias_not_found",
+            Error::AliasScriptExists(_) => "error.alias_script_exists",
+            Error::AliasInvalidName(_) => "error.alias_invalid_name",
+            Error::AliasReservedName(_) => "error.alias_reserved_name",
             Error::UserAgentAlreadySet => "error.user_agent_already_set",
             Error::OutputAlreadySet => "error.output_already_set",
             Error::InfraAlreadySet => "error.infra_already_set",
@@ -269,6 +297,30 @@ mod tests {
         assert_eq!(
             Error::ConfigValueInvalid("x".into()).error_key(),
             "error.config_value_invalid"
+        );
+    }
+
+    #[test]
+    fn test_error_key_alias() {
+        assert_eq!(
+            Error::AliasAlreadyExists("rm".into()).error_key(),
+            "error.alias_already_exists"
+        );
+        assert_eq!(
+            Error::AliasNotFound("rm".into()).error_key(),
+            "error.alias_not_found"
+        );
+        assert_eq!(
+            Error::AliasScriptExists("scoop-rm.ps1".into()).error_key(),
+            "error.alias_script_exists"
+        );
+        assert_eq!(
+            Error::AliasInvalidName("a b".into()).error_key(),
+            "error.alias_invalid_name"
+        );
+        assert_eq!(
+            Error::AliasReservedName("list".into()).error_key(),
+            "error.alias_reserved_name"
         );
     }
 

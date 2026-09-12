@@ -35,7 +35,7 @@
 
 use clap::{
     ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand, crate_description, crate_name,
-    crate_version,
+    crate_version, error::ErrorKind,
 };
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
@@ -164,6 +164,25 @@ pub enum Command {
     Which(which::Args),
 }
 
+/// Every top-level subcommand name and clap alias of `cmd`.
+fn command_names(cmd: &clap::Command) -> Vec<String> {
+    cmd.get_subcommands()
+        .flat_map(|s| {
+            let mut all = vec![s.get_name().to_string()];
+            all.extend(s.get_aliases().map(|a| a.to_string()));
+            all
+        })
+        .collect()
+}
+
+/// The top-level command names clap resolves for the freshly built CLI tree.
+///
+/// `alias add` uses this to reject alias names clap would match before the
+/// alias is ever consulted — such an alias could never run.
+pub(crate) fn cli_command_names() -> Vec<String> {
+    command_names(&Cli::command())
+}
+
 /// Normalise the subcommand token in raw CLI args to lowercase so subcommand
 /// matching is case-insensitive, matching Scoop/PowerShell semantics.
 ///
@@ -172,14 +191,7 @@ pub enum Command {
 /// known subcommand name or alias (ASCII case-insensitively) — so positional
 /// values like `hok search Foo` are never touched.
 fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsString> {
-    let names: Vec<String> = cmd
-        .get_subcommands()
-        .flat_map(|s| {
-            let mut all = vec![s.get_name().to_string()];
-            all.extend(s.get_aliases().map(|a| a.to_string()));
-            all
-        })
-        .collect();
+    let names = command_names(cmd);
 
     let sub_pos = raw
         .iter()
@@ -206,6 +218,40 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
             }
         })
         .collect()
+}
+
+/// Split raw CLI arguments into an alias name and the arguments following it.
+///
+/// The name is the first non-option token; option *values* are skipped so that
+/// `hok --lang zh foo a` yields `("foo", ["a"])` rather than mistaking `zh` for
+/// the subcommand. Only called once clap has already rejected the token as an
+/// unknown subcommand, so a `None` here means there is nothing to dispatch.
+fn alias_invocation(cmd: &clap::Command, raw: &[OsString]) -> Option<(String, Vec<OsString>)> {
+    let mut i = 1; // argv[0] is the program name
+    while i < raw.len() {
+        let token = raw[i].to_string_lossy();
+        if token.starts_with('-') {
+            let takes_value = !token.contains('=') && option_takes_value(cmd, &token);
+            i += if takes_value { 2 } else { 1 };
+            continue;
+        }
+        return Some((token.into_owned(), raw[i + 1..].to_vec()));
+    }
+    None
+}
+
+/// Whether the top-level option spelled `-x` / `--xxx` consumes the next
+/// argument (`--lang zh`), as opposed to being a flag (`--no-color`).
+fn option_takes_value(cmd: &clap::Command, option: &str) -> bool {
+    let name = option.trim_start_matches('-');
+    let short = match name.chars().count() {
+        1 => name.chars().next(),
+        _ => None,
+    };
+    cmd.get_arguments().any(|a| {
+        a.get_action().takes_values()
+            && (a.get_long() == Some(name) || short.is_some_and(|c| a.get_short() == Some(c)))
+    })
 }
 
 /// Localize every structural section heading in the help of *all* commands.
@@ -346,8 +392,29 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
         // lowercase before parsing — see [`normalize_subcommand_case`].
         let raw: Vec<OsString> = std::env::args_os().collect();
         let normalized = normalize_subcommand_case(&cmd, raw);
-        Cli::from_arg_matches(&cmd.get_matches_from(normalized))
-    }?;
+        match cmd.clone().try_get_matches_from(normalized.clone()) {
+            Ok(matches) => Cli::from_arg_matches(&matches)?,
+            Err(err) => {
+                // Aliases are not clap subcommands: they are scripts in the
+                // shims directory, exactly as upstream resolves them
+                // (`command_files` globs `shims\scoop-*.ps1`). So an unknown
+                // subcommand may still name one. Everything that is not an
+                // alias falls through to clap's own diagnostic — same message,
+                // same exit code, as when `get_matches_from` handled it.
+                if err.kind() == ErrorKind::InvalidSubcommand
+                    && let Some((name, rest)) = alias_invocation(&cmd, &normalized)
+                    && let Some(code) = alias::dispatch(&Session::default(), &name, &rest).await?
+                {
+                    return if code == 0 {
+                        Ok(())
+                    } else {
+                        Err(crate::ExitCode(code).into())
+                    };
+                }
+                err.exit()
+            }
+        }
+    };
 
     // If user explicitly set --lang in Cli args (not auto), re-init with explicit choice
     if !matches!(args.language, LanguageChoice::Auto) {

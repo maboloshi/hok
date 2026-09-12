@@ -144,7 +144,8 @@ Compared to the original hok, this fork adds:
 - **cleanup** — remove old versions of installed packages
 - **depends / prefix / which / checkup / shim** — new CLI commands
 - **export / import** — export/import installed package lists as JSON
-- **alias** — list/add/remove aliases with config persistence
+- **alias** — list/add/remove Scoop aliases; each alias is a runnable
+  `shims\scoop-<name>.ps1` script (`hok <name> [args]` runs it)
 - **create** — generate manifest skeleton from download URL
 - **virustotal** — VirusTotal API v3 integration
 
