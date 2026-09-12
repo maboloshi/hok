@@ -51,6 +51,7 @@ pub mod formatjson;
 pub mod hold;
 pub(crate) mod identity;
 pub mod import;
+pub mod info;
 pub(crate) mod install_state;
 pub mod list;
 pub(crate) mod manifest;
@@ -290,29 +291,7 @@ impl Package {
         self.manifest
             .url()
             .into_iter()
-            .map(|u| {
-                let mut hasher = crate::internal::hash::ChecksumBuilder::new()
-                    .sha256()
-                    .build();
-                hasher.consume(u.as_bytes());
-                let mut hash = hasher.finalize();
-                hash.truncate(7);
-                // Strip the query so `?download=1`-style URLs do not produce
-                // cache filenames containing `?` (illegal on Windows). The
-                // `#/rename.ext` Scoop fragment is kept — its extension is
-                // what matters for archive detection.
-                let path = PathBuf::from(internal::url::strip_url_query(u));
-                let mut ext = path
-                    .extension()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if !ext.is_empty() {
-                    ext.insert(0, '.');
-                }
-
-                format!("{}#{}#{}{}", self.name(), self.version(), hash, ext)
-            })
+            .map(|u| cache_file_name(self.name(), self.version(), u))
             .collect::<Vec<_>>()
     }
 
@@ -349,6 +328,31 @@ impl Package {
                 InstallState::NotInstalled => None,
                 InstallState::Installed(info) => Some(info.version()),
             },
+        }
+    }
+
+    /// Get the architecture recorded in the package's `install.json`.
+    ///
+    /// This is the architecture *selected* at install time (after the
+    /// `default_architecture` config and `-a/--arch` overrides), mirroring the
+    /// `$install.architecture` that `scoop info` uses to pick
+    /// architecture-specific manifest fields (libexec/scoop-info.ps1:229).
+    pub fn installed_arch(&self) -> Option<&str> {
+        match self.install_state.get()? {
+            InstallState::NotInstalled => None,
+            InstallState::Installed(info) => Some(info.arch.as_str()),
+        }
+    }
+
+    /// Get the source URL recorded in the package's `install.json`.
+    ///
+    /// Only URL / local-manifest installs carry one; bucket installs record a
+    /// bucket instead. Mirrors upstream's `$install.url`
+    /// (libexec/scoop-info.ps1:41-47).
+    pub fn installed_url(&self) -> Option<&str> {
+        match self.install_state.get()? {
+            InstallState::NotInstalled => None,
+            InstallState::Installed(info) => info.url(),
         }
     }
 
@@ -583,6 +587,37 @@ impl HashMismatchContext {
     pub fn actual(&self) -> &str {
         self.actual.as_str()
     }
+}
+
+/// The cache file name of one download URL: `<name>#<version>#<hash><ext>`.
+///
+/// The single definition of hok's cache naming — [`Package::download_filenames`]
+/// (what the downloader writes) and the `info` command's "is this version
+/// cached" probe (upstream `cache_path $app $version $url`) both go through it,
+/// so a change to the formula cannot leave `info` reporting a stale cache
+/// state. Upstream derives the same shape in `cache_path` (lib/core.ps1:367)
+/// with a SHA256 prefix of the URL as the unique part.
+pub(crate) fn cache_file_name(name: &str, version: &str, url: &str) -> String {
+    let mut hasher = crate::internal::hash::ChecksumBuilder::new()
+        .sha256()
+        .build();
+    hasher.consume(url.as_bytes());
+    let mut hash = hasher.finalize();
+    hash.truncate(7);
+    // Strip the query so `?download=1`-style URLs do not produce cache
+    // filenames containing `?` (illegal on Windows). The `#/rename.ext` Scoop
+    // fragment is kept — its extension is what matters for archive detection.
+    let path = PathBuf::from(internal::url::strip_url_query(url));
+    let mut ext = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    if !ext.is_empty() {
+        ext.insert(0, '.');
+    }
+
+    format!("{name}#{version}#{hash}{ext}")
 }
 
 #[cfg(test)]

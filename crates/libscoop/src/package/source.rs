@@ -58,6 +58,29 @@ fn deprecated_roots(bucket_dir: &Path) -> Vec<PathBuf> {
         .collect::<Vec<_>>()
 }
 
+/// The deprecated manifest file of `name` in `bucket`, if any.
+///
+/// `name` is matched case-insensitively (manifest filenames are conventionally
+/// lower-cased). Shared by [`classify`] — which only needs the flag — and the
+/// `info` command, which must also *show* that path as the package's manifest
+/// (upstream libexec/scoop-info.ps1:66-81, lib/core.ps1:557).
+pub(crate) fn deprecated_manifest_path(
+    session: &Session,
+    bucket: &str,
+    name: &str,
+) -> Option<PathBuf> {
+    deprecated_manifest_in(&deprecated_roots(&session.bucket_dir(bucket)), name)
+}
+
+/// [`deprecated_manifest_path`] against pre-resolved `deprecated` folders.
+fn deprecated_manifest_in(roots: &[PathBuf], name: &str) -> Option<PathBuf> {
+    let filename = format!("{}.json", name.to_lowercase());
+    roots
+        .iter()
+        .map(|dir| dir.join(&filename))
+        .find(|path| path.exists())
+}
+
 /// Classify every installed package; returns one SourceState per input
 /// package (order preserved). Bucket-installed apps are grouped by their
 /// origin bucket and each bucket is resolved with cheap per-app `exists()`
@@ -104,10 +127,7 @@ pub fn classify(session: &Session, pkgs: &[Package]) -> Vec<SourceState> {
             // Manifest filenames are conventionally lower-cased; match how
             // the bucket index keys were previously normalised.
             let name = pkgs[i].name().to_lowercase();
-            let deprecated = deprecated_roots
-                .iter()
-                .any(|dir| dir.join(format!("{name}.json")).exists());
-            if deprecated {
+            if deprecated_manifest_in(&deprecated_roots, &name).is_some() {
                 out[i] = SourceState::Deprecated;
                 continue;
             }

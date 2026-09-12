@@ -86,6 +86,85 @@ pub fn is_admin() -> bool {
     }
 }
 
+/// The owner account name of a file, mirroring PowerShell's
+/// `(Get-Acl $path).Owner.Split('\')[-1]`.
+///
+/// This is the `Updated by` fallback of `scoop info`
+/// (libexec/scoop-info.ps1:132) for manifest files whose bucket is not a git
+/// repository: the account name only, without the `DOMAIN\` prefix.
+///
+/// Returns `None` on non-Windows platforms, when the file's security
+/// descriptor cannot be read, or when the owner SID cannot be resolved.
+pub fn file_owner_name(path: &Path) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        owner_name_windows(path)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Windows half of [`file_owner_name`]: read the owner SID from the file's
+/// security descriptor and resolve it to an account name.
+#[cfg(target_os = "windows")]
+fn owner_name_windows(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{LookupAccountSidW, OWNER_SECURITY_INFORMATION};
+
+    let path_wide = encode_wide(&path.to_string_lossy());
+
+    // SAFETY: `path_wide` is a valid null-terminated UTF-16 string and every
+    // out-parameter is a valid pointer. On success `sd` is a security
+    // descriptor allocated by the API that owns `owner`; both are released
+    // with `LocalFree` before returning.
+    unsafe {
+        let mut owner: *mut c_void = std::ptr::null_mut();
+        let mut sd: *mut c_void = std::ptr::null_mut();
+        let status = GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut sd,
+        );
+        if status != 0 || owner.is_null() {
+            LocalFree(sd);
+            return None;
+        }
+
+        let mut name = [0u16; 256];
+        let mut name_len = name.len() as u32;
+        let mut domain = [0u16; 256];
+        let mut domain_len = domain.len() as u32;
+        let mut sid_use = 0; // SID_NAME_USE
+        let ok = LookupAccountSidW(
+            std::ptr::null(),
+            owner,
+            name.as_mut_ptr(),
+            &mut name_len,
+            domain.as_mut_ptr(),
+            &mut domain_len,
+            &mut sid_use,
+        );
+        LocalFree(sd);
+        if ok == 0 {
+            return None;
+        }
+
+        // `cchName` is the character count, excluding the terminating NUL.
+        Some(String::from_utf16_lossy(
+            &name[..(name_len as usize).min(name.len())],
+        ))
+    }
+}
+
 /// Check if a given executable is available on the system.
 pub fn is_program_available(exe: &str) -> bool {
     if let Ok(path) = std::env::var("PATH") {
@@ -379,6 +458,26 @@ unsafe extern "system" {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[cfg(windows)]
+    #[test]
+    fn file_owner_name_resolves_an_account_without_the_domain() {
+        let dir = std::env::temp_dir().join(format!("hok-owner-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("owned.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let owner = file_owner_name(&file).expect("the owner resolves");
+        assert!(!owner.is_empty());
+        // Upstream keeps only the last `\`-separated segment.
+        assert!(
+            !owner.contains('\\'),
+            "domain prefix must be stripped: {owner}"
+        );
+        assert!(file_owner_name(&dir.join("missing.txt")).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn starts_with_ignore_case_matches_components() {

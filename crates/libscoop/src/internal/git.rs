@@ -232,6 +232,71 @@ pub fn head_commit_id<P: AsRef<Path>>(path: P) -> Option<String> {
     Some(repo.head().ok()?.target()?.to_string())
 }
 
+/// Upper bound on commits inspected while looking for the one that touched a
+/// file. The target is normally the repository HEAD, so the walk stops after a
+/// commit or two; the cap only keeps a pathological history (a file whose only
+/// change is thousands of commits deep) from stalling the caller.
+const MAX_COMMITS_SCANNED: usize = 5000;
+
+/// The most recent commit that touched `file`, mirroring
+/// `git log -1 -s --format=%aD#%an -- <file>`.
+///
+/// This is the metadata `scoop info` shows as `Updated at` / `Updated by`
+/// (libexec/scoop-info.ps1:123-134): upstream runs git with
+/// `-C (Split-Path $manifest_file)`, so the repository is discovered from the
+/// file's parent directory.
+///
+/// # Returns
+///
+/// The commit author's Unix timestamp (seconds) and name, or `None` when the
+/// file is outside a work tree, no commit in the reachable history touches it,
+/// or the repository cannot be read.
+pub fn last_commit_for_file<P: AsRef<Path>>(file: P) -> Option<(i64, String)> {
+    let file = file.as_ref();
+    let repo = Repository::discover(file.parent()?).ok()?;
+    // Pathspecs are relative to the work tree root and use `/` separators.
+    let rel = file.strip_prefix(repo.workdir()?).ok()?;
+    let rel = rel.to_string_lossy().replace('\\', "/");
+
+    let mut walk = repo.revwalk().ok()?;
+    walk.push_head().ok()?;
+
+    for (scanned, oid) in walk.enumerate() {
+        if scanned >= MAX_COMMITS_SCANNED {
+            break;
+        }
+        let Ok(oid) = oid else { continue };
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        if !commit_touches(&repo, &commit, &rel) {
+            continue;
+        }
+        let author = commit.author();
+        return Some((
+            author.when().seconds(),
+            author.name().unwrap_or_default().to_owned(),
+        ));
+    }
+
+    None
+}
+
+/// Whether `commit` modifies `path` relative to its first parent (or, for a
+/// root commit, relative to the empty tree).
+fn commit_touches(repo: &Repository, commit: &git2::Commit<'_>, path: &str) -> bool {
+    let Ok(tree) = commit.tree() else {
+        return false;
+    };
+    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(path);
+    repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))
+        .map(|diff| diff.deltas().len() > 0)
+        .unwrap_or(false)
+}
+
 /// A manifest file that changed between two commits of a bucket repo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestDiffEntry {
@@ -635,5 +700,31 @@ mod tests {
         pull_task.await.unwrap();
         cleanup(&origin_dir);
         cleanup(&clone_dir);
+    }
+
+    /// `git log -1 -- <file>` semantics: the newest commit that actually
+    /// touched the file, not simply HEAD.
+    #[test]
+    fn last_commit_for_file_skips_commits_that_did_not_touch_it() {
+        let dir = temp_dir("last-commit");
+        let repo = Repository::init(&dir).unwrap();
+        commit_file(&repo, "touched.json", "{}\n", "add touched");
+        commit_file(&repo, "other.json", "{}\n", "add other");
+
+        let (secs, author) = last_commit_for_file(dir.join("touched.json")).expect("a commit");
+        assert_eq!(author, "hok tester");
+        // The test signature pins the author time to the Unix epoch.
+        assert_eq!(secs, 0);
+
+        // A file no commit ever carried has no history…
+        std::fs::write(dir.join("untracked.json"), "{}\n").unwrap();
+        assert!(last_commit_for_file(dir.join("untracked.json")).is_none());
+        // …and neither has a file outside any repository.
+        let plain = temp_dir("last-commit-plain");
+        std::fs::write(plain.join("x.json"), "{}\n").unwrap();
+        assert!(last_commit_for_file(plain.join("x.json")).is_none());
+
+        cleanup(&dir);
+        cleanup(&plain);
     }
 }
