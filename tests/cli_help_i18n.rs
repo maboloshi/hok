@@ -269,7 +269,9 @@ fn argument_routing_is_not_shifted() {
         Probe {
             label: "checkver --timeout keeps its own parser",
             argv: &["checkver", "--timeout", "abc"],
-            code: 2,
+            // A usage error exits 1 like the official scripts (`<app> missing`
+            // is reported before `exit 1`), not clap's default 2.
+            code: 1,
             contains: Some("--timeout"),
             rejects: Some("--lang"),
         },

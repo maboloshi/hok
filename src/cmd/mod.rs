@@ -183,6 +183,55 @@ pub(crate) fn cli_command_names() -> Vec<String> {
     command_names(&Cli::command())
 }
 
+/// Index of the first positional token in the raw argv (the subcommand).
+///
+/// `argv[0]` is the program name and every leading option (including global
+/// options such as `--lang zh`) is skipped; hok commands are all
+/// single-level, so the first non-option argument is always the subcommand.
+fn subcommand_index(raw: &[OsString]) -> Option<usize> {
+    raw.iter()
+        .enumerate()
+        .skip(1) // argv[0] is the program name
+        .find(|(_, a)| {
+            let s = a.to_string_lossy();
+            !s.is_empty() && !s.starts_with('-')
+        })
+        .map(|(i, _)| i)
+}
+
+/// Render a clap parse outcome and turn it into the process exit code.
+///
+/// Scoop's own codes for the two screens differ from clap's defaults:
+/// help/version exit 0 (`bin/scoop.ps1:18-19` renders help for a bare
+/// `scoop`), while a usage error exits 1 (`libexec/scoop-install.ps1:60`
+/// reports `<app> missing` before `exit 1`, and `abort` defaults to 1 in
+/// `lib/core.ps1:293`). clap's `get_matches_from` would instead exit 2 for
+/// both, so the error is rendered here and the code chosen explicitly.
+///
+/// A bare invocation (`hok`, `hok --lang zh`) is Scoop's help screen and
+/// therefore exits 0; asking for help of a *subcommand* without its required
+/// arguments (`hok install`) is a usage error and exits 1.
+fn exit_for_parse_error(err: clap::error::Error, raw: &[OsString]) -> crate::ExitCode {
+    use clap::error::ErrorKind;
+
+    let asked_for_help = matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    );
+    let bare_invocation = err.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        && subcommand_index(raw).is_none();
+
+    let code = if asked_for_help || bare_invocation {
+        0
+    } else {
+        1
+    };
+    // `print` writes help/version to stdout and errors to stderr; the code
+    // above is what the process reports either way.
+    let _ = err.print();
+    crate::ExitCode(code)
+}
+
 /// Normalise the subcommand token in raw CLI args to lowercase so subcommand
 /// matching is case-insensitive, matching Scoop/PowerShell semantics.
 ///
@@ -190,18 +239,10 @@ pub(crate) fn cli_command_names() -> Vec<String> {
 /// single-level). Only that token is rewritten, and only when it matches a
 /// known subcommand name or alias (ASCII case-insensitively) — so positional
 /// values like `hok search Foo` are never touched.
-fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsString> {
+fn normalize_subcommand_case(cmd: &clap::Command, raw: &[OsString]) -> Vec<OsString> {
     let names = command_names(cmd);
 
-    let sub_pos = raw
-        .iter()
-        .enumerate()
-        .skip(1) // argv[0] is the program name
-        .find(|(_, a)| {
-            let s = a.to_string_lossy();
-            !s.is_empty() && !s.starts_with('-')
-        })
-        .map(|(i, _)| i);
+    let sub_pos = subcommand_index(raw);
 
     raw.iter()
         .enumerate()
@@ -391,16 +432,14 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
         // non-option argument; hok commands are all single-level) to
         // lowercase before parsing — see [`normalize_subcommand_case`].
         let raw: Vec<OsString> = std::env::args_os().collect();
-        let normalized = normalize_subcommand_case(&cmd, raw);
+        let normalized = normalize_subcommand_case(&cmd, &raw);
         match cmd.clone().try_get_matches_from(normalized.clone()) {
             Ok(matches) => Cli::from_arg_matches(&matches)?,
             Err(err) => {
                 // Aliases are not clap subcommands: they are scripts in the
                 // shims directory, exactly as upstream resolves them
                 // (`command_files` globs `shims\scoop-*.ps1`). So an unknown
-                // subcommand may still name one. Everything that is not an
-                // alias falls through to clap's own diagnostic — same message,
-                // same exit code, as when `get_matches_from` handled it.
+                // subcommand may still name one.
                 if err.kind() == ErrorKind::InvalidSubcommand
                     && let Some((name, rest)) = alias_invocation(&cmd, &normalized)
                     && let Some(code) = alias::dispatch(&Session::default(), &name, &rest).await?
@@ -411,7 +450,10 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
                         Err(crate::ExitCode(code).into())
                     };
                 }
-                err.exit()
+                // Everything that is not an alias is a clap parse outcome,
+                // rendered with Scoop's codes instead of clap's own 2 — see
+                // [`exit_for_parse_error`].
+                return Err(exit_for_parse_error(err, &raw).into());
             }
         }
     };
