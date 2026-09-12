@@ -232,69 +232,107 @@ pub fn head_commit_id<P: AsRef<Path>>(path: P) -> Option<String> {
     Some(repo.head().ok()?.target()?.to_string())
 }
 
-/// Upper bound on commits inspected while looking for the one that touched a
-/// file. The target is normally the repository HEAD, so the walk stops after a
-/// commit or two; the cap only keeps a pathological history (a file whose only
-/// change is thousands of commits deep) from stalling the caller.
-const MAX_COMMITS_SCANNED: usize = 5000;
+/// Upper bound on commits visited while following a file's history. The walk
+/// stops at the first commit that is not "treesame" with a parent, so the cap
+/// is only a safety net for a pathological history.
+const MAX_COMMITS_SCANNED: usize = 200_000;
 
-/// The most recent commit that touched `file`, mirroring
+/// The most recent commit that changed `file`, mirroring
 /// `git log -1 -s --format=%aD#%an -- <file>`.
 ///
 /// This is the metadata `scoop info` shows as `Updated at` / `Updated by`
-/// (libexec/scoop-info.ps1:123-134): upstream runs git with
-/// `-C (Split-Path $manifest_file)`, so the repository is discovered from the
-/// file's parent directory.
+/// (libexec/scoop-info.ps1:123-134). Upstream shells out to git and falls back
+/// to the file's mtime + owner; hok resolves it through libgit2 instead, so it
+/// never needs git on PATH — the same rule the rest of hok follows (buckets are
+/// cloned with libgit2).
+///
+/// The walk reproduces git's default history simplification with tree-entry
+/// lookups instead of comparing each commit to its parent with a full diff:
+///
+/// - a commit whose blob for the path equals a parent's is not a change — keep
+///   following that parent and ignore the others (this is what makes a merge
+///   that merely carried the change into HEAD invisible, exactly as
+///   `git log -- <path>` simplifies it away);
+/// - the first commit that differs from **every** parent is the answer;
+/// - the root commit only counts when the path already exists there.
+///
+/// Picking the first parent's diff alone instead reported the wrong author for
+/// a merge, and diffing every commit against its parent loaded whole bucket
+/// trees per commit (`hok info git` took 1.69 s, against 0.63 s here with
+/// `-v` at 1.97 s against 0.91 s): the blob is carried from one commit to the
+/// next, so a linear history looks each one up once, and an identical tree id
+/// settles a parent without any object lookup at all.
 ///
 /// # Returns
 ///
 /// The commit author's Unix timestamp (seconds) and name, or `None` when the
-/// file is outside a work tree, no commit in the reachable history touches it,
+/// file is outside a work tree, no commit in the reachable history changed it,
 /// or the repository cannot be read.
 pub fn last_commit_for_file<P: AsRef<Path>>(file: P) -> Option<(i64, String)> {
     let file = file.as_ref();
     let repo = Repository::discover(file.parent()?).ok()?;
-    // Pathspecs are relative to the work tree root and use `/` separators.
+    // Tree paths are relative to the work tree root and use `/` separators.
     let rel = file.strip_prefix(repo.workdir()?).ok()?;
     let rel = rel.to_string_lossy().replace('\\', "/");
 
-    let mut walk = repo.revwalk().ok()?;
-    walk.push_head().ok()?;
+    let mut commit = repo.head().ok()?.peel_to_commit().ok()?;
+    let mut blob = blob_at(&commit, &rel);
 
-    for (scanned, oid) in walk.enumerate() {
-        if scanned >= MAX_COMMITS_SCANNED {
-            break;
+    for _ in 0..MAX_COMMITS_SCANNED {
+        if commit.parent_count() == 0 {
+            return blob.is_some().then(|| author_of(&commit));
         }
-        let Ok(oid) = oid else { continue };
-        let Ok(commit) = repo.find_commit(oid) else {
-            continue;
-        };
-        if !commit_touches(&repo, &commit, &rel) {
-            continue;
+
+        let mut treesame = None;
+        for index in 0..commit.parent_count() {
+            // A parent that cannot be read (shallow clone, corruption) leaves
+            // the history unverifiable — report "no metadata" rather than
+            // guessing a commit.
+            let parent = commit.parent(index).ok()?;
+            // An identical tree id means the commit changed nothing at all
+            // relative to that parent, so the path cannot have changed either.
+            if parent.tree_id() == commit.tree_id() {
+                treesame = Some((parent, blob));
+                break;
+            }
+            let parent_blob = blob_at(&parent, &rel);
+            if parent_blob == blob {
+                treesame = Some((parent, parent_blob));
+                break;
+            }
         }
-        let author = commit.author();
-        return Some((
-            author.when().seconds(),
-            author.name().unwrap_or_default().to_owned(),
-        ));
+
+        match treesame {
+            Some((parent, parent_blob)) => {
+                commit = parent;
+                // The next iteration would only look this up again.
+                blob = parent_blob;
+            }
+            None => return Some(author_of(&commit)),
+        }
     }
 
     None
 }
 
-/// Whether `commit` modifies `path` relative to its first parent (or, for a
-/// root commit, relative to the empty tree).
-fn commit_touches(repo: &Repository, commit: &git2::Commit<'_>, path: &str) -> bool {
-    let Ok(tree) = commit.tree() else {
-        return false;
-    };
-    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+/// The blob a commit's tree carries for `path`, or `None` when the commit does
+/// not contain it.
+fn blob_at(commit: &git2::Commit<'_>, path: &str) -> Option<git2::Oid> {
+    commit
+        .tree()
+        .ok()?
+        .get_path(Path::new(path))
+        .ok()
+        .map(|entry| entry.id())
+}
 
-    let mut opts = git2::DiffOptions::new();
-    opts.pathspec(path);
-    repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))
-        .map(|diff| diff.deltas().len() > 0)
-        .unwrap_or(false)
+/// The author of a commit, as `(Unix seconds, name)`.
+fn author_of(commit: &git2::Commit<'_>) -> (i64, String) {
+    let author = commit.author();
+    (
+        author.when().seconds(),
+        author.name().unwrap_or_default().to_owned(),
+    )
 }
 
 /// A manifest file that changed between two commits of a bucket repo.
@@ -460,6 +498,26 @@ mod tests {
 
     fn sig() -> Signature<'static> {
         Signature::new("hok tester", "tester@example.com", &Time::new(0, 0)).unwrap()
+    }
+
+    /// A signature with a distinct author name, to tell commits apart.
+    fn sig_named(name: &str) -> Signature<'static> {
+        Signature::new(name, "tester@example.com", &Time::new(0, 0)).unwrap()
+    }
+
+    /// A copy of `base` with `entries` added/replaced, built without touching
+    /// the index or the working tree.
+    fn tree_with<'r>(
+        repo: &'r Repository,
+        base: &git2::Tree<'_>,
+        entries: &[(&str, &str)],
+    ) -> git2::Tree<'r> {
+        let mut builder = repo.treebuilder(Some(base)).unwrap();
+        for (name, content) in entries {
+            let blob = repo.blob(content.as_bytes()).unwrap();
+            builder.insert(*name, blob, 0o100644).unwrap();
+        }
+        repo.find_tree(builder.write().unwrap()).unwrap()
     }
 
     /// Write a file in the working tree and commit it on HEAD.
@@ -702,7 +760,7 @@ mod tests {
         cleanup(&clone_dir);
     }
 
-    /// `git log -1 -- <file>` semantics: the newest commit that actually
+    /// `git log -1 -- <path>` semantics: the newest commit that actually
     /// touched the file, not simply HEAD.
     #[test]
     fn last_commit_for_file_skips_commits_that_did_not_touch_it() {
@@ -711,7 +769,8 @@ mod tests {
         commit_file(&repo, "touched.json", "{}\n", "add touched");
         commit_file(&repo, "other.json", "{}\n", "add other");
 
-        let (secs, author) = last_commit_for_file(dir.join("touched.json")).expect("a commit");
+        let (secs, author) =
+            last_commit_for_file(dir.join("touched.json")).expect("the touching commit");
         assert_eq!(author, "hok tester");
         // The test signature pins the author time to the Unix epoch.
         assert_eq!(secs, 0);
@@ -726,5 +785,85 @@ mod tests {
 
         cleanup(&dir);
         cleanup(&plain);
+    }
+
+    /// `git log -1 -- <path>` skips a merge that merely carried the change into
+    /// HEAD (it is "treesame" with that parent) and reports the commit that
+    /// actually made it.
+    #[test]
+    fn last_commit_for_file_simplifies_treesame_merges() {
+        let dir = temp_dir("last-commit-merge");
+        let repo = Repository::init(&dir).unwrap();
+        commit_file(&repo, "manifest.json", "{\"v\":1}\n", "base");
+        let base = repo.head().unwrap().peel_to_commit().unwrap();
+
+        // The side branch changes the manifest…
+        let changed = tree_with(
+            &repo,
+            &base.tree().unwrap(),
+            &[("manifest.json", "{\"v\":2}\n")],
+        );
+        let side = repo
+            .commit(
+                None,
+                &sig_named("side author"),
+                &sig_named("side author"),
+                "side change",
+                &changed,
+                &[&base],
+            )
+            .unwrap();
+        // …while main moves on without touching it, then merges the side
+        // branch: the merge's tree for the manifest is the side parent's, so
+        // git does not count the merge itself.
+        let elsewhere = tree_with(&repo, &base.tree().unwrap(), &[("other.txt", "x\n")]);
+        let main = repo
+            .commit(
+                // main advances HEAD: the merge's first parent must be the tip.
+                Some("HEAD"),
+                &sig_named("main author"),
+                &sig_named("main author"),
+                "main change",
+                &elsewhere,
+                &[&base],
+            )
+            .unwrap();
+        // `Repository::commit` returns the new commit id; load both parents.
+        let (main, side) = (
+            repo.find_commit(main).unwrap(),
+            repo.find_commit(side).unwrap(),
+        );
+        let merge = repo
+            .commit(
+                Some("HEAD"),
+                &sig_named("merge author"),
+                &sig_named("merge author"),
+                "merge",
+                &changed,
+                &[&main, &side],
+            )
+            .unwrap();
+        assert_eq!(repo.head().unwrap().target().unwrap(), merge);
+
+        let (_, author) =
+            last_commit_for_file(dir.join("manifest.json")).expect("the treesame merge is skipped");
+        assert_eq!(author, "side author");
+
+        cleanup(&dir);
+    }
+
+    /// A file that is not in the repository has no history at all, even though
+    /// the root commit has no parent to compare against.
+    #[test]
+    fn last_commit_for_file_ignores_untracked_paths() {
+        let dir = temp_dir("last-commit-untracked");
+        let repo = Repository::init(&dir).unwrap();
+        commit_file(&repo, "tracked.json", "{}\n", "base");
+
+        let untracked = dir.join("untracked.json");
+        std::fs::write(&untracked, "{}\n").unwrap();
+        assert!(last_commit_for_file(&untracked).is_none());
+
+        cleanup(&dir);
     }
 }
