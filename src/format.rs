@@ -95,13 +95,26 @@ pub fn visual_width(s: &str) -> usize {
         .sum()
 }
 
-/// Pad a string to a target visual width by appending spaces.
+/// Pad a string to a target visual width by appending spaces (left-align).
 pub fn pad_visual(s: &str, width: usize) -> String {
     let vw = visual_width(s);
     if vw >= width {
         s.to_owned()
     } else {
         format!("{}{}", s, " ".repeat(width - vw))
+    }
+}
+
+/// Pad a string to a target visual width by prepending spaces (right-align).
+///
+/// The numeric-column counterpart of [`pad_visual`]: a count or a size reads
+/// best aligned on its right edge.
+pub fn pad_visual_right(s: &str, width: usize) -> String {
+    let vw = visual_width(s);
+    if vw >= width {
+        s.to_owned()
+    } else {
+        format!("{}{}", " ".repeat(width - vw), s)
     }
 }
 
@@ -176,5 +189,24 @@ mod tests {
     #[test]
     fn pad_visual_cjk_uses_visual_width() {
         assert_eq!(pad_visual("中", 4), "中  ");
+    }
+
+    // ── pad_visual_right ─────────────────────────────────────────────────────
+
+    #[test]
+    fn pad_visual_right_prepends_spaces() {
+        assert_eq!(pad_visual_right("ab", 4), "  ab");
+        assert_eq!(pad_visual_right("2383", 6), "  2383");
+    }
+
+    #[test]
+    fn pad_visual_right_no_pad_when_wider() {
+        assert_eq!(pad_visual_right("abcd", 4), "abcd");
+        assert_eq!(pad_visual_right("abcde", 4), "abcde");
+    }
+
+    #[test]
+    fn pad_visual_right_cjk_uses_visual_width() {
+        assert_eq!(pad_visual_right("中", 4), "  中");
     }
 }

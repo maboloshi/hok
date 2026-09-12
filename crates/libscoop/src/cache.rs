@@ -101,7 +101,24 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
         }
     }
 
+    sort_listing(&mut files);
+
     Ok(files)
+}
+
+/// Order a listing by package name (case-insensitively) then version — the
+/// order upstream's `Get-ChildItem` presents, and the one that makes a listing
+/// reproducible: `read_dir` returns an arbitrary order, so without this the
+/// rows (and therefore a rendered table's column widths) would differ between
+/// filesystems and runs.
+fn sort_listing(files: &mut [CacheFile]) {
+    files.sort_by(|a, b| {
+        a.package_name()
+            .to_lowercase()
+            .cmp(&b.package_name().to_lowercase())
+            .then_with(|| a.version().cmp(b.version()))
+            .then_with(|| a.file_name().cmp(b.file_name()))
+    });
 }
 
 /// Remove cache files by query.
@@ -159,5 +176,60 @@ pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn file(name: &str) -> CacheFile {
+        CacheFile::from(PathBuf::from(name)).expect("valid cache file name")
+    }
+
+    fn identity(f: &CacheFile) -> String {
+        format!("{}#{}", f.package_name(), f.version())
+    }
+
+    /// A listing is ordered by package name (case-insensitively) then version,
+    /// regardless of the order the directory returned.
+    #[test]
+    fn listing_is_ordered_by_name_then_version() {
+        let mut files = vec![
+            file("zstd#1.5.7#a.zip"),
+            file("Brave#1.94.121#b.zip"),
+            file("7zip#26.03#c.msi"),
+            file("croc#11.5.0#d.zip"),
+            file("croc#11.4.0#e.zip"),
+        ];
+
+        sort_listing(&mut files);
+
+        let order = files.iter().map(identity).collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                "7zip#26.03",
+                "Brave#1.94.121",
+                "croc#11.4.0",
+                "croc#11.5.0",
+                "zstd#1.5.7"
+            ]
+        );
+    }
+
+    /// Two files of the same package and version (different URLs) still get a
+    /// deterministic order.
+    #[test]
+    fn listing_is_stable_for_equal_name_and_version() {
+        let mut files = vec![file("croc#1.0#z.zip"), file("croc#1.0#a.zip")];
+        sort_listing(&mut files);
+
+        let order = files
+            .iter()
+            .map(|f| f.file_name().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["croc#1.0#a.zip", "croc#1.0#z.zip"]);
     }
 }
