@@ -102,14 +102,16 @@ pub async fn download_apps(
         }
 
         if !failed.is_empty() {
-            // Individual failures already printed per-package; surface an
-            // aggregate error so the CLI exits non-zero (scripts/CI can tell).
+            // Individual failures were already printed per-package; the
+            // batch summary is informational. Scoop keeps downloading the
+            // remaining apps and still exits 0 (`scoop-download.ps1:110-143`),
+            // so no aggregate error is raised.
             let mut failed: Vec<_> = failed.into_iter().collect();
             failed.sort();
-            return Err(Error::Custom(hok_i18n::t!(
+            session.output().error(hok_i18n::t!(
                 "cmd.download_failed_list",
                 names = failed.join(", ")
-            )));
+            ));
         }
 
         Ok(())
@@ -228,22 +230,18 @@ mod tests {
         let root = crate::test_utils::tmpdir("download_apps_mismatch");
         let session = crate::test_utils::test_session(&root);
         let url = format!("http://{}/app.bin", server.addr);
-        // Wrong hash: the downloaded file must be removed after verification,
-        // and download_apps reports the failure (non-zero exit for callers).
+        // Wrong hash: the downloaded file must be removed after verification.
+        // The failure is reported per package, but the batch still succeeds —
+        // Scoop continues on failure and exits 0 (`scoop-download.ps1:143`).
         let manifest = write_manifest(&root, "badapp", "1.0", &url, &"0".repeat(64));
 
         let opts = DownloadOptions {
             force: false,
             check_hash: true,
         };
-        let err = download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
             .await
-            .expect_err("hash mismatch must be reported");
-        assert!(
-            err.to_string().contains("download failed for"),
-            "unexpected error: {}",
-            err
-        );
+            .expect("a failed package must not fail the batch");
         server.shutdown();
 
         assert!(
