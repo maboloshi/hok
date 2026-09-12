@@ -42,7 +42,8 @@ struct Row {
     name: String,
     version: String,
     source: String,
-    /// Pre-styled info column; it is the last column and never padded.
+    /// Info column text (coloured per row kind when laid out); it is the last
+    /// column and is never padded.
     info: String,
     /// Retained (non-current) version rows are dimmed as continuation rows.
     dimmed: bool,
@@ -188,37 +189,39 @@ fn continuation(version: &str, note: impl AsRef<str>) -> Row {
     }
 }
 
-/// Render the table: bold header, dashed rule, then one line per row.
-fn render(rows: &[Row]) {
-    let hdr_name = hok_i18n::t!("cmd.list_header_name").to_string();
-    let hdr_ver = hok_i18n::t!("cmd.list_header_version").to_string();
-    let hdr_src = hok_i18n::t!("cmd.list_header_source").to_string();
-    let hdr_info = hok_i18n::t!("cmd.list_header_info").to_string();
+/// Lay out the table: bold header, dashed rule, then one line per row.
+///
+/// `info` is the last column and is never padded, so a row without info ends
+/// right after `source` — no rendered line carries trailing spaces.
+fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
+    let [hdr_name, hdr_ver, hdr_src, hdr_info] = headers;
 
-    let mut w_name = visual_width(&hdr_name);
-    let mut w_ver = visual_width(&hdr_ver);
-    let mut w_src = visual_width(&hdr_src);
-    let w_info = visual_width(&hdr_info);
+    let mut w_name = visual_width(hdr_name);
+    let mut w_ver = visual_width(hdr_ver);
+    let mut w_src = visual_width(hdr_src);
+    let w_info = visual_width(hdr_info);
     for row in rows {
         w_name = w_name.max(visual_width(&row.name));
         w_ver = w_ver.max(visual_width(&row.version));
         w_src = w_src.max(visual_width(&row.source));
     }
 
-    println!(
-        "  {}  {}  {}  {}",
-        style::emphasis(pad_visual(&hdr_name, w_name)),
-        style::emphasis(pad_visual(&hdr_ver, w_ver)),
-        style::emphasis(pad_visual(&hdr_src, w_src)),
-        style::emphasis(hdr_info),
-    );
-    println!(
-        "  {}  {}  {}  {}",
-        style::dim("-".repeat(w_name)),
-        style::dim("-".repeat(w_ver)),
-        style::dim("-".repeat(w_src)),
-        style::dim("-".repeat(w_info)),
-    );
+    let mut lines = vec![
+        format!(
+            "  {}  {}  {}  {}",
+            style::emphasis(pad_visual(hdr_name, w_name)),
+            style::emphasis(pad_visual(hdr_ver, w_ver)),
+            style::emphasis(pad_visual(hdr_src, w_src)),
+            style::emphasis(hdr_info),
+        ),
+        format!(
+            "  {}  {}  {}  {}",
+            style::dim("-".repeat(w_name)),
+            style::dim("-".repeat(w_ver)),
+            style::dim("-".repeat(w_src)),
+            style::dim("-".repeat(w_info)),
+        ),
+    ];
 
     for row in rows {
         let name = pad_visual(&row.name, w_name);
@@ -243,9 +246,133 @@ fn render(rows: &[Row]) {
         };
 
         if row.info.is_empty() {
-            println!("  {}  {}  {}", name, version, source);
+            lines.push(format!("  {}  {}  {}", name, version, source));
         } else {
-            println!("  {}  {}  {}  {}", name, version, source, info);
+            lines.push(format!("  {}  {}  {}  {}", name, version, source, info));
         }
+    }
+
+    lines
+}
+
+/// Print the table with the localized headers.
+fn render(rows: &[Row]) {
+    let name = hok_i18n::t!("cmd.list_header_name");
+    let version = hok_i18n::t!("cmd.list_header_version");
+    let source = hok_i18n::t!("cmd.list_header_source");
+    let info = hok_i18n::t!("cmd.list_header_info");
+
+    for line in layout(
+        rows,
+        [
+            name.as_str(),
+            version.as_str(),
+            source.as_str(),
+            info.as_str(),
+        ],
+    ) {
+        println!("{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, version: &str, source: &str, info: &str) -> Row {
+        Row {
+            name: name.to_owned(),
+            version: version.to_owned(),
+            source: source.to_owned(),
+            info: info.to_owned(),
+            dimmed: false,
+        }
+    }
+
+    /// `line` without its ANSI SGR sequences, so widths can be measured.
+    fn plain(line: &str) -> String {
+        let mut out = String::new();
+        let mut escaping = false;
+        for ch in line.chars() {
+            match ch {
+                '\x1b' => escaping = true,
+                'm' if escaping => escaping = false,
+                _ if !escaping => out.push(ch),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn value_column(line: &str, value: &str) -> usize {
+        let line = plain(line);
+        let at = line.find(value).expect("the value is on the line");
+        visual_width(&line[..at])
+    }
+
+    /// Covers the whole table: the header, the rule and the rows line up
+    /// column by column (CJK names included), and a row whose `info` is empty
+    /// ends at `source` instead of trailing spaces.
+    #[test]
+    fn layout_aligns_columns_and_trims_an_empty_info_column() {
+        let rows = vec![
+            row("7zip", "26.03", "main", ""),
+            row(
+                "directoryopus-cn",
+                "13.25.3",
+                "scoop-app",
+                "Update available",
+            ),
+            row("中文包", "1.0", "main", "Held package"),
+        ];
+        let lines = layout(&rows, ["名称", "版本", "源", "状态"])
+            .iter()
+            .map(|l| plain(l))
+            .collect::<Vec<_>>();
+
+        let version_col = 2 + visual_width("directoryopus-cn") + 2;
+        let source_col = version_col + visual_width("13.25.3") + 2;
+        for (line, version) in lines[2..].iter().zip(["26.03", "13.25.3", "1.0"]) {
+            assert_eq!(value_column(line, version), version_col, "on `{line}`");
+        }
+        for (line, source) in lines[2..].iter().zip(["main", "scoop-app", "main"]) {
+            assert_eq!(value_column(line, source), source_col, "on `{line}`");
+        }
+
+        // The empty info row ends right after `source`; the others carry theirs.
+        assert!(lines[2].ends_with("main"), "row 1: {}", lines[2]);
+        assert!(
+            lines[3].ends_with("Update available"),
+            "row 2: {}",
+            lines[3]
+        );
+        assert!(
+            lines.iter().all(|l| !l.ends_with(' ')),
+            "trailing spaces: {lines:#?}"
+        );
+    }
+
+    /// A dimmed continuation row lays out in the same columns as a normal one.
+    #[test]
+    fn layout_keeps_continuation_rows_aligned() {
+        let rows = vec![
+            row("git", "2.51.0", "main", ""),
+            Row {
+                name: String::new(),
+                version: "2.50.0".to_owned(),
+                source: String::new(),
+                info: "old".to_owned(),
+                dimmed: true,
+            },
+        ];
+        let lines = layout(&rows, ["Name", "Version", "Source", "Info"])
+            .iter()
+            .map(|l| plain(l))
+            .collect::<Vec<_>>();
+
+        let version_col = 2 + visual_width("Name").max(visual_width("git")) + 2;
+        assert_eq!(value_column(&lines[2], "2.51.0"), version_col);
+        assert_eq!(value_column(&lines[3], "2.50.0"), version_col);
+        assert!(lines[3].contains("old"), "continuation: {}", lines[3]);
     }
 }
