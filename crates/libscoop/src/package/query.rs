@@ -283,6 +283,14 @@ pub(crate) fn query_synced_files(
                         }
 
                         if let Ok(manifest) = parse_file(entry.path()) {
+                            // Only real manifests: `version` is required, and a
+                            // bucket directory can hold unrelated JSON
+                            // (`.markdownlint.json`). Upstream skips such a file
+                            // when it writes its DB (lib/database.ps1:176), and
+                            // the cached path skips it too — the two must agree.
+                            if manifest.version().is_empty() {
+                                return None;
+                            }
                             let bucket = bucket.name();
 
                             if !manifest_matches(

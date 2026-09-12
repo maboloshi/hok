@@ -179,6 +179,7 @@ cmd:
   refresh_cache: "正在刷新清单缓存..."
   cache_done: "清单缓存已刷新。"
   cache_rebuilt: "清单缓存已重建。"
+  cache_rescanned: "清单缓存已刷新（重建仓库：%{buckets}）。"
   cache_refresh_failed: "清单缓存刷新失败：%{e}。请重试 'hok update --force'。"
   cache_stale: "清单缓存可能不是最新（%{count} 个仓库未同步）；运行 'hok update --force' 重建。"
   shim_added: "已添加 shim: %{name}"

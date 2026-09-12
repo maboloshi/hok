@@ -189,8 +189,11 @@ fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) ->
         return Ok(());
     }
 
-    let done = match outcome {
+    let done = match &outcome {
         package::manifest_cache::RefreshOutcome::Rebuilt => hok_i18n::t!("cmd.cache_rebuilt"),
+        package::manifest_cache::RefreshOutcome::Rescanned(buckets) if !buckets.is_empty() => {
+            hok_i18n::t!("cmd.cache_rescanned", buckets = buckets.join(", "))
+        }
         _ => hok_i18n::t!("cmd.cache_done"),
     };
 

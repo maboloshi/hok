@@ -213,6 +213,13 @@ fn insert_manifest_row(
         Ok(m) => m,
         Err(_) => return Ok(None),
     };
+    // Not a package manifest: `version` is required, and upstream's DB writer
+    // skips a JSON that has none (lib/database.ps1:176). A bucket directory can
+    // hold unrelated JSON (`.markdownlint.json`, `appsettings.json`), which
+    // must not surface as a package with an empty version.
+    if manifest.version().is_empty() {
+        return Ok(None);
+    }
 
     let description = manifest.description().unwrap_or("").to_owned();
     let version = manifest.version().to_owned();
@@ -307,9 +314,21 @@ pub fn populate(conn: &Connection, session: &Session) -> Fallible<()> {
 /// holds exactly the latest version per package (no historical accumulation).
 /// An unparseable upsert drops the previously cached rows. Deleted manifests
 /// remove their rows entirely.
+/// [`apply_incremental_tx`] in its own transaction (the incremental tests drive
+/// the diff apply directly).
+#[cfg(test)]
 fn apply_incremental(conn: &Connection, changes: &crate::bucket::UpdateChanges) -> Fallible<()> {
     let tx = conn.unchecked_transaction()?;
+    apply_incremental_tx(&tx, changes)?;
+    tx.commit()?;
+    Ok(())
+}
 
+/// [`apply_incremental`] inside a caller-owned transaction.
+fn apply_incremental_tx(
+    tx: &rusqlite::Transaction<'_>,
+    changes: &crate::bucket::UpdateChanges,
+) -> Fallible<()> {
     for (bucket, path) in &changes.upsert {
         let Some(name) = path
             .file_stem()
@@ -328,7 +347,7 @@ fn apply_incremental(conn: &Connection, changes: &crate::bucket::UpdateChanges) 
             continue;
         };
 
-        match insert_manifest_row(&tx, &name, bucket, &raw_json)? {
+        match insert_manifest_row(tx, &name, bucket, &raw_json)? {
             Some(version) => {
                 // Keep only the latest version for this package.
                 tx.execute(
@@ -353,7 +372,89 @@ fn apply_incremental(conn: &Connection, changes: &crate::bucket::UpdateChanges) 
         )?;
     }
 
-    tx.commit()?;
+    Ok(())
+}
+
+/// Re-scan one bucket: drop its rows and re-insert every manifest it holds.
+///
+/// This is the per-bucket rebuild — the cost is proportional to that bucket,
+/// not to the whole cache. It is the fallback for a bucket the diff cannot
+/// cover (no sync marker, no git remote, a failed pull).
+///
+/// The manifest list is collected *before* the rows are deleted: a bucket whose
+/// directory cannot be read fails the refresh (which the caller reports and the
+/// user retries) instead of silently emptying that bucket's cache.
+fn rescan_bucket_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session: &Session,
+    bucket_name: &str,
+) -> Fallible<usize> {
+    let Some(bucket) = crate::bucket::bucket_added(session)?
+        .into_iter()
+        .find(|bucket| bucket.name() == bucket_name)
+    else {
+        // No longer an added bucket: its rows are dropped by the
+        // not-added cleanup, not here.
+        return Ok(0);
+    };
+
+    let files = bucket
+        .manifests()?
+        .into_iter()
+        .map(|entry| {
+            let name = entry
+                .path()
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_owned);
+            (name, entry.path())
+        })
+        .collect::<Vec<_>>();
+
+    tx.execute("DELETE FROM app WHERE bucket = ?1", params![bucket_name])?;
+
+    let mut inserted = 0;
+    for (name, path) in files {
+        let Some(name) = name else { continue };
+        let Some(raw_json) = read_manifest_file(&path) else {
+            continue;
+        };
+        if insert_manifest_row(tx, &name, bucket_name, &raw_json)?.is_some() {
+            inserted += 1;
+        }
+    }
+    Ok(inserted)
+}
+
+/// Drop the rows of buckets that are no longer added.
+///
+/// A per-bucket rescan only clears the buckets it re-scans, so a bucket removed
+/// from the config would otherwise leave its rows in the cache for good
+/// (`bucket::remove` does not touch the cache).
+fn drop_buckets_not_added(tx: &rusqlite::Transaction<'_>, session: &Session) -> Fallible<()> {
+    let added = crate::bucket::bucket_added(session)?;
+    if added.is_empty() {
+        tx.execute("DELETE FROM app", [])?;
+        return Ok(());
+    }
+
+    let names = added
+        .iter()
+        .map(|bucket| bucket.name().to_owned())
+        .collect::<Vec<_>>();
+    let placeholders = (1..=names.len())
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params = names
+        .iter()
+        .map(|name| name as &dyn rusqlite::types::ToSql)
+        .collect::<Vec<_>>();
+
+    tx.execute(
+        &format!("DELETE FROM app WHERE bucket NOT IN ({placeholders})"),
+        params.as_slice(),
+    )?;
     Ok(())
 }
 
@@ -412,29 +513,30 @@ pub fn entry_to_manifest(entry: &CacheEntry) -> Option<Manifest> {
 }
 
 /// What a [`refresh`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefreshOutcome {
     /// The SQLite cache is disabled in config — nothing was refreshed.
     Disabled,
     /// Only the changed manifests were re-parsed.
     Incremental,
-    /// The cache was rebuilt from the buckets (empty cache, or a bucket whose
-    /// cached rows could not be diffed).
+    /// These buckets were re-scanned in full; every other bucket kept its rows.
+    Rescanned(Vec<String>),
+    /// The whole cache was rebuilt (it was empty).
     Rebuilt,
 }
 
 /// Refresh the SQLite manifest cache after bucket updates.
 ///
 /// Applies the manifest diff produced by `crate::bucket::update()`
-/// incrementally — only the changed manifests are re-parsed. Falls back to a
-/// full re-populate when the cache is empty or any bucket could not be cleanly
-/// diffed.
+/// incrementally — only the changed manifests are re-parsed. A bucket the diff
+/// could not cover (no sync marker, no git remote, a failed pull) is re-scanned
+/// on its own; the whole cache is rebuilt only when it is empty.
 ///
 /// On success the commits the cache now reflects are recorded, which is the
 /// baseline the next update diffs from. On failure the markers are dropped
-/// (so a retry rebuilds the cache from scratch) and the error is returned —
-/// the caller reports it and the user retries, rather than a silently stale
-/// cache being served from then on.
+/// (so a retry rebuilds from scratch) and the error is returned — the caller
+/// reports it and the user retries, rather than a silently stale cache being
+/// served from then on.
 pub fn refresh(
     session: &Session,
     changes: &crate::bucket::UpdateChanges,
@@ -444,42 +546,52 @@ pub fn refresh(
     }
     let conn = open(session)?;
 
-    // Full rebuild on first use (empty cache), or when any bucket could not be
-    // cleanly diffed (never synced, no remote, failed pull/diff) and must be
-    // re-scanned to keep the cache complete. Otherwise apply only the changed
-    // manifests.
-    let needs_full = match is_populated(&conn) {
+    // An empty cache has nothing to preserve: rebuild it in one go. Otherwise
+    // one transaction covers everything — the per-bucket re-scans, the diffed
+    // manifests and the removed-bucket cleanup are all-or-nothing.
+    let cache_empty = match is_populated(&conn) {
         Ok(populated) => !populated,
         Err(_) => true,
-    } || !changes.full_scan.is_empty();
-
-    let result = if needs_full {
-        populate(&conn, session)
-    } else if !changes.upsert.is_empty() || !changes.delete.is_empty() {
-        apply_incremental(&conn, changes)
-    } else {
-        Ok(())
     };
-
-    if let Err(e) = result {
-        // Drop the markers: a retry (or the next update) re-scans every bucket,
-        // which repairs whatever this failed refresh left behind.
-        if let Err(e) = clear_synced(&conn) {
-            tracing::warn!("failed to clear manifest sync markers: {e}");
+    let result = (|| -> Fallible<RefreshOutcome> {
+        if cache_empty {
+            populate(&conn, session)?;
+            return Ok(RefreshOutcome::Rebuilt);
         }
-        return Err(e);
-    }
+
+        let tx = conn.unchecked_transaction()?;
+        for bucket in &changes.full_scan {
+            rescan_bucket_tx(&tx, session, bucket)?;
+        }
+        apply_incremental_tx(&tx, changes)?;
+        drop_buckets_not_added(&tx, session)?;
+        tx.commit()?;
+
+        Ok(if changes.full_scan.is_empty() {
+            RefreshOutcome::Incremental
+        } else {
+            RefreshOutcome::Rescanned(changes.full_scan.clone())
+        })
+    })();
+
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // Drop the markers: a retry (or the next update) re-scans every
+            // bucket, which repairs whatever this failed refresh left behind.
+            if let Err(e) = clear_synced(&conn) {
+                tracing::warn!("failed to clear manifest sync markers: {e}");
+            }
+            return Err(e);
+        }
+    };
 
     if let Err(e) = record_synced(&conn, &changes.synced) {
         let _ = clear_synced(&conn);
         return Err(e);
     }
 
-    Ok(if needs_full {
-        RefreshOutcome::Rebuilt
-    } else {
-        RefreshOutcome::Incremental
-    })
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -590,10 +702,10 @@ mod tests {
         );
     }
 
-    /// A cache that trailed its bucket is repaired by the full rebuild a
-    /// missing sync marker asks for, and the marker is recorded afterwards.
+    /// A cache that trailed its bucket is repaired by re-scanning *that*
+    /// bucket, and the marker is recorded afterwards.
     #[test]
-    fn full_rebuild_repairs_a_stale_row_and_records_the_marker() {
+    fn bucket_rescan_repairs_a_stale_row_and_records_the_marker() {
         let root = tmpdir("cache_repair");
         let session = test_session(&root);
         session
@@ -617,14 +729,14 @@ mod tests {
         };
         assert_eq!(
             refresh(&session, &changes).unwrap(),
-            RefreshOutcome::Rebuilt
+            RefreshOutcome::Rescanned(vec!["main".to_owned()])
         );
 
         let conn = open(&session).unwrap();
         assert_eq!(
             row_count(&conn, "foo", "main")[0].version,
             "2.0",
-            "the rebuild must replace the stale row"
+            "the rescan must replace the stale row"
         );
         assert_eq!(
             synced_baselines(&session)
@@ -634,6 +746,130 @@ mod tests {
             Some("c2"),
             "the synced commit becomes the next update's baseline"
         );
+    }
+
+    /// A re-scanned bucket must not disturb the buckets that were diffed: only
+    /// the named bucket's rows are replaced.
+    #[test]
+    fn bucket_rescan_leaves_other_buckets_alone() {
+        let root = tmpdir("cache_rescan_scope");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        write_bucket_manifest(&root, "extras", "bar", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+        assert_eq!(row_count(&conn, "bar", "extras")[0].version, "1.0");
+        drop(conn);
+
+        // Both buckets moved on, but only `main` is flagged for a rescan.
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "2.0"}"#);
+        write_bucket_manifest(&root, "extras", "bar", r#"{"version": "2.0"}"#);
+
+        let changes = UpdateChanges {
+            upsert: vec![],
+            delete: vec![],
+            full_scan: vec!["main".to_owned()],
+            synced: vec![("main".to_owned(), "c1".to_owned())],
+        };
+        refresh(&session, &changes).unwrap();
+
+        let conn = open(&session).unwrap();
+        assert_eq!(row_count(&conn, "foo", "main")[0].version, "2.0");
+        assert_eq!(
+            row_count(&conn, "bar", "extras")[0].version,
+            "1.0",
+            "a bucket that was not flagged keeps its rows (no whole-cache rebuild)"
+        );
+    }
+
+    /// Rows of a bucket that is no longer added are dropped: a per-bucket
+    /// rescan cannot be relied on to clean up after a removed bucket.
+    #[test]
+    fn removed_bucket_rows_are_dropped() {
+        let root = tmpdir("cache_removed_bucket");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        write_bucket_manifest(&root, "extras", "bar", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+        assert_eq!(row_count(&conn, "bar", "extras").len(), 1);
+        drop(conn);
+
+        std::fs::remove_dir_all(root.join("buckets").join("extras")).unwrap();
+        refresh(&session, &UpdateChanges::default()).unwrap();
+
+        let conn = open(&session).unwrap();
+        assert!(
+            row_count(&conn, "bar", "extras").is_empty(),
+            "a removed bucket must not leave rows behind"
+        );
+        assert_eq!(
+            row_count(&conn, "foo", "main").len(),
+            1,
+            "the remaining bucket is untouched"
+        );
+    }
+
+    /// An empty cache is rebuilt as a whole (nothing to preserve).
+    #[test]
+    fn empty_cache_is_rebuilt() {
+        let root = tmpdir("cache_empty_rebuild");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+
+        let changes = UpdateChanges {
+            synced: vec![("main".to_owned(), "c1".to_owned())],
+            ..Default::default()
+        };
+        assert_eq!(
+            refresh(&session, &changes).unwrap(),
+            RefreshOutcome::Rebuilt
+        );
+
+        let conn = open(&session).unwrap();
+        assert_eq!(row_count(&conn, "foo", "main")[0].version, "1.0");
+    }
+
+    /// A JSON without a `version` is not a manifest (upstream skips it when
+    /// writing its DB): it must not be cached, and it must not be returned by
+    /// the file-based query either.
+    #[test]
+    fn json_without_a_version_is_not_a_package() {
+        let root = tmpdir("cache_junk_json");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        write_bucket_manifest(&root, "main", ".markdownlint", r#"{"MD013": false}"#);
+
+        let conn = populated(&root, &session);
+        assert_eq!(row_count(&conn, "foo", "main").len(), 1);
+        assert!(
+            row_count(&conn, ".markdownlint", "main").is_empty(),
+            "a version-less JSON must not be cached as a package"
+        );
+
+        // The file-based path agrees with the cached one.
+        let fresh = crate::package::query::query_synced_files(&session, &["*"], &[]).unwrap();
+        let names = fresh.iter().map(|pkg| pkg.name()).collect::<Vec<_>>();
+        assert!(names.contains(&"foo"), "names: {names:?}");
+        assert!(!names.contains(&".markdownlint"), "names: {names:?}");
     }
 
     /// A refresh that fails is reported as an error and drops the markers, so
