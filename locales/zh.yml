@@ -260,6 +260,28 @@ cmd:
   import_parse_err: "解析 JSON 失败：%{e}"
   import_found: "找到 %{count} 个待安装的包。"
   import_err: "导入失败：%{e}"
+  import_bucket_added: "已添加 bucket '%{name}'。"
+  import_config_set: "'%{key}' 已设为 '%{value}'。"
+  import_config_set_mapped: "'%{key}' 已设为 '%{value}'（映射为 '%{hok_key}'）。"
+  import_alias_set: "别名 '%{name}' 已设为 '%{command}'。"
+  import_summary: "已导入 %{imported} 个应用；%{failed} 个未安装；跳过 %{skipped} 项（见上）。"
+  import_skip_app_arch: "已跳过需要架构 '%{arch}' 的包：%{e}"
+  import_skip_app_err: "已跳过部分包：%{e}"
+  import_skip_app_check: "无法确认导入结果：%{e}"
+  import_skip_app_failed: "已跳过应用 '%{name}'：Scoopfile 记录该应用安装失败。"
+  import_skip_app_bucket: "已跳过应用 '%{name}'：其来源 bucket '%{source}' 不可用。"
+  import_skip_app_version: "已跳过应用 '%{name}'：自动生成的清单缺少版本，无法重放。"
+  import_skip_bucket_err: "已跳过 bucket '%{name}'：%{e}"
+  import_skip_bucket_exists: "已跳过 bucket '%{name}'：已存在。"
+  import_skip_bucket_list: "无法列出已添加的 bucket：%{e}"
+  import_skip_bucket_local: "已跳过 bucket '%{name}'：'%{source}' 不是 git 远程仓库（hok 只支持 git bucket）。"
+  import_skip_config_err: "已跳过配置 '%{key}'：%{e}"
+  import_skip_config_machine: "已跳过配置 '%{key}'：该键与本机相关（官方导出同样会剔除）。"
+  import_skip_config_unsupported: "已跳过配置 '%{key}'：hok 没有对应设置项。"
+  import_skip_config_value: "已跳过配置 '%{key}'：hok 无法表示该值。"
+  import_skip_alias: "已跳过别名 '%{name}'：命令不是字符串。"
+  import_skip_alias_err: "已跳过别名 '%{name}'：%{e}"
+  import_skip_hold: "无法锁定 '%{name}'：%{e}"
   create_creating: "正在为 %{url} 创建 manifest"
   reset_admin_skip: "'%{name}' 是全局应用——重置它需要管理员权限。跳过。"
   reset_broken_skip: "'%{name}' 未正确安装。请重新安装或修复其 manifest。"
@@ -628,8 +650,8 @@ cli_help:
     about: 浏览包的主页
   import:
     args:
-      file: 要导入的 JSON 文件
-    about: 从文件导入已安装包
+      file: "要导入的 Scoopfile：本地路径、http(s) URL 或 UNC 路径"
+    about: 从 Scoopfile 导入已安装包
   info:
     args:
       query: 应用名称（也接受 `bucket/name`）、manifest URL 或本地 manifest 路径

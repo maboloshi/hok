@@ -260,6 +260,28 @@ cmd:
   import_parse_err: "Error parsing JSON: %{e}"
   import_found: "Found %{count} packages to install."
   import_err: "Import error: %{e}"
+  import_bucket_added: "Bucket '%{name}' has been added."
+  import_config_set: "'%{key}' has been set to '%{value}'."
+  import_config_set_mapped: "'%{key}' has been set to '%{value}' (as '%{hok_key}')."
+  import_alias_set: "Alias '%{name}' has been set to '%{command}'."
+  import_summary: "Imported %{imported} app(s); %{failed} not installed; skipped %{skipped} item(s) (see above)."
+  import_skip_app_arch: "Skipped the packages that need architecture '%{arch}': %{e}"
+  import_skip_app_err: "Skipped some packages: %{e}"
+  import_skip_app_check: "Could not check what the import installed: %{e}"
+  import_skip_app_failed: "Skipped app '%{name}': the Scoopfile records a failed install."
+  import_skip_app_bucket: "Skipped app '%{name}': its bucket '%{source}' is not available."
+  import_skip_app_version: "Skipped app '%{name}': a generated manifest needs a version to replay it."
+  import_skip_bucket_err: "Skipped bucket '%{name}': %{e}"
+  import_skip_bucket_exists: "Skipped bucket '%{name}': it is already added."
+  import_skip_bucket_list: "Could not list the added buckets: %{e}"
+  import_skip_bucket_local: "Skipped bucket '%{name}': '%{source}' is not a git remote (hok only adds git buckets)."
+  import_skip_config_err: "Skipped config '%{key}': %{e}"
+  import_skip_config_machine: "Skipped config '%{key}': it is machine-specific (upstream strips it too)."
+  import_skip_config_unsupported: "Skipped config '%{key}': hok has no such setting."
+  import_skip_config_value: "Skipped config '%{key}': hok cannot represent this value."
+  import_skip_alias: "Skipped alias '%{name}': the command is not a string."
+  import_skip_alias_err: "Skipped alias '%{name}': %{e}"
+  import_skip_hold: "Could not hold '%{name}': %{e}"
   create_creating: "Creating manifest for: %{url}"
   reset_admin_skip: "'%{name}' is a global app — admin rights are required to reset it. Skipping."
   reset_broken_skip: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
@@ -630,8 +652,8 @@ cli_help:
     about: Browse the homepage of a package
   import:
     args:
-      file: JSON file to import from
-    about: Import installed packages from a file
+      file: "Scoopfile to import from: a local path, an http(s) URL, or a UNC path"
+    about: Import installed packages from a Scoopfile
   info:
     args:
       query: The app name (`bucket/name` also accepted), a manifest URL or a local manifest path
