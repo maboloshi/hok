@@ -611,7 +611,7 @@ cli_help:
   export:
     about: 导出已安装包列表
     args:
-      all: 包含非仓库包（URL/路径安装）
+      hok: 追加 hok 自有扩展（配置与逐应用状态）；官方 Scoop 会忽略，hok 可完整还原
   formatjson:
     about: 格式化仓库目录中的清单 JSON 文件
     args:

@@ -613,7 +613,7 @@ cli_help:
   export:
     about: Export installed packages list
     args:
-      all: Include non-bucket packages (URL/path installs)
+      hok: Append hok's own extension (config and per-app state); Scoop ignores it, hok restores it exactly
   formatjson:
     about: Format manifest JSON files in a bucket directory
     args:
