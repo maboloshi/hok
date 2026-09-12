@@ -581,13 +581,15 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
     // in-memory fake here.
     let git = session.git();
 
-    // Buckets without a remote are never pulled, so they can't be diffed —
-    // mark them for a full re-scan so the cache stays complete. Whether or not
-    // the cache is tracked, say what happened to them: a bucket that is never
-    // fetched has to be visible (upstream prints "'x' is not a git repository.
-    // Skipped." — libexec/scoop-update.ps1:183), and a git repository that
-    // merely lacks an `origin` remote is a broken subscription, not a
-    // local-only bucket: upstream's `git pull` fails on it, and so does this.
+    // Buckets without a resolvable remote are never pulled, so they can't be
+    // diffed — mark them for a full re-scan so the cache stays complete.
+    // Whether or not the cache is tracked, say what happened to them: a bucket
+    // that is never fetched has to be visible (upstream prints "'x' is not a
+    // git repository. Skipped." — libexec/scoop-update.ps1:183), and a git
+    // repository whose `origin` cannot be resolved is a broken subscription,
+    // not a local-only bucket: upstream's `git pull` fails on it, and so does
+    // this. `remote_url()` is `None` both for a missing remote and for git
+    // metadata that cannot be read, so the message names neither as the cause.
     for bucket in buckets.iter().filter(|b| b.remote_url().is_none()) {
         let name = bucket.name().to_owned();
         let mut ctx = BucketUpdateProgressContext::new(name.as_str());

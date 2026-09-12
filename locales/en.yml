@@ -301,7 +301,7 @@ cmd:
   bucket_cooldown: "Buckets recently updated. Next update allowed in ~%{remaining}s. Use --force to update now."
   bucket_not_git_skipped: "'%{bucket}' is not a git repository. Skipped."
   bucket_update_failed: "Failed to update %{bucket}: %{e}"
-  bucket_no_remote: "no remote 'origin' configured"
+  bucket_no_remote: "no usable 'origin' remote (missing, or the git metadata is broken)"
   bucket_update_failed_summary: "%{count} bucket(s) failed to update: %{buckets}; run 'hok update --force' to retry."
   multiple_candidates: "Found multiple candidates for package '%{name}':"
   script_failed: "script failed: %{stderr}"

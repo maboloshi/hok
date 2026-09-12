@@ -301,7 +301,7 @@ cmd:
   bucket_cooldown: "仓库刚刚更新过，需等待约 %{remaining} 秒才能再次更新。使用 --force 可立即更新。"
   bucket_not_git_skipped: "'%{bucket}' 不是 git 仓库。已跳过。"
   bucket_update_failed: "%{bucket} 更新失败：%{e}"
-  bucket_no_remote: "未配置远程仓库（origin）"
+  bucket_no_remote: "无法确定远程仓库 origin（缺失或 git 元数据损坏）"
   bucket_update_failed_summary: "%{count} 个仓库更新失败：%{buckets}；运行 'hok update --force' 重试。"
   multiple_candidates: "找到多个名为 '%{name}' 的包:"
   script_failed: "脚本失败: %{stderr}"
