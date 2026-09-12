@@ -120,6 +120,25 @@ fn summary_of(content: &str) -> String {
         .to_owned()
 }
 
+/// The command body of an alias with its line structure preserved, or `None`
+/// when its script file is missing.
+///
+/// [`Alias::command`] joins the lines for display; a caller that recreates the
+/// script elsewhere (the `hok` export extension restored by `hok import`) needs
+/// the body as written, because joining statements with spaces changes what
+/// PowerShell executes.
+pub fn body(session: &Session, name: &str) -> Option<String> {
+    let content = std::fs::read_to_string(script_path(session, name)).ok()?;
+    let body = content
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_owned();
+    Some(body)
+}
+
 /// Add an alias, writing its script and indexing it in the config.
 ///
 /// `description` becomes the script's `# Summary:` line (upstream always emits

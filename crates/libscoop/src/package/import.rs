@@ -97,6 +97,18 @@ impl ImportApp {
     }
 }
 
+/// One `hok.aliases[]` entry of hok's extension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportAlias {
+    /// Alias name (the name given to `hok alias add`).
+    pub name: String,
+    /// The alias command as written; `None` when the exporting machine had a
+    /// config entry whose script was already gone.
+    pub command: Option<String>,
+    /// The alias's `# Summary:` line.
+    pub summary: Option<String>,
+}
+
 /// A whole Scoopfile.
 #[derive(Debug, Clone, Default)]
 pub struct ImportFile {
@@ -104,6 +116,8 @@ pub struct ImportFile {
     pub config: Map<String, Value>,
     /// hok's `hok.config` extension: hok's own keys, verbatim.
     pub hok_config: Map<String, Value>,
+    /// hok's `hok.aliases` extension: aliases with their commands.
+    pub hok_aliases: Vec<ImportAlias>,
     /// Buckets to add.
     pub buckets: Vec<ImportBucket>,
     /// Apps to install.
@@ -124,17 +138,43 @@ pub fn parse_import_json(content: &str) -> Fallible<ImportFile> {
     if let Some(object) = root.get("config").and_then(Value::as_object) {
         file.config = object.clone();
     }
-    if let Some(object) = root
-        .get("hok")
+    let hok = root.get("hok");
+    if let Some(object) = hok
         .and_then(|hok| hok.get("config"))
         .and_then(Value::as_object)
     {
         file.hok_config = object.clone();
     }
+    if let Some(entries) = hok
+        .and_then(|hok| hok.get("aliases"))
+        .and_then(Value::as_array)
+    {
+        file.hok_aliases = entries.iter().filter_map(hok_alias).collect();
+    }
 
     parse_buckets(&root, &mut file);
     parse_apps(&root, &mut file);
     Ok(file)
+}
+
+/// One `hok.aliases[]` entry.
+fn hok_alias(entry: &Value) -> Option<ImportAlias> {
+    let object = entry.as_object()?;
+    let name = object.get("Name").and_then(Value::as_str)?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(ImportAlias {
+        name: name.to_owned(),
+        command: object
+            .get("Command")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        summary: object
+            .get("Summary")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 /// `buckets`: an upstream array, or hok's legacy `name → url` map.
@@ -478,7 +518,14 @@ mod tests {
         let file = parse(
             r#"{
                 "config": { "proxy": "127.0.0.1:7890", "aria2-split": 5 },
-                "hok": { "version": 1, "config": { "use_sqlite_cache": true } },
+                "hok": {
+                    "version": 1,
+                    "config": { "use_sqlite_cache": true },
+                    "aliases": [
+                        { "Name": "rt", "Command": "scoop reinstall $args", "Summary": "Reinstall" },
+                        { "Name": "gone", "Command": null }
+                    ]
+                },
                 "buckets": [], "apps": []
             }"#,
         );
@@ -486,6 +533,15 @@ mod tests {
         assert_eq!(file.config["proxy"], "127.0.0.1:7890");
         assert_eq!(file.hok_config.len(), 1);
         assert_eq!(file.hok_config["use_sqlite_cache"], true);
+        assert_eq!(file.hok_aliases.len(), 2);
+        assert_eq!(file.hok_aliases[0].name, "rt");
+        assert_eq!(
+            file.hok_aliases[0].command.as_deref(),
+            Some("scoop reinstall $args")
+        );
+        assert_eq!(file.hok_aliases[0].summary.as_deref(), Some("Reinstall"));
+        // A config entry whose script was already gone carries no command.
+        assert_eq!(file.hok_aliases[1].command, None);
     }
 
     /// Upstream's `Source` → install query mapping.

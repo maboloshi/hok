@@ -23,7 +23,7 @@
 
 use clap::Parser;
 use libscoop::package::import::{self, ConfigKey, ImportFile};
-use libscoop::{QueryOption, Session, SyncOption, bucket, config, fs, package};
+use libscoop::{QueryOption, Session, SyncOption, alias, bucket, config, fs, package};
 
 use crate::{Result, output};
 
@@ -109,12 +109,14 @@ impl Report {
 /// Apply both config sections: hok's own keys verbatim first, then upstream's,
 /// whose keys are mapped onto hok's (or reported when hok has no equivalent).
 fn apply_config(session: &Session, file: &ImportFile, report: &mut Report) {
+    restore_aliases(session, file, report);
+
     for (key, value) in &file.hok_config {
-        // Aliases have no scalar form: they live behind the alias API rather
-        // than `config set`, so an hok export's alias map is restored entry by
-        // entry instead of being reported as unrepresentable.
+        // An older hok export kept the alias *index* (name → script stem) in
+        // the config: the commands live in the alias scripts and are not in
+        // the file, so there is nothing to restore.
         if key == "alias" {
-            restore_aliases(session, value, report);
+            report.skip(hok_i18n::t!("cmd.import_skip_alias_index"));
             continue;
         }
         let Some(value) = import::config_value_to_string(value) else {
@@ -162,26 +164,29 @@ fn apply_config(session: &Session, file: &ImportFile, report: &mut Report) {
     }
 }
 
-/// Restore an exported alias map (`{ name: command }`) through the alias API.
-fn restore_aliases(session: &Session, value: &serde_json::Value, report: &mut Report) {
-    let Some(aliases) = value.as_object() else {
-        report.skip(hok_i18n::t!("cmd.import_skip_config_value", key = "alias"));
-        return;
-    };
-    for (name, command) in aliases {
-        let Some(command) = command.as_str() else {
-            report.skip(hok_i18n::t!("cmd.import_skip_alias", name = name));
+/// Restore `hok.aliases` through the alias API (`alias add` writes both the
+/// script and the config index).
+///
+/// An alias without a command — the exporting machine had a config entry whose
+/// script was already gone — is reported rather than invented.
+fn restore_aliases(session: &Session, file: &ImportFile, report: &mut Report) {
+    for alias in &file.hok_aliases {
+        let Some(command) = alias.command.as_deref() else {
+            report.skip(hok_i18n::t!(
+                "cmd.import_skip_alias_no_command",
+                name = alias.name
+            ));
             continue;
         };
-        match config::alias_add(session, name, command) {
+        match alias::add(session, &alias.name, command, alias.summary.as_deref()) {
             Ok(()) => output::info(hok_i18n::t!(
                 "cmd.import_alias_set",
-                name = name,
+                name = alias.name,
                 command = command
             )),
             Err(e) => report.skip(hok_i18n::t!(
                 "cmd.import_skip_alias_err",
-                name = name,
+                name = alias.name,
                 e = e
             )),
         }

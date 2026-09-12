@@ -24,11 +24,12 @@
 //!
 //! With the `hok` flag a Scoop-ignored extension is appended, carrying what
 //! upstream expresses only inside the `Info` string: a top-level `hok`
-//! namespace holding hok's own config verbatim, and a per-app `Hok` object
-//! (`Hold` / `Global` / `Architecture` / `Failed`). Upstream's importer reads
-//! only `config` / `buckets` / `apps` and the five documented app fields, so
-//! both variants are valid Scoopfiles — and the extension makes an hok → hok
-//! round trip lossless without parsing human-readable words back.
+//! namespace (hok's own config verbatim, plus its aliases with their commands)
+//! and a per-app `Hok` object (`Hold` / `Global` / `Architecture` / `Failed`).
+//! Upstream's importer reads only `config` / `buckets` / `apps` and the five
+//! documented app fields, so both variants are valid Scoopfiles — and the
+//! extension makes an hok → hok round trip lossless without parsing
+//! human-readable words back.
 
 use std::path::{Path, PathBuf};
 
@@ -254,12 +255,38 @@ fn hok_app_state(package: &Package, global: bool) -> Value {
 fn hok_section(session: &Session) -> Fallible<Value> {
     let mut section = Map::new();
     section.insert("version".to_owned(), Value::from(1));
-    // `config::list` is the crate's own serialization of the whole config.
-    section.insert(
-        "config".to_owned(),
-        serde_json::from_str(&crate::config::list(session)?)?,
-    );
+    section.insert("aliases".to_owned(), Value::Array(aliases(session)?));
+    // `config::list` is the crate's own serialization of the whole config. Its
+    // `alias` key is dropped: it indexes alias scripts whose commands travel in
+    // `aliases` above, and restoring an alias rebuilds the index.
+    let mut config: Map<String, Value> = serde_json::from_str(&crate::config::list(session)?)?;
+    config.remove("alias");
+    section.insert("config".to_owned(), Value::Object(config));
     Ok(Value::Object(section))
+}
+
+/// `hok.aliases` — every alias with the script body as written.
+///
+/// A broken alias (config entry without its script) is exported without a
+/// command, so the importer reports it instead of dropping it silently.
+fn aliases(session: &Session) -> Fallible<Vec<Value>> {
+    let mut out = Vec::new();
+    for alias in crate::alias::list(session)? {
+        let mut item = Map::new();
+        item.insert("Name".to_owned(), Value::String(alias.name.clone()));
+        item.insert(
+            "Command".to_owned(),
+            crate::alias::body(session, &alias.name).into(),
+        );
+        item.insert(
+            "Summary".to_owned(),
+            (!alias.summary.is_empty())
+                .then_some(Value::String(alias.summary.clone()))
+                .into(),
+        );
+        out.push(Value::Object(item));
+    }
+    Ok(out)
 }
 
 /// A path's last-modification time in upstream's timestamp shape, or `None`
@@ -365,6 +392,40 @@ mod tests {
         assert_eq!(app["Hok"]["Global"], false);
         assert_eq!(doc["hok"]["version"], 1);
         assert!(doc["hok"]["config"].is_object());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The extension carries every alias with its command, and the config's
+    /// alias index (which only points at shim scripts) is left behind.
+    #[test]
+    fn hok_extension_carries_aliases() {
+        let root = tmpdir("export_hok_aliases");
+        let session = test_session(&root);
+        crate::alias::add(
+            &session,
+            "rt",
+            "scoop reinstall $args\nWrite-Host done",
+            Some("Reinstall the app"),
+        )
+        .unwrap();
+
+        let doc = build_export(&session, true).unwrap();
+        assert_eq!(
+            doc["hok"]["aliases"][0]["Name"], "rt",
+            "aliases carry their name: {doc}"
+        );
+        // The body keeps its line structure: joining the lines would change
+        // what PowerShell executes.
+        assert_eq!(
+            doc["hok"]["aliases"][0]["Command"],
+            "scoop reinstall $args\nWrite-Host done"
+        );
+        assert_eq!(doc["hok"]["aliases"][0]["Summary"], "Reinstall the app");
+        assert!(
+            doc["hok"]["config"].get("alias").is_none(),
+            "the config alias index is rebuilt by `alias add`"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
