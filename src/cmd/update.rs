@@ -270,19 +270,22 @@ pub async fn execute_upgrade(
     // reinstalled too, instead of falling into the plain install path
     // (which would expand `*` to every bucket package).
     options.push(SyncOption::OnlyUpgrade);
+    // A named target that isn't installed must NOT be reported as up-to-date:
+    // the batch still runs so `sync` reports it (`Confirm-InstallationStatus`,
+    // `lib/core.ps1:1084-1121`), and the closing success footer is then
+    // suppressed — Scoop reports the app and exits 0 without a success line
+    // (`scoop-update.ps1:424-427,468`).
+    let mut missing_target = false;
+    for &q in &queries {
+        if q != "*" && package::query::query_installed(session, &[q], &[])?.is_empty() {
+            missing_target = true;
+            break;
+        }
+    }
     if !force {
         // "All apps are up to date" is upgrade semantics: the update command
         // decides it, not the event loop. Nothing upgradable and at least
         // one of the targets installed means there is nothing to do.
-        // A named target that isn't installed must NOT be reported as
-        // up-to-date — fall through to sync so it reports PackageNotFound.
-        let mut missing_target = false;
-        for &q in &queries {
-            if q != "*" && package::query::query_installed(session, &[q], &[])?.is_empty() {
-                missing_target = true;
-                break;
-            }
-        }
         let upgradable = package::query::query_installed(
             session,
             &queries,
@@ -306,6 +309,10 @@ pub async fn execute_upgrade(
         return Ok(());
     }
     sync_result?;
+
+    if missing_target {
+        return Ok(());
+    }
 
     output::done(hok_i18n::t!("output.ok_all"));
 

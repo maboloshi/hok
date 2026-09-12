@@ -98,23 +98,17 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
     }
 
-    // Per-package running-process check. A running app aborts the whole
-    // reinstall unless `ignore_failures` is enabled — the app's
-    // process-in-use failure is then skipped while the rest of the batch is
-    // reinstalled. When `ignore_running_processes` is enabled,
-    // check_not_running already printed a warning and the app proceeds.
-    // Skipped apps are also dropped from the hold set so their hold is
-    // never released.
+    // Per-package running-process check. A running app is skipped — the check
+    // printed the reason — and the rest of the batch is reinstalled, matching
+    // Scoop's uninstall/update behaviour. Skipped apps are also dropped from
+    // the hold set so their hold is never released.
     let mut keep = Vec::new();
     for q in &exact_queries {
         let name = q.rsplit('/').next().unwrap_or(q.as_str());
         match package::sync::check_not_running(session, name, &hok_i18n::t!("action.reinstall")) {
-            Ok(_) => keep.push(q.clone()),
-            Err(libscoop::Error::AppRunning(name))
-                if all_opts.contains(&SyncOption::IgnoreFailure) =>
-            {
-                output::warn(hok_i18n::t!("reinstall.running_process", name = name));
-                hold_set.remove(&name);
+            Ok(package::sync::RunningCheck::NotRunning) => keep.push(q.clone()),
+            Ok(package::sync::RunningCheck::Running) => {
+                hold_set.remove(name);
             }
             Err(e) => return Err(e.into()),
         }

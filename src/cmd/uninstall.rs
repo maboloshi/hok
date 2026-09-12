@@ -1,10 +1,10 @@
 //! Uninstall package(s).
 
 use clap::Parser;
-use libscoop::{package, Session, SyncOption};
+use libscoop::{Session, SyncOption, package};
 
 use crate::cmd::shared_args::ensure_global;
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -58,6 +58,22 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+
+    // `remove` reports every query that isn't installed and skips it
+    // (`Confirm-InstallationStatus`, `lib/core.ps1:1084-1121`); a batch with
+    // nothing installed therefore still exits 0 but must not end in the
+    // success footer. The same call `remove` uses decides it here, `Broken`
+    // included so a partial install still counts as installed.
+    let any_installed = !package::query::query_installed(
+        session,
+        &queries,
+        &[
+            libscoop::QueryOption::Explicit,
+            libscoop::QueryOption::Broken,
+        ],
+    )?
+    .is_empty();
+
     let handle = crate::eventloop::run_event_loop_default(session);
 
     let sync_result = package::sync::sync(session, queries, options).await;
@@ -68,7 +84,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
     sync_result?;
 
-    output::done(hok_i18n::t!("output.ok_all"));
+    if any_installed {
+        output::done(hok_i18n::t!("output.ok_all"));
+    }
 
     Ok(())
 }

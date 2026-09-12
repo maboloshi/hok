@@ -69,7 +69,6 @@ step:
 reinstall:
   released: "Packages released."
   reheld: "Packages re-held."
-  running_process: "Running process detected, skip reinstalling '%{name}'."
   releasing: "Releasing held packages: %{names}"
   reholding: "Re-holding packages: %{names}"
 action:
@@ -317,9 +316,9 @@ cmd:
   total_download_size: "Total download size: %{size}"
   total_download_size_estimated: "Total download size: %{size} (estimated)"
   nothing_to_download: "Nothing to download, all cached."
-  running_process_update: "Running process detected, skip updating '%{name}'."
-  running_process_uninstall: "Running process detected, skip uninstalling '%{name}'."
-  running_ignore_continue: "'%{name}' is still running. hok is configured to ignore this condition (ignore_running_processes), continuing to %{action}.\n%{procs}"
+  running_process_skip: "'%{name}' is still running; hok is configured to ignore this condition (ignore_running_processes), skipping %{action}.\n%{procs}"
+  running_process_close: "'%{name}' is still running! Close the app(s) and retry; skipping %{action}.\n%{procs}"
+  not_installed: "'%{name}' isn't installed."
   not_installed_correctly: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
   failed_resolve: "failed to resolve '%{query}': %{error}"
   failed_resolve_dependency: "failed to resolve dependency '%{query}' of '%{pkg}': %{error}"
@@ -398,7 +397,6 @@ error:
   package_hold_not_installed: "package '%{name}' is not installed"
   package_hold_broken_install: "package '%{name}' is broken"
   shim_target_missing: "command path does not exist: %{path}"
-  app_running: "'%{name}' is still running! Close the app(s) before proceeding."
   user_aborted: "Operation aborted."
   custom: "%{msg}"
   extraction_failed: "failed to extract archive: %{reason}"

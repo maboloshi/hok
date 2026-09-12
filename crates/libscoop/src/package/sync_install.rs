@@ -122,15 +122,14 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                         .warn(hok_i18n::t!("cmd.not_installed_correctly", name = q));
                     continue;
                 }
-                if ignore_failure {
-                    session.output().error(hok_i18n::t!(
-                        "cmd.failed_resolve",
-                        query = q,
-                        error = Error::PackageNotFound(q.to_owned())
-                    ));
-                    continue;
-                }
-                return Err(Error::PackageNotFound(q.to_owned()));
+                // Not installed at all: Scoop's Confirm-InstallationStatus
+                // reports it and drops the app from the batch
+                // (`lib/core.ps1:1084-1121`); the command still exits 0
+                // (`scoop-update.ps1:424-427,468`).
+                session
+                    .output()
+                    .error(hok_i18n::t!("cmd.not_installed", name = q));
+                continue;
             }
         }
 
@@ -304,8 +303,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
     // processed (mirrors scoop-update.ps1: test_running_process runs before
     // the upgrade list is confirmed/downloaded). Newly installed apps have
     // no apps/<name> directory yet, so `installable` never matches.
-    let (upgradable, replaceable) =
-        filter_not_running(session, upgradable, replaceable, ignore_failure)?;
+    let (upgradable, replaceable) = filter_not_running(session, upgradable, replaceable)?;
 
     if !only_upgrade && !installable.is_empty() {
         transaction.set_install(installable);
@@ -428,37 +426,32 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 pub enum RunningCheck {
     /// No process is running under `apps/<name>`; the operation may proceed.
     NotRunning,
-    /// The app is running but `ignore_running_processes` is enabled.
-    /// A warning (with the process list) was already printed; the caller
-    /// decides whether to proceed or skip this package.
-    Ignored,
+    /// A process is running under `apps/<name>`: skip this package and carry
+    /// on with the rest of the batch. The reason and the process list were
+    /// already printed; the severity is picked by `ignore_running_processes`.
+    ///
+    /// Scoop skips the package either way — the config only chooses between
+    /// `warn` and `error` text (`lib/install.ps1:534-551`), it never turns a
+    /// skip into a proceed.
+    Running,
 }
 
 /// Drop packages whose app is currently running, *before* the transaction is
 /// assembled, so the confirmation list matches what will actually be
-/// processed. With `ignore_failure` a running app is skipped with a warning
-/// (matching upstream's per-package skip when `ignore_failures` is on);
-/// without it the whole batch aborts.
+/// processed. A running app is skipped, never fatal: Scoop skips it and keeps
+/// updating the rest of the batch (`scoop-update.ps1:296-300`).
 fn filter_not_running(
     session: &Session,
     upgradable: Vec<Package>,
     replaceable: Vec<Package>,
-    ignore_failure: bool,
 ) -> Fallible<(Vec<Package>, Vec<Package>)> {
     let filter = |packages: Vec<Package>| -> Fallible<Vec<Package>> {
         let mut kept = Vec::new();
         for pkg in packages {
-            match check_not_running(session, pkg.name(), &hok_i18n::t!("action.update")) {
-                // Not running, or running but ignored (warning printed):
-                // update proceeds either way (matches Scoop's
-                // IGNORE_RUNNING_PROCESSES branch, which continues).
-                Ok(_) => kept.push(pkg),
-                Err(Error::AppRunning(name)) if ignore_failure => {
-                    session
-                        .output()
-                        .warn(hok_i18n::t!("cmd.running_process_update", name = name));
-                }
-                Err(e) => return Err(e),
+            match check_not_running(session, pkg.name(), &hok_i18n::t!("action.update"))? {
+                RunningCheck::NotRunning => kept.push(pkg),
+                // The check printed the reason (and the process list).
+                RunningCheck::Running => {}
             }
         }
         Ok(kept)
@@ -466,18 +459,17 @@ fn filter_not_running(
     Ok((filter(upgradable)?, filter(replaceable)?))
 }
 
-/// Check if the given package's process is currently running under
-/// `apps/<name>`. Returns an error if so, to prevent install/upgrade/
-/// uninstall/reset while the app is in use (matches PS1's
-/// `test_running_process`).
+/// Check whether the given package's process is running under `apps/<name>`
+/// (matches PS1's `test_running_process`).
 ///
-/// When `ignore_running_processes` is enabled, prints a warning listing the
-/// running processes and returns `Ok(RunningCheck::Ignored)` instead — the
-/// caller decides whether to proceed or skip the package (matches PS1's
-/// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
+/// A running process is a *skip*, not a failure: the reason and the process
+/// list are printed here — as a warning when `ignore_running_processes` is
+/// enabled, as an error otherwise, exactly the two branches of
+/// `lib/install.ps1:534-551` — and [`RunningCheck::Running`] tells the caller
+/// to leave this package out of the batch.
 ///
 /// `action` is the already-localized verb phrase the caller is performing
-/// (`t!("action.update")` and friends); it is interpolated into that warning
+/// (`t!("action.update")` and friends); it is interpolated into that message
 /// verbatim, so callers must translate it rather than pass English.
 pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
@@ -497,21 +489,30 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
     if running.is_empty() {
         return Ok(RunningCheck::NotRunning);
     }
+
+    let procs = running
+        .iter()
+        .map(|p| format!("  {} (pid {})", p.name, p.pid))
+        .collect::<Vec<_>>()
+        .join("\n");
     if session.config().ignore_running_processes() {
-        let procs = running
-            .iter()
-            .map(|p| format!("  {} (pid {})", p.name, p.pid))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Scoop's IGNORE_RUNNING_PROCESSES branch warns, but the package is
+        // skipped all the same (`lib/install.ps1:539-542`).
         session.output().warn(hok_i18n::t!(
-            "cmd.running_ignore_continue",
+            "cmd.running_process_skip",
             name = name,
             action = action,
             procs = procs
         ));
-        return Ok(RunningCheck::Ignored);
+    } else {
+        session.output().error(hok_i18n::t!(
+            "cmd.running_process_close",
+            name = name,
+            action = action,
+            procs = procs
+        ));
     }
-    Err(Error::AppRunning(name.to_owned()))
+    Ok(RunningCheck::Running)
 }
 
 /// Commit package installation: extract files, run scripts, create symlinks,
@@ -1066,17 +1067,17 @@ mod tests {
     const TEST_MANIFEST: &str =
         r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#;
 
-    /// A named package that is not installed must fail fast instead of
-    /// silently reporting "all apps are up to date".
+    /// A named package that is not installed must not abort the batch:
+    /// Scoop's `Confirm-InstallationStatus` reports it and drops it, and the
+    /// command still exits 0 (`scoop-update.ps1:424-427,468`).
     #[tokio::test]
-    async fn only_upgrade_missing_package_errors() {
+    async fn only_upgrade_missing_package_is_reported_not_fatal() {
         let root = crate::test_utils::tmpdir("only_upgrade_missing");
         let session = crate::test_utils::test_session(&root);
 
-        let err = install(&session, &["ghost"], &[SyncOption::OnlyUpgrade])
+        install(&session, &["ghost"], &[SyncOption::OnlyUpgrade])
             .await
-            .unwrap_err();
-        assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
+            .expect("a missing package must not fail the batch");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1127,8 +1128,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// With IgnoreFailure, a missing package is skipped (reported to stderr)
-    /// instead of aborting the whole upgrade.
+    /// A missing package in a mixed batch is skipped (reported to stderr)
+    /// while the installed one is still processed; `IgnoreFailure` no longer
+    /// changes that, it only keeps a *commit* failure from aborting.
     #[tokio::test]
     async fn only_upgrade_ignore_failure_skips_missing() {
         let root = crate::test_utils::tmpdir("only_upgrade_ignore");
@@ -1396,6 +1398,98 @@ mod tests {
         assert_eq!(starts, vec![("obsidian".to_owned(), 1, 1)]);
         assert_eq!(dones, vec![("obsidian".to_owned(), 1, 1)]);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A running app is a *skip*, never a failure, and
+    /// `ignore_running_processes` only chooses the message severity —
+    /// matching Scoop, where `test_running_process` returns true for both
+    /// branches (`lib/install.ps1:534-551`) and the callers skip the package
+    /// (`scoop-uninstall.ps1:65-67`, `scoop-update.ps1:297-300`).
+    #[test]
+    fn check_not_running_skips_and_picks_severity() {
+        use std::sync::{Arc, Mutex};
+
+        let root = crate::test_utils::tmpdir("check_not_running");
+        let session = crate::test_utils::test_session(&root);
+
+        // A long-running program living under `apps/<name>`, so the process
+        // image path is inside the app directory (the same criterion as
+        // Scoop's `$_.Path -like "$appdir\*"`).
+        let app_dir = session.app_dir("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let exe = app_dir.join("app.exe");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        std::fs::copy(
+            std::path::Path::new(&system_root)
+                .join("System32")
+                .join("cmd.exe"),
+            &exe,
+        )
+        .unwrap();
+
+        let mut child = std::process::Command::new(&exe)
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        // Wait until the child is visible to the process scan: it may take a
+        // moment to start, and a false negative would make the assertions
+        // below flaky.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::internal::os::running_processes_under(&app_dir)
+            .unwrap()
+            .is_empty()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child process never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        {
+            let warnings = Arc::clone(&warnings);
+            let errors = Arc::clone(&errors);
+            session
+                .set_output(Arc::new(move |out: crate::output::Output| match out {
+                    crate::output::Output::Warn(m) => warnings.lock().unwrap().push(m),
+                    crate::output::Output::Error(m) => errors.lock().unwrap().push(m),
+                    _ => {}
+                }))
+                .unwrap();
+        }
+
+        // Default config: an error explaining that the app must be closed, but
+        // the caller still gets `Running` (skip), not an error.
+        assert_eq!(
+            check_not_running(&session, "app", "update").unwrap(),
+            RunningCheck::Running
+        );
+        assert_eq!(errors.lock().unwrap().len(), 1, "one error message");
+        assert_eq!(warnings.lock().unwrap().len(), 0);
+
+        // `ignore_running_processes` only downgrades the message to a warning;
+        // the outcome stays "skip".
+        session
+            .config_mut()
+            .unwrap()
+            .set("ignore_running_processes", "true")
+            .unwrap();
+        assert_eq!(
+            check_not_running(&session, "app", "update").unwrap(),
+            RunningCheck::Running
+        );
+        assert_eq!(errors.lock().unwrap().len(), 1, "no extra error message");
+        assert_eq!(warnings.lock().unwrap().len(), 1, "one warning message");
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(&root);
     }
 }
