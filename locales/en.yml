@@ -182,6 +182,8 @@ cmd:
   cache_rescanned: "Manifest cache refreshed (rebuilt buckets: %{buckets})."
   cache_refresh_failed: "Manifest cache refresh failed: %{e}. Please retry 'hok update --force'."
   cache_stale: "The manifest cache may be out of date (%{count} bucket(s) not synced); run 'hok update --force' to rebuild it."
+  cache_mismatch: "Manifest cache differs from the file: %{name} cached %{cached}, file %{file} (using the file value)."
+  cache_missing: "Manifest cache differs from the file: %{name} has no manifest on disk (cache row ignored)."
   shim_added: "Added shim: %{name}"
   shim_removed_by_name: "Removed shim: %{name}"
   shim_not_found: "shim not found: %{name}"

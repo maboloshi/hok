@@ -332,6 +332,12 @@ pub(crate) fn query_synced_files(
 /// from the cache, which is refreshed on every `hok update`; reading the file
 /// (load_bucket_manifest) is a fallback when a cached entry fails to parse.
 /// Falls back silently if the cache is unavailable.
+///
+/// An **explicit hit** (one named package: `info`, `search -e`, `cat`, `home`,
+/// `depends`) additionally re-reads the file behind the row and answers with
+/// the version it declares. The cache only knows what the last `hok update`
+/// saw, so a bucket changed outside it would otherwise report a version that
+/// no longer exists; a row whose file has since been deleted is dropped.
 fn query_synced_cached(
     session: &Session,
     queries: &[&str],
@@ -362,7 +368,13 @@ fn query_synced_cached(
     // fresh; re-reading 20k+ manifest files from disk on every query was the
     // dominant cost here. The scan is parallelized so per-package install-state
     // probing overlaps across entries.
-    let packages = entries
+    //
+    // Explicit hits are checked against their file (see the function doc): the
+    // check is per *hit*, so it costs one file read per matched package, never
+    // a walk over the bucket.
+    let verify = is_explicit_mode && !is_wildcard_query;
+
+    let checked = entries
         .par_iter()
         .filter_map(|entry| {
             let name = &entry.name;
@@ -372,7 +384,7 @@ fn query_synced_cached(
                 return None;
             }
 
-            let manifest = manifest_cache::entry_to_manifest(entry)
+            let mut manifest = manifest_cache::entry_to_manifest(entry)
                 .or_else(|| load_bucket_manifest(&root_path, bucket, name))?;
 
             if !manifest_matches(
@@ -387,14 +399,86 @@ fn query_synced_cached(
                 return None;
             }
 
+            let mismatch = if verify {
+                match load_bucket_manifest(&root_path, bucket, name) {
+                    Some(fresh) => {
+                        if fresh.version() != manifest.version() {
+                            let mismatch = manifest_cache::CacheMismatch::Version {
+                                cached: manifest.version().to_owned(),
+                                file: fresh.version().to_owned(),
+                            };
+                            // The file is the source of truth: serve it whole,
+                            // so every field of the hit is as fresh as its
+                            // version.
+                            manifest = fresh;
+                            Some(mismatch)
+                        } else {
+                            None
+                        }
+                    }
+                    // The hit is a phantom row: its file is gone, so there is
+                    // no package to return — but the disappearance is still
+                    // worth reporting.
+                    None => {
+                        return Some(CheckedHit::Phantom {
+                            bucket: bucket.clone(),
+                            name: name.clone(),
+                        });
+                    }
+                }
+            } else {
+                None
+            };
+
             let package = Package::from(name, bucket, manifest);
             fill_install_state(&package, &apps_dir, name, no_junction);
 
-            Some(package)
+            Some(CheckedHit::Package(Box::new(package), mismatch))
         })
         .collect::<Vec<_>>();
 
+    // The notices are emitted outside the parallel section: `Session` is not
+    // `Sync`, so it cannot be touched from a rayon worker.
+    let mut packages = Vec::with_capacity(checked.len());
+    for hit in checked {
+        match hit {
+            CheckedHit::Package(package, mismatch) => {
+                if let Some(mismatch) = &mismatch {
+                    manifest_cache::warn_if_cache_mismatch(
+                        session,
+                        package.bucket(),
+                        package.name(),
+                        mismatch,
+                    );
+                }
+                packages.push(*package);
+            }
+            CheckedHit::Phantom { bucket, name } => {
+                manifest_cache::warn_if_cache_mismatch(
+                    session,
+                    &bucket,
+                    &name,
+                    &manifest_cache::CacheMismatch::Missing,
+                );
+            }
+        }
+    }
+
     Ok(packages)
+}
+
+/// One survivor of a cache-backed query, after the explicit-hit file check.
+///
+/// A phantom cache row produces no package but still has to be reported, which
+/// is why this is not simply a `Package`.
+enum CheckedHit {
+    /// A package to return, plus the cache disagreement the check found.
+    ///
+    /// Boxed: a package dwarfs the phantom variant, which would otherwise make
+    /// every hit as large as the largest one.
+    Package(Box<Package>, Option<manifest_cache::CacheMismatch>),
+    /// A cache row whose manifest file is gone.
+    Phantom { bucket: String, name: String },
 }
 
 // ─── Session-level query operations ─────────────────────────────────────────

@@ -189,6 +189,76 @@ pub(crate) fn reset_stale_warning() {
     STALE_WARNED.store(false, Ordering::Relaxed);
 }
 
+/// A cached manifest whose manifest file on disk disagrees with the cache row.
+///
+/// Produced when an explicit query re-reads the file behind a cache hit
+/// (`package::query`): the cache is only refreshed by `hok update`, so a bucket
+/// changed outside it — a dirty working tree, a local directory bucket edited
+/// by hand — leaves rows that trail the files until the next update.
+pub(crate) enum CacheMismatch {
+    /// The file on disk declares a different version than the cache row.
+    Version {
+        /// The version the cache served.
+        cached: String,
+        /// The version the file declares.
+        file: String,
+    },
+    /// The file the cache row came from no longer exists: the row is phantom.
+    Missing,
+}
+
+/// Packages already reported by [`warn_if_cache_mismatch`] in this process.
+///
+/// One command can reach the same package through several code paths
+/// (`depends` resolves the package and then resolves its tree), and the notice
+/// is about the cache, not about the command — once per package is enough.
+static MISMATCH_WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Warn that a cache hit disagreed with the file it came from, which the caller
+/// has already resolved in favour of the file.
+///
+/// The notice is not optional: without it the user cannot tell that the cache
+/// trailed the buckets, and would have no reason to run `hok update`.
+pub(crate) fn warn_if_cache_mismatch(
+    session: &Session,
+    bucket: &str,
+    name: &str,
+    mismatch: &CacheMismatch,
+) {
+    let key = format!("{bucket}/{name}");
+    {
+        let mut warned = MISMATCH_WARNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if warned.iter().any(|seen| seen == &key) {
+            return;
+        }
+        warned.push(key);
+    }
+
+    let msg = match mismatch {
+        CacheMismatch::Version { cached, file } => {
+            hok_i18n::t!(
+                "cmd.cache_mismatch",
+                name = name,
+                cached = cached,
+                file = file
+            )
+        }
+        CacheMismatch::Missing => hok_i18n::t!("cmd.cache_missing", name = name),
+    };
+    session.output().warn(msg);
+}
+
+/// Reset the once-per-package mismatch latch (tests only).
+#[cfg(test)]
+pub(crate) fn reset_mismatch_warning() {
+    MISMATCH_WARNED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
 /// Check if the cache has any data.
 pub fn is_populated(conn: &Connection) -> Fallible<bool> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM app", [], |row| row.get(0))?;
@@ -1007,6 +1077,140 @@ mod tests {
                 .iter()
                 .any(|out| matches!(out, crate::output::Output::Warn(_))),
             "a stale cache must warn: {warnings:?}"
+        );
+    }
+
+    /// Collect the warning texts a sink received.
+    fn warnings_of(seen: &std::sync::Mutex<Vec<crate::output::Output>>) -> Vec<String> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|out| match out {
+                crate::output::Output::Warn(msg) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Install a sink that records everything the session emits.
+    fn record_output(
+        session: &Session,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<crate::output::Output>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        session
+            .set_output(std::sync::Arc::new(move |out| {
+                sink.lock().unwrap().push(out)
+            }))
+            .unwrap();
+        seen
+    }
+
+    /// An explicit query re-reads the file behind the hit: a cache row that
+    /// trails its bucket is answered with the version the file declares, and
+    /// the disagreement is reported (the row would never heal by itself).
+    #[test]
+    fn explicit_query_serves_the_file_version() {
+        let root = tmpdir("cache_verify_explicit");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "v_bump", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+        assert_eq!(row_count(&conn, "v_bump", "main")[0].version, "1.0");
+        drop(conn);
+
+        // The bucket moved on without an update: only the file knows.
+        write_bucket_manifest(&root, "main", "v_bump", r#"{"version": "2.0"}"#);
+
+        let seen = record_output(&session);
+        reset_mismatch_warning();
+
+        let packages = crate::package::query::query_synced(
+            &session,
+            &["v_bump"],
+            &[crate::package::QueryOption::Explicit],
+        )
+        .unwrap();
+
+        assert_eq!(packages.len(), 1);
+        assert_eq!(
+            packages[0].version(),
+            "2.0",
+            "an explicit hit must answer with the file's version"
+        );
+        let warnings = warnings_of(&seen);
+        assert!(
+            warnings
+                .iter()
+                .any(|msg| msg.contains("v_bump") && msg.contains("2.0")),
+            "the mismatch must be reported, naming the package: {warnings:?}"
+        );
+    }
+
+    /// A row whose file is gone is a phantom, not a package: an explicit query
+    /// drops it instead of answering from the cache.
+    #[test]
+    fn explicit_query_drops_a_phantom_row() {
+        let root = tmpdir("cache_verify_phantom");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "v_phantom", r#"{"version": "1.0"}"#);
+        let _ = populated(&root, &session);
+
+        std::fs::remove_file(manifest_path(&root, "main", "v_phantom")).unwrap();
+
+        let seen = record_output(&session);
+        reset_mismatch_warning();
+
+        let packages = crate::package::query::query_synced(
+            &session,
+            &["v_phantom"],
+            &[crate::package::QueryOption::Explicit],
+        )
+        .unwrap();
+
+        assert!(
+            packages.is_empty(),
+            "a phantom row must not answer the query: {packages:?}"
+        );
+        let warnings = warnings_of(&seen);
+        assert!(
+            warnings.iter().any(|msg| msg.contains("v_phantom")),
+            "the dropped row must be reported: {warnings:?}"
+        );
+    }
+
+    /// A wildcard query has no single hit to check and stays purely cached: a
+    /// listing of 20k manifests must not turn into 20k file reads.
+    #[test]
+    fn wildcard_query_stays_cached() {
+        let root = tmpdir("cache_verify_wildcard");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "v_list", r#"{"version": "1.0"}"#);
+        let _ = populated(&root, &session);
+
+        write_bucket_manifest(&root, "main", "v_list", r#"{"version": "2.0"}"#);
+
+        let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+        assert_eq!(
+            packages[0].version(),
+            "1.0",
+            "a listing must be served from the cache, not re-read from disk"
         );
     }
 }
