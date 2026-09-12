@@ -31,4 +31,10 @@ Cargo.lock.txt
 /src/cmd/__cmd_reg__.rs
 
 .reasonix
-.dsh
+# Agent scratch/logs stay ignored; the skill library is left visible as
+# untracked files instead of being hidden.
+.dsh/*
+!.dsh/skills/
+
+# Git worktrees (per-session branches, e.g. .worktrees/s1-s13)
+/.worktrees
