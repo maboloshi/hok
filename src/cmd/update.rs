@@ -121,12 +121,16 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
         .receiver()
         .expect("event bus outbound receiver already taken");
 
+    // Buckets pull concurrently (bucket::update spawns one task per bucket), so
+    // each bucket gets its own spinner row that finishes in place — an inline
+    // status/done pair would interleave the "Updating..."/"updated." lines when
+    // buckets finish out of order. In a pipe indicatif draws nothing at all, so
+    // the same events render as plain lines instead (failures and skips only):
+    // a silently failed pull must not look like a successful update.
+    let terminal = std::io::stdout().is_terminal();
     let handle = tokio::spawn(async move {
-        // Buckets pull concurrently (bucket::update spawns one task per
-        // bucket), so each bucket gets its own spinner row that finishes in
-        // place — an inline status/done pair would interleave the
-        // "Updating..."/"updated." lines when buckets finish out of order.
-        let mut ui = cui::RowUI::new();
+        let mut ui = cui::BucketRows::new(terminal);
+        let mut failed: Vec<String> = Vec::new();
         while let Some(event) = rx.recv().await {
             match event {
                 Event::BucketUpdateProgress(ctx) => {
@@ -136,7 +140,14 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
                     } else if ctx.state().succeeded() {
                         ui.done(name);
                     } else if let Some(err) = ctx.state().failed() {
-                        ui.fail(name, err);
+                        failed.push(name.to_owned());
+                        ui.fail(
+                            name,
+                            err,
+                            &hok_i18n::t!("cmd.bucket_update_failed", bucket = name, e = err),
+                        );
+                    } else if ctx.state().skipped() {
+                        ui.skip(&hok_i18n::t!("cmd.bucket_not_git_skipped", bucket = name));
                     }
                 }
                 Event::BucketUpdateDone => break,
@@ -144,17 +155,30 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
             }
         }
         ui.finish_all();
+        failed
     });
 
     output::header(hok_i18n::t!("cmd.header_buckets"));
     let changes = bucket::update(session).await?;
-    handle.await.unwrap();
+    let failed = handle.await.unwrap();
 
     // Refresh SQLite manifest cache with visible feedback. `bucket::update`
     // returns the manifest diff, so the cache is updated incrementally (only
     // the changed manifests are re-parsed) instead of rebuilt in full — and
     // nothing is printed at all when the cache is disabled in config.
     refresh_manifest_cache(session, &changes)?;
+
+    // Buckets that were never fetched are named once, at the end: by now their
+    // rows are settled, and this is the line that survives a scrollback or a CI
+    // log. The exit code stays 0 — upstream reports a failed pull and carries
+    // on (libexec/scoop-update.ps1:198 does not check the pull's status).
+    if !failed.is_empty() {
+        output::warn(hok_i18n::t!(
+            "cmd.bucket_update_failed_summary",
+            count = failed.len(),
+            buckets = failed.join(", ")
+        ));
+    }
 
     Ok(())
 }

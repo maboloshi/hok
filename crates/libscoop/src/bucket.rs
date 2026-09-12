@@ -359,10 +359,14 @@ impl BucketUpdateProgressContext {
     pub(crate) fn set_failed(&mut self, msg: &str) {
         self.state = BucketUpdateState::Failed(msg.to_owned());
     }
+
+    pub(crate) fn set_skipped(&mut self) {
+        self.state = BucketUpdateState::Skipped;
+    }
 }
 
 /// Bucket update progress state.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum BucketUpdateState {
     /// The bucket is started to update.
     Started,
@@ -372,6 +376,11 @@ pub enum BucketUpdateState {
 
     /// The bucket is updated successfully.
     Succeeded,
+
+    /// The bucket was not updated at all, because it is not a git repository:
+    /// upstream prints "'x' is not a git repository. Skipped."
+    /// (libexec/scoop-update.ps1:183).
+    Skipped,
 }
 
 impl BucketUpdateState {
@@ -391,6 +400,11 @@ impl BucketUpdateState {
             BucketUpdateState::Failed(msg) => Some(msg),
             _ => None,
         }
+    }
+
+    /// Check if the state is skipped.
+    pub fn skipped(&self) -> bool {
+        self == &BucketUpdateState::Skipped
     }
 }
 
@@ -509,6 +523,15 @@ enum BucketUpdateOutcome {
     None,
 }
 
+/// Collapse a backend error onto one line.
+///
+/// A libgit2 error can carry an embedded newline (it appends
+/// `"; class=Os (2)"` on its own line), which would break a single-row bucket
+/// report into two lines.
+fn one_line(msg: &str) -> String {
+    msg.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Turn a repo-relative diff of manifest files into absolute upsert paths and
 /// deleted manifest names (basename without the `.json` extension).
 fn classify_diff(
@@ -559,10 +582,27 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
     let git = session.git();
 
     // Buckets without a remote are never pulled, so they can't be diffed —
-    // mark them for a full re-scan so the cache stays complete.
-    if track_cache {
-        for b in buckets.iter().filter(|b| b.remote_url().is_none()) {
-            changes.full_scan.push(b.name().to_owned());
+    // mark them for a full re-scan so the cache stays complete. Whether or not
+    // the cache is tracked, say what happened to them: a bucket that is never
+    // fetched has to be visible (upstream prints "'x' is not a git repository.
+    // Skipped." — libexec/scoop-update.ps1:183), and a git repository that
+    // merely lacks an `origin` remote is a broken subscription, not a
+    // local-only bucket: upstream's `git pull` fails on it, and so does this.
+    for bucket in buckets.iter().filter(|b| b.remote_url().is_none()) {
+        let name = bucket.name().to_owned();
+        let mut ctx = BucketUpdateProgressContext::new(name.as_str());
+        if bucket.path().join(".git").exists() {
+            ctx.set_failed(&hok_i18n::t!("cmd.bucket_no_remote"));
+        } else {
+            ctx.set_skipped();
+        }
+
+        if let Some(tx) = emitter.as_ref() {
+            let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
+        }
+
+        if track_cache {
+            changes.full_scan.push(name);
         }
     }
 
@@ -638,7 +678,7 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
                     }
                     Err(err) => {
                         if let Some(tx) = emitter {
-                            ctx.set_failed(err.to_string().as_str());
+                            ctx.set_failed(&one_line(&err.to_string()));
                             let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
                         }
                         BucketUpdateOutcome::Full
@@ -944,6 +984,73 @@ mod tests {
             changes.synced,
             vec![("extras".to_owned(), "abc123".to_owned())],
             "the bucket is still recorded as synced at its current HEAD"
+        );
+    }
+
+    /// Drain the bucket-update states a session published.
+    fn bucket_states(
+        rx: &mut tokio::sync::mpsc::Receiver<crate::Event>,
+    ) -> Vec<(String, crate::bucket::BucketUpdateState)> {
+        let mut states = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let crate::Event::BucketUpdateProgress(ctx) = event {
+                states.push((ctx.name().to_owned(), ctx.state().clone()));
+            }
+        }
+        states
+    }
+
+    /// A bucket without git metadata is never fetched, and that must be said:
+    /// upstream prints "'x' is not a git repository. Skipped."
+    /// (libexec/scoop-update.ps1:183), while silence would read as a
+    /// successful update.
+    #[tokio::test]
+    async fn bucket_update_reports_a_non_git_bucket_as_skipped() {
+        use crate::test_utils::{test_session, tmpdir};
+
+        let root = tmpdir("bucket_update_non_git");
+        let session = test_session(&root);
+        std::fs::create_dir_all(root.join("buckets").join("localb")).unwrap();
+
+        let mut rx = session.event_bus().receiver().unwrap();
+        let changes = crate::bucket::update(&session).await.unwrap();
+
+        assert_eq!(
+            bucket_states(&mut rx),
+            vec![(
+                "localb".to_owned(),
+                crate::bucket::BucketUpdateState::Skipped
+            )],
+            "a non-git bucket must be reported as skipped"
+        );
+        assert!(
+            changes.full_scan.is_empty() && changes.synced.is_empty(),
+            "cache tracking is off in this test: {changes:?}"
+        );
+    }
+
+    /// A git repository with no `origin` remote is a broken subscription, not a
+    /// local-only bucket: upstream's `git pull` fails on it, so it is a failure
+    /// here rather than a silent skip.
+    #[tokio::test]
+    async fn bucket_update_reports_a_git_bucket_without_a_remote_as_failed() {
+        use crate::test_utils::{test_session, tmpdir};
+
+        let root = tmpdir("bucket_update_no_remote");
+        let session = test_session(&root);
+        let bucket_dir = root.join("buckets").join("orphan");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        git2::Repository::init(&bucket_dir).unwrap();
+
+        let mut rx = session.event_bus().receiver().unwrap();
+        crate::bucket::update(&session).await.unwrap();
+
+        let states = bucket_states(&mut rx);
+        assert_eq!(states.len(), 1, "states: {states:?}");
+        assert_eq!(states[0].0, "orphan");
+        assert!(
+            states[0].1.failed().is_some_and(|msg| !msg.is_empty()),
+            "a git bucket with no origin must be reported as failed: {states:?}"
         );
     }
 }

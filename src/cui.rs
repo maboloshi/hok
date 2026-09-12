@@ -120,6 +120,86 @@ impl RowUI {
         }
         self.labels.clear();
     }
+
+    /// Print a standalone note above the rows, without disturbing them.
+    ///
+    /// Used for a bucket that was never attempted (no spinner row was opened
+    /// for it): `indicatif` places the line above every live row.
+    pub fn note(&self, msg: impl AsRef<str>) {
+        let _ = self.mp.println(format!("  {}", style::dim(msg.as_ref())));
+    }
+}
+
+/// Bucket-update progress rows: live spinners on a terminal, plain lines in a
+/// pipe.
+///
+/// `indicatif` renders *nothing* when the stream is not a terminal
+/// ([`ProgressDrawTarget`] drops every draw), so a failed bucket pull would
+/// disappear from piped / CI output — the one line that must not be lost. The
+/// plain mode therefore prints exactly the rows that carry information
+/// (skipped, failed) and stays silent for the running / successful ones, which
+/// on a terminal are the transient spinners.
+///
+/// [`ProgressDrawTarget`]: indicatif::ProgressDrawTarget
+pub enum BucketRows {
+    /// Live spinner rows, one per bucket (a terminal).
+    Rich(RowUI),
+    /// Plain lines, failures and skips only (a pipe).
+    Plain,
+}
+
+impl BucketRows {
+    /// Pick the renderer for the current output stream.
+    pub fn new(terminal: bool) -> BucketRows {
+        if terminal {
+            BucketRows::Rich(RowUI::new())
+        } else {
+            BucketRows::Plain
+        }
+    }
+
+    /// Start a spinner row for `id` (terminal only).
+    pub fn start(&mut self, id: &str) {
+        if let BucketRows::Rich(ui) = self {
+            ui.start(id);
+        }
+    }
+
+    /// Finish `id` successfully (terminal only).
+    pub fn done(&mut self, id: &str) {
+        if let BucketRows::Rich(ui) = self {
+            ui.done(id);
+        }
+    }
+
+    /// Report a failed bucket update.
+    ///
+    /// `err` is the raw backend error (the terminal row renders it in
+    /// parentheses); `message` is the localized one-line description the plain
+    /// mode prints.
+    pub fn fail(&mut self, id: &str, err: &str, message: &str) {
+        match self {
+            BucketRows::Rich(ui) => ui.fail(id, err),
+            BucketRows::Plain => {
+                println!("  {} {}", style::danger_bold("✗"), style::danger(message))
+            }
+        }
+    }
+
+    /// Report a bucket that was not updated at all, in either mode.
+    pub fn skip(&self, message: &str) {
+        match self {
+            BucketRows::Rich(ui) => ui.note(message),
+            BucketRows::Plain => println!("  {}", style::dim(message)),
+        }
+    }
+
+    /// Finish and clear any rows still running (terminal only).
+    pub fn finish_all(&mut self) {
+        if let BucketRows::Rich(ui) = self {
+            ui.finish_all();
+        }
+    }
 }
 
 /// Single aggregate download line driven by an indicatif [`MultiProgress`].
