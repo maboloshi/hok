@@ -486,8 +486,15 @@ async fn build(session: &Session, parts: Parts<'_>) -> Fallible<Info> {
     });
 
     let environment = env_set.map(|vars| {
+        // Upstream enumerates the object with `Get-Member -member noteproperty`,
+        // i.e. case-insensitively alphabetical (scoop-info.ps1:252) — a plain
+        // `sort` would put `BOOST_ROOT` before `Boost_INCLUDE_DIR`.
         let mut keys = vars.keys().collect::<Vec<_>>();
-        keys.sort();
+        keys.sort_by(|a, b| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
+        });
         keys.into_iter()
             .map(|key| format!("{key} = {}", substitute(&vars[key], "$dir", &dir)))
             .collect::<Vec<_>>()
@@ -861,7 +868,7 @@ mod tests {
         "homepage": "https://example.com/",
         "license": "MIT",
         "depends": ["dep1", "dep2"],
-        "env_set": {"APP_HOME": "$dir\\home"},
+        "env_set": {"APP_HOME": "$dir\\home", "App_Data": "$dir\\data"},
         "env_add_path": ["bin", "."],
         "suggest": {"Notes": ["a", "b"], "Alt": ["c"]},
         "notes": ["Run $dir\\x", "Then $original_dir and $persist_dir"],
@@ -922,8 +929,13 @@ mod tests {
         assert_eq!(info.license.as_deref(), Some("MIT"));
         assert_eq!(info.dependencies.as_deref(), Some("dep1 | dep2"));
         assert_eq!(info.binaries.as_deref(), Some("generic.exe"));
-        // Upstream substitutes `$dir` with the literal `<root>` without `-v`.
-        assert_eq!(info.environment.unwrap(), vec!["APP_HOME = <root>\\home"]);
+        // Upstream substitutes `$dir` with the literal `<root>` without `-v`,
+        // and orders the variables the way `Get-Member` does: case-insensitive
+        // alphabetical (`App_Data` before `APP_HOME`).
+        assert_eq!(
+            info.environment.unwrap(),
+            vec!["App_Data = <root>\\data", "APP_HOME = <root>\\home"]
+        );
         assert_eq!(info.path_added.unwrap(), vec!["<root>\\bin", "<root>"]);
         // Declaration order, not alphabetical (upstream renders property order).
         assert_eq!(info.suggestions.as_deref(), Some("a | b | c"));

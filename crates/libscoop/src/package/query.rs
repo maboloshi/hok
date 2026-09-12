@@ -545,7 +545,17 @@ pub fn suggest(session: &Session, packages: &[&str]) -> Fallible<Vec<SuggestEntr
         let manifest = pkg.manifest();
         if let Some(suggest) = manifest.suggest() {
             let name = pkg.name();
-            for values in suggest.values() {
+            // Upstream reports the features in `Get-Member` order, i.e.
+            // case-insensitive alphabetical (lib/install.ps1:407) — unlike
+            // `scoop info`, which walks the object's properties in manifest
+            // order. `suggest` preserves declaration order, so sort here.
+            let mut features = suggest.iter().collect::<Vec<_>>();
+            features.sort_by(|(a, _), (b, _)| {
+                a.to_lowercase()
+                    .cmp(&b.to_lowercase())
+                    .then_with(|| a.cmp(b))
+            });
+            for (_, values) in features {
                 let candidates: Vec<String> = values
                     .devectorize()
                     .into_iter()
@@ -625,6 +635,34 @@ mod tests {
         // flag the app install-failed even though an older version resolves
         // and an upgrade is available.
         assert!(f.is_install_failed(), "damaged install must stay flagged");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The install report walks `suggest` the way upstream's `Get-Member` does:
+    /// case-insensitive alphabetical, not manifest order and not
+    /// case-sensitive.
+    #[test]
+    fn suggest_reports_features_in_get_member_order() {
+        let root = tmpdir("query_suggest_order");
+        let session = test_session(&root);
+        let manifest = r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "suggest": {"vcredist": ["extras/vcredist"], "Boost": ["boost"], "alpha": ["extras/alpha"]}
+            }"#;
+        write_bucket_manifest(&root, "extras", "app", manifest);
+        crate::test_utils::mark_installed(&root, "app", "extras", manifest, false);
+
+        let entries = suggest(&session, &["app"]).unwrap();
+        let features = entries
+            .iter()
+            .map(|entry| entry.candidates[0].as_str())
+            .collect::<Vec<_>>();
+        // Case-insensitive: alpha, Boost, vcredist (manifest declares
+        // vcredist first; a case-sensitive sort would put Boost first).
+        assert_eq!(features, ["extras/alpha", "boost", "extras/vcredist"]);
 
         let _ = std::fs::remove_dir_all(&root);
     }
