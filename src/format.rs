@@ -44,6 +44,30 @@ pub fn humansize(length: u64, with_unit: bool) -> String {
     }
 }
 
+/// Format a byte count the way Scoop's `filesize` does
+/// (lib/core.ps1:328-345): binary units with one decimal place, and a plain
+/// `n B` below 1 KB.
+///
+/// Upstream formats through `{0:n1}`, so its decimal separator and thousands
+/// grouping follow the host culture; the CLI deliberately writes the same
+/// `1.5 MB` shape everywhere.
+pub fn filesize(length: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let length = length as f64;
+    if length > GB {
+        format!("{:.1} GB", length / GB)
+    } else if length > MB {
+        format!("{:.1} MB", length / MB)
+    } else if length > KB {
+        format!("{:.1} KB", length / KB)
+    } else {
+        format!("{} B", length as u64)
+    }
+}
+
 // ─── Visual width ───────────────────────────────────────────────────────────
 
 /// Approximate visual width of a string in a terminal.
@@ -110,6 +134,20 @@ mod tests {
     #[test]
     fn humansize_gb_with_unit() {
         assert_eq!(humansize(4 * 1024 * 1024 * 1024, true), "4 GB");
+    }
+
+    // ── filesize (Scoop's `filesize`) ────────────────────────────────────────
+
+    #[test]
+    fn filesize_matches_scoop_shape() {
+        // `{0:n1}` in each binary unit, and `n B` below 1 KB (upstream uses a
+        // strict `-gt`, so exactly 1 KB is still bytes).
+        assert_eq!(filesize(0), "0 B");
+        assert_eq!(filesize(1023), "1023 B");
+        assert_eq!(filesize(1024), "1024 B");
+        assert_eq!(filesize(1536), "1.5 KB");
+        assert_eq!(filesize(3 * 1024 * 1024), "3.0 MB");
+        assert_eq!(filesize(5 * 1024 * 1024 * 1024), "5.0 GB");
     }
 
     // ── visual_width / pad_visual ────────────────────────────────────────────

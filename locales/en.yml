@@ -6,14 +6,6 @@ output:
   confirm_continue: "Do you want to continue? [y/N]:"
   ok_all: "Everything is ok!"
   downloaded_only: "Downloaded (not installed)."
-  field_identity: "Identity:"
-  field_name: "Name:"
-  field_bucket: "Bucket:"
-  field_description: "Description:"
-  field_version: "Version:"
-  field_homepage: "Homepage:"
-  field_license: "License:"
-  field_shims: "Shims:"
   select_prompt: "Please select one, enter the number to continue:"
 status:
   resolving: "Resolving packages..."
@@ -215,6 +207,35 @@ cmd:
   auto_pr_no_changes: "No manifests updated."
   info_not_found: "Could not find any package matching '%{query}'."
   info_more: "… and %{n} more matches. Refine the query for details."
+  info_name: "Name"
+  info_description: "Description"
+  info_version: "Version"
+  info_source: "Source"
+  info_website: "Website"
+  info_license: "License"
+  info_dependencies: "Dependencies"
+  info_updated_at: "Updated at"
+  info_updated_by: "Updated by"
+  info_manifest: "Manifest"
+  info_installed: "Installed"
+  info_installed_size: "Installed size"
+  info_download_size: "Download size"
+  info_binaries: "Binaries"
+  info_shortcuts: "Shortcuts"
+  info_environment: "Environment"
+  info_path_added: "Path Added"
+  info_suggestions: "Suggestions"
+  info_notes: "Notes"
+  info_update_available: "%{installed} (Update to %{latest} available)"
+  info_size_current_version: "Current version:"
+  info_size_old_versions: "Old versions:"
+  info_size_persisted_data: "Persisted data:"
+  info_size_cached_downloads: "Cached downloads:"
+  info_size_total: "Total:"
+  info_download_unknown: "Unknown (%{reason})"
+  info_download_cached: " (latest version is cached)"
+  info_download_no_content_length: "the server at %{host} did not send a Content-Length header"
+  info_download_server_down: "the server at %{host} is down"
   which_not_found: "'%{command}' was not found: not a Scoop shim, a broken shim, or not an installed app command."
   import_read_err: "Error reading '%{file}': %{e}"
   import_parse_err: "Error parsing JSON: %{e}"
@@ -543,8 +564,9 @@ cli_help:
     about: Import installed packages from a file
   info:
     args:
-      query: The query string (regex supported)
-    about: Show package(s) basic information
+      query: The app name (`bucket/name` also accepted), a manifest URL or a local manifest path
+      verbose: Show full paths and URLs
+    about: Display information about an app
   install:
     about: Install package(s)
     long_about: |-

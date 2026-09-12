@@ -6,14 +6,6 @@ output:
   confirm_continue: "是否继续? [y/N]:"
   ok_all: "一切正常。"
   downloaded_only: "已下载（未安装）。"
-  field_identity: "标识:"
-  field_name: "名称:"
-  field_bucket: "仓库:"
-  field_description: "描述:"
-  field_version: "版本:"
-  field_homepage: "主页:"
-  field_license: "许可证:"
-  field_shims: "Shims:"
   select_prompt: "请选择一个，输入数字继续:"
 status:
   resolving: "正在解析包..."
@@ -215,6 +207,35 @@ cmd:
   auto_pr_no_changes: "没有 manifest 被更新。"
   info_not_found: "找不到匹配 '%{query}' 的任何包。"
   info_more: "…… 以及另外 %{n} 个匹配。请细化查询以查看详情。"
+  info_name: "名称"
+  info_description: "描述"
+  info_version: "版本"
+  info_source: "来源"
+  info_website: "主页"
+  info_license: "许可证"
+  info_dependencies: "依赖项"
+  info_updated_at: "更新时间"
+  info_updated_by: "更新者"
+  info_manifest: "清单文件"
+  info_installed: "已安装版本"
+  info_installed_size: "安装大小"
+  info_download_size: "下载大小"
+  info_binaries: "二进制文件"
+  info_shortcuts: "快捷方式"
+  info_environment: "环境变量"
+  info_path_added: "添加的路径"
+  info_suggestions: "建议"
+  info_notes: "备注"
+  info_update_available: "%{installed}（可更新到 %{latest}）"
+  info_size_current_version: "当前版本:"
+  info_size_old_versions: "旧版本:"
+  info_size_persisted_data: "持久化数据:"
+  info_size_cached_downloads: "缓存下载:"
+  info_size_total: "总计:"
+  info_download_unknown: "未知（%{reason}）"
+  info_download_cached: "（最新版本已缓存）"
+  info_download_no_content_length: "服务器 %{host} 未返回 Content-Length 头"
+  info_download_server_down: "服务器 %{host} 无法访问"
   which_not_found: "'%{command}' 未找到：不是 Scoop shim、shim 已损坏或不属于已安装应用的命令。"
   import_read_err: "读取 '%{file}' 失败：%{e}"
   import_parse_err: "解析 JSON 失败：%{e}"
@@ -541,8 +562,9 @@ cli_help:
     about: 从文件导入已安装包
   info:
     args:
-      query: 查询字符串（支持正则）
-    about: 显示包的基本信息
+      query: 应用名称（也接受 `bucket/name`）、manifest URL 或本地 manifest 路径
+      verbose: 显示完整路径和 URL
+    about: 显示应用的信息
   install:
     about: 安装包
     long_about: |-

@@ -54,7 +54,7 @@ Commands:
   hold              Hold package(s) to disable changes
   home              Browse the homepage of a package
   import            Import installed packages from a file
-  info              Show package(s) basic information
+  info              Display information about an app
   install           Install package(s)
   list              List installed package(s)
   missing-checkver  Check bucket manifests missing checkver and autoupdate
