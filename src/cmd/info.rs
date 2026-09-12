@@ -182,25 +182,49 @@ fn field(label: String, lines: Vec<String>) -> Field {
     Field { label, lines }
 }
 
-/// Print the label/value block with one aligned label column, so a multi-line
-/// value (installed versions, environment, notes) reads as one field.
-fn render(fields: &[Field]) {
+/// Lay out the label/value block with one aligned label column, so a
+/// multi-line value (installed versions, environment, notes) reads as one
+/// field.
+///
+/// Every line's value starts at the same column — the label column plus one
+/// separating space — including the continuation lines of a multi-line value.
+/// An empty continuation line stays empty instead of being padded out with
+/// spaces: upstream joins `notes` with "`n" and prints them as they are, blank
+/// separator lines included.
+fn layout(fields: &[Field]) -> Vec<String> {
     let width = fields
         .iter()
         .map(|field| visual_width(&field.label))
         .max()
         .unwrap_or(0);
 
+    let mut lines = Vec::new();
     for field in fields {
         for (index, line) in field.lines.iter().enumerate() {
             if index == 0 {
                 let pad = " ".repeat(width - visual_width(&field.label));
-                println!("  {}{} {}", style::accent_bold(&field.label), pad, line);
+                lines.push(format!(
+                    "  {}{} {}",
+                    style::accent_bold(&field.label),
+                    pad,
+                    line
+                ));
+            } else if line.is_empty() {
+                lines.push(String::new());
             } else {
-                // Continuation lines align under the first value.
-                println!("  {:width$} {}", "", line, width = width + 1);
+                // The value column of the first line: two spaces of indent,
+                // the label column, and its separating space.
+                lines.push(format!("  {:width$}{}", "", line, width = width + 1));
             }
         }
+    }
+    lines
+}
+
+/// Print the block built by [`layout`].
+fn render(fields: &[Field]) {
+    for line in layout(fields) {
+        println!("{line}");
     }
 }
 
@@ -299,5 +323,84 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `line` without its ANSI SGR sequences, so widths can be measured.
+    fn plain(line: &str) -> String {
+        let mut out = String::new();
+        let mut escaping = false;
+        for ch in line.chars() {
+            match ch {
+                '\x1b' => escaping = true,
+                'm' if escaping => escaping = false,
+                _ if !escaping => out.push(ch),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The visual column at which `value` starts in a rendered `line`.
+    fn value_column(line: &str, value: &str) -> usize {
+        let line = plain(line);
+        let at = line.find(value).expect("the value is on the line");
+        visual_width(&line[..at])
+    }
+
+    /// Every line — including the continuation lines of a multi-line value —
+    /// starts its value at the same column, whatever the label widths are.
+    #[test]
+    fn values_align_across_labels_and_continuation_lines() {
+        let fields = vec![
+            Field {
+                label: "名称".to_owned(),
+                lines: vec!["git".to_owned()],
+            },
+            Field {
+                label: "Installed size".to_owned(),
+                lines: vec![
+                    "当前版本:   389.1 MB".to_owned(),
+                    "持久化数据: 357 B".to_owned(),
+                ],
+            },
+            Field {
+                label: "备注".to_owned(),
+                lines: vec!["first line".to_owned(), "second line".to_owned()],
+            },
+        ];
+
+        // The widest label is `Installed size` (14 columns), so the value
+        // column is 2 + 14 + 1.
+        let expected = 2 + visual_width("Installed size") + 1;
+        for line in layout(&fields) {
+            let value = match line.as_str() {
+                line if line.contains("git") => "git",
+                line if line.contains("389.1 MB") => "当前版本:   389.1 MB",
+                line if line.contains("357 B") => "持久化数据: 357 B",
+                line if line.contains("first line") => "first line",
+                line if line.contains("second line") => "second line",
+                other => panic!("unexpected line: {other}"),
+            };
+            assert_eq!(value_column(&line, value), expected, "on `{line}`");
+        }
+    }
+
+    /// A blank separator line inside `notes` is printed as an empty line, not
+    /// as indentation trailing into nothing.
+    #[test]
+    fn blank_continuation_lines_carry_no_trailing_spaces() {
+        let fields = vec![Field {
+            label: "备注".to_owned(),
+            lines: vec!["paragraph".to_owned(), String::new(), "more".to_owned()],
+        }];
+
+        let lines = layout(&fields);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].is_empty(), "blank line was `{}`", lines[1]);
     }
 }
