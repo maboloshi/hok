@@ -148,6 +148,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
     }
 
+    // Scoop distinguishes an empty installation from a query that simply
+    // matched nothing: with no app installed at all it reports "There aren't
+    // any apps installed." and exits 1 (`scoop-list.ps1:19-22`), while a
+    // non-matching query against a populated installation exits 0. The extra
+    // wildcard scan runs only when nothing was rendered.
+    if rows.is_empty()
+        && package::query::query(session, vec![], vec![QueryOption::Broken], true)?.is_empty()
+    {
+        output::info(hok_i18n::t!("cmd.list_no_apps"));
+        return Err(crate::ExitCode(1).into());
+    }
+
     output::header(hok_i18n::t!("cmd.header_installed_apps"));
 
     if rows.is_empty() {

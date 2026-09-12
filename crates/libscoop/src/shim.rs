@@ -413,6 +413,14 @@ pub fn add_custom(session: &Session, name: &str, target: &str, args: &[String]) 
         .to_string_lossy()
         .into_owned();
 
+    // Upstream refuses to create a shim for a target that does not exist
+    // (`libexec/scoop-shim.ps1:114-123`: `Test-Path $commandPath` guards the
+    // `shim` call). The distinct error variant lets the CLI report Scoop's
+    // exit code 3 instead of a generic failure.
+    if !Path::new(&target_abs).exists() {
+        return Err(crate::Error::ShimTargetMissing(target_abs));
+    }
+
     let mut def = vec![target_abs.as_str(), name];
     def.extend(args.iter().map(String::as_str));
     let shim = Shim::new(def);

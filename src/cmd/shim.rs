@@ -64,7 +64,17 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let args = parts[2..]
                 .strip_prefix(["--".to_string()].as_slice())
                 .unwrap_or(&parts[2..]);
-            add_custom(session, name, target, args)?;
+            match add_custom(session, name, target, args) {
+                Ok(()) => {}
+                // Scoop reports a missing `<command_path>` with its own exit
+                // code 3 (`libexec/scoop-shim.ps1:114-123`) instead of a
+                // generic failure.
+                Err(libscoop::Error::ShimTargetMissing(path)) => {
+                    output::err(hok_i18n::t!("error.shim_target_missing", path = path));
+                    return Err(crate::ExitCode(3).into());
+                }
+                Err(err) => return Err(err.into()),
+            }
             output::done(hok_i18n::t!("cmd.shim_added", name = name));
         }
         Command::Remove { names } => {
@@ -82,8 +92,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 }
                 // Each missing shim was already reported above (localized);
                 // just exit nonzero — do not also print a hardcoded-English
-                // summary via the top-level error path.
-                return Err(crate::ExitCode(1).into());
+                // summary via the top-level error path. Scoop reserves 3 for
+                // "shim not found" (`libexec/scoop-shim.ps1:139`), which is
+                // why 1 would be indistinguishable from a real failure.
+                return Err(crate::ExitCode(3).into());
             }
         }
         Command::List { patterns } => {
@@ -119,7 +131,33 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let paths = package::shim::shim_paths(session, &name)?;
             if paths.is_empty() {
                 output::err(hok_i18n::t!("cmd.shim_not_found", name = name));
-                return Err(crate::ExitCode(1).into());
+                // Scoop splits the two not-found outcomes: a shim that exists
+                // in the *other* scope exits 2 with a hint on how to ask for
+                // it, a shim that exists nowhere exits 3
+                // (`libexec/scoop-shim.ps1:169-183`).
+                let wanted_global = args.global;
+                session.set_global(!wanted_global);
+                let other = package::shim::shim_paths(session, &name)?;
+                session.set_global(wanted_global);
+                if other.is_empty() {
+                    return Err(crate::ExitCode(3).into());
+                }
+                let scope = if wanted_global {
+                    hok_i18n::t!("cmd.shim_scope_local")
+                } else {
+                    hok_i18n::t!("cmd.shim_scope_global")
+                };
+                let hint = if wanted_global {
+                    format!("hok shim info {name}")
+                } else {
+                    format!("hok shim info {name} --global")
+                };
+                output::info(hok_i18n::t!(
+                    "cmd.shim_other_scope",
+                    scope = scope,
+                    cmd = hint
+                ));
+                return Err(crate::ExitCode(2).into());
             }
             for (ext, path) in &paths {
                 let ty = match ext.as_str() {

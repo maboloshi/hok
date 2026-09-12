@@ -152,11 +152,12 @@ pub enum Error {
     #[error("package '{0}' is broken")]
     PackageHoldBrokenInstall(String),
 
-    /// Thrown when the app is currently running and must not be touched
-    /// (matches PS1's `test_running_process`). Callers skip this package and
-    /// continue with the rest of the batch, like Scoop's update/uninstall.
-    #[error("'{0}' is still running! Close the app(s) before proceeding.")]
-    AppRunning(String),
+    /// Thrown when `shim add` names a target that does not exist. Upstream
+    /// refuses to create such a shim and exits 3
+    /// (`libexec/scoop-shim.ps1:114-123`); the CLI maps this variant to that
+    /// code.
+    #[error("command path does not exist: {0}")]
+    ShimTargetMissing(String),
 
     /// Thrown when the user aborts an interactive confirmation prompt.
     /// Not a failure: callers exit 0 but skip success messages.
@@ -239,7 +240,7 @@ impl Error {
             Error::PackageMultipleCandidates(_) => "error.package_multiple_candidates",
             Error::PackageHoldNotInstalled(_) => "error.package_hold_not_installed",
             Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
-            Error::AppRunning(_) => "error.app_running",
+            Error::ShimTargetMissing(_) => "error.shim_target_missing",
             Error::UserAborted => "error.user_aborted",
             Error::Custom(_) => "error.custom",
             Error::ExtractionFailed(_) => "error.extraction_failed",
@@ -337,10 +338,6 @@ mod tests {
         assert_eq!(
             Error::PackageHoldNotInstalled("7zip".into()).error_key(),
             "error.package_hold_not_installed"
-        );
-        assert_eq!(
-            Error::AppRunning("7zip".into()).error_key(),
-            "error.app_running"
         );
     }
 

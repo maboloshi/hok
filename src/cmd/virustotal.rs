@@ -22,10 +22,24 @@ pub struct Args {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = args.app.iter().map(|s| s.as_str()).collect();
     let options = vec![QueryOption::Explicit];
-    let pkgs = package::query::query(session, queries, options, false)?;
+    let pkgs = package::query::query(session, queries.clone(), options, false)?;
 
+    // Scoop combines result bits, and sets bit 8 for every package whose
+    // manifest could not be found (`libexec/scoop-virustotal.ps1:272-275`
+    // `$_ERR_NO_INFO`): a missing manifest is a reportable outcome, not a
+    // hard failure. A query that matched nothing counts as that bit.
+    let unresolved = queries
+        .iter()
+        .copied()
+        .filter(|q| !pkgs.iter().any(|p| p.matches_bucket_query(q)))
+        .count();
+    let mut exit_code: u32 = if unresolved == 0 { 0 } else { 8 };
+
+    if unresolved > 0 {
+        output::err(hok_i18n::t!("cmd.no_pkgs_found"));
+    }
     if pkgs.is_empty() {
-        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.no_pkgs_found")));
+        return Err(ExitCode(exit_code as i32).into());
     }
 
     // Get API key: env var > config > none
@@ -40,9 +54,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         return Err(ExitCode(16).into());
     }
 
-    // Scoop combines result bits: 2 = at least one unsafe (malicious or
-    // suspicious) finding, 4 = at least one request exception.
-    let mut exit_code: u32 = 0;
+    // Scoop accumulates the remaining result bits on top of the missing
+    // ones: 2 = at least one unsafe (malicious or suspicious) finding,
+    // 4 = at least one request exception.
 
     for pkg in &pkgs {
         let urls = pkg.manifest().url();

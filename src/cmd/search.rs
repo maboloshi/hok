@@ -1,9 +1,9 @@
 //! Search available packages.
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::{Session, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Search available package(s)
 ///
@@ -41,19 +41,22 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let packages = package::query::query(session, queries, options, false)?;
 
+    // Scoop treats "no match" as a failed search (`scoop-search.ps1:195-200`
+    // warns and exits 1) so scripts can test a package's existence.
+    if packages.is_empty() {
+        output::warn(hok_i18n::t!("cmd.search_no_match"));
+        return Err(crate::ExitCode(1).into());
+    }
+
     for pkg in packages {
         let mut line = String::new();
-        line.push_str(
-            format!("{}/{} {}", pkg.name(), pkg.bucket(), pkg.version()).as_str(),
-        );
+        line.push_str(format!("{}/{} {}", pkg.name(), pkg.bucket(), pkg.version()).as_str());
 
         if pkg.is_strictly_installed() {
             let manifest_version = pkg.version();
             let installed_version = pkg.installed_version().unwrap();
             if manifest_version != installed_version {
-                line.push_str(
-                    format!(" [installed: {installed_version}]").as_str(),
-                );
+                line.push_str(format!(" [installed: {installed_version}]").as_str());
             } else {
                 line.push_str(" [installed]");
             }

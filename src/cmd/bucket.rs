@@ -58,6 +58,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             let repo = repo.as_deref().unwrap_or_default();
             match bucket::add(session, name.as_str(), repo).await {
                 Ok(..) => output::ok(),
+                // Scoop exits 2 — not 1 — when the bucket is already there:
+                // `lib/buckets.ps1:132` returns 2 and
+                // `libexec/scoop-bucket.ps1:50` propagates it through
+                // `exit $status`.
+                Err(libscoop::Error::BucketAlreadyExists(name)) => {
+                    output::err(hok_i18n::t!("error.bucket_already_exists", name = name));
+                    return Err(crate::ExitCode(2).into());
+                }
                 Err(err) => return Err(err.into()),
             }
             Ok(())
@@ -70,6 +78,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 match bucket::list(session) {
                     Err(e) => Err(e.into()),
                     Ok(buckets) => {
+                        // Scoop warns and exits 2 when nothing is added
+                        // (`libexec/scoop-bucket.ps1:61-70`), which scripts use
+                        // to tell "no buckets" from an ordinary listing.
+                        if buckets.is_empty() {
+                            output::warn(hok_i18n::t!("cmd.bucket_list_empty"));
+                            return Err(crate::ExitCode(2).into());
+                        }
                         let rows = buckets
                             .iter()
                             .map(|b| Row {

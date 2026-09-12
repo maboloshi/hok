@@ -87,23 +87,11 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::ConfigValueInvalid(value) => {
             hok_i18n::t!("error.config_value_invalid", value = value).to_string()
         }
-        libscoop::Error::AliasAlreadyExists(name) => {
-            hok_i18n::t!("error.alias_already_exists", name = name).to_string()
-        }
-        libscoop::Error::AliasNotFound(name) => {
-            hok_i18n::t!("error.alias_not_found", name = name).to_string()
-        }
-        libscoop::Error::AliasScriptExists(file) => {
-            hok_i18n::t!("error.alias_script_exists", file = file).to_string()
-        }
-        libscoop::Error::AliasInvalidName(name) => {
-            hok_i18n::t!("error.alias_invalid_name", name = name).to_string()
-        }
         libscoop::Error::AliasReservedName(name) => {
             hok_i18n::t!("error.alias_reserved_name", name = name).to_string()
         }
-        libscoop::Error::AppRunning(name) => {
-            hok_i18n::t!("error.app_running", name = name).to_string()
+        libscoop::Error::ShimTargetMissing(path) => {
+            hok_i18n::t!("error.shim_target_missing", path = path).to_string()
         }
         libscoop::Error::ExtractionFailed(reason) => {
             hok_i18n::t!("error.extraction_failed", reason = reason).to_string()
