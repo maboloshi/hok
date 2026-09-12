@@ -3,11 +3,19 @@
 //! Table `app` stores denormalized manifest data for fast querying without
 //! re-parsing thousands of JSON files on every command.
 //!
+//! Table `hok_manifest_sync` is hok-only (upstream never touches it) and holds,
+//! per bucket, the commit whose manifests the cached rows reflect. It is what
+//! lets an update diff from the *last successful sync* instead of from this
+//! run's pre-pull HEAD: a pull that turns out to be a no-op would otherwise
+//! hide every manifest that changed since, leaving permanently stale rows.
+//!
 //! The cache is populated when:
 //!   1. Buckets are updated (`hok update`)
 //!   2. On first query if the DB is empty
 
+use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::{Connection, params};
 
@@ -64,7 +72,121 @@ pub fn open(session: &Session) -> Fallible<Connection> {
 
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS 'hok_manifest_sync' (
+            bucket TEXT PRIMARY KEY,
+            synced_commit TEXT NOT NULL
+        );",
+    )?;
+
     Ok(conn)
+}
+
+/// The commit each bucket's cached rows were last synced at.
+///
+/// A bucket without an entry cannot be diffed, so the caller must re-scan it
+/// fully — that is also how a cache built before this table existed (or one
+/// whose refresh failed) repairs itself.
+pub fn synced_baselines(session: &Session) -> Fallible<HashMap<String, String>> {
+    let conn = open(session)?;
+    synced_baselines_conn(&conn)
+}
+
+/// [`synced_baselines`] against an already-open connection.
+fn synced_baselines_conn(conn: &Connection) -> Fallible<HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT bucket, synced_commit FROM hok_manifest_sync")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    let mut baselines = HashMap::new();
+    for row in rows {
+        let (bucket, commit) = row?;
+        baselines.insert(bucket, commit);
+    }
+    Ok(baselines)
+}
+
+/// Record the commit every listed bucket's cached rows now reflect.
+pub(crate) fn record_synced(conn: &Connection, synced: &[(String, String)]) -> Fallible<()> {
+    let tx = conn.unchecked_transaction()?;
+    for (bucket, commit) in synced {
+        tx.execute(
+            "INSERT OR REPLACE INTO hok_manifest_sync (bucket, synced_commit) VALUES (?1, ?2)",
+            params![bucket, commit],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Drop every sync marker, forcing the next refresh to rebuild the cache.
+pub(crate) fn clear_synced(conn: &Connection) -> Fallible<()> {
+    conn.execute("DELETE FROM hok_manifest_sync", [])?;
+    Ok(())
+}
+
+/// Buckets whose cached rows may no longer match the bucket on disk: the sync
+/// marker is missing, or the bucket's HEAD moved past it (a pull outside hok,
+/// an update skipped by the cooldown, or a refresh that failed).
+///
+/// Empty when the SQLite cache is disabled — nothing is served from it then.
+///
+/// Buckets without a git HEAD (a plain directory) are skipped: there is nothing
+/// to compare against, and every update re-scans them fully anyway.
+pub fn stale_buckets(session: &Session) -> Fallible<Vec<String>> {
+    if !session.config().use_sqlite_cache() {
+        return Ok(Vec::new());
+    }
+    let conn = open(session)?;
+    stale_buckets_of(&conn, session)
+}
+
+/// [`stale_buckets`] against an already-open connection.
+fn stale_buckets_of(conn: &Connection, session: &Session) -> Fallible<Vec<String>> {
+    let baselines = synced_baselines_conn(conn)?;
+    let git = session.git();
+    let mut stale = Vec::new();
+
+    for bucket in crate::bucket::bucket_added(session)? {
+        let name = bucket.name();
+        let Some(head) = git.head_commit_id(bucket.path()) else {
+            continue;
+        };
+        if baselines.get(name) != Some(&head) {
+            stale.push(name.to_owned());
+        }
+    }
+    Ok(stale)
+}
+
+/// Once-per-process latch for [`warn_if_cache_stale`].
+static STALE_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Warn once per process when the cache about to be served may trail the
+/// buckets.
+///
+/// This is the only way the user learns that `info` / `search` are about to
+/// answer from stale rows: the cache is refreshed by `hok update` alone, so the
+/// notice names that command.
+pub(crate) fn warn_if_cache_stale(session: &Session, conn: &Connection) {
+    if STALE_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    if let Ok(stale) = stale_buckets_of(conn, session)
+        && !stale.is_empty()
+    {
+        session
+            .output()
+            .warn(hok_i18n::t!("cmd.cache_stale", count = stale.len()));
+    }
+}
+
+/// Reset the once-per-process warning latch (tests only).
+#[cfg(test)]
+pub(crate) fn reset_stale_warning() {
+    STALE_WARNED.store(false, Ordering::Relaxed);
 }
 
 /// Check if the cache has any data.
@@ -289,38 +411,75 @@ pub fn entry_to_manifest(entry: &CacheEntry) -> Option<Manifest> {
     Manifest::from_json(&entry.name, &entry.manifest_json).ok()
 }
 
+/// What a [`refresh`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshOutcome {
+    /// The SQLite cache is disabled in config — nothing was refreshed.
+    Disabled,
+    /// Only the changed manifests were re-parsed.
+    Incremental,
+    /// The cache was rebuilt from the buckets (empty cache, or a bucket whose
+    /// cached rows could not be diffed).
+    Rebuilt,
+}
+
 /// Refresh the SQLite manifest cache after bucket updates.
 ///
 /// Applies the manifest diff produced by `crate::bucket::update()`
 /// incrementally — only the changed manifests are re-parsed. Falls back to a
-/// full re-populate when the cache is empty or a bucket could not be cleanly
-/// diffed. No-op if the SQLite cache is not enabled in config.
-pub fn refresh(session: &Session, changes: &crate::bucket::UpdateChanges) {
+/// full re-populate when the cache is empty or any bucket could not be cleanly
+/// diffed.
+///
+/// On success the commits the cache now reflects are recorded, which is the
+/// baseline the next update diffs from. On failure the markers are dropped
+/// (so a retry rebuilds the cache from scratch) and the error is returned —
+/// the caller reports it and the user retries, rather than a silently stale
+/// cache being served from then on.
+pub fn refresh(
+    session: &Session,
+    changes: &crate::bucket::UpdateChanges,
+) -> Fallible<RefreshOutcome> {
     if !session.config().use_sqlite_cache() {
-        return;
+        return Ok(RefreshOutcome::Disabled);
     }
-    let conn = match open(session) {
-        Ok(conn) => conn,
-        Err(_) => {
-            tracing::warn!("failed to open manifest cache");
-            return;
-        }
-    };
+    let conn = open(session)?;
 
     // Full rebuild on first use (empty cache), or when any bucket could not be
-    // cleanly diffed (no remote, failed pull/diff) and must be re-scanned to
-    // keep the cache complete. Otherwise apply only the changed manifests.
+    // cleanly diffed (never synced, no remote, failed pull/diff) and must be
+    // re-scanned to keep the cache complete. Otherwise apply only the changed
+    // manifests.
     let needs_full = match is_populated(&conn) {
         Ok(populated) => !populated,
         Err(_) => true,
     } || !changes.full_scan.is_empty();
 
-    if needs_full {
-        let _ = populate(&conn, session);
+    let result = if needs_full {
+        populate(&conn, session)
     } else if !changes.upsert.is_empty() || !changes.delete.is_empty() {
-        let _ = apply_incremental(&conn, changes);
+        apply_incremental(&conn, changes)
+    } else {
+        Ok(())
+    };
+
+    if let Err(e) = result {
+        // Drop the markers: a retry (or the next update) re-scans every bucket,
+        // which repairs whatever this failed refresh left behind.
+        if let Err(e) = clear_synced(&conn) {
+            tracing::warn!("failed to clear manifest sync markers: {e}");
+        }
+        return Err(e);
     }
-    // Nothing changed and the cache is populated: no-op.
+
+    if let Err(e) = record_synced(&conn, &changes.synced) {
+        let _ = clear_synced(&conn);
+        return Err(e);
+    }
+
+    Ok(if needs_full {
+        RefreshOutcome::Rebuilt
+    } else {
+        RefreshOutcome::Incremental
+    })
 }
 
 #[cfg(test)]
@@ -364,6 +523,7 @@ mod tests {
             upsert: vec![("main".to_owned(), manifest_path(&root, "main", "foo"))],
             delete: vec![],
             full_scan: vec![],
+            synced: vec![],
         };
         apply_incremental(&conn, &changes).unwrap();
 
@@ -391,6 +551,7 @@ mod tests {
             upsert: vec![],
             delete: vec![("main".to_owned(), "bar".to_owned())],
             full_scan: vec![],
+            synced: vec![],
         };
         apply_incremental(&conn, &changes).unwrap();
 
@@ -419,12 +580,192 @@ mod tests {
             upsert: vec![("main".to_owned(), manifest_path(&root, "main", "foo"))],
             delete: vec![],
             full_scan: vec![],
+            synced: vec![],
         };
         apply_incremental(&conn, &changes).unwrap();
 
         assert!(
             row_count(&conn, "foo", "main").is_empty(),
             "unparseable manifest must not leave stale cached rows"
+        );
+    }
+
+    /// A cache that trailed its bucket is repaired by the full rebuild a
+    /// missing sync marker asks for, and the marker is recorded afterwards.
+    #[test]
+    fn full_rebuild_repairs_a_stale_row_and_records_the_marker() {
+        let root = tmpdir("cache_repair");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+        assert_eq!(row_count(&conn, "foo", "main")[0].version, "1.0");
+        drop(conn);
+
+        // The bucket moved on to 2.0 while the cache stayed at 1.0.
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "2.0"}"#);
+
+        let changes = UpdateChanges {
+            upsert: vec![],
+            delete: vec![],
+            full_scan: vec!["main".to_owned()],
+            synced: vec![("main".to_owned(), "c2".to_owned())],
+        };
+        assert_eq!(
+            refresh(&session, &changes).unwrap(),
+            RefreshOutcome::Rebuilt
+        );
+
+        let conn = open(&session).unwrap();
+        assert_eq!(
+            row_count(&conn, "foo", "main")[0].version,
+            "2.0",
+            "the rebuild must replace the stale row"
+        );
+        assert_eq!(
+            synced_baselines(&session)
+                .unwrap()
+                .get("main")
+                .map(String::as_str),
+            Some("c2"),
+            "the synced commit becomes the next update's baseline"
+        );
+    }
+
+    /// A refresh that fails is reported as an error and drops the markers, so
+    /// the retry the user is asked for rebuilds the cache from scratch.
+    #[test]
+    fn failed_refresh_reports_an_error_and_drops_the_sync_markers() {
+        let root = tmpdir("cache_fail_marker");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        {
+            let conn = open(&session).unwrap();
+            populate(&conn, &session).unwrap();
+            record_synced(&conn, &[("main".to_owned(), "c1".to_owned())]).unwrap();
+            // Corrupt the cache table so the next refresh cannot write to it
+            // (`open` keeps an existing table as it is).
+            conn.execute("DROP TABLE app", []).unwrap();
+            conn.execute("CREATE TABLE app (name TEXT)", []).unwrap();
+        }
+
+        let changes = UpdateChanges {
+            upsert: vec![],
+            delete: vec![],
+            full_scan: vec![],
+            synced: vec![("main".to_owned(), "c2".to_owned())],
+        };
+        assert!(
+            refresh(&session, &changes).is_err(),
+            "a failed refresh must surface as an error, not a silent flag"
+        );
+
+        assert!(
+            synced_baselines(&session).unwrap().is_empty(),
+            "dropped markers force a full rebuild on the retry"
+        );
+    }
+
+    /// The staleness check that drives the read-path warning: a bucket with no
+    /// marker, or whose HEAD moved past its marker, is reported — a synced one
+    /// is not, and a disabled cache never reports anything.
+    #[test]
+    fn stale_buckets_reports_unsynced_and_moved_buckets() {
+        use crate::test_utils::FakeGit;
+        use std::sync::Arc;
+
+        let root = tmpdir("cache_stale");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+
+        let bucket_dir = root.join("buckets").join("main");
+        let fake = Arc::new(FakeGit::default());
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir.clone(), "head-1".to_owned());
+        session.set_git(fake.clone()).unwrap();
+
+        // Never synced: no marker at all.
+        assert_eq!(stale_buckets(&session).unwrap(), vec!["main".to_owned()]);
+
+        // Synced at the current HEAD: fresh.
+        {
+            let conn = open(&session).unwrap();
+            record_synced(&conn, &[("main".to_owned(), "head-1".to_owned())]).unwrap();
+        }
+        assert!(stale_buckets(&session).unwrap().is_empty());
+
+        // The bucket moved on (a pull outside hok): stale again.
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir, "head-2".to_owned());
+        assert_eq!(stale_buckets(&session).unwrap(), vec!["main".to_owned()]);
+
+        // With the cache disabled nothing is served from it.
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "false")
+            .unwrap();
+        assert!(stale_buckets(&session).unwrap().is_empty());
+    }
+
+    /// Serving rows from a stale cache warns through the session's output sink,
+    /// which is how the user learns to run `hok update` instead of trusting
+    /// them.
+    #[test]
+    fn serving_a_stale_cache_warns_once() {
+        use crate::test_utils::FakeGit;
+        use std::sync::{Arc, Mutex};
+
+        let root = tmpdir("cache_warn");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(root.join("buckets").join("main"), "head-1".to_owned());
+        session.set_git(fake).unwrap();
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        session
+            .set_output(Arc::new(move |out| sink.lock().unwrap().push(out)))
+            .unwrap();
+
+        reset_stale_warning();
+        let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+        assert_eq!(packages.len(), 1, "the cached query still returns the row");
+
+        let warnings = seen.lock().unwrap().clone();
+        assert!(
+            warnings
+                .iter()
+                .any(|out| matches!(out, crate::output::Output::Warn(_))),
+            "a stale cache must warn: {warnings:?}"
         );
     }
 }

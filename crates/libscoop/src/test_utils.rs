@@ -333,6 +333,9 @@ pub struct FakeGit {
     pub head_ids: Mutex<HashMap<std::path::PathBuf, String>>,
     /// Diff entries returned by `diff_manifest_changes` (per repo path).
     pub diffs: Mutex<HashMap<std::path::PathBuf, Vec<ManifestDiffEntry>>>,
+    /// Record of `(repo path, from_commit)` for every `diff_manifest_changes`
+    /// call, so a test can assert which baseline was diffed from.
+    pub diff_baselines: Mutex<Vec<(std::path::PathBuf, String)>>,
 }
 
 #[async_trait::async_trait]
@@ -373,8 +376,12 @@ impl Git for FakeGit {
     fn diff_manifest_changes(
         &self,
         path: &Path,
-        _from_commit: &str,
+        from_commit: &str,
     ) -> Fallible<Vec<ManifestDiffEntry>> {
+        self.diff_baselines
+            .lock()
+            .unwrap()
+            .push((path.to_owned(), from_commit.to_owned()));
         Ok(self
             .diffs
             .lock()

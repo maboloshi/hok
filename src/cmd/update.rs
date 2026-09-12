@@ -152,10 +152,9 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 
     // Refresh SQLite manifest cache with visible feedback. `bucket::update`
     // returns the manifest diff, so the cache is updated incrementally (only
-    // the changed manifests are re-parsed) instead of rebuilt in full.
-    if session.config().use_sqlite_cache() {
-        refresh_manifest_cache(session, &changes);
-    }
+    // the changed manifests are re-parsed) instead of rebuilt in full — and
+    // nothing is printed at all when the cache is disabled in config.
+    refresh_manifest_cache(session, &changes)?;
 
     Ok(())
 }
@@ -166,17 +165,44 @@ async fn update_buckets(session: &Session, force: bool) -> Result<()> {
 /// place as `✓ <cache_done>`; on a non-terminal (piped) it falls back to the
 /// plain `status`/`done` line pair, since indicatif's `MultiProgress` is
 /// hidden and renders nothing when the output is not a TTY.
-fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) {
+///
+/// A failed refresh is an error, not a silent one: the cache drops its sync
+/// markers (so a retry rebuilds it from scratch) and the command fails with a
+/// retry hint.
+fn refresh_manifest_cache(session: &Session, changes: &bucket::UpdateChanges) -> Result<()> {
+    let outcome = match package::manifest_cache::refresh(session, changes) {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            let message = hok_i18n::t!("cmd.cache_refresh_failed", e = e);
+            if std::io::stdout().is_terminal() {
+                let mut ui = cui::RowUI::new();
+                ui.fail("manifest-cache", &message);
+            } else {
+                output::err(message);
+            }
+            // The handler printed its own message; the exit code still reports
+            // the failure.
+            return Err(crate::ExitCode(1).into());
+        }
+    };
+    if outcome == package::manifest_cache::RefreshOutcome::Disabled {
+        return Ok(());
+    }
+
+    let done = match outcome {
+        package::manifest_cache::RefreshOutcome::Rebuilt => hok_i18n::t!("cmd.cache_rebuilt"),
+        _ => hok_i18n::t!("cmd.cache_done"),
+    };
+
     if std::io::stdout().is_terminal() {
         let mut ui = cui::RowUI::new();
         ui.set_spin("manifest-cache", hok_i18n::t!("cmd.refresh_cache"));
-        package::manifest_cache::refresh(session, changes);
-        ui.done_with("manifest-cache", hok_i18n::t!("cmd.cache_done"));
+        ui.done_with("manifest-cache", done);
     } else {
         output::status(hok_i18n::t!("cmd.refresh_cache"));
-        package::manifest_cache::refresh(session, changes);
-        output::done(hok_i18n::t!("cmd.cache_done"));
+        output::done(done);
     }
+    Ok(())
 }
 
 /// Shared upgrade logic — used by both `update` (when packages given) and `upgrade`.

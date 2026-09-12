@@ -485,9 +485,14 @@ pub struct UpdateChanges {
     /// `(bucket, manifest name)` for deleted manifests — these rows should be
     /// removed from the cache.
     pub delete: Vec<(String, String)>,
-    /// Bucket names that were not cleanly diffed (no git remote, or the pull /
-    /// diff failed) — the cache must fall back to re-scanning these fully.
+    /// Bucket names that were not cleanly diffed (never synced, no git remote,
+    /// or the pull / diff failed) — the cache must fall back to re-scanning
+    /// these fully.
     pub full_scan: Vec<String>,
+    /// `(bucket, HEAD commit)` after the pull. The refresh records these as the
+    /// commit each bucket's cached rows reflect, which is the baseline the next
+    /// update diffs from.
+    pub synced: Vec<(String, String)>,
 }
 
 /// Per-bucket outcome of a cache-tracking bucket update.
@@ -561,6 +566,19 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
         }
     }
 
+    // Each bucket is diffed from the commit its cached rows were last synced
+    // at — *not* from this run's pre-pull HEAD. A pull that is a no-op (the
+    // repo already sits at the remote's HEAD) still has to replay everything
+    // that changed since the last successful sync; diffing from the pre-pull
+    // HEAD would report an empty diff and leave those rows stale for good.
+    // A bucket with no marker (never synced, or the marker table is new) can't
+    // be diffed and is re-scanned fully instead.
+    let baselines = if track_cache {
+        crate::package::manifest_cache::synced_baselines(session).unwrap_or_default()
+    } else {
+        std::collections::HashMap::new()
+    };
+
     // Pull each bucket concurrently. git2 pulls are blocking, so each runs as
     // its own task on the runtime's worker pool (真 async orchestration; the
     // blocking body is offloaded by tokio).
@@ -573,6 +591,8 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
             let proxy = proxy.clone();
             let git = git.clone();
             let emitter = emitter.clone();
+            let baseline = baselines.get(&name).cloned();
+            let track = track_cache;
 
             tokio::task::spawn(async move {
                 let mut ctx = BucketUpdateProgressContext::new(name.as_str());
@@ -583,36 +603,24 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
                         .await;
                 }
 
-                // Capture the pre-pull HEAD so the working tree can be diffed
-                // against it afterwards (Scoop records `$previousCommit`).
-                //
-                // Note: on a no-op pull (already up to date) `old_head == new HEAD`, and
-                // `diff_manifest_changes` short-circuits identical trees to an empty diff, so
-                // we deliberately do NOT add an explicit `old_head == new_head` guard here — it
-                // would save ~nothing (the tree diff is already O(1) for equal trees) and would
-                // only duplicate the check `pull` already performs internally.
-                let old_head = if track_cache {
-                    git.head_commit_id(&repo)
-                } else {
-                    None
-                };
-
+                // Diff from the last successfully synced commit (see above). A
+                // bucket that was never synced has no baseline, so it cannot be
+                // diffed and is re-scanned instead.
                 let outcome = match git.pull(&repo, proxy.as_deref()).await {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
                             let _ = tx.send(crate::Event::BucketUpdateProgress(ctx)).await;
                         }
-                        if track_cache {
-                            match old_head {
-                                Some(old) => match git.diff_manifest_changes(&repo, &old) {
+                        if track {
+                            match baseline {
+                                Some(from) => match git.diff_manifest_changes(&repo, &from) {
                                     Ok(entries) => {
                                         let (upsert, delete) = classify_diff(&repo, entries);
                                         BucketUpdateOutcome::Diff { upsert, delete }
                                     }
                                     Err(_) => BucketUpdateOutcome::Full,
                                 },
-                                // No pre-pull HEAD (e.g. an unborn repo): can't diff.
                                 None => BucketUpdateOutcome::Full,
                             }
                         } else {
@@ -628,25 +636,39 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
                     }
                 };
 
-                (name, outcome)
+                // The commit the cache reflects once this update's refresh has
+                // run, whatever the outcome: a failed pull leaves the working
+                // tree where it was, and the cache still matches it.
+                let synced_at = if track {
+                    git.head_commit_id(&repo)
+                } else {
+                    None
+                };
+
+                (name, outcome, synced_at)
             })
         })
         .collect();
 
     for handle in handles {
         match handle.await {
-            Ok((name, outcome)) => match outcome {
-                BucketUpdateOutcome::Diff { upsert, delete } => {
-                    changes
-                        .upsert
-                        .extend(upsert.into_iter().map(|p| (name.clone(), p)));
-                    changes
-                        .delete
-                        .extend(delete.into_iter().map(|n| (name.clone(), n)));
+            Ok((name, outcome, synced_at)) => {
+                if let Some(commit) = synced_at {
+                    changes.synced.push((name.clone(), commit));
                 }
-                BucketUpdateOutcome::Full => changes.full_scan.push(name),
-                BucketUpdateOutcome::None => {}
-            },
+                match outcome {
+                    BucketUpdateOutcome::Diff { upsert, delete } => {
+                        changes
+                            .upsert
+                            .extend(upsert.into_iter().map(|p| (name.clone(), p)));
+                        changes
+                            .delete
+                            .extend(delete.into_iter().map(|n| (name.clone(), n)));
+                    }
+                    BucketUpdateOutcome::Full => changes.full_scan.push(name),
+                    BucketUpdateOutcome::None => {}
+                }
+            }
             Err(e) => tracing::warn!("bucket update task failed to join: {e}"),
         }
     }
@@ -828,6 +850,16 @@ mod tests {
         );
         session.set_git(fake.clone()).unwrap();
 
+        // The bucket's cached rows were last synced at `old123`.
+        {
+            let conn = crate::package::manifest_cache::open(&session).unwrap();
+            crate::package::manifest_cache::record_synced(
+                &conn,
+                &[("extras".to_owned(), "old123".to_owned())],
+            )
+            .unwrap();
+        }
+
         let changes = crate::bucket::update(&session).await.unwrap();
 
         // foo.json is an upsert path under the extras bucket; bar.json a delete.
@@ -846,6 +878,63 @@ mod tests {
             changes.full_scan.is_empty(),
             "cleanly-diffed bucket must not be re-scanned fully: {:?}",
             changes.full_scan
+        );
+
+        // The diff starts at the last *synced* commit, never at this run's
+        // pre-pull HEAD: a no-op pull must still replay everything that
+        // changed since the cache was last refreshed.
+        assert_eq!(
+            *fake.diff_baselines.lock().unwrap(),
+            vec![(bucket_dir.clone(), "old123".to_owned())],
+            "the diff must start from the last synced commit"
+        );
+        // ... and the new HEAD becomes the next baseline.
+        assert_eq!(
+            changes.synced,
+            vec![("extras".to_owned(), "abc123".to_owned())]
+        );
+    }
+
+    /// A bucket the cache never synced carries no baseline, so it is re-scanned
+    /// fully — no diff is requested at all.
+    #[tokio::test]
+    async fn bucket_update_rescans_a_bucket_without_a_sync_marker() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_update_no_marker");
+        let session = test_session(&root);
+
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://example.com/extras.git")
+            .unwrap();
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir.clone(), "abc123".to_owned());
+        session.set_git(fake.clone()).unwrap();
+
+        let changes = crate::bucket::update(&session).await.unwrap();
+
+        assert_eq!(changes.full_scan, vec!["extras".to_owned()]);
+        assert!(changes.upsert.is_empty() && changes.delete.is_empty());
+        assert!(
+            fake.diff_baselines.lock().unwrap().is_empty(),
+            "without a baseline there is nothing to diff from"
+        );
+        assert_eq!(
+            changes.synced,
+            vec![("extras".to_owned(), "abc123".to_owned())],
+            "the bucket is still recorded as synced at its current HEAD"
         );
     }
 }

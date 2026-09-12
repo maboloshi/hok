@@ -334,6 +334,11 @@ fn query_synced_cached(
         manifest_cache::populate(&conn, session)?;
     }
 
+    // The rows below are served from the cache, which only `hok update`
+    // refreshes: say so when the cache may trail the buckets, so the user can
+    // act instead of trusting a stale version.
+    manifest_cache::warn_if_cache_stale(session, &conn);
+
     let entries = manifest_cache::query(&conn, None, None)?;
     let apps_dir = session.apps_dir();
     let root_path = session.config().root_path().to_path_buf();
