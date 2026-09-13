@@ -48,8 +48,8 @@ pub struct Args {
     #[arg(short = 'k', long, action = ArgAction::SetTrue)]
     no_cache: bool,
 
-    /// Do not install dependencies (may break packages)
-    #[arg(short = 'I', long, action = ArgAction::SetTrue)]
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = ArgAction::SetTrue)]
     independent: bool,
 
     /// Do not replace package(s)

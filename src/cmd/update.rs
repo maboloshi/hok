@@ -45,8 +45,8 @@ pub struct Args {
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
 
-    /// Do not install dependencies (may break packages)
-    #[arg(short = 'I', long, action = ArgAction::SetTrue)]
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = ArgAction::SetTrue)]
     independent: bool,
 
     /// Do not upgrade package(s)

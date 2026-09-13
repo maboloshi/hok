@@ -761,7 +761,7 @@ cli_help:
       global: 全局安装（到 $SCOOP_GLOBAL）
       no_cache: "不使用下载缓存"
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
-      independent: 不安装依赖（可能破坏包）
+      independent: 不自动安装依赖
       skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包
@@ -866,7 +866,7 @@ cli_help:
       force: "即使没有新版本也强制更新"
       no_cache: "不使用下载缓存"
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
-      independent: 不安装依赖（可能破坏包）
+      independent: 不自动安装依赖
       skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包

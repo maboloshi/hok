@@ -44,8 +44,8 @@ pub struct SyncArgs {
     #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
     pub skip_hash_check: bool,
 
-    /// Do not install dependencies (may break packages)
-    #[arg(short = 'I', long, action = clap::ArgAction::SetTrue)]
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = clap::ArgAction::SetTrue)]
     pub independent: bool,
 
     /// Do not replace package(s)
