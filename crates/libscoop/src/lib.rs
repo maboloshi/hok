@@ -85,7 +85,7 @@ pub use internal::compare_versions;
 pub use package::manifest::{Checkver, Manifest, parse_file};
 pub use package::{QueryOption, SyncOption};
 pub use session::Session;
-pub use shim::{add_custom, remove_by_name};
+pub use shim::{ShimInfo, add_custom, list_shim_info, remove_by_name, shim_file, shim_info};
 
 /// Public filesystem helpers (thin facade over [`internal::fs`]).
 pub mod fs {

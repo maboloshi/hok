@@ -38,7 +38,7 @@
 //! - closure_done / closure_fail: per-package success/failure closure.
 //! - done / ok: success markers.
 //! - info / warn / err: side notes and prefixes.
-//! - field / named / change: structured label/value lines.
+//! - field / named: structured label/value lines.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -365,17 +365,6 @@ pub fn ok() {
 /// Named entity + message (name emphasized).
 pub fn named(name: impl AsRef<str>, msg: impl AsRef<str>) {
     println!("  {} {}", style::emphasis(name.as_ref()), msg.as_ref());
-}
-
-/// Change indicator `label -> value` (label accent bold, arrow accent, value
-/// success green).
-pub fn change(label: impl AsRef<str>, _op: impl AsRef<str>, value: impl AsRef<str>) {
-    println!(
-        "  {} {} {}",
-        style::accent_bold(label.as_ref()),
-        style::accent("->"),
-        style::success(value.as_ref())
-    );
 }
 
 /// Per-package counting action line: `(k/N) verb pkg`.

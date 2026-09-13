@@ -388,6 +388,167 @@ fn resolve_in_path(name: &str) -> Option<String> {
     None
 }
 
+// ─── Shim inspection (`shim list` / `shim info`) ────────────────────────────
+
+/// One shim's resolved metadata, mirroring upstream `Get-ShimInfo`
+/// (`libexec/scoop-shim.ps1:68-81`). The CLI renders these as upstream's
+/// Name | Source | Alternatives | IsGlobal | IsHidden table
+/// (`supporting/formats/ScoopTypes.Format.ps1xml:34-62`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShimInfo {
+    /// Shim name: the file name without its `.shim`/`.ps1` extension.
+    pub name: String,
+    /// The file the shim actually launches. Upstream derives it as
+    /// `$ShimPath -replace 'shim$', 'exe'`, so a `.shim` metadata file maps to
+    /// its `.exe` stub and every other shim maps to itself.
+    pub path: PathBuf,
+    /// Owning app name parsed out of the shim body, or the literal `External`
+    /// when it cannot be derived (upstream's `-replace '^$', 'External'`).
+    pub source: String,
+    /// The source plus the owners of sibling `<shim>.*` alternatives, deduped
+    /// and space-joined. Empty when the shim has no alternatives (upstream
+    /// leaves the property unset in that case).
+    pub alternatives: String,
+    /// Whether this shim lives in the global shims directory.
+    pub is_global: bool,
+    /// Whether resolving the shim name through `PATH` does not reach this
+    /// shim (upstream `IsHidden`).
+    pub is_hidden: bool,
+}
+
+/// Build the [`ShimInfo`] for one shim file (a `.shim` metadata file or a
+/// `.ps1` script shim), reusing the same owner parser as the
+/// conflict/backup path so `shim list` and `warn_on_overwrite` cannot
+/// disagree on who owns a shim.
+pub fn shim_info(session: &Session, shim_path: &Path) -> ShimInfo {
+    let global_shims = session.config().global_path().join("shims");
+
+    let name = shim_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    // Upstream rewrites a trailing `shim` to `exe`; for `foo.shim` that is the
+    // `.exe` stub, and for `foo.ps1` it is the `.ps1` file itself.
+    let path = if shim_path.extension().is_some_and(|e| e == "shim") {
+        shim_path.with_extension("exe")
+    } else {
+        shim_path.to_path_buf()
+    };
+
+    let source = shim_owner_package(shim_path).unwrap_or_else(|| "External".to_string());
+
+    // Upstream: `Get-Item "$ShimPath.*" -Exclude '*.shim','*.cmd','*.ps1'`,
+    // then each sibling's extension (`foo.shim.scoop` -> `scoop`); the source
+    // is prepended last and the alternatives are deduped.
+    let mut alternatives: Vec<String> = Vec::new();
+    if let (Some(dir), Some(file_name)) = (
+        shim_path.parent(),
+        shim_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
+    ) && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        let prefix = format!("{file_name}.");
+        for entry in entries.flatten() {
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            if !entry_name.starts_with(&prefix) {
+                continue;
+            }
+            let lower = entry_name.to_ascii_lowercase();
+            if lower.ends_with(".shim") || lower.ends_with(".cmd") || lower.ends_with(".ps1") {
+                continue;
+            }
+            if let Some((_, ext)) = entry_name.rsplit_once('.')
+                && !ext.is_empty()
+                && !alternatives.iter().any(|a| a == ext)
+            {
+                alternatives.push(ext.to_owned());
+            }
+        }
+    }
+    let alternatives = if alternatives.is_empty() {
+        String::new()
+    } else {
+        alternatives.insert(0, source.clone());
+        alternatives.join(" ")
+    };
+
+    let is_global = shim_path.starts_with(&global_shims);
+    // PowerShell's `-eq` on paths is case-insensitive; a name `Get-Command`
+    // cannot resolve is hidden too (upstream compares against `$null`).
+    let is_hidden = match resolve_in_path(&name) {
+        Some(found) => !found.eq_ignore_ascii_case(&path.to_string_lossy()),
+        None => true,
+    };
+
+    ShimInfo {
+        name,
+        path,
+        source,
+        alternatives,
+        is_global,
+        is_hidden,
+    }
+}
+
+/// Resolve the one shim file a `shim info`-style lookup should describe,
+/// mirroring upstream `Get-ShimPath` (`libexec/scoop-shim.ps1:83-90`): the
+/// `.shim` metadata file first, then a `.ps1` script shim. hok additionally
+/// accepts the other variants it generates (`.exe`, `.cmd`, extension-less),
+/// so a shim that only has those stays addressable.
+///
+/// Returns `None` when the name resolves to no shim in the session's scope.
+pub fn shim_file(session: &Session, name: &str) -> Option<PathBuf> {
+    let dir = session.shims_dir();
+    [".shim", ".ps1", ".exe", ".cmd", ""]
+        .iter()
+        .map(|ext| dir.join(format!("{name}{ext}")))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Every shim in the local and (when present) global shims directories, in
+/// upstream `list` order: local entries first, then global ones; each scope is
+/// sorted by file name so the rendered table is reproducible. Both `.shim`
+/// metadata files and `.ps1` script shims are collected — upstream globs
+/// `*.shim`/`*.ps1` (`libexec/scoop-shim.ps1:158-166`) — so a name with both
+/// variants yields two entries, exactly as upstream's listing does.
+///
+/// # Errors
+///
+/// I/O errors will be returned if a shims directory exists but is not
+/// readable.
+pub fn list_shim_info(session: &Session) -> Fallible<Vec<ShimInfo>> {
+    let config = session.config();
+    let dirs = [
+        config.root_path().join("shims"),
+        config.global_path().join("shims"),
+    ];
+
+    let mut infos = Vec::new();
+    for dir in dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e == "shim" || e == "ps1")
+            })
+            .collect();
+        paths.sort();
+        for path in paths {
+            infos.push(shim_info(session, &path));
+        }
+    }
+
+    Ok(infos)
+}
+
 /// Add a custom shim pointing at an arbitrary target
 /// (`hok shim add <name> <target> [args...]`), mirroring Scoop's
 /// `shim <path> <global> <name> <args>` (lib/install.ps1).
@@ -845,6 +1006,81 @@ mod tests {
         assert_eq!(owner_from_content("not a shim at all"), None);
         // `apps` with no version dir after the candidate package
         assert_eq!(owner_from_content(r#"path = "~\..\apps\python\""#), None);
+    }
+
+    /// `shim_info` mirrors upstream `Get-ShimInfo`: the source comes from the
+    /// shim body, the alternatives from sibling backups, and a `.shim`
+    /// metadata file resolves to its `.exe` stub.
+    #[test]
+    fn shim_info_matches_upstream_shape() {
+        let root = test_utils::tmpdir("shim_info_shape");
+        let session = test_utils::test_session(&root);
+        let shims = root.join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+
+        let shim_path = shims.join("git.shim");
+        std::fs::write(&shim_path, r#"path = "C:\scoop\apps\git\current\git.exe""#).unwrap();
+        // A backup left by another package (`warn_on_overwrite` writes
+        // `$shim.$shim_app`), which upstream reports as an alternative.
+        std::fs::write(shims.join("git.shim.scoop"), b"x").unwrap();
+
+        let info = shim_info(&session, &shim_path);
+        assert_eq!(info.name, "git");
+        assert_eq!(info.path, shims.join("git.exe"));
+        assert_eq!(info.source, "git");
+        assert_eq!(info.alternatives, "git scoop");
+        assert!(!info.is_global);
+
+        // A `.ps1` shim maps to itself; with no siblings the alternatives
+        // property stays unset (empty), as upstream leaves it.
+        let bare = shims.join("bare.ps1");
+        std::fs::write(&bare, "# C:\\scoop\\apps\\bare\\current\\x.ps1\n").unwrap();
+        let info = shim_info(&session, &bare);
+        assert_eq!(info.name, "bare");
+        assert_eq!(info.path, bare);
+        assert_eq!(info.source, "bare");
+        assert_eq!(info.alternatives, "");
+
+        // An unparseable shim body falls back to the literal `External`.
+        let ext = shims.join("ext.shim");
+        std::fs::write(&ext, "nothing here").unwrap();
+        assert_eq!(shim_info(&session, &ext).source, "External");
+    }
+
+    /// `list_shim_info` enumerates `.shim` and `.ps1` files, sorted per scope,
+    /// and skips `.cmd` wrappers (they pair with the shims already listed).
+    #[test]
+    fn list_shim_info_lists_shim_and_ps1_files() {
+        let root = test_utils::tmpdir("shim_info_list");
+        let session = test_utils::test_session(&root);
+        let shims = root.join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::write(shims.join("b.shim"), "x").unwrap();
+        std::fs::write(shims.join("a.ps1"), "x").unwrap();
+        std::fs::write(shims.join("a.cmd"), "x").unwrap();
+
+        let infos = list_shim_info(&session).unwrap();
+        let names = infos.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    /// `shim_file` prefers the `.shim` metadata (where the owner is recorded)
+    /// over the `.exe` stub, and is `None` for a name with no shim at all.
+    #[test]
+    fn shim_file_prefers_metadata_over_the_stub() {
+        let root = test_utils::tmpdir("shim_file_pick");
+        let session = test_utils::test_session(&root);
+        let shims = root.join("shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::write(shims.join("tool.exe"), b"MZ").unwrap();
+        std::fs::write(shims.join("tool.shim"), "path = \"x\"").unwrap();
+
+        assert_eq!(shim_file(&session, "tool"), Some(shims.join("tool.shim")));
+
+        std::fs::remove_file(shims.join("tool.shim")).unwrap();
+        // Without the metadata file the `.exe` stub is the next candidate.
+        assert_eq!(shim_file(&session, "tool"), Some(shims.join("tool.exe")));
+        assert_eq!(shim_file(&session, "ghost"), None);
     }
 
     #[test]
