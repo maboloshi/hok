@@ -20,6 +20,6 @@ path = "src/bin/hok-shim-gui.rs"
 
 # `hok-shim` is a `no_std` Win32 FFI shim generator — unsafe is inherent.
 # The crate-level `#![allow(unsafe_code)]` in `src/lib.rs` (and both bins)
-# deliberately overrides this deny; see the audit in `docs/unsafe-audit.md`.
+# deliberately overrides this deny; see the audit in `.dsh/docs/unsafe-audit.md`.
 [lints.rust]
 unsafe_code = "deny"

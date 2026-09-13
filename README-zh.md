@@ -193,7 +193,7 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 
 2026-08 起本分支进行了一次系统性重构（edition 2024 全量升级 + 架构演进）。目标：在保持行为等价的前提下，把「功能面领先」的 hok 进一步做到「工程面扎实」——通过领域纯化与单测离线化保障正确性、通过异步并发兑现性能、通过安全纪律与基准护栏防回归。
 
-- **Edition 2024 全量升级** —— workspace 全部 crate 迁移到 2024 edition；`unsafe extern` 在每一处 FFI 边界显式标注，`unsafe` 在安全 crate 全量 deny，仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块豁免（审计清单见 `docs/unsafe-audit.md`）。
+- **Edition 2024 全量升级** —— workspace 全部 crate 迁移到 2024 edition；`unsafe extern` 在每一处 FFI 边界显式标注，`unsafe` 在安全 crate 全量 deny，仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块豁免（审计清单见 `.dsh/docs/unsafe-audit.md`）。
 - **分层单向依赖** —— CLI（hok）→ 门面（libscoop）→ 领域服务 → 核心 `package/` 逻辑 → `internal/` 工具。领域类型（`Package` / `Manifest` / `Version` / `Config`）**纯化**：零 I/O、零 async、零框架依赖，可确定性单测。
 - **基础设施 trait 化** —— `Network` / `Git` / `Archive` 抽成 trait + 内存 fake，下载 / checkver / bucket / 解压整条流水线可离线单测，不依赖真实网络与磁盘。
 - **真异步网络** —— CLI 跑在 tokio runtime 上；`Network` trait 基于 **`reqwest`（rustls）** async 化，checkver 用 `buffer_unordered` 并发、分片下载并行、bucket 更新用 `tokio::spawn`；本地快操作（`list` / `search` / `status` / `which` / `config` / `cat`）保持同步。
@@ -205,7 +205,7 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 - **不要重复造轮子，但也不当冤大头** —— 标准算法（MD5/SHA）用现成 crate，平台特定 API（COM/Win32）用 raw FFI。后者没有合适的轻量 crate，几十行 FFI 比引入整个 crate 更合理。
 - **兼容原版 Scoop** —— SQLite 缓存 schema、config 格式、autoupdate 行为均保持兼容。
 - **零 warning 策略** —— 所有代码 0 warning，101 测试全过。
-- **`unsafe_code = deny` 护栏** —— 安全 crate 全量 deny `unsafe`；仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块（`internal::os`、`permission`）按审计豁免（审计清单在 `docs/unsafe-audit.md`）。
+- **`unsafe_code = deny` 护栏** —— 安全 crate 全量 deny `unsafe`；仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块（`internal::os`、`permission`）按审计豁免（审计清单在 `.dsh/docs/unsafe-audit.md`）。
 - **criterion 基准护栏** —— `cargo bench` 对关键纯函数（版本比较 / glob / 哈希 / manifest 解析 / URL 工具）跑微基准，防重构回归。
 
 ---

@@ -31,10 +31,11 @@ Cargo.lock.txt
 /src/cmd/__cmd_reg__.rs
 
 .reasonix
-# Agent scratch/logs stay ignored; the skill library is left visible as
-# untracked files instead of being hidden.
+# Agent scratch/logs stay ignored; the skill library and docs are left
+# visible as untracked files instead of being hidden.
 .dsh/*
 !.dsh/skills/
+!.dsh/docs/
 
 # Local investigation lab (fixture manifests, served files, scratch scripts)
 .s10lab/

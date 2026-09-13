@@ -228,7 +228,7 @@ This fork maintains a strong focus on dependency hygiene. Notable improvements o
 - **Eliminated duplicate crate versions**: `unarc-rs` replaced (removed `sevenz-rust2 v0.20` + `zip v8` duplicates), `thiserror v1+v2` unified, `md-5/sha1/sha2 v0.10+v0.11` unified
 - **Code deduplication**: Macroized repetitive accessor patterns (×16), extracted shared helpers (×5), consolidated 4 benchmark files into 1
 - **Zero external C build dependencies for decompression**: All archive formats (7z, zip, tar, gz, bz2, xz, zst) handled by pure Rust crates; RAR via `unrar` (C++ unrar library); LZH/ISO via 7z.exe fallback
-- **`unsafe_code = deny` guardrail**: `unsafe` is denied crate-wide across the safe crates; the only exceptions are the `no_std` Win32 shim (`hok-shim`) and the small FFI modules (`libscoop::internal::os`, `libscoop::permission`). Every `unsafe` is audited and classified in the (working-tree) `docs/unsafe-audit.md`.
+- **`unsafe_code = deny` guardrail**: `unsafe` is denied crate-wide across the safe crates; the only exceptions are the `no_std` Win32 shim (`hok-shim`) and the small FFI modules (`libscoop::internal::os`, `libscoop::permission`). Every `unsafe` is audited and classified in the (working-tree) `.dsh/docs/unsafe-audit.md`.
 - **criterion guardrail benchmarks**: `cargo bench` runs micro-benchmarks over the key pure functions (`compare_versions`, glob, hashing, manifest parsing, URL helpers) to catch refactor regressions.
 
 ## Architecture
