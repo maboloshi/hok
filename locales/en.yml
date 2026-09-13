@@ -149,6 +149,8 @@ cmd:
   checkhashes_mismatch: "hash mismatch: expected %{expected}, actual %{actual} (%{url})"
   checkhashes_summary: "Scanned %{total}: %{passed} ok, %{failed} failed, %{updated} updated."
   checkhashes_count_mismatch: "URL and hash count mismatch"
+  checkhashes_no_url: "Manifest does not contain URL property."
+  checkhashes_parse_failed: "failed to parse manifest: %{e}"
   checkhashes_download_failed: "download failed: %{e}"
   checkhashes_hash_failed: "hash failed: %{e}"
   checkhashes_path_not_found: "path %{path} not found in JSON"
@@ -532,12 +534,23 @@ cli_help:
     about: Inspect the manifest of a package
   checkhashes:
     about: Verify and update manifest hashes
+    long_about: |-
+      Walks the manifests under `--dir`, downloads every URL they declare and compares the computed digest with the `hash` field, mirroring Scoop's `bin/checkhashes.ps1`. Manifests that declare a top-level `url` are checked against it alone; the rest are checked per architecture (64bit, 32bit, arm64).
+      With `--update` a manifest whose hashes do not match is rewritten in place (CRLF, trailing newline preserved), while `--force` also rewrites manifests whose hashes are already correct.
     args:
-      app: "Specific app(s) to check (supports wildcards, default: all)"
-      cache: Use cache directory for downloaded files
+      app: |-
+        Specific app(s) to check (supports wildcards, default: all)
+        Matching is case-insensitive, like Scoop's `-App` filter; multiple patterns are accepted and OR-ed together.
+      cache: |-
+        Use cache directory for downloaded files
+        Defaults to a temporary directory that is removed at the end of the run unless `--keep-cache` is given.
       dir: Bucket directory to scan for manifests
-      force: Force update manifest even when hash matches (re-hash)
-      keep_cache: Keep downloaded files in cache after check completes
+      force: |-
+        Force update manifest even when hash matches
+        Downloads are always re-fetched with this flag, even together with `--keep-cache`.
+      keep_cache: |-
+        Keep downloaded files after the check completes
+        Equivalent to Scoop's `-UseCache`: the next run reuses the cached files instead of downloading them again, so it may check an already out-of-date file. The cache is keyed by manifest version.
       skip_correct: Suppress output for manifests with correct hashes
       update: Update manifest with correct hash when mismatch found
   checkup:

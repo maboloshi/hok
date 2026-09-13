@@ -36,5 +36,8 @@ Cargo.lock.txt
 .dsh/*
 !.dsh/skills/
 
+# Local investigation lab (fixture manifests, served files, scratch scripts)
+.s10lab/
+
 # Git worktrees (per-session branches, e.g. .worktrees/s1-s13)
 /.worktrees

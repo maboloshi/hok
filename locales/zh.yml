@@ -149,6 +149,8 @@ cmd:
   checkhashes_mismatch: "哈希不匹配：期望 %{expected}，实际 %{actual}（%{url}）"
   checkhashes_summary: "已扫描 %{total}: %{passed} 通过, %{failed} 失败, %{updated} 已更新。"
   checkhashes_count_mismatch: "URL 与哈希数量不匹配"
+  checkhashes_no_url: "清单不含 URL 属性。"
+  checkhashes_parse_failed: "清单解析失败：%{e}"
   checkhashes_download_failed: "下载失败：%{e}"
   checkhashes_hash_failed: "哈希失败：%{e}"
   checkhashes_path_not_found: "JSON 中找不到路径 %{path}"
@@ -532,12 +534,23 @@ cli_help:
     about: 查看包的清单信息
   checkhashes:
     about: 验证并更新清单哈希值
+    long_about: |-
+      遍历 `--dir` 下的清单，下载其声明的每个 URL，并将计算结果与 `hash` 字段比对，对标官方 Scoop 的 `bin/checkhashes.ps1`。声明了顶层 `url` 的清单只按顶层校验；其余按架构（64bit、32bit、arm64）逐个校验。
+      使用 `--update` 时，哈希不匹配的清单会被原地重写（保留 CRLF 与末尾换行）；`--force` 则连哈希本就正确的清单也一并重写。
     args:
-      app: "要检查的特定应用（支持通配符，默认为全部）"
-      cache: 对下载的文件使用缓存目录
+      app: |-
+        要检查的特定应用（支持通配符，默认为全部）
+        匹配不区分大小写（对齐官方 `-App` 过滤），可传多个模式，按 OR 组合。
+      cache: |-
+        对下载的文件使用缓存目录
+        默认为临时目录，运行结束时删除，除非给出 `--keep-cache`。
       dir: 要扫描清单的仓库目录
-      force: 即使哈希匹配也强制更新清单（重新哈希）
-      keep_cache: 检查完成后将下载的文件保留在缓存中
+      force: |-
+        即使哈希匹配也强制更新清单
+        该标志下始终重新下载，即使同时给出 `--keep-cache`。
+      keep_cache: |-
+        检查完成后保留下载的文件
+        等价于官方 `-UseCache`：下次运行复用缓存文件而不重新下载，因此可能校验到过期的文件。缓存按清单版本区分。
       skip_correct: 不输出哈希正确的清单
       update: 发现不匹配时用正确哈希更新清单
   checkup:

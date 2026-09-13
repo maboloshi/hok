@@ -79,6 +79,18 @@ Options:
       --detail   Show detailed operation information for debugging
 ```
 
+### `hok checkhashes` and the download cache
+
+By default `checkhashes` downloads every URL again for each run and deletes its
+temporary files afterwards, so a check always verifies what the server serves
+right now — the same behaviour as official Scoop without `-UseCache`.
+
+`-k`/`--keep-cache` is the equivalent of Scoop's `-UseCache`: the downloaded
+files stay on disk (under the manifest's version) and the **next run reuses
+them instead of downloading again**, which means an already out-of-date file
+can be reported as `OK`. Use it only when you deliberately want to re-check a
+local copy; add `-f`/`--force` to re-download anyway.
+
 ## Configuration
 
 hok reads its config from `~/.config/hok/config.json` (a Scoop-compatible
