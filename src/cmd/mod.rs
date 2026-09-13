@@ -201,6 +201,12 @@ pub enum Command {
     /// Download package(s) into the cache folder without installing
     Download(download::Args),
     Export(export::Args),
+    // Upstream's script is `bin/formatjson.ps1`, so the command is
+    // `formatjson` — without the explicit `name`, clap kebab-cases the variant
+    // ident to `format-json` and `hok formatjson` is rejected as an unknown
+    // subcommand. The kebab spelling stays as an alias for scripts already
+    // written against it.
+    #[clap(name = "formatjson", alias = "format-json")]
     FormatJson(formatjson::Args),
     Health(health::Args),
     Hold(hold::Args),

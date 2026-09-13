@@ -73,7 +73,12 @@ pub fn derive_i18n_help(input: TokenStream) -> TokenStream {
             fn_.replace('_', "")
         };
         cmds.push((
-            to_kebab(&p),
+            // The name clap actually registers: an explicit
+            // `#[clap(name = "...")]` wins over the kebab-cased ident, and that
+            // is what `mut_subcommand` must be handed (`FormatJson` now
+            // registers as `formatjson`, not `format-json`). Only the
+            // translation *key* stays on the kebab-free form via `yk`.
+            variant_name(var).unwrap_or_else(|| to_kebab(&p)),
             matches!(var.fields, Fields::Unnamed(ref u) if u.unnamed.len() == 1),
             fn_,
             yk,
@@ -305,6 +310,35 @@ fn extract_module(fields: &Fields) -> String {
     } else {
         String::new()
     }
+}
+
+/// The subcommand name a `Command` variant declares through
+/// `#[clap(name = "...")]` / `#[command(name = "...")]`.
+///
+/// clap derives a subcommand's name from the variant ident (kebab-cased) unless
+/// the attribute overrides it, and `Command::mut_subcommand` matches on that
+/// *final* name — patching the kebab spelling of an overridden variant panics
+/// at process start. `None` means "no override", so the caller kebab-cases the
+/// ident itself.
+fn variant_name(var: &syn::Variant) -> Option<String> {
+    var.attrs.iter().find_map(|attr| {
+        if !(attr.path().is_ident("clap") || attr.path().is_ident("command")) {
+            return None;
+        }
+        let nested = attr.parse_args_with(
+            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+        );
+        nested.ok()?.into_iter().find_map(|meta| {
+            if let Meta::NameValue(nv) = meta
+                && nv.path.is_ident("name")
+                && let syn::Expr::Lit(lit) = &nv.value
+                && let syn::Lit::Str(s) = &lit.lit
+            {
+                return Some(s.value());
+            }
+            None
+        })
+    })
 }
 
 fn extract_field_names(fields: &Fields) -> Vec<String> {

@@ -50,7 +50,7 @@ Commands:
   depends           Show dependencies of a package
   download          Download apps in the cache folder and verify hashes
   export            Export installed packages list
-  format-json       Format manifest JSON files in a bucket directory
+  formatjson        Format manifest JSON files in a bucket directory
   health            Check for potential problems with installed packages
   hold              Hold package(s) to disable changes
   home              Browse the homepage of a package
