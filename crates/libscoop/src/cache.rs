@@ -13,6 +13,11 @@ use crate::error::{Error, Fallible};
 #[derive(Clone, Debug)]
 pub struct CacheFile {
     path: PathBuf,
+    /// Length in bytes at enumeration time. Cached because the file is often
+    /// removed straight after being listed (`remove`), and upstream likewise
+    /// measures `$file.Length` while the file still exists
+    /// (`scoop-cache.ps1:19,47`). `0` when the metadata could not be read.
+    size: u64,
 }
 
 impl CacheFile {
@@ -24,7 +29,10 @@ impl CacheFile {
         };
         match REGEX_CACHE_FILE.is_match(text) {
             false => Err(Error::InvalidCacheFile { path }),
-            true => Ok(CacheFile { path }),
+            true => {
+                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                Ok(CacheFile { path, size })
+            }
         }
     }
 
@@ -50,6 +58,13 @@ impl CacheFile {
     #[inline]
     pub fn version(&self) -> &str {
         self.file_name().splitn(3, '#').collect::<Vec<_>>()[1]
+    }
+
+    /// Get the length of this cache file in bytes, as measured when it was
+    /// enumerated.
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -164,6 +179,14 @@ fn sort_listing(files: &mut [CacheFile]) {
 /// app's aria2 sidecar `<cachedir>/<app>.txt` (`scoop-cache.ps1:53-55`).
 /// Selection is anchored to the app name, so `zip` never matches `7zip`.
 ///
+/// Returns the removed cache entries, in the same order [`list`] presents
+/// them, so the caller can report each removal (`Removing <name>...`) and the
+/// `Deleted: N files, <size>` summary the way upstream does
+/// (`scoop-cache.ps1:49-58`). The wildcard branch also deletes entries that do
+/// not follow the `app#version#url` naming (aria2 sidecars, stray files,
+/// directories) but only the recognizable cache files are returned — those are
+/// the ones the summary accounts for.
+///
 /// Files that are already gone are silently skipped. Files that fail to
 /// remove (e.g. locked by a running process on Windows) are reported through
 /// the session output channel and skipped, so a single locked file never
@@ -172,26 +195,36 @@ fn sort_listing(files: &mut [CacheFile]) {
 /// # Errors
 ///
 /// I/O errors will be returned if the cache directory is not readable.
-pub fn remove(session: &crate::Session, apps: &[String]) -> Fallible<()> {
+pub fn remove(session: &crate::Session, apps: &[String]) -> Fallible<Vec<CacheFile>> {
     let cache_dir = session.config().cache_path().to_path_buf();
 
     if is_wildcard(apps) {
         if !cache_dir.exists() {
-            return Ok(());
+            return Ok(Vec::new());
         }
+        let mut removed = Vec::new();
         for entry in cache_dir.read_dir()? {
-            remove_entry(session, &entry?.path());
+            let path = entry?.path();
+            // Enumerate through the same constructor `list` uses, so the
+            // caller's per-file output matches what `cache` (show) would list.
+            if let Ok(file) = CacheFile::from(path.clone()) {
+                removed.push(file);
+            }
+            remove_entry(session, &path);
         }
-        return Ok(());
+        sort_listing(&mut removed);
+        return Ok(removed);
     }
 
     let mut sidecars: Vec<String> = vec![];
+    let mut removed = Vec::new();
     for f in list(session, apps)? {
         let app = f.package_name().to_owned();
         if !sidecars.iter().any(|s| s.eq_ignore_ascii_case(&app)) {
             sidecars.push(app);
         }
         remove_entry(session, f.path());
+        removed.push(f);
     }
 
     // aria2 drops a `<app>.txt` control file beside the downloads; upstream
@@ -200,7 +233,7 @@ pub fn remove(session: &crate::Session, apps: &[String]) -> Fallible<()> {
         remove_entry(session, &cache_dir.join(format!("{app}.txt")));
     }
 
-    Ok(())
+    Ok(removed)
 }
 
 /// Remove one app's outdated cache files, keeping `keep_version`.
@@ -353,8 +386,14 @@ mod tests {
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
         assert!(cache_dir.join("zip.txt").exists(), "sidecar untouched");
 
-        // `cache rm zip`: only zip's file and sidecar go.
-        remove(&session, &["zip".to_owned()]).unwrap();
+        // `cache rm zip`: only zip's file and sidecar go, and the removed
+        // cache file is reported back (upstream's per-file `Removing ...`).
+        let removed = remove(&session, &["zip".to_owned()]).unwrap();
+        assert_eq!(
+            removed.iter().map(CacheFile::file_name).collect::<Vec<_>>(),
+            ["zip#2.0#b.zip"]
+        );
+        assert_eq!(removed[0].size(), 1);
         assert!(!cache_dir.join("zip#2.0#b.zip").exists());
         assert!(!cache_dir.join("zip.txt").exists(), "sidecar removed");
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
@@ -363,5 +402,34 @@ mod tests {
         remove_incomplete(&session).unwrap();
         assert!(!cache_dir.join("partial.download").exists());
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
+    }
+
+    /// The wildcard `cache rm *` clears the whole cache directory (including
+    /// the aria2 sidecars), reports the recognizable cache files in `list`
+    /// order, and returns nothing when the cache directory does not exist.
+    #[test]
+    fn wildcard_remove_reports_cache_files_and_clears_the_dir() {
+        let root = crate::test_utils::tmpdir("cache_remove_all");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        for name in ["zip#2.0#b.zip", "7zip#26.0#c.7z", "zip.txt"] {
+            std::fs::write(cache_dir.join(name), b"x").unwrap();
+        }
+
+        let removed = remove(&session, &[]).unwrap();
+        assert_eq!(
+            removed.iter().map(CacheFile::file_name).collect::<Vec<_>>(),
+            ["7zip#26.0#c.7z", "zip#2.0#b.zip"],
+        );
+        assert_eq!(removed.iter().map(CacheFile::size).sum::<u64>(), 2);
+        assert!(
+            cache_dir.read_dir().unwrap().next().is_none(),
+            "dir cleared"
+        );
+
+        // A wildcard removal without a cache directory is a no-op.
+        std::fs::remove_dir_all(&cache_dir).unwrap();
+        assert!(remove(&session, &["*".to_owned()]).unwrap().is_empty());
     }
 }

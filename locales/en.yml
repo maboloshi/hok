@@ -396,6 +396,8 @@ cmd:
   suggests_install: "'%{pkg}' suggests installing '%{names}'."
   cache_total_label: "Total:"
   cache_total: "%{count} files, %{size}"
+  cache_removing: "Removing %{name}..."
+  cache_deleted_label: "Deleted:"
   manifest_no_version: "Manifest for '%{name}' doesn't specify a version."
   manifest_version_invalid: "Manifest version for '%{name}' has an unsupported character."
   arch_unsupported: "'%{name}' doesn't support the current architecture!"

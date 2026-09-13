@@ -396,6 +396,8 @@ cmd:
   suggests_install: "包 '%{pkg}' 建议安装 '%{names}'。"
   cache_total_label: "合计:"
   cache_total: "共 %{count} 个文件，%{size}"
+  cache_removing: "正在移除 %{name}..."
+  cache_deleted_label: "已删除:"
   manifest_no_version: "包 '%{name}' 的 manifest 未指定版本。"
   manifest_version_invalid: "包 '%{name}' 的 manifest 版本包含不支持的字符。"
   arch_unsupported: "包 '%{name}' 不支持当前架构！"

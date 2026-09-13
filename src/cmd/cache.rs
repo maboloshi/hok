@@ -108,16 +108,45 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             // `--all` is upstream's `-a`/`--all`/`*` literal; an empty
             // selection is the same wildcard.
             let selection = if all { Vec::new() } else { app };
-            cache::remove(session, &selection)?;
+            let removed = cache::remove(session, &selection)?;
 
-            if selection.is_empty() || selection.iter().any(|a| a == "*") {
-                output::info(hok_i18n::t!("cmd.cache_all_removed"));
-            } else {
-                output::info(hok_i18n::t!(
-                    "cmd.cache_matching_removed",
-                    query = selection.join(", ")
-                ));
+            // Nothing matched: keep the summary-only note (upstream still
+            // prints `Deleted: 0 files`, but the existing hok wording is more
+            // informative and no per-file line exists to show).
+            if removed.is_empty() {
+                if selection.is_empty() || selection.iter().any(|a| a == "*") {
+                    output::info(hok_i18n::t!("cmd.cache_all_removed"));
+                } else {
+                    output::info(hok_i18n::t!(
+                        "cmd.cache_matching_removed",
+                        query = selection.join(", ")
+                    ));
+                }
+                return Ok(());
             }
+
+            // Upstream prints one `Removing <name>...` line per removed file,
+            // then the `Deleted: N files, <size>` summary
+            // (`scoop-cache.ps1:49-58`). Sizes were measured when the files
+            // were enumerated (they are gone by now).
+            let total_size: u64 = removed.iter().map(|f| f.size()).sum();
+            for file in &removed {
+                println!(
+                    "  {}",
+                    hok_i18n::t!("cmd.cache_removing", name = file.file_name())
+                );
+            }
+
+            println!();
+            output::info(format!(
+                "{} {}",
+                hok_i18n::t!("cmd.cache_deleted_label"),
+                hok_i18n::t!(
+                    "cmd.cache_total",
+                    count = removed.len(),
+                    size = format::humansize(total_size, true)
+                )
+            ));
 
             Ok(())
         }
