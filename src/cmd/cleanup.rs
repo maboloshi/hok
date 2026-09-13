@@ -4,6 +4,7 @@ use clap::{ArgAction, Parser};
 use libscoop::package::cleanup::CleanupOptions;
 use libscoop::{Session, cache, package};
 
+use crate::cmd::shared_args::ensure_global;
 use crate::{Result, output};
 
 /// Cleanup apps by removing old versions
@@ -25,9 +26,12 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    session.set_global(args.global);
     // --all or '*' overrides any specific app names
     let all = args.all || args.app.iter().any(|a| a == "*");
+
+    // Upstream requires elevation for any `--global` cleanup, including the
+    // sweep-all form (`scoop-cleanup.ps1:26-28`).
+    ensure_global(session, args.global, "cleanup")?;
 
     // Cleanup is a maintenance operation; individual failures should not abort
     // it.
@@ -36,15 +40,25 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         cache: args.cache,
     };
 
-    // The target list is always explicit: an empty list means "nothing to
-    // clean", never "every app", so the sweep-all form enumerates the apps
-    // itself (`installed_app_names`).
-    let names = if all {
-        package::cleanup::installed_app_names(session)
+    let mut results = Vec::new();
+
+    if all {
+        // Local first, then global — upstream appends the global apps to the
+        // local list (`scoop-cleanup.ps1:67-70`). The target list is always
+        // explicit, so an app list that resolves to nothing cannot fall back
+        // to a full sweep.
+        session.set_global(false);
+        let names = package::cleanup::installed_app_names(session);
+        results.extend(package::cleanup::cleanup(session, &names, &options)?);
+        if args.global {
+            session.set_global(true);
+            let names = package::cleanup::installed_app_names(session);
+            results.extend(package::cleanup::cleanup(session, &names, &options)?);
+        }
     } else {
-        args.app
-    };
-    let results = package::cleanup::cleanup(session, &names, &options)?;
+        session.set_global(args.global);
+        results.extend(package::cleanup::cleanup(session, &args.app, &options)?);
+    }
 
     for (name, count, failed) in &results {
         let msg = if *failed > 0 {
