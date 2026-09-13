@@ -41,6 +41,7 @@ pub(crate) struct ScoopRequest {
     referer: Option<String>,
     extra_headers: Option<HashMap<String, String>>,
     token: Option<String>,
+    github_api: bool,
 }
 
 impl ScoopRequest {
@@ -73,6 +74,7 @@ impl ScoopRequest {
             } else {
                 None
             },
+            github_api: profile.uses_github_download_headers(url),
         }
     }
 
@@ -96,6 +98,7 @@ impl ScoopRequest {
             cookies: None,
             extra_headers: self.extra_headers.as_ref(),
             token: self.token.as_deref(),
+            github_api: self.github_api,
             range_start: 0,
         }
     }

@@ -23,7 +23,7 @@ use tracing::warn;
 
 use futures::StreamExt;
 use reqwest::header::{
-    AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, COOKIE, RANGE, REFERER, USER_AGENT,
+    ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, COOKIE, RANGE, REFERER, USER_AGENT,
 };
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,10 @@ pub struct RequestOptions<'a> {
     pub cookies: Option<&'a HashMap<String, String>>,
     pub token: Option<&'a str>,
     pub extra_headers: Option<&'a HashMap<String, String>>,
+    /// Attach upstream's GitHub API *download* headers — `Accept:
+    /// application/octet-stream` and `X-GitHub-Api-Version: 2022-11-28`
+    /// (`lib/download.ps1:97-101`). Paired with [`Self::token`].
+    pub github_api: bool,
     /// Resume a partial single-stream download from this byte offset via a
     /// `Range: bytes={range_start}-` request (0 = fresh download). Used by the
     /// single-stream path so an interrupted `.download` resumes next run.
@@ -102,6 +106,12 @@ impl HeaderProfile {
             return None;
         }
         Some(strip_filename(url))
+    }
+
+    /// Does upstream attach the GitHub API *download* headers to `url`?
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`.
+    pub fn uses_github_download_headers(self, url: &str) -> bool {
+        self == Self::Download && url.contains("api.github.com/repos")
     }
 
     /// Does upstream attach the configured GitHub token to `url`?
@@ -165,6 +175,11 @@ pub(crate) fn apply_headers<'a>(
     }
     if let Some(token) = opts.token {
         req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if opts.github_api {
+        req = req
+            .header(ACCEPT, "application/octet-stream")
+            .header("X-GitHub-Api-Version", "2022-11-28");
     }
     if let Some(extra) = opts.extra_headers {
         for (k, v) in extra {
@@ -655,6 +670,20 @@ mod tests {
     }
 
     #[test]
+    fn github_download_headers_only_on_the_repos_path() {
+        // `lib/download.ps1:97` matches `api\.github\.com/repos`.
+        assert!(
+            HeaderProfile::Download
+                .uses_github_download_headers("https://api.github.com/repos/o/r/releases")
+        );
+        assert!(!HeaderProfile::Download.uses_github_download_headers("https://api.github.com/"));
+        assert!(
+            !HeaderProfile::Checkver
+                .uses_github_download_headers("https://api.github.com/repos/o/r/releases")
+        );
+    }
+
+    #[test]
     fn github_token_never_leaks_to_other_hosts() {
         // `lib/autoupdate.ps1:319` and `bin/checkurls.ps1` never authorize.
         assert!(!HeaderProfile::Autoupdate.uses_github_token("https://api.github.com/repos/o/r"));
@@ -665,5 +694,39 @@ mod tests {
         // `bin/checkver.ps1:219` — any api.github.com path.
         assert!(HeaderProfile::Checkver.uses_github_token("https://api.github.com/users/o"));
         assert!(!HeaderProfile::Checkver.uses_github_token("https://example.com/x"));
+    }
+
+    #[test]
+    fn github_api_download_headers_are_attached() {
+        // `lib/download.ps1:97-101` — the Accept / API-version / bearer triple.
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            user_agent: Some("ua"),
+            token: Some("tok"),
+            github_api: true,
+            ..Default::default()
+        };
+        let req = apply_headers(client.get("https://api.github.com/repos/o/r"), &opts)
+            .build()
+            .expect("request builds");
+
+        assert_eq!(req.headers()[ACCEPT], "application/octet-stream");
+        assert_eq!(req.headers()["x-github-api-version"], "2022-11-28");
+        assert_eq!(req.headers()[AUTHORIZATION], "Bearer tok");
+    }
+
+    #[test]
+    fn github_api_headers_stay_off_by_default() {
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            token: Some("tok"),
+            ..Default::default()
+        };
+        let req = apply_headers(client.get("https://example.com/x"), &opts)
+            .build()
+            .expect("request builds");
+
+        assert!(req.headers().get(ACCEPT).is_none());
+        assert!(req.headers().get("x-github-api-version").is_none());
     }
 }
