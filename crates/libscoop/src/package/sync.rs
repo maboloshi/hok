@@ -85,7 +85,7 @@ pub enum SyncOption {
     /// option.
     ///
     /// [1]: SyncOption::Offline
-    IgnoreCache,
+    NoCache,
 
     /// Ignore transaction failure.
     ///
@@ -106,7 +106,7 @@ pub enum SyncOption {
     ///
     /// **NO rollback will be performed if this option is enabled**, which means
     /// there may be broken packages being committed to the system.
-    IgnoreFailure,
+    IgnoreFailures,
 
     /// Do not install dependencies.
     ///
@@ -130,7 +130,7 @@ pub enum SyncOption {
     ///
     /// It is highly **NOT** recommended to use this option unless you really
     /// know what you are doing.
-    NoHashCheck,
+    SkipHashCheck,
 
     /// Do not upgrade packages.
     ///
@@ -160,9 +160,9 @@ pub enum SyncOption {
     /// operation. However, the transaction may fail if there is any package file
     /// missing or invalid cache.
     ///
-    /// This option is basically the opposite of the [`IgnoreCache`][1] option.
+    /// This option is basically the opposite of the [`NoCache`][1] option.
     ///
-    /// [1]: SyncOption::IgnoreCache
+    /// [1]: SyncOption::NoCache
     Offline,
 
     /// Upgrade packages only.

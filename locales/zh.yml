@@ -590,7 +590,7 @@ cli_help:
             全局应用安装的根目录。
       gh_token: 字符串，默认无
             用于认证请求的 GitHub API token。
-      ignore-failures: bool，默认 false
+      ignore_failures: bool，默认 false
             多包操作中单个包失败时继续处理其余包。
       ignore_running_processes: bool，默认 false
             应用正在运行时仍继续（仅警告，不中止）。
@@ -598,7 +598,7 @@ cli_help:
             消息与帮助文本使用的 CLI 语言。
       last_update: 字符串，内部
             上次 bucket 更新的时间戳（由 hok 管理）。
-      no-color: bool，默认 false
+      no_color: bool，默认 false
             禁用彩色输出。
       no_junction: bool，默认 false
             不使用 'current' 目录联接；shim 直接指向版本目录。
@@ -608,7 +608,7 @@ cli_help:
             代理设置：none | default | currentuser | [username:password@]host:port。
       root_path: 路径，默认 $SCOOP 或 ~/scoop
             Scoop 根目录。
-      script-engine: bool，默认 false
+      script_engine: bool，默认 false
             复用常驻 pwsh 进程执行安装/卸载脚本。
       use_isolated_path: bool|字符串，默认无
             将应用的 PATH 条目存入专用环境变量（默认为 SCOOP_PATH）。
@@ -662,7 +662,7 @@ cli_help:
     args:
       package: 要下载的包（名称、bucket/名称、名称@版本，或 manifest URL/路径）
       force: 强制下载（覆盖缓存）
-      no_hash_check: 跳过包完整性检查
+      skip_hash_check: 跳过包完整性检查
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
   export:
     about: 导出已安装包列表
@@ -721,10 +721,10 @@ cli_help:
       download_only: 仅下载包而不执行安装
       escape_hold: 绕过锁定以允许更改被锁定的包
       global: 全局安装（到 $SCOOP_GLOBAL）
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
       independent: 不安装依赖（可能破坏包）
-      no_hash_check: 跳过包完整性检查
+      skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
@@ -750,9 +750,9 @@ cli_help:
     about: 重新安装包
     args:
       global: 全局安装（到 $SCOOP_GLOBAL）
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      skip_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
       package: 要重新安装的包
   reset:
@@ -810,8 +810,8 @@ cli_help:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许更改被锁定的包
       global: 卸载全局安装的应用（来自 $SCOOP_GLOBAL）
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      skip_hash_check: 跳过包完整性检查
       package: 要卸载的包
       purge: 删除所有持久化数据
   update:
@@ -821,10 +821,10 @@ cli_help:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
       force: "强制更新：绕过冷却期并重装已达请求版本的软件"
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
       independent: 不安装依赖（可能破坏包）
-      no_hash_check: 跳过包完整性检查
+      skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
@@ -837,9 +837,10 @@ cli_help:
       all: 升级所有已安装的包（相当于 '*'）
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
+      force: "强制升级：对已达请求版本的包重新安装"
       global: 全局安装（到 $SCOOP_GLOBAL）
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      skip_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
       package: "要升级的包（默认为全部，被锁定的除外）"
   virustotal:

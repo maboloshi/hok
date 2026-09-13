@@ -20,9 +20,10 @@ pub struct Args {
     #[arg(action = ArgAction::Append)]
     package: Vec<String>,
 
-    /// Ignore failures to ensure a complete transaction
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
     #[arg(long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    ignore_failures: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
@@ -36,9 +37,9 @@ pub struct Args {
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
     /// Force update: bypass the cooldown and reinstall apps that are already
     /// at the requested version (Scoop's `-f/--force`)
@@ -57,9 +58,9 @@ pub struct Args {
     #[arg(short = 'R', long, action = ArgAction::SetTrue)]
     no_replace: bool,
 
-    /// Ignore cache and force download (Scoop: -k, --no-cache)
-    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
-    ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = ArgAction::SetTrue)]
+    no_cache: bool,
 
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
@@ -75,14 +76,14 @@ impl SyncFlags for Args {
         SyncArgs {
             global: self.global,
             assume_yes: self.assume_yes,
-            ignore_failure: self.ignore_failure,
+            ignore_failures: self.ignore_failures,
             offline: self.offline,
-            no_hash_check: self.no_hash_check,
+            skip_hash_check: self.skip_hash_check,
             independent: self.independent,
             no_replace: self.no_replace,
             escape_hold: self.escape_hold,
             no_upgrade: self.no_upgrade,
-            ignore_cache: self.ignore_cache,
+            no_cache: self.no_cache,
             // `update` never downloads without installing (unlike `install`)
             download_only: false,
         }

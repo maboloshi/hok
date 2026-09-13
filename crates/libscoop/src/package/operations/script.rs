@@ -152,7 +152,7 @@ fn install_env_additions(
 /// [`install_env_additions`]), mirroring Scoop's env hooks running right
 /// before post_install (lib/install.ps1:62-63,69).
 ///
-/// Execution path is gated by the `script-engine` config (default off):
+/// Execution path is gated by the `script_engine` config (default off):
 /// - **off** (default): each stage spawns a fresh `pwsh -File`, piping its
 ///   stdout/stderr separately to `ScriptStdout` / `ScriptStderr` events with
 ///   prompt Ctrl-C cancellation.
@@ -940,7 +940,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// In-flight cancellation: with `script-engine` on, cancelling the token
+    /// In-flight cancellation: with `script_engine` on, cancelling the token
     /// *while* a script runs must kill the engine worker (the only way to
     /// interrupt an in-process script) and make run_script return promptly.
     #[tokio::test]
@@ -1007,7 +1007,7 @@ mod tests {
         std::fs::write(
             &config_path,
             format!(
-                r#"{{"root_path": "{}", "cache_path": "{}", "script-engine": true}}"#,
+                r#"{{"root_path": "{}", "cache_path": "{}", "script_engine": true}}"#,
                 root_escaped, cache_escaped
             ),
         )
@@ -1024,7 +1024,7 @@ mod tests {
                 .unwrap_or(false)
     }
 
-    /// With `script-engine` on, `run_script` runs the stage through the
+    /// With `script_engine` on, `run_script` runs the stage through the
     /// resident engine; its captured output is forwarded as ScriptStdout
     /// events (same frontend contract as the fresh-spawn path).
     #[tokio::test]

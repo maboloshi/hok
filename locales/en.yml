@@ -590,7 +590,7 @@ cli_help:
             Root directory for globally installed apps.
       gh_token: string, default none
             GitHub API token used for authenticated requests.
-      ignore-failures: bool, default false
+      ignore_failures: bool, default false
             Continue multi-package operations despite individual failures.
       ignore_running_processes: bool, default false
             Proceed even if the app is running (warning instead of abort).
@@ -598,7 +598,7 @@ cli_help:
             CLI language for messages and help text.
       last_update: string, internal
             Timestamp of the last bucket update (managed by hok).
-      no-color: bool, default false
+      no_color: bool, default false
             Disable colored output.
       no_junction: bool, default false
             Do not use the 'current' junction; shims point to version dirs instead.
@@ -608,7 +608,7 @@ cli_help:
             Proxy settings: none | default | currentuser | [username:password@]host:port.
       root_path: path, default $SCOOP or ~/scoop
             Scoop root directory.
-      script-engine: bool, default false
+      script_engine: bool, default false
             Reuse one resident pwsh process for installer/uninstaller scripts.
       use_isolated_path: bool|string, default none
             Store apps' PATH entries in a dedicated env var (SCOOP_PATH by default).
@@ -665,7 +665,7 @@ cli_help:
     args:
       package: The package(s) to download (name, bucket/name, name@version, or manifest URL/path)
       force: Force download (overwrite cache)
-      no_hash_check: Skip package integrity check (use with caution!)
+      skip_hash_check: Skip package integrity check (use with caution!)
       arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
   export:
     about: Export installed packages list
@@ -725,10 +725,10 @@ cli_help:
       download_only: Download package(s) without performing installation
       escape_hold: Escape hold to allow changes on held package(s)
       global: Install globally (to $SCOOP_GLOBAL)
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
       independent: Do not install dependencies (may break packages)
-      no_hash_check: Skip package integrity check
+      skip_hash_check: Skip package integrity check
       no_replace: Do not replace package(s)
       no_upgrade: Do not upgrade package(s)
       offline: Leverage cache and suppress network access
@@ -754,9 +754,9 @@ cli_help:
     about: Reinstall a package
     args:
       global: Install globally (to $SCOOP_GLOBAL)
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      skip_hash_check: Skip package integrity check
       offline: Leverage cache and suppress network access
       package: The package(s) to reinstall
   reset:
@@ -817,8 +817,8 @@ cli_help:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow changes on held package(s)
       global: Uninstall a globally installed app (from $SCOOP_GLOBAL)
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      skip_hash_check: Skip package integrity check
       package: The package(s) to uninstall
       purge: Remove all persistent data
   update:
@@ -828,10 +828,10 @@ cli_help:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
       force: "Force update: bypass the cooldown and reinstall apps already at the requested version"
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
       independent: Do not install dependencies (may break packages)
-      no_hash_check: Skip package integrity check
+      skip_hash_check: Skip package integrity check
       no_replace: Do not replace package(s)
       no_upgrade: Do not upgrade package(s)
       offline: Leverage cache and suppress network access
@@ -844,9 +844,10 @@ cli_help:
       all: Update all installed packages (alternative to '*')
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
+      force: "Force upgrade: reinstall apps that are already at the requested version"
       global: Install globally (to $SCOOP_GLOBAL)
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      skip_hash_check: Skip package integrity check
       offline: Leverage cache and suppress network access
       package: "The package(s) to be upgraded (default: all except held)"
   virustotal:

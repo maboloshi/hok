@@ -12,9 +12,10 @@ pub struct Args {
     /// The package(s) to be upgraded (default: all except held)
     #[arg(action = ArgAction::Append)]
     package: Vec<String>,
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = ArgAction::SetTrue)]
+    ignore_failures: bool,
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
     offline: bool,
@@ -24,9 +25,13 @@ pub struct Args {
     /// Escape hold to allow to upgrade held package(s)
     #[arg(short = 'S', long, action = ArgAction::SetTrue)]
     escape_hold: bool,
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
+    /// Force upgrade: reinstall apps that are already at the requested version
+    /// (Scoop's `-f/--force`)
+    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
+    force: bool,
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     global: bool,
@@ -40,14 +45,14 @@ impl SyncFlags for Args {
         SyncArgs {
             global: self.global,
             assume_yes: self.assume_yes,
-            ignore_failure: self.ignore_failure,
+            ignore_failures: self.ignore_failures,
             offline: self.offline,
-            no_hash_check: self.no_hash_check,
+            skip_hash_check: self.skip_hash_check,
             independent: false,
             no_replace: false,
             escape_hold: self.escape_hold,
             no_upgrade: false,
-            ignore_cache: false,
+            no_cache: false,
             download_only: false,
         }
     }
@@ -61,10 +66,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             session,
             &[String::from("*")],
             &args.sync_args(),
-            false,
+            args.force,
         )
         .await;
     }
 
-    super::update::execute_upgrade(session, &args.package, &args.sync_args(), false).await
+    super::update::execute_upgrade(session, &args.package, &args.sync_args(), args.force).await
 }

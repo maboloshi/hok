@@ -107,7 +107,7 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
 
     let transaction = Transaction::default();
 
-    // Nothing to remove (all held, or all failed under IgnoreFailure) —
+    // Nothing to remove (all held, or all failed under IgnoreFailures) —
     // no confirmation needed for an empty transaction.
     if packages.is_empty() {
         return Ok(());
@@ -123,8 +123,8 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
 
     if let Some(packages) = transaction.remove_view() {
         let purge = options.contains(&SyncOption::Purge);
-        let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
-        commit_remove(session, packages, purge, ignore_failure).await?;
+        let ignore_failures = options.contains(&SyncOption::IgnoreFailures);
+        commit_remove(session, packages, purge, ignore_failures).await?;
     }
 
     Ok(())
@@ -136,7 +136,7 @@ async fn commit_remove(
     session: &Session,
     packages: &[Package],
     purge: bool,
-    ignore_failure: bool,
+    ignore_failures: bool,
 ) -> Fallible<()> {
     let total = packages.len();
     for (i, package) in packages.iter().enumerate() {
@@ -151,7 +151,7 @@ async fn commit_remove(
                 });
             }
             let msg = hok_i18n::t!("cmd.failed_remove", name = package.name(), error = e);
-            if ignore_failure {
+            if ignore_failures {
                 session.output().error(msg);
                 continue;
             }

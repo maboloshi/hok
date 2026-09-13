@@ -114,11 +114,11 @@ store yet).
 | `editor` | string | *(empty)* | Text editor used by `hok config edit` (e.g. `code --wait`); falls back to `$EDITOR`, then the system default handler |
 | `global_path` | path | `$SCOOP_GLOBAL` or `%ProgramData%\scoop` | Root directory for globally installed apps |
 | `gh_token` | string | *(empty)* | GitHub API token used for authenticated requests |
-| `ignore-failures` | bool | `false` | Continue multi-package operations despite individual failures |
+| `ignore_failures` | bool | `false` | Continue multi-package operations despite individual failures |
 | `ignore_running_processes` | bool | `false` | Proceed even if the app is running (warning instead of abort) |
 | `language` | `auto`\|`en`\|`zh` | `auto` | CLI language for messages and help text |
 | `last_update` | string | *(empty)* | Timestamp of the last bucket update (managed by hok; edit the file only) |
-| `no-color` | bool | `false` | Disable colored output |
+| `no_color` | bool | `false` | Disable colored output |
 | `no_junction` | bool | `false` | Do not use the `current` junction; shims point to version dirs instead |
 | `private_hosts` | array | *(empty)* | Private hosts needing extra auth headers (edit the file only) |
 | `proxy` | string | `none` | Proxy: `none` \| `default` \| `currentuser` \| `[username:password@]host:port` |

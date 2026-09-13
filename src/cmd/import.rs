@@ -13,7 +13,7 @@
 //!   replays the install: the file records that it did not complete.
 //! - hok's `bucket add` is git-remote only, so a bucket exported with a local
 //!   path (`lib/buckets.ps1:112-115`) is skipped instead of handed to git.
-//! - The install runs with `AssumeYes` + `IgnoreFailure` (one non-interactive
+//! - The install runs with `AssumeYes` + `IgnoreFailures` (one non-interactive
 //!   restore), where upstream installs app by app without `-y`.
 //! - Upstream's `config` keys are mapped onto hok's names (by their canonical
 //!   upstream spelling, see [`libscoop::config::map_official_key`]) and
@@ -342,13 +342,13 @@ async fn install_apps(
         let queries: Vec<&str> = apps.iter().map(|app| app.query.as_str()).collect();
         // Non-interactive restore: yes to every prompt, and a failing app must
         // not abort the rest (upstream installs app by app and continues).
-        let options = vec![SyncOption::AssumeYes, SyncOption::IgnoreFailure];
+        let options = vec![SyncOption::AssumeYes, SyncOption::IgnoreFailures];
         if let Err(e) = package::sync::sync(session, queries, options).await {
             report.skip(hok_i18n::t!("cmd.import_skip_app_err", e = e));
             continue;
         }
 
-        // With `IgnoreFailure` a failed package still leaves the batch
+        // With `IgnoreFailures` a failed package still leaves the batch
         // successful, so the count comes from what is actually installed — not
         // from what was submitted, which would report broken apps as imported.
         let names: Vec<&str> = apps.iter().map(|app| app.name.as_str()).collect();

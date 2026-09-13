@@ -31,9 +31,10 @@ pub struct Args {
     #[arg(short = 'd', long, action = ArgAction::SetTrue)]
     download_only: bool,
 
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = ArgAction::SetTrue)]
+    ignore_failures: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
@@ -43,9 +44,9 @@ pub struct Args {
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
     assume_yes: bool,
 
-    /// Ignore cache and force download (Scoop: -k, --no-cache)
-    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
-    ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = ArgAction::SetTrue)]
+    no_cache: bool,
 
     /// Do not install dependencies (may break packages)
     #[arg(short = 'I', long, action = ArgAction::SetTrue)]
@@ -63,9 +64,9 @@ pub struct Args {
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
     no_upgrade: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
     /// Use the specified architecture (32bit/64bit/arm64), overriding the
     /// runtime-detected and configured default (Scoop's `-a/--arch`)
@@ -78,14 +79,14 @@ impl SyncFlags for Args {
         SyncArgs {
             global: self.global,
             assume_yes: self.assume_yes,
-            ignore_failure: self.ignore_failure,
+            ignore_failures: self.ignore_failures,
             offline: self.offline,
-            no_hash_check: self.no_hash_check,
+            skip_hash_check: self.skip_hash_check,
             independent: self.independent,
             no_replace: self.no_replace,
             escape_hold: self.escape_hold,
             no_upgrade: self.no_upgrade,
-            ignore_cache: self.ignore_cache,
+            no_cache: self.no_cache,
             download_only: self.download_only,
         }
     }

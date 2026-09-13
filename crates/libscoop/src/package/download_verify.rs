@@ -23,18 +23,18 @@ use super::download::PackageSet;
 /// Nightly packages skip verification; a missing or empty hash in the
 /// manifest warns and continues; a mismatch removes the corrupt cache
 /// file so the next attempt re-downloads, and either fails hard or — in
-/// IgnoreFailure mode — records the package ident in the returned set.
+/// IgnoreFailures mode — records the package ident in the returned set.
 ///
 /// Shared by the install pipeline and the standalone `download` command so
 /// the verification semantics cannot drift between them.
 pub(crate) fn verify_downloads(
     session: &Session,
     packages: &[&Package],
-    no_hash_check: bool,
-    ignore_failure: bool,
+    skip_hash_check: bool,
+    ignore_failures: bool,
 ) -> Fallible<HashSet<String>> {
     let mut failed = HashSet::new();
-    if no_hash_check {
+    if skip_hash_check {
         return Ok(failed);
     }
 
@@ -116,7 +116,7 @@ pub(crate) fn verify_downloads(
         })();
 
         if let Err(e) = result {
-            if ignore_failure {
+            if ignore_failures {
                 failed.insert(pkg.ident());
                 session.output().error(hok_i18n::t!(
                     "cmd.failed_verify",
@@ -149,8 +149,8 @@ pub(crate) fn verify_downloads(
 /// fragmented download (splitting) and the progress bar's total depend on.
 pub(crate) async fn download_and_verify(
     set: &mut PackageSet<'_>,
-    no_hash_check: bool,
-    ignore_failure: bool,
+    skip_hash_check: bool,
+    ignore_failures: bool,
     offline: bool,
 ) -> Fallible<HashSet<String>> {
     let session = set.session;
@@ -161,7 +161,7 @@ pub(crate) async fn download_and_verify(
             let _ = tx.try_send(Event::PackageDownloadStart);
         }
 
-        set.set_ignore_failure(ignore_failure);
+        set.set_ignore_failures(ignore_failures);
         failed = set.download().await?.into_iter().collect();
 
         if let Some(tx) = session.emitter() {
@@ -179,8 +179,8 @@ pub(crate) async fn download_and_verify(
     failed.extend(verify_downloads(
         session,
         &ok_pkgs,
-        no_hash_check,
-        ignore_failure,
+        skip_hash_check,
+        ignore_failures,
     )?);
     Ok(failed)
 }

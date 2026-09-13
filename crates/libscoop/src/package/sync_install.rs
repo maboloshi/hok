@@ -91,7 +91,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
     let force = options.contains(&SyncOption::Force);
     let escape_hold = options.contains(&SyncOption::EscapeHold);
-    let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
+    let ignore_failures = options.contains(&SyncOption::IgnoreFailures);
 
     if only_upgrade {
         // Named packages must already be installed. The Upgradable filter
@@ -178,7 +178,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                 }
                 Ok(None) => regular.push(query),
                 Err(e) => {
-                    if ignore_failure {
+                    if ignore_failures {
                         session.output().error(hok_i18n::t!(
                             "cmd.failed_resolve",
                             query = query,
@@ -217,7 +217,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
             match matched.len() {
                 0 => {
-                    if ignore_failure {
+                    if ignore_failures {
                         session.output().error(hok_i18n::t!(
                             "cmd.failed_resolve",
                             query = query,
@@ -253,7 +253,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                     )
                     .await
                     {
-                        if ignore_failure {
+                        if ignore_failures {
                             session.output().error(hok_i18n::t!(
                                 "cmd.failed_resolve",
                                 query = query,
@@ -285,7 +285,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         resolve::resolve_dependencies(
             session,
             &mut packages,
-            ignore_failure,
+            ignore_failures,
             options.contains(&SyncOption::AssumeYes),
         )
         .await?;
@@ -346,7 +346,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
         transaction.set_replace(replaceable);
     }
 
-    let reuse_cache = !options.contains(&SyncOption::IgnoreCache);
+    let reuse_cache = !options.contains(&SyncOption::NoCache);
 
     let packages = transaction.add_view();
     if packages.is_empty() {
@@ -354,7 +354,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
     }
 
     let mut set = download::PackageSet::new(session, &packages, reuse_cache)?;
-    set.set_ignore_failure(ignore_failure);
+    set.set_ignore_failures(ignore_failures);
 
     let offline = options.contains(&SyncOption::Offline);
     let mut should_offline = true;
@@ -394,16 +394,16 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
     }
 
     // Idents of packages that failed to download / verify and must be
-    // skipped. Only populated when IgnoreFailure is enabled.
-    let no_hash_check = options.contains(&SyncOption::NoHashCheck);
+    // skipped. Only populated when IgnoreFailures is enabled.
+    let skip_hash_check = options.contains(&SyncOption::SkipHashCheck);
     // `set` already has remote_size filled by calculate_download_size above
     // (used for the confirm prompt) — fragmented download and the progress
     // bar depend on it, so the same set must be handed to the downloader.
     let failed =
-        download::download_and_verify(&mut set, no_hash_check, ignore_failure, should_offline)
+        download::download_and_verify(&mut set, skip_hash_check, ignore_failures, should_offline)
             .await?;
 
-    // Drop packages that failed to download or verify (IgnoreFailure mode).
+    // Drop packages that failed to download or verify (IgnoreFailures mode).
     let packages = if failed.is_empty() {
         packages
     } else {
@@ -415,7 +415,7 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        commit_install(session, &packages, ignore_failure).await?;
+        commit_install(session, &packages, ignore_failures).await?;
     }
 
     Ok(())
@@ -520,7 +520,7 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
 async fn commit_install(
     session: &Session,
     packages: &[&Package],
-    ignore_failure: bool,
+    ignore_failures: bool,
 ) -> Fallible<()> {
     let total = packages.len();
     for (i, &pkg) in packages.iter().enumerate() {
@@ -535,7 +535,7 @@ async fn commit_install(
                 });
             }
             let msg = hok_i18n::t!("cmd.failed_install", name = pkg.name(), error = e);
-            if ignore_failure {
+            if ignore_failures {
                 session.output().error(msg);
                 continue;
             }
@@ -1129,20 +1129,20 @@ mod tests {
     }
 
     /// A missing package in a mixed batch is skipped (reported to stderr)
-    /// while the installed one is still processed; `IgnoreFailure` no longer
+    /// while the installed one is still processed; `IgnoreFailures` no longer
     /// changes that, it only keeps a *commit* failure from aborting.
     #[tokio::test]
-    async fn only_upgrade_ignore_failure_skips_missing() {
+    async fn only_upgrade_ignore_failures_skips_missing() {
         let root = crate::test_utils::tmpdir("only_upgrade_ignore");
         let session = crate::test_utils::test_session(&root);
 
         crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
 
-        // "ghost" is missing but IgnoreFailure lets the rest proceed.
+        // "ghost" is missing but IgnoreFailures lets the rest proceed.
         install(
             &session,
             &["ghost", "curl"],
-            &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailure],
+            &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailures],
         )
         .await
         .unwrap();

@@ -158,11 +158,11 @@ hok 尚未保存的设置的视图）。
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | 自动检测 | 安装时使用的首选架构 |
 | `global_path` | 路径 | `$SCOOP_GLOBAL` 或 `%ProgramData%\scoop` | 全局应用安装的根目录 |
 | `gh_token` | 字符串 | *(空)* | 用于认证请求的 GitHub API token |
-| `ignore-failures` | bool | `false` | 多包操作中单个包失败时继续处理其余包 |
+| `ignore_failures` | bool | `false` | 多包操作中单个包失败时继续处理其余包 |
 | `ignore_running_processes` | bool | `false` | 应用正在运行时仍继续（仅警告，不中止） |
 | `language` | `auto`\|`en`\|`zh` | `auto` | 消息与帮助文本使用的 CLI 语言 |
 | `last_update` | 字符串 | *(空)* | 上次 bucket 更新时间戳（由 hok 管理，仅可编辑文件） |
-| `no-color` | bool | `false` | 禁用彩色输出 |
+| `no_color` | bool | `false` | 禁用彩色输出 |
 | `no_junction` | bool | `false` | 不使用 `current` 目录联接；shim 直接指向版本目录 |
 | `private_hosts` | 数组 | *(空)* | 需要额外认证头的私有主机（仅可编辑文件） |
 | `proxy` | 字符串 | `none` | 代理：`none` \| `default` \| `currentuser` \| `[username:password@]host:port` |

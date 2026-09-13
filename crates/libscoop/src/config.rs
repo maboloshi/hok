@@ -201,7 +201,6 @@ pub struct ConfigInner {
     language: Option<String>,
 
     #[serde(alias = "no-color")]
-    #[serde(rename = "no-color")]
     #[serde(skip_serializing_if = "Option::is_none")]
     no_color: Option<bool>,
 
@@ -216,8 +215,7 @@ pub struct ConfigInner {
     /// (reusing one long-lived pwsh worker across stages) instead of spawning
     /// a fresh `pwsh -File` per stage. Defaults to `false` — the well-trodden
     /// per-stage spawn path stays the default; the engine path is opt-in.
-    #[serde(alias = "script_engine")]
-    #[serde(rename = "script-engine")]
+    #[serde(alias = "script-engine")]
     #[serde(skip_serializing_if = "Option::is_none")]
     script_engine: Option<bool>,
 
@@ -268,7 +266,7 @@ pub struct ConfigInner {
 
     /// Continue multi-package operations despite individual package failures.
     #[serde(alias = "ignore_failure")]
-    #[serde(rename = "ignore-failures")]
+    #[serde(alias = "ignore-failures")]
     #[serde(skip_serializing_if = "Option::is_none")]
     ignore_failures: Option<bool>,
 
@@ -611,7 +609,7 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "script-engine" => match is_unset {
+            "script_engine" => match is_unset {
                 true => self.inner.script_engine = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.script_engine = Some(v),
@@ -624,7 +622,7 @@ impl Config {
                     false => Some(value.to_string()),
                 }
             }
-            "ignore-failures" => match is_unset {
+            "ignore_failures" => match is_unset {
                 true => self.inner.ignore_failures = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.ignore_failures = Some(v),
@@ -682,7 +680,7 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "no-color" => match is_unset {
+            "no_color" => match is_unset {
                 true => self.inner.no_color = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.no_color = Some(v),
@@ -1042,11 +1040,11 @@ const SETTINGS: &[&str] = &[
     // hok's own settings (upstream has no such key).
     "confirm",
     "editor",
-    "ignore-failures",
+    "ignore_failures",
     "jobs",
     "language",
-    "no-color",
-    "script-engine",
+    "no_color",
+    "script_engine",
 ];
 
 /// The canonical spelling of `key`, or `None` when `key` is not a setting.
@@ -1300,7 +1298,7 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
         ConfigCell::Unset,
     ));
     rows.push(row(
-        "ignore-failures",
+        "ignore_failures",
         ConfigCell::text(fmt_bool(config.ignore_failures())),
         ConfigCell::text("false"),
     ));
@@ -1320,7 +1318,7 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
         ConfigCell::Unset,
     ));
     rows.push(row(
-        "no-color",
+        "no_color",
         ConfigCell::text(fmt_bool(config.no_color())),
         ConfigCell::text("false"),
     ));
@@ -1330,7 +1328,7 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
         ConfigCell::text("false"),
     ));
     rows.push(row(
-        "script-engine",
+        "script_engine",
         ConfigCell::text(fmt_bool(config.script_engine())),
         ConfigCell::text("false"),
     ));
@@ -1494,9 +1492,9 @@ mod tests {
     fn bool_field(config: &ConfigInner, key: &str) -> Option<bool> {
         match key {
             "no_junction" => config.no_junction,
-            "no-color" => config.no_color,
+            "no_color" => config.no_color,
             "ignore_running_processes" => config.ignore_running_processes,
-            "script-engine" => config.script_engine,
+            "script_engine" => config.script_engine,
             _ => panic!("not a bool key: {key}"),
         }
     }
@@ -1529,9 +1527,9 @@ mod tests {
         // bool keys
         for key in [
             "no_junction",
-            "no-color",
+            "no_color",
             "ignore_running_processes",
-            "script-engine",
+            "script_engine",
         ] {
             crate::config::set(&session, key, "true").unwrap();
             assert_eq!(bool_field(&session.config().inner, key), Some(true));
@@ -1604,10 +1602,10 @@ mod tests {
             ("aria2-split", "7", json!(7)),
             ("aria2-max-connection-per-server", "9", json!(9)),
             ("aria2-min-split-size", "5M", json!("5M")),
-            ("script-engine", "true", json!(true)),
-            ("ignore-failures", "true", json!(true)),
+            ("script_engine", "true", json!(true)),
+            ("ignore_failures", "true", json!(true)),
             ("no_junction", "true", json!(true)),
-            ("no-color", "true", json!(true)),
+            ("no_color", "true", json!(true)),
         ];
         for (key, value, expected) in cases {
             crate::config::set(&session, key, value).unwrap();
@@ -1629,8 +1627,9 @@ mod tests {
         for alias in [
             "aria2_split",
             "no_junctions",
-            "no_color",
-            "script_engine",
+            "no-color",
+            "script-engine",
+            "ignore-failures",
             "ignore_failure",
         ] {
             let err = crate::config::set(&session, alias, "true").unwrap_err();
@@ -1684,16 +1683,16 @@ mod tests {
             "editor",
             "global_path",
             "gh_token",
-            "ignore-failures",
+            "ignore_failures",
             "ignore_running_processes",
             "language",
             "last_update",
-            "no-color",
+            "no_color",
             "no_junction",
             "private_hosts",
             "proxy",
             "root_path",
-            "script-engine",
+            "script_engine",
             "use_isolated_path",
             "use_sqlite_cache",
             "virustotal_api_key",
@@ -1737,14 +1736,14 @@ mod tests {
         let config = session.config();
         for (key, actual) in [
             ("aria2-enabled", config.aria2_enabled()),
-            ("ignore-failures", config.ignore_failures()),
+            ("ignore_failures", config.ignore_failures()),
             (
                 "ignore_running_processes",
                 config.ignore_running_processes(),
             ),
-            ("no-color", config.no_color()),
+            ("no_color", config.no_color()),
             ("confirm", config.confirm()),
-            ("script-engine", config.script_engine()),
+            ("script_engine", config.script_engine()),
             ("no_junction", config.no_junction()),
             ("use_sqlite_cache", config.use_sqlite_cache()),
         ] {

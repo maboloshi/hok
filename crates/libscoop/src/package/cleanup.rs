@@ -13,7 +13,7 @@ use crate::{Error, Session, cache, error::Fallible, internal, package::install_s
 pub struct CleanupOptions {
     /// Continue after a failed version-dir removal instead of aborting the
     /// rest of the batch.
-    pub ignore_failure: bool,
+    pub ignore_failures: bool,
     /// Also drop each app's outdated download cache, keeping its current
     /// version — upstream `cleanup -k` (`scoop-cleanup.ps1:32-33`).
     pub cache: bool,
@@ -135,12 +135,12 @@ pub fn installed_app_names(session: &Session) -> Vec<String> {
 /// `names` is always an explicit target list (upstream's `$apps`): an empty
 /// list cleans nothing, so callers sweeping every app must enumerate it
 /// through [`installed_app_names`]. A name that does not exist yields
-/// [`PackageNotFound`][1] unless `options.ignore_failure` is set.
+/// [`PackageNotFound`][1] unless `options.ignore_failures` is set.
 ///
 /// # Errors
 ///
 /// A [`PackageNotFound`][1] error will be returned if a named package does not
-/// exist and `options.ignore_failure` is false.
+/// exist and `options.ignore_failures` is false.
 ///
 /// [1]: crate::Error::PackageNotFound
 pub fn cleanup(
@@ -148,14 +148,14 @@ pub fn cleanup(
     names: &[String],
     options: &CleanupOptions,
 ) -> Fallible<Vec<(String, usize, usize)>> {
-    let ignore_failure = options.ignore_failure;
+    let ignore_failures = options.ignore_failures;
     let apps_dir = session.apps_dir();
     let mut results = Vec::new();
 
     for name in names {
         let pkg_dir = apps_dir.join(name);
         if !pkg_dir.exists() {
-            if !ignore_failure {
+            if !ignore_failures {
                 return Err(Error::PackageNotFound(name.to_owned()));
             }
             continue;
@@ -212,7 +212,7 @@ pub fn cleanup(
             if let Err(e) = internal::fs::remove_dir(&ver_dir) {
                 let msg = hok_i18n::t!("cmd.cleanup_remove_failed", name = name, ver = ver, e = e)
                     .to_string();
-                if ignore_failure {
+                if ignore_failures {
                     session.output().error(msg);
                     failed += 1;
                 } else {
@@ -235,9 +235,9 @@ pub fn cleanup(
 mod tests {
     use super::*;
 
-    fn opts(ignore_failure: bool) -> CleanupOptions {
+    fn opts(ignore_failures: bool) -> CleanupOptions {
         CleanupOptions {
-            ignore_failure,
+            ignore_failures,
             cache: false,
         }
     }
@@ -304,7 +304,7 @@ mod tests {
             &session,
             &["app".to_owned()],
             &CleanupOptions {
-                ignore_failure: false,
+                ignore_failures: false,
                 cache: true,
             },
         )

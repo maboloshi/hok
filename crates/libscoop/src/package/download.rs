@@ -51,7 +51,7 @@ pub struct PackageSet<'a> {
     caches: OnceCell<HashMap<String, PackageCache<'a>>>,
     reuse_cache: bool,
     /// Skip packages whose download fails instead of aborting the operation.
-    ignore_failure: bool,
+    ignore_failures: bool,
 }
 
 struct FileDownloadInfo<'a> {
@@ -104,7 +104,7 @@ struct PkgDownloadOutcome {
     filepaths: Vec<(PathBuf, PathBuf, String)>,
     /// Fragmented files to reassemble: `final_path -> (part_paths, ident)`.
     chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)>,
-    /// The package ident when it failed (only under IgnoreFailure).
+    /// The package ident when it failed (only under IgnoreFailures).
     failed_ident: Option<String>,
 }
 
@@ -124,7 +124,7 @@ async fn download_one_package<'a>(
     base_opts: &internal::network::RequestOptions<'_>,
     net: &Arc<dyn internal::network::Network + Send + Sync>,
     reuse_cache: bool,
-    ignore_failure: bool,
+    ignore_failures: bool,
     fragmentation_enabled: bool,
     chunk_count: u64,
     min_split_size: u64,
@@ -150,7 +150,7 @@ async fn download_one_package<'a>(
     };
 
     // A failure on any file marks the whole package as failed so the rest of
-    // the transaction can still be committed (IgnoreFailure).
+    // the transaction can still be committed (IgnoreFailures).
     let mut pkg_error: Option<crate::Error> = None;
     let emitter = session.emitter();
 
@@ -372,7 +372,7 @@ async fn download_one_package<'a>(
     }
 
     if let Some(err) = pkg_error {
-        if ignore_failure {
+        if ignore_failures {
             session.output().error(hok_i18n::t!(
                 "cmd.failed_download",
                 name = ident,
@@ -405,7 +405,7 @@ impl<'a> PackageSet<'a> {
             packages,
             caches: OnceCell::new(),
             reuse_cache,
-            ignore_failure: false,
+            ignore_failures: false,
         })
     }
 
@@ -417,8 +417,8 @@ impl<'a> PackageSet<'a> {
     /// the whole operation, so the remaining packages can still be committed.
     ///
     /// [1]: PackageSet::download
-    pub fn set_ignore_failure(&mut self, ignore: bool) {
-        self.ignore_failure = ignore;
+    pub fn set_ignore_failures(&mut self, ignore: bool) {
+        self.ignore_failures = ignore;
     }
 
     fn load_cache(&self) {
@@ -486,10 +486,10 @@ impl<'a> PackageSet<'a> {
     /// # Returns
     ///
     /// The identifiers (`bucket/name`) of the packages whose download failed
-    /// and were skipped. Unless [`set_ignore_failure`][1] was enabled, the
+    /// and were skipped. Unless [`set_ignore_failures`][1] was enabled, the
     /// first failure aborts with an error, so the list is empty on success.
     ///
-    /// [1]: PackageSet::set_ignore_failure
+    /// [1]: PackageSet::set_ignore_failures
     pub async fn download(&mut self) -> Fallible<Vec<String>> {
         if self.caches.get().is_none() {
             self.load_cache();
@@ -531,7 +531,7 @@ impl<'a> PackageSet<'a> {
         // borrow). Session is Sync + Send, so all of these share cleanly.
         let session = self.session;
         let reuse_cache = self.reuse_cache;
-        let ignore_failure = self.ignore_failure;
+        let ignore_failures = self.ignore_failures;
         let net = self.session.network();
         let emitter = self.session.emitter();
 
@@ -605,7 +605,7 @@ impl<'a> PackageSet<'a> {
                     &base_opts,
                     &net,
                     reuse_cache,
-                    ignore_failure,
+                    ignore_failures,
                     fragmentation_enabled,
                     chunk_count,
                     min_split_size,
@@ -645,7 +645,7 @@ impl<'a> PackageSet<'a> {
                 Ok(())
             })();
             if let Err(e) = reassembled {
-                if self.ignore_failure {
+                if self.ignore_failures {
                     self.session.output().error(hok_i18n::t!(
                         "cmd.failed_reassemble",
                         name = ident,
@@ -661,7 +661,7 @@ impl<'a> PackageSet<'a> {
         // Rename simple downloads
         for (tmp, path, ident) in filepaths.iter() {
             if let Err(e) = std::fs::rename(tmp, path) {
-                if self.ignore_failure {
+                if self.ignore_failures {
                     self.session.output().error(hok_i18n::t!(
                         "cmd.failed_move_download",
                         name = ident,

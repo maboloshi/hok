@@ -17,17 +17,18 @@ pub struct Args {
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
     offline: bool,
 
-    /// Ignore cache and force download (Scoop: -k, --no-cache)
-    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
-    ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = ArgAction::SetTrue)]
+    no_cache: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = ArgAction::SetTrue)]
+    ignore_failures: bool,
 
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
@@ -41,14 +42,14 @@ impl SyncFlags for Args {
             // Reinstall always runs non-interactively; the remaining flags
             // are not exposed by `scoop reinstall`.
             assume_yes: true,
-            ignore_failure: self.ignore_failure,
+            ignore_failures: self.ignore_failures,
             offline: self.offline,
-            no_hash_check: self.no_hash_check,
+            skip_hash_check: self.skip_hash_check,
             independent: false,
             no_replace: false,
             escape_hold: false,
             no_upgrade: false,
-            ignore_cache: self.ignore_cache,
+            no_cache: self.no_cache,
             download_only: false,
         }
     }

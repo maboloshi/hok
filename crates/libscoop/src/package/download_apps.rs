@@ -251,7 +251,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_download_apps_no_hash_check_keeps_file() {
+    async fn test_download_apps_skip_hash_check_keeps_file() {
         let data = b"download-apps-no-hash".to_vec();
         let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
         let root = crate::test_utils::tmpdir("download_apps_no_hash");

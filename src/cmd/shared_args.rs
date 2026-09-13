@@ -31,9 +31,10 @@ pub struct SyncArgs {
     #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
     pub assume_yes: bool,
 
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    pub ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub ignore_failures: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = clap::ArgAction::SetTrue)]
@@ -41,7 +42,7 @@ pub struct SyncArgs {
 
     /// Skip package integrity check
     #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
-    pub no_hash_check: bool,
+    pub skip_hash_check: bool,
 
     /// Do not install dependencies (may break packages)
     #[arg(short = 'I', long, action = clap::ArgAction::SetTrue)]
@@ -59,9 +60,9 @@ pub struct SyncArgs {
     #[arg(short = 'U', long, action = clap::ArgAction::SetTrue)]
     pub no_upgrade: bool,
 
-    /// Ignore cache and force download
-    #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
-    pub ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
+    pub no_cache: bool,
 
     /// Download package(s) without performing installation
     #[arg(short = 'd', long, action = clap::ArgAction::SetTrue)]
@@ -81,11 +82,11 @@ impl SyncArgs {
         if self.escape_hold {
             options.push(SyncOption::EscapeHold);
         }
-        if self.ignore_failure || session.config().ignore_failures() {
-            options.push(SyncOption::IgnoreFailure);
+        if self.ignore_failures || session.config().ignore_failures() {
+            options.push(SyncOption::IgnoreFailures);
         }
-        if self.ignore_cache {
-            options.push(SyncOption::IgnoreCache);
+        if self.no_cache {
+            options.push(SyncOption::NoCache);
         }
         if self.no_upgrade {
             options.push(SyncOption::NoUpgrade);
@@ -99,8 +100,8 @@ impl SyncArgs {
         if self.independent {
             options.push(SyncOption::NoDependencies);
         }
-        if self.no_hash_check {
-            options.push(SyncOption::NoHashCheck);
+        if self.skip_hash_check {
+            options.push(SyncOption::SkipHashCheck);
         }
         options
     }
@@ -177,7 +178,7 @@ pub struct QueryArgs {
     pub with_binary: bool,
 
     /// Search through package descriptions as well
-    #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
+    #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
     pub with_description: bool,
 }
 

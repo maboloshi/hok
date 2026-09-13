@@ -54,13 +54,13 @@ pub(crate) fn helper_installed(session: &Session, name: &str) -> bool {
 /// This function ensures that packages are unique and sorted in dependency first
 /// order.
 ///
-/// When `ignore_failure` is enabled, a package whose dependencies cannot be
+/// When `ignore_failures` is enabled, a package whose dependencies cannot be
 /// resolved (missing dependency or undecidable multi-candidate) is dropped from
 /// the list and reported to stderr, so the remaining packages still proceed.
 pub(crate) async fn resolve_dependencies(
     session: &Session,
     packages: &mut Vec<Package>,
-    ignore_failure: bool,
+    ignore_failures: bool,
     assume_yes: bool,
 ) -> Fallible<()> {
     let mut graph = DepGraph::<String>::new();
@@ -118,7 +118,7 @@ pub(crate) async fn resolve_dependencies(
 
                     match matched.len() {
                         0 => {
-                            if ignore_failure {
+                            if ignore_failures {
                                 session.output().error(hok_i18n::t!(
                                     "cmd.failed_resolve_dependency",
                                     query = query,
@@ -154,7 +154,7 @@ pub(crate) async fn resolve_dependencies(
                                 match select_candidate(session, &mut matched, assume_yes).await {
                                     Ok(()) => {}
                                     Err(e) => {
-                                        if ignore_failure {
+                                        if ignore_failures {
                                             session.output().error(hok_i18n::t!(
                                                 "cmd.failed_resolve_dependency",
                                                 query = query,

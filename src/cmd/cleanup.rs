@@ -41,7 +41,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Cleanup is a maintenance operation; individual failures should not abort it.
     let options = CleanupOptions {
-        ignore_failure: true,
+        ignore_failures: true,
         cache: args.cache,
     };
 

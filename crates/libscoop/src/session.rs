@@ -107,7 +107,7 @@ pub struct Session {
     /// Defaults to a never-cancelled token when the frontend never sets one.
     cancellation: OnceLock<CancellationToken>,
 
-    /// Resident PowerShell engine slot for package scripts (the `script-engine`
+    /// Resident PowerShell engine slot for package scripts (the `script_engine`
     /// config path). Lazily created on first use; `None` until a submission
     /// runs. Accessed crate-internally by [`package::operations::script`]; the
     /// engine is taken out for a blocking submission and put back afterwards.
@@ -126,7 +126,7 @@ impl std::fmt::Debug for Session {
             .field("git", &"<infra>")
             .field("archive", &"<infra>")
             .field("cancellation", &"<cancellation>")
-            .field("script_engine", &"<script-engine>")
+            .field("script_engine", &"<script_engine>")
             .finish()
     }
 }
@@ -590,7 +590,7 @@ impl Session {
             .map_err(|_| Error::CancellationTokenAlreadySet)
     }
 
-    /// The session's resident PowerShell engine slot (the `script-engine`
+    /// The session's resident PowerShell engine slot (the `script_engine`
     /// config path). Lazily created on first access. The caller takes the
     /// engine out for a blocking submission and returns it afterwards.
     pub(crate) fn script_engine_slot(

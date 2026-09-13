@@ -12,18 +12,19 @@ pub struct Args {
     /// The package(s) to uninstall
     #[arg(required = true)]
     package: Vec<String>,
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    ignore_failures: bool,
     /// Escape hold to allow changes on held package(s)
     #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
     escape_hold: bool,
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
     assume_yes: bool,
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = clap::ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
+    skip_hash_check: bool,
     /// Uninstall a globally installed app (from $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]
     global: bool,
@@ -49,12 +50,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(SyncOption::AssumeYes);
     }
 
-    if args.ignore_failure || session.config().ignore_failures() {
-        options.push(SyncOption::IgnoreFailure);
+    if args.ignore_failures || session.config().ignore_failures() {
+        options.push(SyncOption::IgnoreFailures);
     }
 
-    if args.no_hash_check {
-        options.push(SyncOption::NoHashCheck);
+    if args.skip_hash_check {
+        options.push(SyncOption::SkipHashCheck);
     }
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();

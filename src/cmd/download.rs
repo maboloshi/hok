@@ -21,9 +21,9 @@ pub struct Args {
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
     /// Use the specified architecture (32bit/64bit/arm64), overriding the
     /// runtime-detected and configured default (Scoop's -a/--arch)
@@ -40,7 +40,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let opts = package::download::DownloadOptions {
         force: args.force,
-        check_hash: !args.no_hash_check,
+        check_hash: !args.skip_hash_check,
     };
 
     let handle = crate::eventloop::run_event_loop_default(session);
