@@ -3,8 +3,8 @@
 use clap::{ArgAction, Parser};
 use libscoop::Session;
 
-use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 use crate::Result;
+use crate::cmd::shared_args::{SyncArgs, SyncFlags};
 
 /// Upgrade installed package(s)
 #[derive(Debug, Parser)]

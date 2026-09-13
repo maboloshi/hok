@@ -304,7 +304,11 @@ pub async fn execute_upgrade(
             for pkg in &installed {
                 println!(
                     "{}",
-                    hok_i18n::t!("cmd.update_latest", name = pkg.name(), version = pkg.version())
+                    hok_i18n::t!(
+                        "cmd.update_latest",
+                        name = pkg.name(),
+                        version = pkg.version()
+                    )
                 );
             }
             output::info(hok_i18n::t!("cmd.update_all_latest"));

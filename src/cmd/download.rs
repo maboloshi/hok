@@ -5,7 +5,7 @@
 //! (Scoop's `scoop download`).
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::{Session, package};
 
 use crate::{Result, output};
 

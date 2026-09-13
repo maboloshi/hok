@@ -561,7 +561,7 @@ impl Config {
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Fallible<()> {
         let is_unset = value.is_empty();
         // Resolve the spelling once: `set`, the read path and the rejection
-        // message all go through the same table, so a new alias cannot drift
+        // message all go through the same table, so a new key cannot drift
         // away from the field it writes.
         let Some(canonical) = canonical_key(key) else {
             return Err(if is_official_only_key(key) {
