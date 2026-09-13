@@ -454,6 +454,250 @@ unsafe extern "system" {
     ) -> isize;
 }
 
+// ─── Diagnostic probes (upstream `lib/diagnostic.ps1` + `scoop-checkup.ps1`) ─
+
+/// The Windows version as `(major, build)`.
+///
+/// `major` is `CurrentMajorVersionNumber`, which only exists on Windows 10 and
+/// later — an older system reports 0, which is exactly upstream's "too old for
+/// configurable long paths" case. `build` is `CurrentBuildNumber`. Both are 0
+/// when the registry cannot be read.
+pub fn windows_version() -> (u32, u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+
+        let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        else {
+            return (0, 0);
+        };
+        let major = key
+            .get_value::<u32, _>("CurrentMajorVersionNumber")
+            .unwrap_or(0);
+        let build = key
+            .get_value::<String, _>("CurrentBuildNumber")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        (major, build)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        (0, 0)
+    }
+}
+
+/// Whether the `HKEY_LOCAL_MACHINE\<path>` registry key exists.
+pub fn registry_key_exists(path: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+
+        RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(path).is_ok()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Read a `REG_DWORD` value from `HKEY_LOCAL_MACHINE\<path>`.
+///
+/// `None` covers both "key/value missing" and "unreadable", so callers must
+/// treat it as *unknown* rather than *disabled*.
+pub fn registry_dword(path: &str, name: &str) -> Option<u32> {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+
+        RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(path)
+            .and_then(|key| key.get_value::<u32, _>(name))
+            .ok()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (path, name);
+        None
+    }
+}
+
+/// The immediate subkey names of `HKEY_LOCAL_MACHINE\<path>`.
+///
+/// Used for the Defender `Exclusions\Paths` list, where each subkey name *is*
+/// an excluded path. `None` when the key is missing or unreadable.
+pub fn registry_subkeys(path: &str) -> Option<Vec<String>> {
+    #[cfg(target_os = "windows")]
+    {
+        use winreg::RegKey;
+        use winreg::enums::HKEY_LOCAL_MACHINE;
+
+        let key = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(path).ok()?;
+        Some(
+            key.enum_keys()
+                .filter_map(std::result::Result::ok)
+                .collect(),
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// The `SERVICE_STATUS` structure `QueryServiceStatus` fills in.
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct ServiceStatus {
+    service_type: u32,
+    current_state: u32,
+    controls_accepted: u32,
+    win32_exit_code: u32,
+    service_specific_exit_code: u32,
+    checkpoint: u32,
+    wait_hint: u32,
+}
+
+// Safety: every parameter/return is an opaque SCM or service handle (SC_HANDLE)
+// or a pointer to a valid `SERVICE_STATUS`.
+#[cfg(target_os = "windows")]
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenSCManagerW(
+        machine_name: *const u16,
+        database_name: *const u16,
+        desired_access: u32,
+    ) -> isize;
+    fn OpenServiceW(sc_manager: isize, service_name: *const u16, desired_access: u32) -> isize;
+    fn QueryServiceStatus(service: isize, status: *mut ServiceStatus) -> i32;
+    fn CloseServiceHandle(handle: isize) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+const SC_MANAGER_CONNECT: u32 = 0x0001;
+#[cfg(target_os = "windows")]
+const SERVICE_QUERY_STATUS: u32 = 0x0004;
+#[cfg(target_os = "windows")]
+const SERVICE_RUNNING: u32 = 0x0000_0004;
+
+/// Whether the Windows service `name` is currently running.
+///
+/// `None` means the state could not be determined (service manager or service
+/// unavailable) — callers must treat it as *unknown*, not *stopped*.
+pub fn is_service_running(name: &str) -> Option<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: null machine/database select the local service manager; the
+        // service name is a valid null-terminated UTF-16 string; `status` is a
+        // valid out-parameter; every opened handle is closed before returning.
+        unsafe {
+            let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+            if manager == 0 {
+                return None;
+            }
+            let name_wide = encode_wide(name);
+            let service = OpenServiceW(manager, name_wide.as_ptr(), SERVICE_QUERY_STATUS);
+            CloseServiceHandle(manager);
+            if service == 0 {
+                return None;
+            }
+            let mut status: ServiceStatus = std::mem::zeroed();
+            let ok = QueryServiceStatus(service, &mut status);
+            CloseServiceHandle(service);
+            if ok == 0 {
+                return None;
+            }
+            Some(status.current_state == SERVICE_RUNNING)
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = name;
+        None
+    }
+}
+
+// Safety: `root_path_name` is a null-terminated UTF-16 mount point; the
+// out-parameters point to buffers valid for their stated lengths or are null.
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn GetVolumePathNameW(
+        file_name: *const u16,
+        volume_path_name: *mut u16,
+        buffer_length: u32,
+    ) -> i32;
+    fn GetVolumeInformationW(
+        root_path_name: *const u16,
+        volume_name_buffer: *mut u16,
+        volume_name_size: u32,
+        volume_serial_number: *mut u32,
+        maximum_component_length: *mut u32,
+        file_system_flags: *mut u32,
+        file_system_name_buffer: *mut u16,
+        file_system_name_size: u32,
+    ) -> i32;
+}
+
+/// Whether the volume backing `path` is formatted as NTFS.
+///
+/// `None` when the filesystem name cannot be queried (missing path, unmounted
+/// volume, rejected call) — callers treat that as *unknown*, so the diagnostic
+/// only reports an actual non-NTFS result.
+pub fn volume_is_ntfs(path: &Path) -> Option<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        // Resolve the mount point first: `GetVolumeInformationW` wants a root
+        // path ("C:\"), while the configured Scoop root is an arbitrary
+        // directory.
+        let path_wide = encode_wide(&path.to_string_lossy());
+        let mut root = [0u16; 260];
+        // SAFETY: both buffers are valid for their stated lengths and the input
+        // is a valid null-terminated UTF-16 string.
+        let resolved =
+            unsafe { GetVolumePathNameW(path_wide.as_ptr(), root.as_mut_ptr(), root.len() as u32) };
+        if resolved == 0 {
+            return None;
+        }
+
+        let mut file_system = [0u16; 64];
+        // SAFETY: `root` is a null-terminated UTF-16 mount point; the optional
+        // out-parameters are null and `file_system` is valid for its length.
+        let ok = unsafe {
+            GetVolumeInformationW(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                file_system.as_mut_ptr(),
+                file_system.len() as u32,
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+
+        let len = file_system
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(file_system.len());
+        Some(String::from_utf16_lossy(&file_system[..len]).eq_ignore_ascii_case("NTFS"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

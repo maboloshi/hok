@@ -36,18 +36,19 @@
 pub mod auto_pr;
 // ─── Submodules ────────────────────────────────────────────────────────────
 pub mod checkhashes;
-pub mod checkup;
 pub mod checkurls;
 pub mod checkver;
 pub mod cleanup;
 pub mod create;
 pub mod depends;
+pub mod diagnostic;
 pub mod download;
 pub(crate) mod download_apps;
 pub(crate) mod download_fragmented;
 pub(crate) mod download_verify;
 pub mod export;
 pub mod formatjson;
+pub mod health;
 pub mod hold;
 pub(crate) mod identity;
 pub mod import;

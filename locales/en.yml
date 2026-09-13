@@ -104,7 +104,29 @@ cmd:
   missing_manifest_json: "missing manifest.json"
   no_issues: "No issues found."
   run_reset: "run 'hok reset <app>' to fix"
-  checkup_issue_count: "%{count} issue(s) found."
+  health_issue_count: "%{count} issue(s) found."
+  checkup_defender: "Windows Defender may slow down or disrupt installs with realtime scanning."
+  checkup_defender_consider: "Consider running:"
+  checkup_defender_exclude: "sudo Add-MpPreference -ExclusionPath '%{path}'"
+  checkup_defender_sudo: "(Requires 'sudo' command. Run 'hok install sudo' if you don't have it.)"
+  checkup_main_bucket: "Main bucket is not added."
+  checkup_main_bucket_hint: "run 'hok bucket add main'"
+  checkup_long_paths_unsupported: "This version of Windows does not support configuration of LongPaths."
+  checkup_long_paths_disabled: "LongPaths support is not enabled."
+  checkup_long_paths_enable: "You can enable it by running:"
+  checkup_long_paths_set: "sudo Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Name 'LongPathsEnabled' -Value 1"
+  checkup_developer_mode: "Windows Developer Mode is not enabled. Operations relevant to symlinks may fail without proper rights."
+  checkup_developer_mode_read: "You may read more about the symlinks support here:"
+  checkup_developer_mode_link: "https://blogs.windows.com/windowsdeveloper/2016/12/02/symlinks-windows-10/"
+  checkup_missing_7zip: "'7-Zip' is not installed! It's required for unpacking most programs. Please run 'hok install 7zip'."
+  checkup_missing_innounp: "'Inno Setup Unpacker' is not installed! It's required for unpacking InnoSetup files. Please run 'hok install innounp'."
+  checkup_missing_dark: "'dark' is not installed! It's required for unpacking installers created with the WiX Toolset. Please run 'hok install dark' or 'hok install wixtoolset'."
+  checkup_ntfs_global: "hok requires an NTFS volume to work! Please point $env:SCOOP_GLOBAL or 'global_path' variable in '~/.config/hok/config.json' to another drive."
+  checkup_ntfs_root: "hok requires an NTFS volume to work! Please point $env:SCOOP or 'root_path' variable in '~/.config/hok/config.json' to another drive."
+  checkup_no_problems: "No problems identified!"
+  checkup_performance_problems: "Found %{count} performance problem(s)."
+  checkup_potential_problems: "Found %{count} potential problem(s)."
+  checkup_security_over_performance: "Security is more important than performance, in most cases."
   cleanup_all_done: "Everything is shiny now!"
   checkver_autoupdate: "autoupdate available"
   create_failed: "create manifest failed: %{e}"
@@ -498,7 +520,7 @@ cli_help:
       skip_correct: Suppress output for manifests with correct hashes
       update: Update manifest with correct hash when mismatch found
   checkup:
-    about: Check for potential problems with installed packages
+    about: Check for potential problems
   checkurls:
     about: Check manifest URLs for validity
     args:
@@ -642,6 +664,8 @@ cli_help:
     args:
       app: "Specific app(s) to format (supports wildcards, default: all)"
       dir: Bucket directory to scan for manifests
+  health:
+    about: Check for potential problems with installed packages
   hold:
     about: Hold package(s) to disable changes
     args:

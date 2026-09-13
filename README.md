@@ -39,7 +39,7 @@ Commands:
   cache             Package cache management
   cat               Inspect the manifest of a package
   checkhashes       Verify and update manifest hashes
-  checkup           Check for potential problems with installed packages
+  checkup           Check for potential problems
   checkurls         Check manifest URLs for validity
   checkver          Check manifest for a newer version
   ci-auto-pr        Auto-update manifests and create pull-requests via GitHub API (CI mode)
@@ -51,6 +51,7 @@ Commands:
   download          Download apps in the cache folder and verify hashes
   export            Export installed packages list
   format-json       Format manifest JSON files in a bucket directory
+  health            Check for potential problems with installed packages
   hold              Hold package(s) to disable changes
   home              Browse the homepage of a package
   import            Import installed packages from a file

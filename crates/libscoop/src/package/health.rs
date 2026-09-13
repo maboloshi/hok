@@ -3,14 +3,18 @@
 //! Scan the installed packages directory, check whether the file structure of each package is complete (`current` symlink,
 //! `install.json`, `manifest.json`), and return a list of discovered issues.
 //!
+//! This is hok's own diagnostic (the `health` command); upstream's `checkup`
+//! command inspects the *environment* instead — see
+//! [`crate::package::diagnostic`].
+//!
 //! # Usage
 //!
 //! ```no_run
-//! use libscoop::package::checkup;
+//! use libscoop::package::health;
 //! use libscoop::Session;
 //!
 //! let session = Session::new();
-//! let issues = checkup::check_installed(&session);
+//! let issues = health::check_installed(&session);
 //! for issue in &issues {
 //!     println!("{}: {}", issue.name, issue.message);
 //! }
@@ -27,7 +31,7 @@ use super::install_state;
 
 /// A single health issue found for an installed package.
 #[derive(Debug, Clone)]
-pub struct CheckupIssue {
+pub struct HealthIssue {
     /// Package name (directory name under `apps/`).
     pub name: String,
     /// Human-readable description of the issue.
@@ -43,8 +47,8 @@ pub struct CheckupIssue {
 ///
 /// # Returns
 ///
-/// A (possibly empty) list of [`CheckupIssue`] entries, one per problem found.
-pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
+/// A (possibly empty) list of [`HealthIssue`] entries, one per problem found.
+pub fn check_installed(session: &Session) -> Vec<HealthIssue> {
     let apps_dir = session.apps_dir();
     let mut issues = Vec::new();
 
@@ -76,7 +80,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
             let Some(version) = install_state::resolve_current_version(&app_dir, no_junction)
                 .map(|resolved| resolved.version)
             else {
-                issues.push(CheckupIssue {
+                issues.push(HealthIssue {
                     name: name.to_string(),
                     message: hok_i18n::t!("cmd.missing_install_json").to_string(),
                 });
@@ -86,7 +90,7 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         } else {
             let current = app_dir.join("current");
             if !current.exists() {
-                issues.push(CheckupIssue {
+                issues.push(HealthIssue {
                     name: name.to_string(),
                     message: hok_i18n::t!("cmd.no_current_symlink").to_string(),
                 });
@@ -96,14 +100,14 @@ pub fn check_installed(session: &Session) -> Vec<CheckupIssue> {
         };
 
         if !meta_dir.join("install.json").exists() {
-            issues.push(CheckupIssue {
+            issues.push(HealthIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_install_json").to_string(),
             });
         }
 
         if !meta_dir.join("manifest.json").exists() {
-            issues.push(CheckupIssue {
+            issues.push(HealthIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_manifest_json").to_string(),
             });
@@ -119,7 +123,7 @@ mod tests {
 
     #[test]
     fn issue_fields_accessible() {
-        let issue = CheckupIssue {
+        let issue = HealthIssue {
             name: "test-pkg".to_string(),
             message: "missing manifest.json".to_string(),
         };

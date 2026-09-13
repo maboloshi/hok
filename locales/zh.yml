@@ -104,7 +104,29 @@ cmd:
   missing_manifest_json: "缺少 manifest.json"
   no_issues: "没有发现问题。"
   run_reset: "运行 'hok reset <app>' 修复"
-  checkup_issue_count: "发现 %{count} 个问题。"
+  health_issue_count: "发现 %{count} 个问题。"
+  checkup_defender: "Windows Defender 的实时扫描可能会拖慢或干扰安装。"
+  checkup_defender_consider: "建议运行："
+  checkup_defender_exclude: "sudo Add-MpPreference -ExclusionPath '%{path}'"
+  checkup_defender_sudo: "（需要 'sudo' 命令。若没有请先运行 'hok install sudo'。）"
+  checkup_main_bucket: "尚未添加 main bucket。"
+  checkup_main_bucket_hint: "运行 'hok bucket add main'"
+  checkup_long_paths_unsupported: "该 Windows 版本不支持配置长路径（LongPaths）。"
+  checkup_long_paths_disabled: "未启用长路径（LongPaths）支持。"
+  checkup_long_paths_enable: "可通过以下命令启用："
+  checkup_long_paths_set: "sudo Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Name 'LongPathsEnabled' -Value 1"
+  checkup_developer_mode: "未启用 Windows 开发者模式。与符号链接相关的操作可能因权限不足而失败。"
+  checkup_developer_mode_read: "关于符号链接支持，可阅读："
+  checkup_developer_mode_link: "https://blogs.windows.com/windowsdeveloper/2016/12/02/symlinks-windows-10/"
+  checkup_missing_7zip: "未安装 '7-Zip'！解压大多数程序都需要它。请运行 'hok install 7zip'。"
+  checkup_missing_innounp: "未安装 'Inno Setup Unpacker'！解压 InnoSetup 文件需要它。请运行 'hok install innounp'。"
+  checkup_missing_dark: "未安装 'dark'！解压 WiX Toolset 生成的安装程序需要它。请运行 'hok install dark' 或 'hok install wixtoolset'。"
+  checkup_ntfs_global: "hok 需要 NTFS 卷才能工作！请将 '~/.config/hok/config.json' 中的 'global_path' 变量或 $env:SCOOP_GLOBAL 指向另一个驱动器。"
+  checkup_ntfs_root: "hok 需要 NTFS 卷才能工作！请将 '~/.config/hok/config.json' 中的 'root_path' 变量或 $env:SCOOP 指向另一个驱动器。"
+  checkup_no_problems: "未发现问题！"
+  checkup_performance_problems: "发现 %{count} 个性能问题。"
+  checkup_potential_problems: "发现 %{count} 个潜在问题。"
+  checkup_security_over_performance: "大多数情况下，安全比性能更重要。"
   cleanup_all_done: "一切正常！"
   checkver_autoupdate: "可用 autoupdate 更新"
   create_failed: "创建清单失败：%{e}"
@@ -498,7 +520,7 @@ cli_help:
       skip_correct: 不输出哈希正确的清单
       update: 发现不匹配时用正确哈希更新清单
   checkup:
-    about: 检查已安装包的潜在问题
+    about: 检查潜在问题
   checkurls:
     about: 检查清单 URL 的有效性
     args:
@@ -640,6 +662,8 @@ cli_help:
     args:
       app: "要格式化的特定应用（支持通配符，默认为全部）"
       dir: 要扫描清单的仓库目录
+  health:
+    about: 检查已安装包的潜在问题
   hold:
     about: 锁定包以禁止更改
     args:

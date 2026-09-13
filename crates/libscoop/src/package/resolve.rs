@@ -35,7 +35,7 @@ const HELPERS: [&str; 4] = ["7zip", "lessmsi", "innounp", "dark"];
 /// Whether `name` is one of the implicit installation helpers AND is already
 /// installed. Only the helper names are ever checked; ordinary dependencies are
 /// unaffected.
-fn helper_installed(session: &Session, name: &str) -> bool {
+pub(crate) fn helper_installed(session: &Session, name: &str) -> bool {
     if !HELPERS.contains(&name) {
         return false;
     }
