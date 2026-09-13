@@ -410,28 +410,37 @@ impl BucketUpdateState {
 
 // ─── Session operations ────────────────────────────────────────────────────
 
-/// Add a bucket to Scoop.
+/// An add request that passed upstream's local prechecks
+/// (`lib/buckets.ps1:129-147`).
+///
+/// The name is free, the repository URL is a valid git URL and no added
+/// bucket subscribes to that repository yet; neither the filesystem nor the
+/// network has been touched. [`add_resolved`] performs the precheck and the
+/// clone.
+pub struct ResolvedBucket {
+    /// The repository to clone from (never empty).
+    remote_url: String,
+
+    /// The local directory the repository is cloned into.
+    path: PathBuf,
+}
+
+/// Resolve a `scoop bucket add <name> [<repo>]` request without touching the
+/// network: resolve a known bucket name to its repository URL, validate that
+/// URL, and refuse a repository another bucket already subscribes to.
 ///
 /// # Errors
 ///
-/// This method will return an error if the bucket already exists, the
-/// repository URL is not a valid git URL, another added bucket already
-/// subscribes to that repository, or the remote url is not specified when
-/// adding a non built-in bucket.
-///
-/// A git error will be returned if failed to clone the bucket.
-pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
-    let (mut path, proxy) = {
-        let config = session.config();
-        let mut path = config.root_path().to_owned();
-        path.push("buckets");
-        let proxy = config.proxy().map(|s| s.to_owned());
-        (path, proxy)
-    };
-
-    internal::fs::ensure_dir(&path)?;
-
+/// Returns [`Error::BucketAlreadyExists`] when the name is taken,
+/// [`Error::BucketAddRemoteRequired`] when a non-known bucket has no URL,
+/// [`Error::BucketInvalidGitUrl`] when the URL is not a git clone URL, and
+/// [`Error::BucketRepoAlreadyExists`] when another bucket already subscribes
+/// to the repository.
+pub fn resolve(session: &Session, name: &str, remote_url: &str) -> Fallible<ResolvedBucket> {
+    let mut path = session.config().root_path().to_owned();
+    path.push("buckets");
     path.push(name);
+
     if path.exists() {
         return Err(Error::BucketAlreadyExists(name.to_owned()));
     }
@@ -468,10 +477,45 @@ pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()
         }
     }
 
+    Ok(ResolvedBucket {
+        remote_url: remote_url.to_owned(),
+        path,
+    })
+}
+
+/// Clone a bucket resolved by [`resolve`].
+///
+/// # Errors
+///
+/// A git error will be returned if cloning the bucket failed.
+pub async fn add_resolved(session: &Session, bucket: &ResolvedBucket) -> Fallible<()> {
+    // The proxy is read before the await so a concurrent `config_mut()` is
+    // never blocked by the clone.
+    let proxy = {
+        let config = session.config();
+        config.proxy().map(|s| s.to_owned())
+    };
+
+    // Upstream creates the buckets directory right before the clone
+    // (`lib/buckets.ps1:155-157`).
+    let mut buckets_dir = bucket.path.clone();
+    buckets_dir.pop();
+    internal::fs::ensure_dir(&buckets_dir)?;
+
     session
         .git()
-        .clone_repo(remote_url, &path, proxy.as_deref())
+        .clone_repo(&bucket.remote_url, &bucket.path, proxy.as_deref())
         .await
+}
+
+/// Add a bucket to Scoop: [`resolve`] followed by [`add_resolved`].
+///
+/// # Errors
+///
+/// See [`resolve`] and [`add_resolved`].
+pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
+    let bucket = resolve(session, name, remote_url)?;
+    add_resolved(session, &bucket).await
 }
 
 /// Get a list of added buckets.

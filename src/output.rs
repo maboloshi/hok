@@ -442,6 +442,16 @@ pub fn progress(action: impl AsRef<str>, target: impl AsRef<str>) {
     let _ = std::io::stdout().flush();
 }
 
+/// Print a phrase verbatim — no indent, no trailing newline — and flush.
+///
+/// For upstream's `Write-Host -NoNewline` announcements, which carry their own
+/// spacing and are completed by a later line: `Checking repo... ` followed by
+/// `OK` (`lib/buckets.ps1:149,163`).
+pub fn inline(text: impl AsRef<str>) {
+    print!("{}", text.as_ref());
+    let _ = std::io::stdout().flush();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

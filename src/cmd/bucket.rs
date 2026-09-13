@@ -54,10 +54,9 @@ pub enum Command {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
         Command::Add { name, repo } => {
-            output::progress(hok_i18n::t!("cmd.adding_bucket"), &name);
             let repo = repo.as_deref().unwrap_or_default();
-            match bucket::add(session, name.as_str(), repo).await {
-                Ok(..) => output::ok(),
+            let resolved = match bucket::resolve(session, name.as_str(), repo) {
+                Ok(resolved) => resolved,
                 // Scoop exits 2 — not 1 — when the bucket is already there:
                 // `lib/buckets.ps1:132` returns 2 and
                 // `libexec/scoop-bucket.ps1:50` propagates it through
@@ -85,7 +84,16 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     return Err(crate::ExitCode(2).into());
                 }
                 Err(err) => return Err(err.into()),
-            }
+            };
+
+            // Upstream announces the precheck with `Checking repo... `
+            // (no indent, no newline) and closes it with `OK` after a
+            // successful clone (`lib/buckets.ps1:149,163`).
+            output::inline(hok_i18n::t!("cmd.bucket_checking_repo"));
+            bucket::add_resolved(session, &resolved).await?;
+            println!("OK");
+            output::done(hok_i18n::t!("cmd.bucket_added_success", name = name));
+
             Ok(())
         }
         Command::List { known } => {
