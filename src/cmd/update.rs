@@ -41,8 +41,7 @@ pub struct Args {
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     skip_hash_check: bool,
 
-    /// Force update: bypass the cooldown and reinstall apps that are already
-    /// at the requested version (Scoop's `-f/--force`)
+    /// Force update even when there isn't a newer version (Scoop's `-f/--force`)
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
 
@@ -111,17 +110,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if args.no_cache {
         return Err(anyhow::anyhow!(hok_i18n::t!("cmd.update_no_cache_no_app")));
     }
-    update_buckets(session, args.force).await
+    update_buckets(session).await
 }
 
 /// Update all buckets with simple inline status.
-async fn update_buckets(session: &Session, force: bool) -> Result<()> {
-    // Cooldown: skip if buckets were updated less than 15 minutes ago (unless --force)
-    if !force && let Some(remaining) = session.config().update_cooldown_remaining() {
-        output::status(hok_i18n::t!("cmd.bucket_cooldown", remaining = remaining));
-        return Ok(());
-    }
-
+async fn update_buckets(session: &Session) -> Result<()> {
     let mut rx = session
         .event_bus()
         .receiver()

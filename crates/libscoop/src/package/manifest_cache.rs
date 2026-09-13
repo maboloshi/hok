@@ -128,7 +128,7 @@ pub(crate) fn clear_synced(conn: &Connection) -> Fallible<()> {
 
 /// Buckets whose cached rows may no longer match the bucket on disk: the sync
 /// marker is missing, or the bucket's HEAD moved past it (a pull outside hok,
-/// an update skipped by the cooldown, or a refresh that failed).
+/// or a refresh that failed).
 ///
 /// Empty when the SQLite cache is disabled — nothing is served from it then.
 ///

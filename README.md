@@ -189,7 +189,7 @@ Compared to the original hok, this fork adds:
 - **Pure Rust shortcuts** — `.lnk` writer using `shortcuts-rs` crate, no COM FFI, args/icon support
 - **SQLite manifest cache** — `use_sqlite_cache` config, compatible with Scoop's schema
 - **Resumable fragmented downloads** — partial parts resume via HTTP Range, no restart
-- **`hok update` improvements** — 15-min cooldown, `--force` bypass, visible cache refresh
+- **`hok update` improvements** — concurrent bucket pulls, visible manifest-cache refresh
 - **Batch failure isolation** — `ignore_failures` config keeps multi-package operations
   running even if individual packages fail (applies to install/upgrade/uninstall/cleanup)
 - **Fixed upstream bug**: `reset` now correctly runs `post_install` scripts

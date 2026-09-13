@@ -824,7 +824,9 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
 
     // Scoop writes LAST_UPDATE unconditionally after the no-arg update
     // branch (scoop-update.ps1:399) — even when every bucket was skipped
-    // — so the cooldown/outdated checks see that an update ran.
+    // — so its outdated check sees that an update ran. hok keeps the field
+    // for the same config compatibility (and for `hok config`); it is no
+    // longer read as a throttle.
     let time = internal::time::format_last_update(time::OffsetDateTime::now_utc());
     {
         let mut config = session.config_mut()?;

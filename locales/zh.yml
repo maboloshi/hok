@@ -371,11 +371,10 @@ cmd:
   config_desc_use_isolated_path: "独立 PATH 环境变量"
   config_desc_use_sqlite_cache: "用 SQLite 缓存清单"
   config_desc_virustotal_api_key: "VirusTotal API 密钥"
-  bucket_cooldown: "仓库刚刚更新过，需等待约 %{remaining} 秒才能再次更新。使用 --force 可立即更新。"
   bucket_not_git_skipped: "'%{bucket}' 不是 git 仓库。已跳过。"
   bucket_update_failed: "%{bucket} 更新失败：%{e}"
   bucket_no_remote: "无法确定远程仓库 origin（缺失或 git 元数据损坏）"
-  bucket_update_failed_summary: "%{count} 个仓库更新失败：%{buckets}；运行 'hok update --force' 重试。"
+  bucket_update_failed_summary: "%{count} 个仓库更新失败：%{buckets}；运行 'hok update' 重试。"
   multiple_candidates: "找到多个名为 '%{name}' 的包:"
   script_failed: "脚本失败: %{stderr}"
   total_download_size: "总下载大小: %{size}"
@@ -864,7 +863,7 @@ cli_help:
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       escape_hold: 绕过锁定以允许升级被锁定的包
-      force: "强制更新：绕过冷却期并重装已达请求版本的软件"
+      force: "即使没有新版本也强制更新"
       no_cache: "不使用下载缓存"
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
       independent: 不安装依赖（可能破坏包）

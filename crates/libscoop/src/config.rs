@@ -333,18 +333,6 @@ impl FromStr for IsolatedPath {
 }
 
 impl Config {
-    /// The cooldown remaining is computed against an explicit clock.
-    ///
-    /// Pure variant of [`Config::update_cooldown_remaining`]: deterministic
-    /// and host-independent.
-    pub fn update_cooldown_remaining_at(&self, now: time::OffsetDateTime) -> Option<i64> {
-        const COOLDOWN_SECS: i64 = 900; // 15 minutes
-        let last_ts = internal::time::parse_last_update(self.inner.last_update.as_ref()?)?;
-        let elapsed = now.unix_timestamp() - last_ts.unix_timestamp();
-        let remaining = COOLDOWN_SECS - elapsed;
-        (remaining > 0).then_some(remaining)
-    }
-
     /// Get the `cache` directory of Scoop.
     #[inline]
     pub fn cache_path(&self) -> &Path {
@@ -464,16 +452,6 @@ impl Config {
     #[inline]
     pub fn script_engine(&self) -> bool {
         self.script_engine.unwrap_or(false)
-    }
-
-    /// Returns the cooldown duration (in seconds) remaining before the next
-    /// bucket update is allowed. Returns `None` if no last update recorded.
-    /// The default cooldown is 15 minutes (900 seconds).
-    ///
-    /// Host-dependent (reads the wall clock); the deterministic computation
-    /// lives in [`Config::update_cooldown_remaining_at`].
-    pub fn update_cooldown_remaining(&self) -> Option<i64> {
-        self.update_cooldown_remaining_at(time::OffsetDateTime::now_utc())
     }
 
     /// Get the `use_isoloated_path` config.
@@ -1860,37 +1838,6 @@ mod tests {
         std::fs::write(&path, format!("\u{FEFF}{}", r#"{"proxy": "bom-proxy"}"#)).unwrap();
         let config = ConfigBuilder::new().path(&path).load().unwrap();
         assert_eq!(config.proxy(), Some("bom-proxy"));
-    }
-
-    /// The cooldown computation is deterministic given an explicit clock
-    /// (pure `update_cooldown_remaining_at`); the wall-clock wrapper just
-    /// supplies `now`.
-    #[test]
-    fn cooldown_remaining_at_is_deterministic() {
-        let root = crate::test_utils::tmpdir("config_cooldown");
-        let hok = root.join("hok.json");
-        std::fs::write(&hok, r#"{"last_update": "2026-08-01T00:00:00Z"}"#).unwrap();
-        let config = ConfigBuilder::new().path(&hok).load().unwrap();
-
-        use time::format_description::well_known::Rfc3339;
-        let t0 = time::OffsetDateTime::parse("2026-08-01T00:00:00Z", &Rfc3339).unwrap();
-
-        // 10 minutes after the recorded update → 5 minutes (300 s) remaining.
-        assert_eq!(
-            config.update_cooldown_remaining_at(t0 + time::Duration::minutes(10)),
-            Some(300)
-        );
-        // 20 minutes after → cooldown expired.
-        assert_eq!(
-            config.update_cooldown_remaining_at(t0 + time::Duration::minutes(20)),
-            None
-        );
-        // No recorded update → no cooldown.
-        let root2 = crate::test_utils::tmpdir("config_cooldown_none");
-        let hok2 = root2.join("hok.json");
-        std::fs::write(&hok2, "{}").unwrap();
-        let config2 = ConfigBuilder::new().path(&hok2).load().unwrap();
-        assert_eq!(config2.update_cooldown_remaining_at(t0), None);
     }
 
     /// Writing (commit) writes the whole `ConfigInner`, which by construction

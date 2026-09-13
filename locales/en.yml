@@ -371,11 +371,10 @@ cmd:
   config_desc_use_isolated_path: "Dedicated PATH environment variable"
   config_desc_use_sqlite_cache: "Cache manifests in SQLite"
   config_desc_virustotal_api_key: "VirusTotal API key"
-  bucket_cooldown: "Buckets recently updated. Next update allowed in ~%{remaining}s. Use --force to update now."
   bucket_not_git_skipped: "'%{bucket}' is not a git repository. Skipped."
   bucket_update_failed: "Failed to update %{bucket}: %{e}"
   bucket_no_remote: "no usable 'origin' remote (missing, or the git metadata is broken)"
-  bucket_update_failed_summary: "%{count} bucket(s) failed to update: %{buckets}; run 'hok update --force' to retry."
+  bucket_update_failed_summary: "%{count} bucket(s) failed to update: %{buckets}; run 'hok update' to retry."
   multiple_candidates: "Found multiple candidates for package '%{name}':"
   script_failed: "script failed: %{stderr}"
   total_download_size: "Total download size: %{size}"
@@ -871,7 +870,7 @@ cli_help:
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
       escape_hold: Escape hold to allow to upgrade held package(s)
-      force: "Force update: bypass the cooldown and reinstall apps already at the requested version"
+      force: "Force update even when there isn't a newer version"
       no_cache: "Don't use the download cache"
       ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
       independent: Do not install dependencies (may break packages)

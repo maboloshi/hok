@@ -3,10 +3,9 @@
 //! Scoop stores bucket-update timestamps as .NET round-trip strings
 //! (`[System.DateTime]::Now.ToString('o')`), e.g.
 //! `2026-07-19T10:48:34.0100861+08:00` — local wall time with offset and
-//! 7 fractional digits. The writer (`bucket::update`) and the reader
-//! (`Config::update_cooldown_remaining`) must agree on this exact format;
-//! keeping the format/parse pair in one module guarantees they cannot
-//! drift apart.
+//! 7 fractional digits. The writer (`bucket::update`) and the reader must
+//! agree on this exact format; keeping the format/parse pair in one module
+//! guarantees they cannot drift apart.
 //!
 //! # Design
 //!
@@ -66,6 +65,14 @@ pub fn format_last_update(now: OffsetDateTime) -> String {
 /// time + offset), `Z`-suffixed UTC timestamps, and bare no-offset values
 /// (treated as UTC) produced by other tools. Returns `None` when the string
 /// cannot be parsed.
+///
+/// Only unit tests consume it today: its production caller was the bucket
+/// update cooldown, which hok dropped (upstream never throttles an explicit
+/// `scoop update`, `libexec/scoop-update.ps1:397-398`). Kept as the reader
+/// half of the codec pair — the value is still written by `bucket::update`
+/// for Scoop config compatibility, and upstream's freshness check
+/// (`is_scoop_outdated()`, `lib/core.ps1:1168-1178`) is a pending feature.
+#[allow(dead_code)]
 pub fn parse_last_update(s: &str) -> Option<OffsetDateTime> {
     if let Ok(dt) = OffsetDateTime::parse(s, &Rfc3339) {
         return Some(dt.to_offset(UtcOffset::UTC));
