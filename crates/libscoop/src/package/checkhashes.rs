@@ -44,9 +44,34 @@ pub enum CheckHashesStatus {
     Updated,
 }
 
-struct HashEntry {
-    path: String,
+/// One `(url, hash)` download entry of a manifest, in check order.
+struct Entry {
+    url: String,
+    /// Manifest algorithm of the expected hash (`sha256` for an empty hash).
+    algorithm: String,
+    /// Expected digest as written in the manifest (lowercase, without prefix).
+    /// Empty when the manifest carries `""` — official Scoop compares it like
+    /// any other sha256 expectation, so it always mismatches and `--update`
+    /// writes the real digest back.
+    expected: String,
+    /// JSON pointer of the `hash` field this entry is written back to.
+    path: &'static str,
+    /// Index inside the `hash` field at `path`.
     index: usize,
+}
+
+impl Entry {
+    /// Expected hash formatted the way [`crate::internal::hash::format_hash_value`]
+    /// formats a computed one (`sha256` has no prefix, everything else does).
+    fn formatted_expected(&self) -> String {
+        if self.expected.is_empty() {
+            String::new()
+        } else if self.algorithm == "sha256" {
+            self.expected.clone()
+        } else {
+            format!("{}:{}", self.algorithm, self.expected)
+        }
+    }
 }
 
 pub async fn execute(
@@ -67,9 +92,25 @@ pub async fn execute(
     for (path, name) in &discovered {
         let manifest = match manifest::parse_file(path) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(e) => {
+                // Official Scoop parses manifests with `parse_json` and keeps
+                // the file in the run; hok's typed parser rejects shapes it
+                // cannot model (e.g. `"hash": "TODO"`, unsupported algorithms
+                // and `{ "url": ..., "hash": ... }` hash objects). Never drop such
+                // a manifest silently — report it and move on.
+                report.total += 1;
+                report.failed += 1;
+                on_item(&CheckHashesItem {
+                    name: name.clone(),
+                    status: CheckHashesStatus::Failed,
+                    messages: vec![
+                        hok_i18n::t!("cmd.checkhashes_parse_failed", e = e.to_string()).to_string(),
+                    ],
+                });
+                continue;
+            }
         };
-        if manifest.version() == "nightly" {
+        if manifest.version().eq_ignore_ascii_case("nightly") {
             continue;
         }
 
@@ -80,89 +121,71 @@ pub async fn execute(
         };
         report.total += 1;
 
-        let Some((urls, entries)) = collect_entries(&manifest) else {
-            let has_urls = !manifest.all_urls().is_empty();
-            let has_hashes = !manifest.all_hashes().is_empty();
-            if has_urls || has_hashes {
-                item.status = CheckHashesStatus::Failed;
-                item.messages
-                    .push(hok_i18n::t!("cmd.checkhashes_count_mismatch").to_string());
-                report.failed += 1;
-                on_item(&item);
-                report.items.push(item);
-            }
-            continue;
-        };
-
-        let mut actual_hashes = Vec::with_capacity(urls.len());
-        let mut has_any_failure = false;
-
-        for (i, url_str) in urls.iter().enumerate() {
-            let hash_str = manifest.all_hashes()[i];
-            let raw_hash = hash_str.value();
-            if raw_hash.is_empty() || raw_hash == "TODO" {
-                item.status = CheckHashesStatus::Failed;
-                item.messages
-                    .push(hok_i18n::t!("cmd.checkhashes_skipped").to_string());
-                report.skipped += 1;
-                has_any_failure = true;
-                break;
-            }
-
-            let url = url_str.split('#').next().unwrap_or(url_str);
-            let filename = url_remote_filename(url_str);
-            let cache_filename = format!(
-                "{}-{}-{}",
-                name,
-                hash_entry_index_prefix(&entries, i),
-                filename
-            );
-            let cache_path = cache_dir.join(&cache_filename);
-
-            if (!cache_path.exists() || options.force)
-                && let Err(e) = network::download_file(session, url, &cache_path).await
-            {
-                item.status = CheckHashesStatus::Failed;
-                item.messages
-                    .push(hok_i18n::t!("cmd.checkhashes_download_failed", e = e).to_string());
-                has_any_failure = true;
-                break;
-            }
-
-            let actual_hash =
-                match crate::internal::hash::compute_file_hash(&cache_path, hash_str.algorithm()) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        item.status = CheckHashesStatus::Failed;
-                        item.messages
-                            .push(hok_i18n::t!("cmd.checkhashes_hash_failed", e = e).to_string());
-                        has_any_failure = true;
-                        break;
-                    }
-                };
-            actual_hashes.push(crate::internal::hash::format_hash_value(
-                hash_str.algorithm(),
-                &actual_hash,
-            ));
-        }
-
-        if has_any_failure {
+        let entries = collect_entries(&manifest);
+        if entries.is_empty() {
+            // Mirrors `bin/checkhashes.ps1:84-87`.
+            item.status = CheckHashesStatus::Failed;
+            item.messages
+                .push(hok_i18n::t!("cmd.checkhashes_no_url").to_string());
             report.failed += 1;
             on_item(&item);
             report.items.push(item);
             continue;
         }
 
-        let mut mismatches: Vec<(usize, &HashEntry)> = Vec::new();
+        // Cached downloads are keyed by version so `--keep-cache` cannot make
+        // a later version masquerade as already-checked (official Scoop does
+        // the same through `<app>#<version>#…` cache keys for `-UseCache`).
+        let run_cache_dir = if options.keep_cache {
+            cache_dir.join(manifest.version())
+        } else {
+            cache_dir.clone()
+        };
+
+        let mut actual_hashes: Vec<String> = Vec::with_capacity(entries.len());
+        let mut url_error = false;
+
         for (i, entry) in entries.iter().enumerate() {
-            let expected = manifest.all_hashes()[i];
-            let formatted_expected =
-                crate::internal::hash::format_hash_value(expected.algorithm(), expected.value());
-            let actual = &actual_hashes[i];
-            if actual != &formatted_expected || options.force {
-                mismatches.push((i, entry));
+            let url_stripped = entry.url.split('#').next().unwrap_or(&entry.url);
+            let cache_path = run_cache_dir.join(cache_filename(name, &entries, i, &entry.url));
+
+            if (!cache_path.exists() || options.force)
+                && let Err(e) = network::download_file(session, url_stripped, &cache_path).await
+            {
+                item.messages
+                    .push(hok_i18n::t!("cmd.checkhashes_download_failed", e = e).to_string());
+                url_error = true;
+                break;
+            }
+
+            match crate::internal::hash::compute_file_hash(&cache_path, &entry.algorithm) {
+                Ok(h) => actual_hashes.push(crate::internal::hash::format_hash_value(
+                    &entry.algorithm,
+                    &h,
+                )),
+                Err(e) => {
+                    item.messages
+                        .push(hok_i18n::t!("cmd.checkhashes_hash_failed", e = e).to_string());
+                    url_error = true;
+                    break;
+                }
             }
         }
+
+        if url_error {
+            item.status = CheckHashesStatus::Failed;
+            report.failed += 1;
+            on_item(&item);
+            report.items.push(item);
+            continue;
+        }
+
+        // Every entry is compared independently: a manifest whose hash is empty
+        // (`""`) still yields a real mismatch for that entry instead of
+        // aborting the whole manifest (official Scoop compares it too).
+        let mismatches: Vec<usize> = (0..entries.len())
+            .filter(|&i| actual_hashes[i] != entries[i].formatted_expected() || options.force)
+            .collect();
 
         if mismatches.is_empty() {
             item.status = CheckHashesStatus::Passed;
@@ -173,53 +196,28 @@ pub async fn execute(
         }
 
         if options.update || options.force {
-            let content = std::fs::read_to_string(path)?;
-            // Tolerant read: upstream `bin/checkhashes.ps1:65` reads the
-            // manifest through `parse_json`, so a BOM/JSON5 manifest that
-            // passed the hash check must also parse for the rewrite.
-            let mut root: serde_json::Value = crate::internal::json::parse_str(&content)?;
-            let mut path_map: std::collections::HashMap<&str, Vec<usize>> =
-                std::collections::HashMap::new();
-            for (i, entry) in entries.iter().enumerate() {
-                path_map.entry(&entry.path).or_default().push(i);
-            }
-
-            for (path_prefix, indices) in path_map {
-                let new_hashes: Vec<String> = indices
-                    .iter()
-                    .map(|&idx| actual_hashes[idx].clone())
-                    .collect();
-                if let Some(obj) = root.pointer_mut(path_prefix) {
-                    let existing = obj.clone();
-                    *obj = manifest::update_hash_preserving_style(&existing, &new_hashes, None);
-                } else {
+            match update_manifest(path, &entries, &actual_hashes) {
+                Ok(()) => {
+                    item.status = CheckHashesStatus::Updated;
+                    report.updated += 1;
+                }
+                Err(e) => {
                     item.status = CheckHashesStatus::Failed;
-                    item.messages.push(
-                        hok_i18n::t!("cmd.checkhashes_path_not_found", path = path_prefix)
-                            .to_string(),
-                    );
+                    item.messages.push(e.to_string());
+                    report.failed += 1;
                 }
             }
-            crate::internal::fs::write_json(path, &root)?;
-            item.status = CheckHashesStatus::Updated;
-            report.updated += 1;
         } else {
-            for (i, _entry) in &mismatches {
-                let expected = manifest.all_hashes()[*i];
-                let expected_str = crate::internal::hash::format_hash_value(
-                    expected.algorithm(),
-                    expected.value(),
-                );
-                let actual = &actual_hashes[*i];
+            for &i in &mismatches {
+                let entry = &entries[i];
+                let cache_path = run_cache_dir.join(cache_filename(name, &entries, i, &entry.url));
                 item.messages.push(
                     hok_i18n::t!(
                         "cmd.checkhashes_mismatch",
-                        expected = &expected_str[..std::cmp::min(12, expected_str.len())],
-                        actual = &actual[..std::cmp::min(12, actual.len())],
-                        url = urls
-                            .get(*i)
-                            .cloned()
-                            .unwrap_or_else(|| "<unknown url>".to_owned())
+                        expected = entry.formatted_expected(),
+                        actual = actual_hashes[i],
+                        url = entry.url,
+                        first_bytes = magic_bytes_of(&cache_path)
                     )
                     .to_string(),
                 );
@@ -237,29 +235,95 @@ pub async fn execute(
     Ok(report)
 }
 
-fn collect_entries(manifest: &Manifest) -> Option<(Vec<String>, Vec<HashEntry>)> {
-    let urls = manifest.all_urls();
-    let hashes = manifest.all_hashes();
-    if urls.is_empty() || hashes.is_empty() || urls.len() != hashes.len() {
-        return None;
-    }
-    let segments = manifest.all_hash_segments();
-    let mut entries = Vec::new();
-    for (path, count) in &segments {
-        for i in 0..*count {
-            entries.push(HashEntry {
-                path: path.clone(),
-                index: i,
-            });
-        }
-    }
-    if entries.len() != urls.len() {
-        return None;
-    }
-    Some((urls.into_iter().map(|s| s.to_string()).collect(), entries))
+/// Cache file name for entry `i`, shared by the download path and the
+/// mismatch report so both always agree.
+fn cache_filename(name: &str, entries: &[Entry], i: usize, url: &str) -> String {
+    format!(
+        "{}-{}-{}",
+        name,
+        hash_entry_index_prefix(entries, i),
+        url_remote_filename(url)
+    )
 }
 
-fn hash_entry_index_prefix(entries: &[HashEntry], i: usize) -> String {
+/// Collect the download entries of a manifest in check order.
+///
+/// Mirrors official Scoop's either/or selection: a top-level `url` wins over
+/// the `architecture` section; otherwise the architecture entries are walked
+/// 64bit → 32bit → arm64 (see [`Manifest::checkhashes_accessors`]).
+fn collect_entries(manifest: &Manifest) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    let mut index_by_path: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    for (url, hash, path) in manifest.checkhashes_accessors() {
+        let index = index_by_path.entry(path).or_insert(0);
+        entries.push(Entry {
+            url: url.to_owned(),
+            algorithm: hash.algorithm().to_owned(),
+            expected: hash.value().to_lowercase(),
+            path,
+            index: *index,
+        });
+        *index += 1;
+    }
+    entries
+}
+
+/// Write the computed hashes back into the manifest, preserving the original
+/// JSON shape of each `hash` field.
+fn update_manifest(
+    path: &std::path::Path,
+    entries: &[Entry],
+    actual_hashes: &[String],
+) -> Fallible<()> {
+    let content = std::fs::read_to_string(path)?;
+    // Tolerant read: upstream `bin/checkhashes.ps1:65` reads the manifest
+    // through `parse_json`, so a BOM/JSON5 manifest that passed the hash check
+    // must also parse for the rewrite.
+    let mut root: serde_json::Value = crate::internal::json::parse_str(&content)?;
+    let mut path_map: std::collections::HashMap<&'static str, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        path_map.entry(entry.path).or_default().push(i);
+    }
+
+    let mut missing = Vec::new();
+    for (path_prefix, indices) in path_map {
+        let new_hashes: Vec<String> = indices
+            .iter()
+            .map(|&idx| actual_hashes[idx].clone())
+            .collect();
+        if let Some(obj) = root.pointer_mut(path_prefix) {
+            let existing = obj.clone();
+            *obj = manifest::update_hash_preserving_style(&existing, &new_hashes, None);
+        } else {
+            missing.push(path_prefix);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(crate::Error::Custom(
+            hok_i18n::t!("cmd.checkhashes_path_not_found", path = missing.join(", ")).to_string(),
+        ));
+    }
+    crate::internal::fs::write_json(path, &root)?;
+    Ok(())
+}
+
+/// First bytes of a file formatted like Scoop's `get_magic_bytes_pretty`
+/// (uppercase hex, space separated, at most 8 bytes). Empty when the file is
+/// gone (e.g. the download was skipped).
+fn magic_bytes_of(path: &std::path::Path) -> String {
+    let Ok(data) = std::fs::read(path) else {
+        return String::new();
+    };
+    data.iter()
+        .take(8)
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn hash_entry_index_prefix(entries: &[Entry], i: usize) -> String {
     if i < entries.len() {
         let entry = &entries[i];
         let arch_hint = entry
@@ -281,36 +345,90 @@ fn hash_entry_index_prefix(entries: &[HashEntry], i: usize) -> String {
 mod tests {
     use super::*;
 
+    // ── entry fixtures ──────────────────────────────────────────────────────
+
+    fn entry(path: &'static str, index: usize) -> Entry {
+        Entry {
+            url: "http://example.com/x.zip".to_owned(),
+            algorithm: "sha256".to_owned(),
+            expected: String::new(),
+            path,
+            index,
+        }
+    }
+
     // ── hash_entry_index_prefix ─────────────────────────────────────────────
 
     #[test]
     fn index_prefix_out_of_bounds_returns_index_string() {
-        let entries: Vec<HashEntry> = vec![];
+        let entries: Vec<Entry> = vec![];
         assert_eq!(hash_entry_index_prefix(&entries, 0), "0");
         assert_eq!(hash_entry_index_prefix(&entries, 5), "5");
     }
 
     #[test]
     fn index_prefix_top_level_hash_returns_index() {
-        let entries = vec![HashEntry {
-            path: "/hash".to_string(),
-            index: 0,
-        }];
+        let entries = vec![entry("/hash", 0)];
         assert_eq!(hash_entry_index_prefix(&entries, 0), "0");
     }
 
     #[test]
     fn index_prefix_arch_path_includes_arch_hint() {
-        let entries = vec![HashEntry {
-            path: "/architecture/64bit/hash".to_string(),
-            index: 0,
-        }];
+        let entries = vec![entry("/architecture/64bit/hash", 0)];
         let prefix = hash_entry_index_prefix(&entries, 0);
         assert!(
             prefix.contains("64bit"),
             "prefix should contain arch hint: {}",
             prefix
         );
+    }
+
+    // ── Entry::formatted_expected ───────────────────────────────────────────
+
+    #[test]
+    fn empty_expected_formats_empty_never_prefixed() {
+        let e = Entry {
+            algorithm: "sha256".to_owned(),
+            expected: String::new(),
+            ..entry("/hash", 0)
+        };
+        assert_eq!(e.formatted_expected(), "");
+    }
+
+    /// An empty expected hash must never compare equal to a real digest: that
+    /// is what turns `"hash": ""` into a mismatch (`-u` then writes the digest
+    /// back) instead of the old "hash skipped" abort.
+    #[test]
+    fn empty_expected_never_equals_a_real_digest() {
+        let e = Entry {
+            algorithm: "sha256".to_owned(),
+            expected: String::new(),
+            ..entry("/hash", 0)
+        };
+        let real = "ab".repeat(32);
+        assert_ne!(e.formatted_expected(), real);
+    }
+
+    #[test]
+    fn sha256_expected_has_no_prefix() {
+        let digest = "ab".repeat(32);
+        let e = Entry {
+            algorithm: "sha256".to_owned(),
+            expected: digest.clone(),
+            ..entry("/hash", 0)
+        };
+        assert_eq!(e.formatted_expected(), digest);
+    }
+
+    #[test]
+    fn non_sha256_expected_keeps_prefix() {
+        let digest = "ab".repeat(20);
+        let e = Entry {
+            algorithm: "sha1".to_owned(),
+            expected: digest.clone(),
+            ..entry("/hash", 0)
+        };
+        assert_eq!(e.formatted_expected(), format!("sha1:{digest}"));
     }
 
     // ── CheckHashesReport default ───────────────────────────────────────────
@@ -335,7 +453,7 @@ mod tests {
         assert_ne!(CheckHashesStatus::Failed, CheckHashesStatus::Updated);
     }
 
-    // ── collect_entries on real manifests ───────────────────────────────────
+    // ── collect_entries ─────────────────────────────────────────────────────
 
     /// Helper: build a Manifest from an inline JSON string.
     fn manifest_from_json(json: &str) -> Option<crate::Manifest> {
@@ -352,33 +470,7 @@ mod tests {
         }"#,
         );
         if let Some(m) = m {
-            assert!(collect_entries(&m).is_none());
-        }
-    }
-
-    #[test]
-    fn collect_entries_mismatch_returns_none() {
-        // One URL but two hashes — should return None.
-        let m = manifest_from_json(
-            r#"{
-            "version": "1.0",
-            "homepage": "https://example.com",
-            "license": "MIT",
-            "url": "https://example.com/app.zip",
-            "hash": [
-                "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-                "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
-            ]
-        }"#,
-        );
-        // Manifest parser may reject mismatched counts; either way collect_entries
-        // should return None for mismatch.
-        if let Some(m) = m {
-            let result = collect_entries(&m);
-            assert!(
-                result.is_none(),
-                "URL/hash count mismatch should yield None"
-            );
+            assert!(collect_entries(&m).is_empty());
         }
     }
 
@@ -394,11 +486,103 @@ mod tests {
         }"#,
         );
         if let Some(m) = m {
-            let result = collect_entries(&m);
-            assert!(result.is_some(), "matching URL/hash should yield Some");
-            let (urls, entries) = result.unwrap();
-            assert_eq!(urls.len(), 1);
+            let entries = collect_entries(&m);
             assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].path, "/hash");
+            assert_eq!(entries[0].index, 0);
+        }
+    }
+
+    /// A top-level `url` wins: the architecture section is not checked
+    /// (official `bin/checkhashes.ps1:73-83`).
+    #[test]
+    fn collect_entries_prefers_top_level_url_over_architecture() {
+        let m = manifest_from_json(
+            r#"{
+            "version": "1.0",
+            "url": "https://example.com/top.zip",
+            "hash": "aa",
+            "architecture": {
+                "64bit": { "url": "https://example.com/64.zip", "hash": "bb" }
+            }
+        }"#,
+        );
+        if let Some(m) = m {
+            let entries = collect_entries(&m);
+            assert_eq!(entries.len(), 1, "architecture must be ignored");
+            assert_eq!(entries[0].url, "https://example.com/top.zip");
+            assert_eq!(entries[0].path, "/hash");
+        }
+    }
+
+    #[test]
+    fn collect_entries_arch_order_is_64_32_arm64() {
+        let m = manifest_from_json(
+            r#"{
+            "version": "1.0",
+            "architecture": {
+                "arm64": { "url": "https://example.com/arm.zip", "hash": "cc" },
+                "32bit": { "url": "https://example.com/32.zip", "hash": "bb" },
+                "64bit": { "url": "https://example.com/64.zip", "hash": "aa" }
+            }
+        }"#,
+        );
+        if let Some(m) = m {
+            let entries = collect_entries(&m);
+            let urls: Vec<&str> = entries.iter().map(|e| e.url.as_str()).collect();
+            assert_eq!(
+                urls,
+                vec![
+                    "https://example.com/64.zip",
+                    "https://example.com/32.zip",
+                    "https://example.com/arm.zip"
+                ]
+            );
+            assert_eq!(entries[0].path, "/architecture/64bit/hash");
+            assert_eq!(entries[2].path, "/architecture/arm64/hash");
+        }
+    }
+
+    #[test]
+    fn collect_entries_arch_hash_indices_are_per_segment() {
+        let m = manifest_from_json(
+            r#"{
+            "version": "1.0",
+            "architecture": {
+                "64bit": {
+                    "url": ["https://example.com/a.zip", "https://example.com/b.zip"],
+                    "hash": ["aa", "bb"]
+                },
+                "32bit": { "url": "https://example.com/c.zip", "hash": "cc" }
+            }
+        }"#,
+        );
+        if let Some(m) = m {
+            let entries = collect_entries(&m);
+            assert_eq!(entries.len(), 3);
+            assert_eq!(entries[0].index, 0);
+            assert_eq!(entries[1].index, 1);
+            // The 32bit segment restarts its own index.
+            assert_eq!(entries[2].index, 0);
+            assert_eq!(entries[2].path, "/architecture/32bit/hash");
+        }
+    }
+
+    #[test]
+    fn collect_entries_empty_hash_is_a_normal_entry() {
+        let m = manifest_from_json(
+            r#"{
+            "version": "1.0",
+            "url": "https://example.com/app.zip",
+            "hash": ""
+        }"#,
+        );
+        if let Some(m) = m {
+            let entries = collect_entries(&m);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].algorithm, "sha256");
+            assert_eq!(entries[0].expected, "");
+            assert_eq!(entries[0].formatted_expected(), "");
         }
     }
 }

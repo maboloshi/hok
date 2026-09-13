@@ -1218,6 +1218,73 @@ impl Manifest {
         fn hash() -> Vec<&HashString>, unwrap_or_default, hash_for
     }
 
+    /// Download entry list for `checkhashes`, mirroring official Scoop.
+    ///
+    /// Unlike [`all_urls`]/[`all_hashes`] — which merge the noarch entries with
+    /// every architecture and are used by `checkurls` — this is an *either/or*
+    /// selection matching `bin/checkhashes.ps1:73-83`:
+    ///
+    /// - when the manifest has a top-level `url`, **only** the top-level
+    ///   `url`/`hash` pair is used (the `architecture` section is ignored);
+    /// - otherwise the architecture sections are walked in Scoop's fixed order
+    ///   (64bit → 32bit → arm64) and their entries are concatenated.
+    ///
+    /// Returns `(url, hash, json_pointer)` triples in the order they must be
+    /// downloaded and written back; the pointer is the manifest location of the
+    /// corresponding `hash` field. An empty vector means the manifest has
+    /// neither a top-level `url` nor any architecture URL — official Scoop
+    /// reports `Manifest does not contain URL property.` in that case.
+    ///
+    /// [`all_urls`]: Self::all_urls
+    /// [`all_hashes`]: Self::all_hashes
+    pub fn checkhashes_accessors(&self) -> Vec<(&str, &HashString, &'static str)> {
+        let mut out = Vec::new();
+
+        // Top level `url` present ⇒ use it exclusively.
+        if let Some(ref top_urls) = self.inner.url {
+            let urls = top_urls.devectorize();
+            let hashes = self
+                .inner
+                .hash
+                .as_ref()
+                .map(|h| h.devectorize())
+                .unwrap_or_default();
+            for (i, url) in urls.iter().enumerate() {
+                if let Some(hash) = hashes.get(i) {
+                    out.push((*url, *hash, "/hash"));
+                }
+            }
+            return out;
+        }
+
+        if let Some(ref arch) = self.inner.architecture {
+            for (path, spec) in [
+                ("/architecture/64bit/hash", &arch.amd64),
+                ("/architecture/32bit/hash", &arch.ia32),
+                ("/architecture/arm64/hash", &arch.aarch64),
+            ] {
+                let Some(spec) = spec else { continue };
+                let urls = spec
+                    .url
+                    .as_ref()
+                    .map(|u| u.devectorize())
+                    .unwrap_or_default();
+                let hashes = spec
+                    .hash
+                    .as_ref()
+                    .map(|h| h.devectorize())
+                    .unwrap_or_default();
+                for (i, url) in urls.iter().enumerate() {
+                    if let Some(hash) = hashes.get(i) {
+                        out.push((*url, *hash, path));
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
     /// Returns the dependencies of this manifest.
     ///
     /// This method returns all dependencies including the implicit ones, while
