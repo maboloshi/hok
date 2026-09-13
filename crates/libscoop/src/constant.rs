@@ -21,8 +21,18 @@ use std::sync::LazyLock;
 /// Default capacity of the event bus.
 pub static EVENT_BUS_CAPACITY: usize = 20;
 
-/// Default user agent for HTTP requests.
-pub static DEFAULT_USER_AGENT: &str = "Scoop/1.0 (+http://scoop.sh/)";
+/// User-Agent sent by every hok HTTP request.
+///
+/// Upstream's `Get-UserAgent` (`lib/download.ps1:547-549`) is
+/// `Scoop/1.0 (+http://scoop.sh/) PowerShell/<ver> (<OS>)`. hok keeps the
+/// upstream prefix byte-for-byte and appends its own product token instead of
+/// fabricating a PowerShell segment it does not run — deliberate divergence
+/// (the only hard requirement real sources impose is that GitHub's REST API
+/// receives a non-empty User-Agent).
+pub static DEFAULT_USER_AGENT: &str = concat!(
+    "Scoop/1.0 (+http://scoop.sh/) Hok/",
+    env!("CARGO_PKG_VERSION")
+);
 
 /// Dummy bucket name for isolated packages.
 ///

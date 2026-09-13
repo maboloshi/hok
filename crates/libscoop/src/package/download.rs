@@ -25,7 +25,7 @@ use tracing::debug;
 
 use futures::StreamExt;
 
-use crate::constant::DEFAULT_USER_AGENT;
+use crate::network::{HeaderProfile, ScoopRequest};
 use crate::{Event, Session, error::Fallible, internal};
 
 use super::Package;
@@ -121,7 +121,6 @@ async fn download_one_package<'a>(
     session: &'a Session,
     cache: &PackageCache<'a>,
     cache_root: &Path,
-    base_opts: &internal::network::RequestOptions<'_>,
     net: &Arc<dyn internal::network::Network + Send + Sync>,
     reuse_cache: bool,
     ignore_failures: bool,
@@ -143,10 +142,6 @@ async fn download_one_package<'a>(
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
         )
-    };
-    let file_opts = internal::network::RequestOptions {
-        cookies: cookie_map.as_ref(),
-        ..base_opts.clone()
     };
 
     // A failure on any file marks the whole package as failed so the rest of
@@ -182,6 +177,16 @@ async fn download_one_package<'a>(
             // Avoid `(chunk_idx + 1) * chunk_size - 1` underflow when the
             // file is smaller than the configured chunk count.
             && chunk_count <= dlinfo.remote_size;
+
+        // Scoop's download header contract for this file (`lib/download.ps1:88-111`):
+        // User-Agent, Referer (suppressed for SourceForge/PortableApps),
+        // PRIVATE_HOSTS extra headers and GitHub API auth. Resolved per URL
+        // because the Referer depends on it.
+        let request = ScoopRequest::for_url(session, dlinfo.url, HeaderProfile::Download);
+        let file_opts = internal::network::RequestOptions {
+            cookies: cookie_map.as_ref(),
+            ..request.options(120)
+        };
 
         let result: Fallible<()> = async {
             if use_fragments {
@@ -498,25 +503,10 @@ impl<'a> PackageSet<'a> {
         // Extract config data into owned values inside a scope so the config
         // read guard is dropped before the awaits below (a guard held across an
         // await would block a concurrent `config_mut()`).
-        let (
-            cache_root,
-            proxy,
-            user_agent,
-            fragmentation_enabled,
-            chunk_count,
-            min_split_size,
-            jobs,
-        ) = {
+        let (cache_root, fragmentation_enabled, chunk_count, min_split_size, jobs) = {
             let config = self.session.config();
             (
                 config.cache_path().to_path_buf(),
-                config.proxy().map(|s| s.to_owned()),
-                self.session
-                    .user_agent
-                    .get()
-                    .map(|s| s.as_str())
-                    .unwrap_or(DEFAULT_USER_AGENT)
-                    .to_owned(),
                 config.aria2_enabled(),
                 config
                     .aria2_split()
@@ -543,16 +533,6 @@ impl<'a> PackageSet<'a> {
         let mut failed: Vec<String> = vec![];
 
         internal::fs::ensure_dir(&cache_root)?;
-
-        // Shared request options (proxy + UA); the cookie is injected per
-        // file inside the per-package task. The network capability is
-        // injected per session so tests can substitute an in-memory fake.
-        let base_opts = internal::network::RequestOptions {
-            proxy: proxy.as_deref(),
-            timeout_secs: 120,
-            user_agent: Some(&user_agent),
-            ..internal::network::RequestOptions::default()
-        };
 
         // Concurrent cross-package download: each package's files are fetched
         // on its own task, bounded by `jobs`. Every package writes only its
@@ -602,7 +582,6 @@ impl<'a> PackageSet<'a> {
                     session,
                     cache,
                     &cache_root,
-                    &base_opts,
                     &net,
                     reuse_cache,
                     ignore_failures,
@@ -684,19 +663,7 @@ impl<'a> PackageSet<'a> {
             self.load_cache();
         }
 
-        let (proxy, user_agent, jobs) = {
-            let config = self.session.config();
-            (
-                config.proxy().map(|s| s.to_owned()),
-                self.session
-                    .user_agent
-                    .get()
-                    .map(|s| s.as_str())
-                    .unwrap_or(DEFAULT_USER_AGENT)
-                    .to_owned(),
-                config.jobs() as usize,
-            )
-        };
+        let jobs = self.session.config().jobs() as usize;
 
         // Fire all HEAD requests concurrently (one per URL), then apply the
         // results back to the cache entries serially. The HEAD is pure network
@@ -704,6 +671,7 @@ impl<'a> PackageSet<'a> {
         // concurrent phase captures owned data and the apply phase mutates the
         // caches under a single `&mut`.
         let net = self.session.network();
+        let session = self.session;
 
         // Collect every (url, filename, ident, cookie) as an owned HEAD task.
         type HeadTask = (String, String, String, Option<HashMap<String, String>>);
@@ -742,15 +710,13 @@ impl<'a> PackageSet<'a> {
         let results: Vec<(String, String, u16, Option<u64>)> = futures::stream::iter(tasks)
             .map(|(url, filename, ident, cookie_map)| {
                 let net = net.clone();
-                let proxy = proxy.clone();
-                let user_agent = user_agent.clone();
                 async move {
+                    // Same header contract as the download itself, so the HEAD
+                    // probe sees the same Referer/PRIVATE_HOSTS as the GET.
+                    let request = ScoopRequest::for_url(session, &url, HeaderProfile::Download);
                     let opts = internal::network::RequestOptions {
-                        proxy: proxy.as_deref(),
-                        timeout_secs: 30,
-                        user_agent: Some(&user_agent),
                         cookies: cookie_map.as_ref(),
-                        ..internal::network::RequestOptions::default()
+                        ..request.options(30)
                     };
                     let result = net.head(&url, &opts).await;
                     (ident, filename, result.status_code, result.content_length)

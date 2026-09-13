@@ -500,8 +500,9 @@ impl Session {
     ///
     /// User agent is used when performing network related operations such as
     /// downloading packages. User agent for a session can only be set once.
-    /// If not set, the default user agent will be used. The default user agent
-    /// is `Scoop/1.0 (+http://scoop.sh/)`.
+    /// If not set, [`DEFAULT_USER_AGENT`][crate::constant::DEFAULT_USER_AGENT]
+    /// is used. The hok CLI never overrides it, so every hok request carries the
+    /// same User-Agent; the setter exists for embedders that need their own.
     ///
     /// # Errors
     ///

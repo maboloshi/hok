@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Manifest, Session,
+    network::{HeaderProfile, ScoopRequest},
     package::{manifest, manifest_walker},
 };
 use regex::Regex;
@@ -161,17 +162,6 @@ pub async fn execute(
 
     // Extract session data needed for concurrent downloads (Session is !Sync)
     let proxy = session.config().proxy().map(|s| s.to_string());
-    let gh_token = session.config().gh_token.clone();
-    let private_hosts = session.config().private_hosts().map(|hosts| {
-        hosts
-            .iter()
-            .map(|h| (h.match_pattern().to_string(), h.headers().to_string()))
-            .collect::<Vec<_>>()
-    });
-    let user_agent = session
-        .user_agent()
-        .unwrap_or("Scoop/1.0 (+http://scoop.sh/)")
-        .to_string();
     let timeout = options.timeout;
 
     /// A manifest that needs version checking.
@@ -351,12 +341,10 @@ pub async fn execute(
                 let url = item.url.clone();
                 let script = item.script_text.clone();
                 let script_url = item.cv.url.clone();
-                let token = gh_token.clone();
+                let manifest_user_agent = item.cv.useragent.clone();
                 let net = net.clone();
                 let cancel = cancel.clone();
                 let proxy_ref = proxy.as_deref();
-                let ua_ref = &user_agent;
-                let hosts_ref = &private_hosts;
                 async move {
                     let fetch = if let Some(script) = script {
                         // Script-based check: the script's stdout is the page
@@ -375,29 +363,15 @@ pub async fn execute(
                             Err(e) => CheckverFetch::ScriptError(e.to_string()),
                         }
                     } else {
-                        // PRIVATE_HOSTS entries matched against the URL here
-                        // (computed inside the closure so the HashMap is owned
-                        // by the task).
-                        let extra = hosts_ref.as_ref().and_then(|v| {
-                            crate::internal::network::match_private_hosts(
-                                v.iter().map(|(p, h)| (p.as_str(), h.as_str())),
-                                &url,
-                            )
-                        });
-                        let extra_ref = extra.as_ref();
-                        let referer = crate::internal::network::strip_filename(&url);
-                        let dl_opts = crate::internal::network::RequestOptions {
-                            proxy: proxy_ref,
-                            timeout_secs: timeout,
-                            user_agent: Some(ua_ref),
-                            referer: Some(&referer),
-                            cookies: None,
-                            token: token.as_deref(),
-                            extra_headers: extra_ref,
-                            range_start: 0,
-                        };
+                        // Scoop's checkver header contract
+                        // (`bin/checkver.ps1:118-246`): User-Agent (the
+                        // manifest's `checkver.useragent` wins), Referer,
+                        // PRIVATE_HOSTS, and the GitHub token only for
+                        // `api.github.com` URLs.
+                        let request = ScoopRequest::for_url(session, &url, HeaderProfile::Checkver)
+                            .with_user_agent(manifest_user_agent.as_deref());
                         match net
-                            .download(&url, &dl_opts)
+                            .download(&url, &request.options(timeout))
                             .await
                             .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
                         {

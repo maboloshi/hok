@@ -64,6 +64,61 @@ pub struct RequestOptions<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Header profiles (upstream's per-call-site header contract)
+// ---------------------------------------------------------------------------
+
+/// Which upstream call site's header rules a request follows.
+///
+/// Upstream assembles request headers in four places, each with slightly
+/// different rules (Referer suppression, PRIVATE_HOSTS, GitHub API auth). This
+/// enum is the single description of those differences, so every hok request
+/// path can be checked against its upstream counterpart by name instead of by
+/// re-reading each call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderProfile {
+    /// `Invoke-Download` (`lib/download.ps1:88-111`) — the file downloader
+    /// behind install / update / download / reinstall / checkhashes.
+    Download,
+    /// `checkurls`' `test_dl` (`bin/checkurls.ps1:56-70`).
+    CheckUrls,
+    /// `checkver`'s page fetch (`bin/checkver.ps1:118-246`).
+    Checkver,
+    /// `autoupdate`'s hash fetchers (`lib/autoupdate.ps1:20-206`), including
+    /// `find_hash_in_headers`.
+    Autoupdate,
+}
+
+/// Hosts whose downloads omit `Referer` (`lib/download.ps1:94-96`). Matched as
+/// substrings against the whole URL, exactly like upstream's `-match`.
+const NO_REFERER_HOSTS: [&str; 2] = ["sourceforge.net", "portableapps.com"];
+
+/// Host fragment that marks a GitHub REST API URL.
+const GITHUB_API_HOST: &str = "api.github.com";
+
+impl HeaderProfile {
+    /// `Referer` value for `url`, or `None` when upstream omits the header.
+    pub fn referer(self, url: &str) -> Option<String> {
+        if self == Self::Download && NO_REFERER_HOSTS.iter().any(|host| url.contains(host)) {
+            return None;
+        }
+        Some(strip_filename(url))
+    }
+
+    /// Does upstream attach the configured GitHub token to `url`?
+    ///
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`;
+    /// `bin/checkver.ps1:219` matches any `api.github.com` path. Upstream never
+    /// sends the token anywhere else, so hok must not either.
+    pub fn uses_github_token(self, url: &str) -> bool {
+        match self {
+            Self::Download => url.contains("api.github.com/repos"),
+            Self::Checkver => url.contains(GITHUB_API_HOST),
+            Self::CheckUrls | Self::Autoupdate => false,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers (pub(crate) for download.rs reuse)
 // ---------------------------------------------------------------------------
 
@@ -549,5 +604,66 @@ mod tests {
         .unwrap();
         assert_eq!(h.get("X-Two").map(|s| s.as_str()), Some("2"));
         assert_eq!(h.get("X-One"), None);
+    }
+
+    // ── HeaderProfile (upstream's per-call-site header contract) ────────────
+
+    #[test]
+    fn download_referer_drops_the_filename() {
+        assert_eq!(
+            HeaderProfile::Download
+                .referer("https://example.com/a/b/file.zip")
+                .as_deref(),
+            Some("https://example.com/a/b/")
+        );
+    }
+
+    #[test]
+    fn download_referer_is_suppressed_for_sourceforge_and_portableapps() {
+        // `lib/download.ps1:94`: SourceForge and PortableApps reject a foreign
+        // Referer. Upstream matches the whole URL with `-match`.
+        assert_eq!(
+            HeaderProfile::Download.referer("https://downloads.sourceforge.net/project/x/y.exe"),
+            None
+        );
+        assert_eq!(
+            HeaderProfile::Download.referer("https://portableapps.com/x.exe"),
+            None
+        );
+        // Anywhere in the URL, mirroring upstream's substring match.
+        assert_eq!(
+            HeaderProfile::Download.referer("https://mirror.test/x.exe?src=sourceforge.net"),
+            None
+        );
+    }
+
+    #[test]
+    fn other_profiles_always_send_the_referer() {
+        // `bin/checkurls.ps1:60` and `lib/autoupdate.ps1:186` have no host
+        // exception; `bin/checkver.ps1:246` neither.
+        for profile in [
+            HeaderProfile::CheckUrls,
+            HeaderProfile::Checkver,
+            HeaderProfile::Autoupdate,
+        ] {
+            assert_eq!(
+                profile.referer("https://downloads.sourceforge.net/project/x/y.exe"),
+                Some("https://downloads.sourceforge.net/project/x/".to_string()),
+                "{profile:?} must keep the Referer"
+            );
+        }
+    }
+
+    #[test]
+    fn github_token_never_leaks_to_other_hosts() {
+        // `lib/autoupdate.ps1:319` and `bin/checkurls.ps1` never authorize.
+        assert!(!HeaderProfile::Autoupdate.uses_github_token("https://api.github.com/repos/o/r"));
+        assert!(!HeaderProfile::CheckUrls.uses_github_token("https://api.github.com/repos/o/r"));
+        // `lib/download.ps1:97` — the repos path only.
+        assert!(HeaderProfile::Download.uses_github_token("https://api.github.com/repos/o/r"));
+        assert!(!HeaderProfile::Download.uses_github_token("https://api.github.com/users/o"));
+        // `bin/checkver.ps1:219` — any api.github.com path.
+        assert!(HeaderProfile::Checkver.uses_github_token("https://api.github.com/users/o"));
+        assert!(!HeaderProfile::Checkver.uses_github_token("https://example.com/x"));
     }
 }

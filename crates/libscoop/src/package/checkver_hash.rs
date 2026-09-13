@@ -365,20 +365,12 @@ fn digest_header_hash(header: &str) -> Option<String> {
 ///
 /// The caller falls back to `$url.meta4` when this returns `Err`.
 async fn head_digest_sha256(session: &Session, url: &str, timeout_secs: u64) -> Fallible<String> {
-    let proxy = {
-        let config = session.config();
-        config.proxy().map(|s| s.to_owned())
-    };
-    let user_agent = session.user_agent().map(|s| s.to_owned());
-    let referer = crate::internal::network::strip_filename(url);
-    let opts = crate::internal::network::RequestOptions {
-        proxy: proxy.as_deref(),
-        timeout_secs,
-        user_agent: user_agent.as_deref(),
-        referer: Some(referer.as_str()),
-        ..crate::internal::network::RequestOptions::default()
-    };
-    let resp = crate::internal::network::head_no_redirect(url, &opts)
+    let request = crate::network::ScoopRequest::for_url(
+        session,
+        url,
+        crate::network::HeaderProfile::Autoupdate,
+    );
+    let resp = crate::internal::network::head_no_redirect(url, &request.options(timeout_secs))
         .await
         .map_err(|e| Error::Custom(format!("HEAD {}: {}", url, e)))?;
 

@@ -55,7 +55,7 @@ pub async fn github_api_request(
     let mut req = client
         .request(http_method, &url)
         .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "hok")
+        .header("User-Agent", crate::constant::DEFAULT_USER_AGENT)
         .header("Accept", "application/vnd.github.v3+json");
 
     // POST always sends a body; use empty object if none provided.
@@ -280,7 +280,7 @@ pub async fn graphql_commit_push(
     let resp = client
         .post("https://api.github.com/graphql")
         .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "hok")
+        .header("User-Agent", crate::constant::DEFAULT_USER_AGENT)
         .json(&body)
         .send()
         .await

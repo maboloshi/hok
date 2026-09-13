@@ -540,8 +540,6 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     // Mount the process-wide Ctrl-C cancellation token so long-running
     // operations (downloads, scripts, waits) can abort cleanly on interrupt.
     session.set_cancellation_token(cancellation)?;
-    let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
-    let _ = session.set_user_agent(&user_agent);
 
     // Route structured output emitted by libscoop to the CLI renderer. The
     // library never writes to stdout/stderr itself; without this sink its
