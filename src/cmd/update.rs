@@ -106,6 +106,11 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if args.global {
         return Err(anyhow::anyhow!(hok_i18n::t!("cmd.update_global_no_app")));
     }
+    // Upstream also rejects `--no-cache` without an <app>
+    // (`libexec/scoop-update.ps1:393-396`).
+    if args.no_cache {
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.update_no_cache_no_app")));
+    }
     update_buckets(session, args.force).await
 }
 
@@ -294,7 +299,15 @@ pub async fn execute_upgrade(
         )?;
         let installed = package::query::query_installed(session, &queries, &[])?;
         if !missing_target && upgradable.is_empty() && !installed.is_empty() {
-            output::info(hok_i18n::t!("cmd.outdated"));
+            // Upstream names every app it found current and closes with a hint
+            // (`libexec/scoop-update.ps1:442,457`).
+            for pkg in &installed {
+                println!(
+                    "{}",
+                    hok_i18n::t!("cmd.update_latest", name = pkg.name(), version = pkg.version())
+                );
+            }
+            output::info(hok_i18n::t!("cmd.update_all_latest"));
             return Ok(());
         }
     } else {
