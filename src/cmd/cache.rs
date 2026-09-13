@@ -26,26 +26,24 @@ pub enum Command {
     /// List download caches
     #[clap(alias = "ls", alias = "show")]
     List {
-        /// List caches matching the query
-        query: Option<String>,
+        /// List caches of the given app(s)
+        app: Vec<String>,
     },
     /// Remove download caches
     #[clap(alias = "rm")]
-    #[clap(arg_required_else_help = true)]
     Remove {
-        /// Remove caches matching the query
-        query: Option<String>,
+        /// Remove caches of the given app(s)
+        app: Vec<String>,
         /// Remove all caches
-        #[arg(short, long, action = ArgAction::SetTrue, conflicts_with = "query")]
+        #[arg(short, long, action = ArgAction::SetTrue)]
         all: bool,
     },
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     match args.command {
-        Command::List { query } => {
-            let query = query.unwrap_or("*".to_string());
-            let files = cache::list(session, query.as_str())?;
+        Command::List { app } => {
+            let files = cache::list(session, &app)?;
             let mut total_size: u64 = 0;
             let mut rows = Vec::new();
 
@@ -92,28 +90,25 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
             Ok(())
         }
-        Command::Remove { query, all } => {
-            if all {
-                match cache::remove(session, "*") {
-                    Ok(_) => {
-                        output::info(hok_i18n::t!("cmd.cache_all_removed"));
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+        Command::Remove { app, all } => {
+            // Upstream reports a missing selection before doing anything
+            // (`scoop-cache.ps1:37-40`), with the usage error's exit code.
+            if !all && app.is_empty() {
+                return Err(anyhow::anyhow!(hok_i18n::t!("cmd.cache_app_missing")));
             }
 
-            if let Some(query) = query {
-                match cache::remove(session, query.as_str()) {
-                    Ok(_) => {
-                        if query == "*" {
-                            output::info(hok_i18n::t!("cmd.cache_all_removed"));
-                        } else {
-                            output::info(hok_i18n::t!("cmd.cache_matching_removed", query = query));
-                        }
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+            // `--all` is upstream's `-a`/`--all`/`*` literal; an empty
+            // selection is the same wildcard.
+            let selection = if all { Vec::new() } else { app };
+            cache::remove(session, &selection)?;
+
+            if selection.is_empty() || selection.iter().any(|a| a == "*") {
+                output::info(hok_i18n::t!("cmd.cache_all_removed"));
+            } else {
+                output::info(hok_i18n::t!(
+                    "cmd.cache_matching_removed",
+                    query = selection.join(", ")
+                ));
             }
 
             Ok(())

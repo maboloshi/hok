@@ -133,6 +133,7 @@ cmd:
   cache_cleaned: "Cache cleaned."
   cache_all_removed: "All download caches were removed."
   cache_matching_removed: "All caches matching '%{query}' were removed."
+  cache_app_missing: "<app(s)> missing"
   header_cache: "Download cache"
   cache_header_name: "Name"
   cache_header_version: "Version"

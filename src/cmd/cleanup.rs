@@ -52,7 +52,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if args.cache {
-        cache::remove(session, "*")?;
+        cache::remove(session, &["*".to_owned()])?;
         output::info(hok_i18n::t!("cmd.cache_cleaned"));
     }
 

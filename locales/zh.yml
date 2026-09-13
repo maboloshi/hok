@@ -133,6 +133,7 @@ cmd:
   cache_cleaned: "缓存已清理。"
   cache_all_removed: "所有下载缓存已移除。"
   cache_matching_removed: "匹配 '%{query}' 的缓存已全部移除。"
+  cache_app_missing: "缺少 <app(s)>"
   header_cache: "下载缓存"
   cache_header_name: "名称"
   cache_header_version: "版本"

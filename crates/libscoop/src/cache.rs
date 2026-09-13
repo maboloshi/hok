@@ -55,7 +55,51 @@ impl CacheFile {
 
 // ─── Session operations ────────────────────────────────────────────────────
 
+/// Whether `apps` selects every cache entry.
+///
+/// An empty selection (the bare `hok cache` default) or an explicit `*` means
+/// "every file in the cache directory", upstream's `Get-ChildItem $cachedir`
+/// branch (`scoop-cache.ps1:42`).
+fn is_wildcard(apps: &[String]) -> bool {
+    apps.is_empty() || apps.iter().any(|a| a == "*")
+}
+
+/// Whether `file` belongs to any app in `apps`.
+///
+/// Upstream anchors the query at the start of the cache file name
+/// (`Where-Object Name -Value "^$app#" -Match`, `scoop-cache.ps1:28,45`).
+/// Comparing the parsed package name for case-insensitive equality reproduces
+/// that anchor without inheriting upstream's regex metacharacters, so
+/// `cache rm zip` no longer also matches `7zip`.
+fn matches_apps(file: &CacheFile, apps: &[String]) -> bool {
+    apps.iter()
+        .any(|a| file.package_name().eq_ignore_ascii_case(a))
+}
+
+/// Remove one cache entry (file or directory), tolerating an entry that is
+/// already gone and reporting any other failure through the session output
+/// channel so a single locked file never aborts the batch.
+fn remove_entry(session: &crate::Session, path: &Path) {
+    let result = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    if let Err(e) = result
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        session.output().error(hok_i18n::t!(
+            "cmd.failed_remove_cache",
+            path = path.display(),
+            error = e
+        ));
+    }
+}
+
 /// Get a list of downloaded cache files.
+///
+/// `apps` filters the listing to those package names; an empty slice (or one
+/// containing `*`) lists every cache file.
 ///
 /// # Returns
 ///
@@ -64,8 +108,8 @@ impl CacheFile {
 /// # Errors
 ///
 /// I/O errors will be returned if the cache directory is not readable.
-pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
-    let is_wildcard_query = query.eq("*") || query.is_empty();
+pub fn list(session: &crate::Session, apps: &[String]) -> Fallible<Vec<CacheFile>> {
+    let list_all = is_wildcard(apps);
     let config = session.config();
     let cache_dir = config.cache_path();
     let mut files = vec![];
@@ -79,19 +123,10 @@ pub fn list(session: &crate::Session, query: &str) -> Fallible<Vec<CacheFile>> {
                 .filter_map(|de| {
                     if let Ok(entry) = de {
                         let is_file = entry.file_type().is_ok_and(|t| t.is_file());
-                        if is_file && let Ok(item) = CacheFile::from(entry.path()) {
-                            if !is_wildcard_query {
-                                let matched = item
-                                    .package_name()
-                                    .to_lowercase()
-                                    .contains(&query.to_lowercase());
-                                if matched {
-                                    return Some(item);
-                                } else {
-                                    return None;
-                                }
-                            }
-
+                        if is_file
+                            && let Ok(item) = CacheFile::from(entry.path())
+                            && (list_all || matches_apps(&item, apps))
+                        {
                             return Some(item);
                         }
                     }
@@ -121,7 +156,13 @@ fn sort_listing(files: &mut [CacheFile]) {
     });
 }
 
-/// Remove cache files by query.
+/// Remove cache files for `apps`.
+///
+/// An empty selection (or one containing `*`) clears the whole cache
+/// directory, exactly as upstream's `Get-ChildItem $cachedir` branch does;
+/// otherwise only the selected apps' files are removed, together with each
+/// app's aria2 sidecar `<cachedir>/<app>.txt` (`scoop-cache.ps1:53-55`).
+/// Selection is anchored to the app name, so `zip` never matches `7zip`.
 ///
 /// Files that are already gone are silently skipped. Files that fail to
 /// remove (e.g. locked by a running process on Windows) are reported through
@@ -131,52 +172,77 @@ fn sort_listing(files: &mut [CacheFile]) {
 /// # Errors
 ///
 /// I/O errors will be returned if the cache directory is not readable.
-pub fn remove(session: &crate::Session, query: &str) -> Fallible<()> {
-    match query {
-        "*" => {
-            let config = session.config();
-            let cache_dir = config.cache_path();
-            if !cache_dir.exists() {
-                return Ok(());
-            }
-            for entry in cache_dir.read_dir()? {
-                let entry = entry?;
-                let path = entry.path();
-                let result = if path.is_dir() {
-                    std::fs::remove_dir_all(&path)
-                } else {
-                    std::fs::remove_file(&path)
-                };
-                if let Err(e) = result {
-                    // Already gone — treat as success (Scoop's
-                    // Remove-Item -Force semantics).
-                    if e.kind() != std::io::ErrorKind::NotFound {
-                        session.output().error(hok_i18n::t!(
-                            "cmd.failed_remove_cache",
-                            path = path.display(),
-                            error = e
-                        ));
-                    }
-                }
-            }
-            Ok(())
+pub fn remove(session: &crate::Session, apps: &[String]) -> Fallible<()> {
+    let cache_dir = session.config().cache_path().to_path_buf();
+
+    if is_wildcard(apps) {
+        if !cache_dir.exists() {
+            return Ok(());
         }
-        query => {
-            let files = list(session, query)?;
-            for f in files.into_iter() {
-                if let Err(e) = std::fs::remove_file(f.path())
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    session.output().error(hok_i18n::t!(
-                        "cmd.failed_remove_cache",
-                        path = f.path().display(),
-                        error = e
-                    ));
-                }
-            }
-            Ok(())
+        for entry in cache_dir.read_dir()? {
+            remove_entry(session, &entry?.path());
+        }
+        return Ok(());
+    }
+
+    let mut sidecars: Vec<String> = vec![];
+    for f in list(session, apps)? {
+        let app = f.package_name().to_owned();
+        if !sidecars.iter().any(|s| s.eq_ignore_ascii_case(&app)) {
+            sidecars.push(app);
+        }
+        remove_entry(session, f.path());
+    }
+
+    // aria2 drops a `<app>.txt` control file beside the downloads; upstream
+    // removes it together with the matching cache files.
+    for app in sidecars {
+        remove_entry(session, &cache_dir.join(format!("{app}.txt")));
+    }
+
+    Ok(())
+}
+
+/// Remove one app's outdated cache files, keeping `keep_version`.
+///
+/// Upstream `cleanup -k` (`Remove-Item "$cachedir\$app#*" -Exclude
+/// "$app#$current_version#*"`, `scoop-cleanup.ps1:32-33`): the currently
+/// installed version stays cached so a reinstall does not re-download it. The
+/// aria2 sidecar is deliberately left alone — upstream's `cleanup` removes it
+/// only through `cache rm`.
+///
+/// # Errors
+///
+/// I/O errors will be returned if the cache directory is not readable.
+pub fn remove_outdated(session: &crate::Session, app: &str, keep_version: &str) -> Fallible<()> {
+    for f in list(session, &[app.to_owned()])? {
+        if f.version() != keep_version {
+            remove_entry(session, f.path());
         }
     }
+    Ok(())
+}
+
+/// Remove leftover partial downloads (`*.download`).
+///
+/// Upstream runs this once after `cleanup -k` has swept every app
+/// (`scoop-cleanup.ps1:79-81`).
+///
+/// # Errors
+///
+/// I/O errors will be returned if the cache directory is not readable.
+pub fn remove_incomplete(session: &crate::Session) -> Fallible<()> {
+    let cache_dir = session.config().cache_path().to_path_buf();
+    let Ok(entries) = cache_dir.read_dir() else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "download") {
+            remove_entry(session, &path);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -231,5 +297,71 @@ mod tests {
             .map(|f| f.file_name().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(order, ["croc#1.0#a.zip", "croc#1.0#z.zip"]);
+    }
+
+    /// App selection is anchored to the whole package name, so `zip` must not
+    /// drag in `7zip`/`unzip` (upstream's `^$app#` anchor), and it is
+    /// case-insensitive like PowerShell's `-Match`.
+    #[test]
+    fn app_selection_is_anchored_and_case_insensitive() {
+        let zip = file("zip#1.0#a.zip");
+        let seven = file("7zip#26.03#b.7z");
+        let unzip = file("unzip#6.0#c.zip");
+
+        assert!(matches_apps(&zip, &["zip".to_owned()]));
+        assert!(matches_apps(&zip, &["ZIP".to_owned()]));
+        assert!(!matches_apps(&seven, &["zip".to_owned()]));
+        assert!(!matches_apps(&unzip, &["zip".to_owned()]));
+        // Any-of semantics matches upstream's `(a|b)` alternation.
+        assert!(matches_apps(&seven, &["zip".to_owned(), "7zip".to_owned()]));
+    }
+
+    /// An empty selection or a literal `*` means "the whole cache"; anything
+    /// else is a per-app selection.
+    #[test]
+    fn empty_and_star_selections_are_wildcards() {
+        assert!(is_wildcard(&[]));
+        assert!(is_wildcard(&["*".to_owned()]));
+        assert!(!is_wildcard(&["zip".to_owned()]));
+    }
+
+    /// Cache operations against a temporary session: `remove_outdated` keeps
+    /// the current version and drops the rest, `remove` is anchored to the
+    /// selected app and takes the aria2 sidecar with it, and
+    /// `remove_incomplete` clears `*.download` leftovers.
+    #[test]
+    fn session_operations_keep_current_version_and_sidecars_in_sync() {
+        let root = crate::test_utils::tmpdir("cache_ops");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        for name in [
+            "zip#1.0#a.zip",
+            "zip#2.0#b.zip",
+            "7zip#26.0#c.7z",
+            "zip.txt",
+            "7zip.txt",
+            "partial.download",
+        ] {
+            std::fs::write(cache_dir.join(name), b"x").unwrap();
+        }
+
+        // `cleanup -k`: keep zip 2.0, drop zip 1.0, leave everything else.
+        remove_outdated(&session, "zip", "2.0").unwrap();
+        assert!(!cache_dir.join("zip#1.0#a.zip").exists());
+        assert!(cache_dir.join("zip#2.0#b.zip").exists());
+        assert!(cache_dir.join("7zip#26.0#c.7z").exists());
+        assert!(cache_dir.join("zip.txt").exists(), "sidecar untouched");
+
+        // `cache rm zip`: only zip's file and sidecar go.
+        remove(&session, &["zip".to_owned()]).unwrap();
+        assert!(!cache_dir.join("zip#2.0#b.zip").exists());
+        assert!(!cache_dir.join("zip.txt").exists(), "sidecar removed");
+        assert!(cache_dir.join("7zip#26.0#c.7z").exists());
+        assert!(cache_dir.join("7zip.txt").exists());
+
+        remove_incomplete(&session).unwrap();
+        assert!(!cache_dir.join("partial.download").exists());
+        assert!(cache_dir.join("7zip#26.0#c.7z").exists());
     }
 }
