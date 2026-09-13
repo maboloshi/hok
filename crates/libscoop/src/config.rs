@@ -1069,6 +1069,77 @@ pub fn value(session: &crate::Session, key: &str) -> Fallible<Option<serde_json:
     Ok(document.get(name).cloned())
 }
 
+/// Settings that exist in **both** configs under the same name.
+///
+/// `hok export -c` emits exactly these: upstream's own `-c` dumps `$scoopConfig`
+/// minus the machine-specific paths (`libexec/scoop-export.ps1:13`). hok-only
+/// settings (`confirm`, `editor`, `jobs`, ...) stay out of upstream's section,
+/// and the upstream-only ones hok has no value for cannot be emitted at all.
+const SHARED_KEYS: &[&str] = &[
+    "aria2-enabled",
+    "aria2-max-connection-per-server",
+    "aria2-min-split-size",
+    "aria2-split",
+    "cat_style",
+    "default_architecture",
+    "gh_token",
+    "ignore_running_processes",
+    "no_junction",
+    "private_hosts",
+    "proxy",
+    "use_isolated_path",
+    "use_sqlite_cache",
+    "virustotal_api_key",
+];
+
+/// The upstream name of a setting hok stores under `hok_key`, or `None` when
+/// upstream has no such setting.
+pub fn official_name(hok_key: &str) -> Option<&'static str> {
+    SHARED_KEYS.iter().copied().find(|name| *name == hok_key)
+}
+
+/// How an upstream config key (`scoop export -c`, `scoop config <name>`) maps
+/// onto hok's config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfficialKey {
+    /// Write the value under this hok key.
+    Supported(&'static str),
+    /// A path (or the alias index) that only makes sense on the machine it was
+    /// exported from; upstream's own `-c` strips these.
+    MachineSpecific,
+    /// hok has no equivalent setting.
+    Unsupported,
+}
+
+/// Map an upstream config key onto hok's config.
+///
+/// Upstream stores a key exactly as the user typed it (`set_config` only
+/// lower-cases it, `libexec/scoop-config.ps1:112`) and reads it back through
+/// `get_config NAME`, so the canonical upstream spellings are the ones its own
+/// calls use: underscores for everything but the `aria2-*` family, which is
+/// hyphenated (`libexec/scoop-config.ps1:21-153`). The other separator is
+/// accepted too, because a hand-written Scoopfile may carry either.
+pub fn map_official_key(key: &str) -> OfficialKey {
+    let key = key.to_ascii_lowercase();
+    // Checked before the table: a path captured on the exporting machine (hok
+    // records them in its `--hok` extension) must not clobber this one's.
+    if matches!(
+        key.replace('-', "_").as_str(),
+        "alias" | "cache_path" | "global_path" | "last_update" | "root_path"
+    ) {
+        return OfficialKey::MachineSpecific;
+    }
+    if let Some(canonical) = canonical_key(&key) {
+        return OfficialKey::Supported(canonical);
+    }
+    for variant in [key.replace('-', "_"), key.replace('_', "-")] {
+        if let Some(canonical) = canonical_key(&variant) {
+            return OfficialKey::Supported(canonical);
+        }
+    }
+    OfficialKey::Unsupported
+}
+
 /// One cell of the config listing.
 ///
 /// The library never renders a config table itself: it reports *what* a value

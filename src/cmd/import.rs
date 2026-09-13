@@ -22,7 +22,7 @@
 //!   (`scoop export -c`) is still open and belongs to the config work (S4).
 
 use clap::Parser;
-use libscoop::package::import::{self, ConfigKey, ImportFile};
+use libscoop::package::import::{self, ImportFile};
 use libscoop::{QueryOption, Session, SyncOption, alias, bucket, config, fs, package};
 
 use crate::{Result, output};
@@ -134,13 +134,13 @@ fn apply_config(session: &Session, file: &ImportFile, report: &mut Report) {
     }
 
     for (key, value) in &file.config {
-        let hok_key = match import::map_config_key(key) {
-            ConfigKey::Supported(hok_key) => hok_key,
-            ConfigKey::MachineSpecific => {
+        let hok_key = match config::map_official_key(key) {
+            config::OfficialKey::Supported(hok_key) => hok_key,
+            config::OfficialKey::MachineSpecific => {
                 report.skip(hok_i18n::t!("cmd.import_skip_config_machine", key = key));
                 continue;
             }
-            ConfigKey::Unsupported => {
+            config::OfficialKey::Unsupported => {
                 report.skip(hok_i18n::t!(
                     "cmd.import_skip_config_unsupported",
                     key = key
@@ -152,13 +152,20 @@ fn apply_config(session: &Session, file: &ImportFile, report: &mut Report) {
             report.skip(hok_i18n::t!("cmd.import_skip_config_value", key = key));
             continue;
         };
-        match config::set(session, hok_key, &value) {
-            Ok(()) => output::info(hok_i18n::t!(
+        // Most upstream keys are spelled exactly like hok's, so only report the
+        // mapping when there really was one.
+        let message = if hok_key == key.as_str() {
+            hok_i18n::t!("cmd.import_config_set", key = key, value = value)
+        } else {
+            hok_i18n::t!(
                 "cmd.import_config_set_mapped",
                 key = key,
                 hok_key = hok_key,
                 value = value
-            )),
+            )
+        };
+        match config::set(session, hok_key, &value) {
+            Ok(()) => output::info(message),
             Err(e) => report.skip(hok_i18n::t!("cmd.import_skip_config_err", key = key, e = e)),
         }
     }

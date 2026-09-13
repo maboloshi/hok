@@ -365,57 +365,6 @@ pub fn is_unavailable_bucket(source: &str, bucket_names: &[String]) -> bool {
         && !source.contains(['/', '\\', ':', '.'])
 }
 
-/// How an upstream config key maps onto hok's config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigKey {
-    /// Write the value under this hok key.
-    Supported(&'static str),
-    /// A path that only makes sense on the machine it was exported from;
-    /// upstream's own `-c` strips these (`libexec/scoop-export.ps1:13`).
-    MachineSpecific,
-    /// hok has no equivalent setting.
-    Unsupported,
-}
-
-/// Map an upstream config key (`scoop export -c`) onto hok's config.
-///
-/// Keys hok accepts under the same name map to themselves; the rest are the
-/// kebab-case/snake_case or wording differences between the two configs.
-pub fn map_config_key(key: &str) -> ConfigKey {
-    // Keys hok's `config set` accepts verbatim.
-    const SAME_NAME: &[&str] = &[
-        "aria2-enabled",
-        "aria2-max-connection-per-server",
-        "aria2-min-split-size",
-        "aria2-split",
-        "confirm",
-        "editor",
-        "ignore-failures",
-        "jobs",
-        "language",
-        "no-color",
-        "proxy",
-        "script-engine",
-    ];
-    if let Some(name) = SAME_NAME.iter().find(|name| **name == key) {
-        return ConfigKey::Supported(name);
-    }
-    match key {
-        // hok's own key names where upstream spells them differently.
-        "cat-style" => ConfigKey::Supported("cat_style"),
-        "default-architecture" => ConfigKey::Supported("default_architecture"),
-        "gh-token" => ConfigKey::Supported("gh_token"),
-        "ignore-running-processes" => ConfigKey::Supported("ignore_running_processes"),
-        "last-update" => ConfigKey::Supported("last_update"),
-        "no-junction" => ConfigKey::Supported("no_junction"),
-        "use-isolated-path" => ConfigKey::Supported("use_isolated_path"),
-        "use-sqlite-cache" => ConfigKey::Supported("use_sqlite_cache"),
-        "virustotal-api-key" => ConfigKey::Supported("virustotal_api_key"),
-        "alias" | "cache-path" | "global-path" | "root-path" => ConfigKey::MachineSpecific,
-        _ => ConfigKey::Unsupported,
-    }
-}
-
 /// Render a Scoopfile config value as the string `hok config set` takes.
 ///
 /// Returns `None` for values hok has no representation for (arrays/objects,
@@ -597,23 +546,41 @@ mod tests {
         assert!(!is_unavailable_bucket("", &buckets));
     }
 
-    /// Config key mapping: same-name, renamed, machine-specific, unsupported.
+    /// Upstream's canonical key spellings — the ones its own `get_config` calls
+    /// read, i.e. underscores except the hyphenated `aria2-*` family — map onto
+    /// hok, the machine-specific ones are refused, and the other separator is
+    /// tolerated for a hand-written Scoopfile.
     #[test]
     fn config_keys_map_onto_hok() {
-        assert_eq!(map_config_key("proxy"), ConfigKey::Supported("proxy"));
+        use crate::config::{OfficialKey, map_official_key};
+
+        assert_eq!(map_official_key("proxy"), OfficialKey::Supported("proxy"));
         assert_eq!(
-            map_config_key("use-sqlite-cache"),
-            ConfigKey::Supported("use_sqlite_cache")
+            map_official_key("use_sqlite_cache"),
+            OfficialKey::Supported("use_sqlite_cache")
         );
         assert_eq!(
-            map_config_key("ignore-running-processes"),
-            ConfigKey::Supported("ignore_running_processes")
+            map_official_key("ignore_running_processes"),
+            OfficialKey::Supported("ignore_running_processes")
         );
-        assert_eq!(map_config_key("root-path"), ConfigKey::MachineSpecific);
-        assert_eq!(map_config_key("scoop-repo"), ConfigKey::Unsupported);
         assert_eq!(
-            map_config_key("aria2-warning-enabled"),
-            ConfigKey::Unsupported
+            map_official_key("no_junction"),
+            OfficialKey::Supported("no_junction")
+        );
+        assert_eq!(
+            map_official_key("aria2-min-split-size"),
+            OfficialKey::Supported("aria2-min-split-size")
+        );
+        assert_eq!(
+            map_official_key("use-sqlite-cache"),
+            OfficialKey::Supported("use_sqlite_cache")
+        );
+        assert_eq!(map_official_key("root_path"), OfficialKey::MachineSpecific);
+        assert_eq!(map_official_key("root-path"), OfficialKey::MachineSpecific);
+        assert_eq!(map_official_key("scoop_repo"), OfficialKey::Unsupported);
+        assert_eq!(
+            map_official_key("aria2-warning-enabled"),
+            OfficialKey::Unsupported
         );
 
         assert_eq!(
