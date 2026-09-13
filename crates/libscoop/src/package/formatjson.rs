@@ -88,11 +88,11 @@ pub struct FormatReport {
 /// Format every manifest under `dir`, filtered by `app` patterns.
 ///
 /// Uses the same app-filtering semantics as `checkhashes` / `checkver` /
-/// `checkurls` (`manifest_walker::discover_matching` / `matches_any_glob`):
-/// a first pattern of `"*"` matches everything, otherwise each stem must
-/// match at least one pattern (glob `*`/`?` supported, plain patterns match
-/// exactly). `package.json` is skipped, and results are processed in sorted
-/// path order.
+/// `checkurls` / `missing_checkver` (`manifest_walker::discover_matching` /
+/// `matches_any_glob`): a first pattern of `"*"` matches everything, otherwise
+/// each stem must match at least one pattern (glob `*`/`?` supported, matching
+/// case-insensitive, a trailing `.json` on the pattern ignored). `package.json`
+/// is skipped, and results are processed in sorted path order.
 ///
 /// Per-file failures are collected into [`FormatReport::errors`] instead of
 /// aborting the whole batch.

@@ -234,7 +234,7 @@ cmd:
   shim_header_is_hidden: "IsHidden"
   shim_true: "True"
   shim_false: "False"
-  missing_checkver_scan: "Scanned %{total} manifests: %{missing} missing checkver, %{noauto} missing autoupdate."
+  missing_checkver_scan: "Scanned %{total} manifests: %{missing} missing checkver, %{noauto} missing autoupdate, %{unparsable} unparsable."
   missing_checkver_all: "All manifests have checkver and autoupdate."
   home_not_found: "Could not find package named '%{query}'."
   home_multiple: "Found multiple packages named '%{query}':"
@@ -701,7 +701,7 @@ cli_help:
   formatjson:
     about: Format manifest JSON files in a bucket directory
     args:
-      app: "Specific app(s) to format (supports wildcards, default: all)"
+      app: "Specific app(s) to format (wildcards and .json optional, case-insensitive; default: all)"
       dir: Bucket directory to scan for manifests
   health:
     about: Check for potential problems with installed packages
@@ -770,8 +770,9 @@ cli_help:
   missing_checkver:
     about: Check bucket manifests missing checkver and autoupdate
     args:
+      app: "Specific app(s) to check (wildcards and .json optional, case-insensitive; default: all)"
       dir: Bucket directory to scan for manifests
-      supported: Only show manifests that have checkver/autoupdate (inverse)
+      skip_supported: Skip manifests that have both checkver and autoupdate
   prefix:
     args:
       package: Name of the package

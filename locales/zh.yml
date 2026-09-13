@@ -234,7 +234,7 @@ cmd:
   shim_header_is_hidden: "已隐藏"
   shim_true: "是"
   shim_false: "否"
-  missing_checkver_scan: "已扫描 %{total} 个清单: %{missing} 缺少 checkver, %{noauto} 缺少 autoupdate。"
+  missing_checkver_scan: "已扫描 %{total} 个清单: %{missing} 缺少 checkver, %{noauto} 缺少 autoupdate, %{unparsable} 无法解析。"
   missing_checkver_all: "所有清单都有 checkver 和 autoupdate。"
   home_not_found: "找不到名为 '%{query}' 的包。"
   home_multiple: "找到多个名为 '%{query}' 的包:"
@@ -698,7 +698,7 @@ cli_help:
   formatjson:
     about: 格式化仓库目录中的清单 JSON 文件
     args:
-      app: "要格式化的特定应用（支持通配符，默认为全部）"
+      app: "要格式化的特定应用（通配符与 .json 后缀可省略，大小写不敏感；默认为全部）"
       dir: 要扫描清单的仓库目录
   health:
     about: 检查已安装包的潜在问题
@@ -766,8 +766,9 @@ cli_help:
   missing_checkver:
     about: 检查缺少 checkver 和 autoupdate 的仓库清单
     args:
+      app: 要检查的特定应用（通配符与 .json 后缀可省略，大小写不敏感；默认为全部）
       dir: 要扫描清单的仓库目录
-      supported: 仅显示具有 checkver/autoupdate 的清单（反向筛选）
+      skip_supported: 跳过同时具有 checkver 和 autoupdate 的清单
   prefix:
     args:
       package: 包名称
