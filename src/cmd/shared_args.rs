@@ -16,7 +16,7 @@
 //! [`QueryArgs`] is the same idea for query operations (search etc.).
 
 use libscoop::{QueryOption, Session, SyncOption};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Shared arguments for sync operations (install, update, upgrade, reinstall, etc.).
 ///
@@ -123,6 +123,31 @@ pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crat
         )));
     }
     Ok(())
+}
+
+/// Resolve the bucket-scan directory for a run that writes to disk.
+///
+/// `-d/--dir` defaults to `.` only for read-only runs. As soon as a run
+/// rewrites manifests the target must be explicit, because the scan is a
+/// recursive `*.json` walk (`libscoop::package::manifest_walker`) that
+/// excludes only `package.json` and never checks whether a file looks like a
+/// Scoop manifest: a bare `hok formatjson` in a source checkout rewrites
+/// `tsconfig.json`, `package-lock.json`, everything under `target/`, and the
+/// user's own `config.json`. Upstream enforces the same thing by declaring
+/// `-Dir` `Mandatory = $true` (`bin/formatjson.ps1`, `bin/checkhashes.ps1`,
+/// `bin/checkurls.ps1`, `bin/missing-checkver.ps1`) or by throwing
+/// (`bin/checkver.ps1:85`); hok states the reason instead of only reporting a
+/// missing parameter. `cmd` names the command in that message.
+pub(crate) fn write_dir(dir: Option<PathBuf>, cmd: &str) -> crate::Result<PathBuf> {
+    dir.ok_or_else(|| {
+        anyhow::anyhow!(hok_i18n::t!("cmd.dir_required_for_write", cmd = cmd).to_string())
+    })
+}
+
+/// Resolve the bucket-scan directory for a read-only run: `-d/--dir` defaults
+/// to the current directory, exactly as before the write guard existed.
+pub(crate) fn scan_dir(dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Validate that `dir` is an existing directory, printing a localized error

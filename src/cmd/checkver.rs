@@ -5,15 +5,18 @@ use libscoop::package::checkver::{self, ReportSeverity};
 use libscoop::Session;
 use std::path::PathBuf;
 
-use crate::cmd::shared_args::validate_dir;
+use crate::cmd::shared_args::{scan_dir, validate_dir, write_dir};
 use crate::{output, Result};
 
 /// Check manifest for a newer version
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Bucket directory to scan for manifests
-    #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    ///
+    /// Defaults to the current directory, but required with `--update`/
+    /// `--force-update` (which rewrite manifests) or hok refuses to run.
+    #[arg(short = 'd', long)]
+    dir: Option<PathBuf>,
 
     /// Specific app(s) to check (supports wildcards, default: all)
     #[arg(default_value = "*")]
@@ -41,10 +44,19 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    validate_dir(&args.dir)?;
+    // `--update` and `--force-update` both rewrite manifests (`--force-update`
+    // implies `--update`, like upstream's `if ($ForceUpdate) { $Update = $true }`
+    // in `bin/checkver.ps1:404`), so either one demands an explicit target.
+    // A plain check only reads, and keeps the current-directory default.
+    let dir = if args.update || args.force_update {
+        write_dir(args.dir, "checkver")?
+    } else {
+        scan_dir(args.dir)
+    };
+    validate_dir(&dir)?;
 
     let options = checkver::CheckverOptions {
-        dir: args.dir,
+        dir,
         app: args.app,
         update: args.update,
         force_update: args.force_update,

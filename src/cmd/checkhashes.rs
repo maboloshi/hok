@@ -15,15 +15,18 @@ use libscoop::package::checkhashes::{self, CheckHashesStatus};
 use libscoop::Session;
 use std::path::PathBuf;
 
-use crate::cmd::shared_args::validate_dir;
+use crate::cmd::shared_args::{scan_dir, validate_dir, write_dir};
 use crate::{output, Result};
 
 /// Verify and update manifest hashes
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Bucket directory to scan for manifests
-    #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    ///
+    /// Defaults to the current directory, but required with `--update`/
+    /// `--force` (which rewrite manifests) or hok refuses to run.
+    #[arg(short = 'd', long)]
+    dir: Option<PathBuf>,
 
     /// Specific app(s) to check (supports wildcards, default: all)
     ///
@@ -64,10 +67,19 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    validate_dir(&args.dir)?;
+    // `--update` and `--force` both rewrite manifests (`--force` implies
+    // `--update`, like upstream's `if ($ForceUpdate) { $Update = $true }` in
+    // `bin/checkhashes.ps1:52`), so either one demands an explicit target.
+    // A plain check only reads, and keeps the current-directory default.
+    let dir = if args.update || args.force {
+        write_dir(args.dir, "checkhashes")?
+    } else {
+        scan_dir(args.dir)
+    };
+    validate_dir(&dir)?;
 
     let options = checkhashes::CheckhashesOptions {
-        dir: args.dir,
+        dir,
         app: args.app,
         update: args.update,
         force: args.force,

@@ -79,6 +79,35 @@ Options:
       --detail   Show detailed operation information for debugging
 ```
 
+### Runs that write to disk require an explicit `-d`
+
+`-d`/`--dir` still defaults to `.` (the current directory) — but **not for a run
+that writes**. `formatjson`, and `checkhashes`/`checkver` with `-u/--update` or
+`-f/--force`/`--force-update`, now refuse to start without `-d`:
+
+```console
+$ hok formatjson
+error: formatjson writes to disk, so the target must be given explicitly: pass -d <dir>. (Read-only runs default to the current directory; a write run never scans it implicitly.)
+$ hok formatjson -d ./bucket
+Formatted 1 manifest(s).
+```
+
+This is a **breaking change** from previous hok releases, which silently scanned
+the current directory. The reason is that the scan behind these commands
+(`manifest_walker::discover`) collects *every* `*.json` file in the tree —
+`package.json` is the only exclusion — and `formatjson` does not check whether a
+file looks like a Scoop manifest. Run in a source checkout, a bare
+`hok formatjson` rewrote `tsconfig.json`, `package-lock.json`, everything under
+`target/` and even `~/.config/hok/config.json`. Upstream Scoop avoids this by
+declaring `-Dir` `Mandatory = $true` (`bin/formatjson.ps1`,
+`bin/checkhashes.ps1`, `bin/checkurls.ps1`, `bin/missing-checkver.ps1`) or by
+throwing (`bin/checkver.ps1`).
+
+Read-only runs are untouched: `checkurls`, `missing-checkver`, a plain
+`checkhashes` (no `-u`/`-f`) and a plain `checkver` (no `-u`/`-f`) all keep
+scanning `.` when `-d` is omitted. That is a deliberate difference from
+upstream, which requires `-Dir` for those too.
+
 ### `hok checkhashes` and the download cache
 
 By default `checkhashes` downloads every URL again for each run and deletes its

@@ -181,6 +181,7 @@ cmd:
   depends_not_found: "找不到名为 '%{query}' 的包。"
   reset_app_missing: "缺少 <app>。使用 'hok reset <app>' 或 'hok reset -a' 重置所有应用。"
   dir_not_found: "错误: '%{path}' 不是目录"
+  dir_required_for_write: "%{cmd} 会写盘，因此必须显式指定目标：请传入 -d <目录>。（只读运行默认使用当前目录；写盘运行不会隐式扫描它。）"
   err_download: "下载失败: %{e}"
   formatjson_none: "没有清单需要格式化。"
   formatjson_count: "已格式化 %{count} 个清单。"
@@ -548,7 +549,9 @@ cli_help:
       cache: |-
         对下载的文件使用缓存目录
         默认为临时目录，运行结束时删除，除非给出 `--keep-cache`。
-      dir: 要扫描清单的仓库目录
+      dir: |-
+        要扫描清单的仓库目录
+        默认为当前目录，但配合 `--update`/`--force`（会重写清单）时必须显式给出，否则 hok 拒绝运行。
       force: |-
         即使哈希匹配也强制更新清单
         该标志下始终重新下载，即使同时给出 `--keep-cache`。
@@ -570,7 +573,9 @@ cli_help:
     about: 检查清单是否有新版本
     args:
       app: "要检查的特定应用（支持通配符，默认为全部）"
-      dir: 要扫描清单的仓库目录
+      dir: |-
+        要扫描清单的仓库目录
+        默认为当前目录，但配合 `--update`/`--force-update`（会重写清单）时必须显式给出，否则 hok 拒绝运行。
       update: 用新版本更新清单并触发自动更新
       force_update: 即使版本不变也强制更新（用于哈希更新场景）
       skip_updated: 跳过已是最新的清单
@@ -705,7 +710,9 @@ cli_help:
     about: 格式化仓库目录中的清单 JSON 文件
     args:
       app: "要格式化的特定应用（通配符与 .json 后缀可省略，大小写不敏感；默认为全部）"
-      dir: 要扫描清单的仓库目录
+      dir: |-
+        要扫描清单的仓库目录
+        必填：该命令会原地重写它找到的每个清单，而扫描是递归收集所有 `*.json`，无法分辨清单与其它 JSON 文件。
   health:
     about: 检查已安装包的潜在问题
   hold:

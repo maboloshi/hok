@@ -181,6 +181,7 @@ cmd:
   depends_not_found: "Could not find package named '%{query}'."
   reset_app_missing: "<app> missing. Use 'hok reset <app>' or 'hok reset -a' to reset all apps."
   dir_not_found: "error: '%{path}' is not a directory"
+  dir_required_for_write: "%{cmd} writes to disk, so the target must be given explicitly: pass -d <dir>. (Read-only runs default to the current directory; a write run never scans it implicitly.)"
   err_download: "download failed: %{e}"
   formatjson_none: "No manifests needed formatting."
   formatjson_count: "Formatted %{count} manifest(s)."
@@ -548,7 +549,9 @@ cli_help:
       cache: |-
         Use cache directory for downloaded files
         Defaults to a temporary directory that is removed at the end of the run unless `--keep-cache` is given.
-      dir: Bucket directory to scan for manifests
+      dir: |-
+        Bucket directory to scan for manifests
+        Defaults to the current directory, but required with `--update`/`--force` (which rewrite manifests) or hok refuses to run.
       force: |-
         Force update manifest even when hash matches
         Downloads are always re-fetched with this flag, even together with `--keep-cache`.
@@ -570,7 +573,9 @@ cli_help:
     about: Check manifest for a newer version
     args:
       app: "Specific app(s) to check (supports wildcards, default: all)"
-      dir: Bucket directory to scan for manifests
+      dir: |-
+        Bucket directory to scan for manifests
+        Defaults to the current directory, but required with `--update`/`--force-update` (which rewrite manifests) or hok refuses to run.
       update: Update manifest with new version and trigger autoupdate
       force_update: Force update even when version is unchanged (useful for hash updates)
       skip_updated: Skip manifests that are already up-to-date
@@ -708,7 +713,9 @@ cli_help:
     about: Format manifest JSON files in a bucket directory
     args:
       app: "Specific app(s) to format (wildcards and .json optional, case-insensitive; default: all)"
-      dir: Bucket directory to scan for manifests
+      dir: |-
+        Bucket directory to scan for manifests
+        Required: this command rewrites every manifest it finds in place, and the scan is a recursive `*.json` walk that cannot tell a manifest from any other JSON file.
   health:
     about: Check for potential problems with installed packages
   hold:

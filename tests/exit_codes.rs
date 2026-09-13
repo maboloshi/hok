@@ -12,7 +12,7 @@
 //! empty Scoop root, where every query is deterministic and nothing is
 //! installed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A throwaway Scoop root plus the environment overrides that keep the test
@@ -20,6 +20,10 @@ use std::process::Command;
 struct Env {
     root: PathBuf,
     home: PathBuf,
+    /// An empty working directory: the bucket-scanning commands default `-d`
+    /// to `.`, so running them from a fixture directory keeps the scan
+    /// deterministic and offline instead of walking the source checkout.
+    cwd: PathBuf,
 }
 
 impl Env {
@@ -28,9 +32,11 @@ impl Env {
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("scoop");
         let home = base.join("home");
+        let cwd = base.join("cwd");
         std::fs::create_dir_all(&root).expect("create test root");
         std::fs::create_dir_all(&home).expect("create test home");
-        Env { root, home }
+        std::fs::create_dir_all(&cwd).expect("create test cwd");
+        Env { root, home, cwd }
     }
 
     /// Run `hok <args>` against this environment and return the exit code.
@@ -39,18 +45,38 @@ impl Env {
     /// reaches the global scope (e.g. `shim list -g`) never reads the machine's
     /// real global installation.
     fn code(&self, args: &[&str]) -> i32 {
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-            .args(args)
+        self.command(args)
+            .output()
+            .expect("run hok")
+            .status
+            .code()
+            .unwrap_or(-1)
+    }
+
+    /// Run `hok <args>` with this environment's empty fixture directory as the
+    /// working directory; returns `(code, stdout + stderr)`.
+    fn run_in(&self, cwd: &Path, args: &[&str]) -> (i32, String) {
+        let out = self
+            .command(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run hok");
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        (out.status.code().unwrap_or(-1), text)
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hok"));
+        cmd.args(args)
             .env("SCOOP", &self.root)
             .env("SCOOP_GLOBAL", self.root.join("global"))
             .env("USERPROFILE", &self.home)
             .env("HOME", &self.home)
             .env("APPDATA", self.home.join("AppData"))
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL")
-            .output()
-            .expect("run hok");
-        out.status.code().unwrap_or(-1)
+            .env_remove("HOK_LOG_LEVEL");
+        cmd
     }
 }
 
@@ -156,4 +182,175 @@ fn shim_flag_positions_and_patterns() {
     assert_eq!(env.code(&["shim", "list", "*", "-g"]), 0);
 
     assert_eq!(env.code(&["shim", "add", "onlyname"]), 1);
+}
+
+/// A run that rewrites manifests must name its target: `-d/--dir` still
+/// defaults to `.`, but never for a write.
+///
+/// The scan behind these commands (`manifest_walker::discover`) collects every
+/// `*.json` under the directory — `package.json` is the only exclusion — and
+/// `formatjson` never checks whether a file looks like a Scoop manifest, so a
+/// bare `hok formatjson` used to rewrite `tsconfig.json`, `package-lock.json`,
+/// `target/**` and the user's own `config.json` in place. Upstream declares
+/// `-Dir` `Mandatory = $true` for the same reason (`bin/formatjson.ps1`,
+/// `bin/checkhashes.ps1`, `bin/checkurls.ps1`, `bin/missing-checkver.ps1`) or
+/// throws (`bin/checkver.ps1:85`); hok only insists when the run writes.
+///
+/// `--force`/`--force-update` imply the update and therefore also write
+/// (upstream `if ($ForceUpdate) { $Update = $true }`, `bin/checkhashes.ps1:52`
+/// and `bin/checkver.ps1:404`), so both switches are covered.
+#[test]
+fn write_runs_require_an_explicit_dir() {
+    let env = Env::new("dir_guard");
+    let cwd = env.cwd.clone();
+
+    // A decoy tree: exactly the collateral a bare `formatjson` used to destroy.
+    std::fs::write(cwd.join("tsconfig.json"), r#"{ "compilerOptions": {} }"#).unwrap();
+    std::fs::write(cwd.join("package-lock.json"), r#"{"a":1}"#).unwrap();
+    std::fs::create_dir_all(cwd.join("target")).unwrap();
+    std::fs::write(cwd.join("target").join("out.json"), r#"{"b":2}"#).unwrap();
+
+    for args in [
+        vec!["formatjson"],
+        vec!["checkhashes", "--update"],
+        vec!["checkhashes", "--force"],
+        vec!["checkver", "--update"],
+        vec!["checkver", "--force-update"],
+    ] {
+        let (code, text) = env.run_in(&cwd, &args);
+        let invocation = args.join(" ");
+        assert_eq!(
+            code, 1,
+            "`hok {invocation}` must be a usage error without -d: {text}"
+        );
+        assert!(
+            text.contains("-d"),
+            "the error must say which target to pass: {text}"
+        );
+        assert!(
+            text.contains(args[0]),
+            "the error must name the command (`{invocation}`): {text}"
+        );
+    }
+
+    // The guard fires before the walk: not one byte of the decoy tree moved.
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("tsconfig.json")).unwrap(),
+        r#"{ "compilerOptions": {} }"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("package-lock.json")).unwrap(),
+        r#"{"a":1}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("target").join("out.json")).unwrap(),
+        r#"{"b":2}"#
+    );
+}
+
+/// ... and the same commands still work when the target is explicit.
+#[test]
+fn write_runs_accept_an_explicit_dir() {
+    let env = Env::new("dir_guard_ok");
+    let bucket = env.cwd.join("bucket");
+    std::fs::create_dir_all(&bucket).unwrap();
+    // `formatjson` rewrites this in place.
+    std::fs::write(
+        bucket.join("fmt.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT"}"#,
+    )
+    .unwrap();
+    // `checkhashes` just reports a manifest without URLs (nothing to download).
+    std::fs::write(
+        bucket.join("hashes.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT"}"#,
+    )
+    .unwrap();
+    // `checkver` needs an entry that declares `checkver`, otherwise the run has
+    // nothing to wait for (see the read-only test below); a refused loopback
+    // URL keeps it offline and fast.
+    std::fs::write(
+        bucket.join("ver.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT","checkver":{"url":"http://127.0.0.1:1/"}}"#,
+    )
+    .unwrap();
+    let dir = bucket.to_str().unwrap().to_string();
+
+    for args in [
+        vec!["formatjson", "-d", &dir],
+        vec!["checkhashes", "--update", "-d", &dir],
+        vec!["checkver", "--update", "-d", &dir, "-t", "1"],
+    ] {
+        let (code, text) = env.run_in(&env.cwd, &args);
+        let invocation = args.join(" ");
+        // These runs may legitimately fail (no URLs, refused connection); the
+        // assertion is that the write guard stays out of the way.
+        assert!(
+            !text.contains("writes to disk"),
+            "`hok {invocation}` must get past the -d guard: {text}"
+        );
+        assert_ne!(code, 1, "`hok {invocation}` failed: {text}");
+    }
+
+    let formatted = std::fs::read_to_string(bucket.join("fmt.json")).unwrap();
+    assert!(
+        formatted.contains("\r\n"),
+        "manifest not rewritten: {formatted:?}"
+    );
+}
+
+/// Read-only runs keep the `.` default: the guard must not leak into them.
+///
+/// This is a deliberate deviation from upstream, which requires `-Dir` for
+/// `checkurls` / `missing-checkver` and for a plain `checkhashes` too.
+///
+/// The fixture directory is deliberately not empty: `hok checkver` hangs when
+/// *no* manifest declares `checkver` (pre-existing at base `2a18d5b`, unrelated
+/// to this guard), so it gets an entry pointing at a refused loopback URL —
+/// which also proves the `.` default really was scanned, because the stem shows
+/// up in the report. `urls.json` is the one `checkurls` can actually report.
+#[test]
+fn read_only_runs_still_default_to_the_current_directory() {
+    let env = Env::new("dir_default");
+    let cwd = env.cwd.clone();
+    std::fs::write(
+        cwd.join("plain.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cwd.join("ver.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT","checkver":{"url":"http://127.0.0.1:1/"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        cwd.join("urls.json"),
+        r#"{"version":"1.0","homepage":"https://e.c","license":"MIT","url":"http://127.0.0.1:1/x.zip","hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+    )
+    .unwrap();
+
+    // command → a stem that only shows up if the current directory was scanned
+    for (args, expected) in [
+        (vec!["checkhashes"], "ver"),
+        (vec!["checkurls"], "urls"),
+        (vec!["missing-checkver"], "plain"),
+    ] {
+        let (code, text) = env.run_in(&cwd, &args);
+        let invocation = args.join(" ");
+        assert_eq!(
+            code, 0,
+            "`hok {invocation}` must still run with -d defaulting to `.`: {text}"
+        );
+        assert!(
+            text.contains(expected),
+            "`hok {invocation}` did not scan the current directory: {text}"
+        );
+    }
+
+    let (code, text) = env.run_in(&cwd, &["checkver", "-t", "1"]);
+    assert_eq!(code, 0, "`hok checkver` must still run: {text}");
+    assert!(
+        text.contains("ver"),
+        "`hok checkver` did not scan the current directory: {text}"
+    );
 }

@@ -3,7 +3,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cmd::shared_args::validate_dir;
+use crate::cmd::shared_args::{validate_dir, write_dir};
 use crate::{output, Result};
 use libscoop::package::formatjson;
 
@@ -11,8 +11,12 @@ use libscoop::package::formatjson;
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Bucket directory to scan for manifests
-    #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    ///
+    /// Required: this command rewrites every manifest it finds in place, and
+    /// the scan is a recursive `*.json` walk that cannot tell a manifest from
+    /// any other JSON file.
+    #[arg(short = 'd', long)]
+    dir: Option<PathBuf>,
 
     /// Specific app(s) to format (supports wildcards, default: all)
     #[arg(default_value = "*")]
@@ -20,10 +24,12 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args) -> Result<()> {
-    validate_dir(&args.dir)?;
-    let dir = &args.dir;
+    // Always a write: every manifest found under `dir` is rewritten in place,
+    // so the target may never default to the current directory.
+    let dir = write_dir(args.dir, "formatjson")?;
+    validate_dir(&dir)?;
 
-    let report = formatjson::format_manifests(dir, &args.app)?;
+    let report = formatjson::format_manifests(&dir, &args.app)?;
 
     for msg in &report.errors {
         output::err(msg);
