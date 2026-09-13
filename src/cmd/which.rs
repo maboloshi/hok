@@ -1,9 +1,9 @@
-//! Locate the shim or executable of a package.
+//! Locate the shim or executable of a command.
 
 use clap::Parser;
 use libscoop::{Session, package};
 
-use crate::{output, ExitCode, Result};
+use crate::{ExitCode, Result, output};
 
 /// Show the shim location(s) of a command
 #[derive(Debug, Parser)]
@@ -15,27 +15,22 @@ pub struct Args {
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let command = args.command;
-    let mut found = false;
 
-    // Check for .cmd, .ps1, .exe shims
-    let paths = package::shim::shim_paths(session, &command)?;
-    for (_, path) in &paths {
-        println!("{}", path.display());
-        found = true;
+    // Upstream `scoop which` prints the path that would actually run
+    // (libexec/scoop-which.ps1:12-19 via `Get-CommandPath`): the target a
+    // Scoop shim points at, a Scoop alias script, or the program itself when
+    // it is found on `PATH`. `command_path` is the one implementation of that
+    // resolution (it classifies both the user and the global shims folder).
+    match package::shim::command_path(session, &command) {
+        Some(path) => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        None => {
+            // Not on `PATH`, not a Scoop shim, or a shim whose target is gone
+            // — upstream warns and exits 2 for all three.
+            output::warn(hok_i18n::t!("cmd.which_not_found", command = command));
+            Err(ExitCode(2).into())
+        }
     }
-
-    if !found {
-        // Scoop's `which` resolves only a real shim/executable file — never an
-        // app directory. `shim_paths` above already enumerated every candidate
-        // (.exe/.cmd/.ps1); reaching here means the command is not a shim, is a
-        // broken shim, or is not an installed app's command. Match Scoop's
-        // stream/severity (a warning) and its documented exit code 2.
-        output::warn(hok_i18n::t!(
-            "cmd.which_not_found",
-            command = command
-        ));
-        return Err(ExitCode(2).into());
-    }
-
-    Ok(())
 }

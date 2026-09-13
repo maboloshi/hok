@@ -374,15 +374,67 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     Ok(())
 }
 
-/// Resolve a bare command name through `PATH` (upstream `Get-Command`).
-fn resolve_in_path(name: &str) -> Option<String> {
+/// The extensions [`resolve_in_path`] tries, in the host's resolution order.
+///
+/// `.ps1` comes first, then `%PATHEXT%` in its declared order, then the bare
+/// name (see [`resolve_in_path`] for the measurements behind that order).
+/// `%PATHEXT%` is normalized to lower-case bare extensions (leading `.`
+/// stripped); when it is unset or empty the list falls back to
+/// `exe;cmd;bat;ps1`.
+fn path_extensions() -> Vec<String> {
+    let raw = std::env::var_os("PATHEXT").unwrap_or_default();
+    let mut extensions: Vec<String> = raw
+        .to_string_lossy()
+        .split(';')
+        .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|ext| !ext.is_empty())
+        .collect();
+    if extensions.is_empty() {
+        extensions = ["exe", "cmd", "bat", "ps1"]
+            .map(str::to_owned)
+            .into_iter()
+            .collect();
+    }
+    // `.ps1` is not a PATHEXT application but an ExternalScript, and an
+    // ExternalScript outranks every application; move it (or add it) to the
+    // front so `scoop-*.ps1` alias scripts stay discoverable on a host whose
+    // `%PATHEXT%` does not mention `.ps1` (the usual case).
+    extensions.retain(|ext| ext != "ps1");
+    extensions.insert(0, "ps1".to_owned());
+    extensions
+}
+
+/// Resolve a bare command name through `PATH`, mirroring how the host finds
+/// external commands (upstream `Get-CommandPath`, `lib/core.ps1:512-517`).
+///
+/// This is hok's *simplified* stand-in for PowerShell's `Get-Command`. The
+/// simplification is deliberate and measured:
+///
+/// - extensions follow [`path_extensions`] (`.ps1`, then `%PATHEXT%`, then the
+///   bare name). Measured on Windows PowerShell 5.1 and pwsh 7: with
+///   `both.exe`, `both.cmd` and `both.ps1` in one directory, `Get-Command
+///   both` resolves to `both.ps1` (ExternalScript precedence); with `x` and
+///   `x.exe`, to `x.exe` (a PATHEXT match beats an extension-less file); an
+///   extension-less file alone is still found.
+/// - PowerShell aliases and functions are not modelled — hok is a native
+///   binary, not a PowerShell session, so it has neither to resolve.
+/// - the current directory is not searched; `Get-Command` does not search it
+///   either unless `.` is on `PATH`.
+///
+/// Returns the first existing candidate in `PATH` order.
+pub(crate) fn resolve_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
+    let extensions = path_extensions();
     for dir in std::env::split_paths(&path) {
-        for ext in ["", ".exe", ".cmd", ".bat", ".ps1"] {
-            let candidate = dir.join(format!("{name}{ext}"));
+        for ext in &extensions {
+            let candidate = dir.join(format!("{name}.{ext}"));
             if candidate.is_file() {
-                return Some(candidate.to_string_lossy().into_owned());
+                return Some(candidate);
             }
+        }
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     None
@@ -478,7 +530,9 @@ pub fn shim_info(session: &Session, shim_path: &Path) -> ShimInfo {
     // PowerShell's `-eq` on paths is case-insensitive; a name `Get-Command`
     // cannot resolve is hidden too (upstream compares against `$null`).
     let is_hidden = match resolve_in_path(&name) {
-        Some(found) => !found.eq_ignore_ascii_case(&path.to_string_lossy()),
+        Some(found) => !found
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&path.to_string_lossy()),
         None => true,
     };
 
@@ -562,7 +616,7 @@ pub fn add_custom(session: &Session, name: &str, target: &str, args: &[String]) 
     let target = if target.contains(['/', '\\']) {
         target.to_owned()
     } else if let Some(found) = resolve_in_path(target) {
-        found
+        found.to_string_lossy().into_owned()
     } else {
         target.to_owned()
     };
