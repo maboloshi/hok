@@ -667,6 +667,7 @@ cli_help:
   export:
     about: Export installed packages list
     args:
+      config: "Export the configuration too (upstream 'scoop export -c')"
       hok: Append hok's own extension (config and per-app state); Scoop ignores it, hok restores it exactly
   formatjson:
     about: Format manifest JSON files in a bucket directory

@@ -30,6 +30,16 @@
 //! documented app fields, so both variants are valid Scoopfiles — and the
 //! extension makes an hok → hok round trip lossless without parsing
 //! human-readable words back.
+//!
+//! # Configuration section
+//!
+//! With the `config` flag upstream's optional `config` section is prepended
+//! (`scoop export -c`, `libexec/scoop-export.ps1:10-16`): the settings both
+//! configs share, under upstream's names, with the machine-specific paths
+//! upstream strips left out. hok's own settings and the upstream ones it does
+//! not implement cannot appear there — the former are upstream's business to
+//! ignore, the latter have no value to export — and both travel in the `hok`
+//! extension instead.
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +56,15 @@ use crate::package::source::{SourceState, classify};
 use crate::package::{Package, QueryOption};
 use crate::{Session, bucket};
 
+/// Which optional sections [`build_export`] emits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ExportSections {
+    /// Upstream's `config` section (`scoop export -c`).
+    pub config: bool,
+    /// hok's own extension namespace (`hok export --hok`).
+    pub hok: bool,
+}
+
 /// Build the export document for every installed package.
 ///
 /// Both scopes are exported (local and global, mirroring upstream
@@ -55,15 +74,41 @@ use crate::{Session, bucket};
 /// # Errors
 ///
 /// Returns an error if listing buckets or querying installed packages fails.
-pub fn build_export(session: &Session, hok: bool) -> Fallible<Value> {
+pub fn build_export(session: &Session, sections: ExportSections) -> Fallible<Value> {
     let mut output = Map::new();
-    // The Scoop-compatible part comes first, in upstream's order.
+    // Upstream's own order: `config` first (`scoop-export.ps1:8-19`), then the
+    // buckets and apps, then hok's extension.
+    if sections.config {
+        output.insert("config".to_owned(), config_section(session)?);
+    }
     output.insert("buckets".to_owned(), Value::Array(buckets(session)?));
-    output.insert("apps".to_owned(), Value::Array(apps(session, hok)?));
-    if hok {
+    output.insert(
+        "apps".to_owned(),
+        Value::Array(apps(session, sections.hok)?),
+    );
+    if sections.hok {
         output.insert("hok".to_owned(), hok_section(session)?);
     }
     Ok(Value::Object(output))
+}
+
+/// Upstream's `config` section (`libexec/scoop-export.ps1:10-16`): the settings
+/// both configs share, under upstream's names.
+///
+/// Upstream dumps its whole `$scoopConfig` and removes the machine-specific
+/// paths. hok emits the shared settings it actually stores, so upstream can
+/// read the file back — and a setting left at its built-in default is not
+/// serialized at all (hok's own file omits it too), which keeps the importing
+/// machine's default in place.
+fn config_section(session: &Session) -> Fallible<Value> {
+    let config: Map<String, Value> = serde_json::from_str(&crate::config::list(session)?)?;
+    let mut section = Map::new();
+    for (key, value) in config {
+        if let Some(official) = crate::config::official_name(&key) {
+            section.insert(official.to_owned(), value);
+        }
+    }
+    Ok(Value::Object(section))
 }
 
 /// `buckets` — upstream `list_buckets` (`lib/buckets.ps1:104-121`).
@@ -348,7 +393,7 @@ mod tests {
         write_bucket_manifest(&root, "main", "app", MANIFEST);
         mark_installed(&root, "app", "main", MANIFEST, false);
 
-        let doc = build_export(&session, false).unwrap();
+        let doc = build_export(&session, ExportSections::default()).unwrap();
         assert!(doc["buckets"].is_array(), "buckets must be an array");
         assert!(doc["apps"].is_array(), "apps must be an array");
         assert!(doc.get("hok").is_none(), "no extension without the flag");
@@ -383,7 +428,14 @@ mod tests {
         )
         .unwrap();
 
-        let doc = build_export(&session, true).unwrap();
+        let doc = build_export(
+            &session,
+            ExportSections {
+                hok: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let app = entry_for(&doc, "held");
         assert_eq!(app["Info"], "Held package, 32bit");
         assert_eq!(app["Hok"]["Hold"], true);
@@ -410,7 +462,14 @@ mod tests {
         )
         .unwrap();
 
-        let doc = build_export(&session, true).unwrap();
+        let doc = build_export(
+            &session,
+            ExportSections {
+                hok: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(
             doc["hok"]["aliases"][0]["Name"], "rt",
             "aliases carry their name: {doc}"
@@ -439,7 +498,7 @@ mod tests {
         // An app directory with no version to resolve: a failed install.
         std::fs::create_dir_all(root.join("apps/broken")).unwrap();
 
-        let doc = build_export(&session, false).unwrap();
+        let doc = build_export(&session, ExportSections::default()).unwrap();
         let app = entry_for(&doc, "broken");
         assert_eq!(app["Info"], "Install failed");
         assert!(app["Version"].is_null());
@@ -458,7 +517,7 @@ mod tests {
         let generated = user_manifest(&session, "generated");
         mark_isolated(&root, "generated", &generated.display().to_string());
 
-        let doc = build_export(&session, false).unwrap();
+        let doc = build_export(&session, ExportSections::default()).unwrap();
         assert_eq!(
             entry_for(&doc, "byurl")["Source"],
             "https://example.com/byurl.json"
@@ -495,7 +554,14 @@ mod tests {
         mark_installed(&root, "local-app", "main", MANIFEST, false);
         mark_installed(&global_root, "global-app", "main", MANIFEST, false);
 
-        let doc = build_export(&session, true).unwrap();
+        let doc = build_export(
+            &session,
+            ExportSections {
+                hok: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let apps = doc["apps"].as_array().unwrap();
         assert_eq!(apps.len(), 2, "both scopes must be exported: {doc}");
 
@@ -506,6 +572,58 @@ mod tests {
         let global = entry_for(&doc, "global-app");
         assert_eq!(global["Info"], INFO_GLOBAL);
         assert_eq!(global["Hok"]["Global"], true);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The `config` flag prepends upstream's section: the shared settings under
+    /// upstream's names, with the hok-only and machine-specific keys (the ones
+    /// upstream's own `-c` strips) left out.
+    #[test]
+    fn config_section_carries_the_shared_settings() {
+        let root = tmpdir("export_config_section");
+        let session = test_session(&root);
+        // `test_session` pins root_path/cache_path in the config file, so the
+        // machine-specific filter below is exercised for real.
+        crate::config::set(&session, "use_sqlite_cache", "true").unwrap();
+        crate::config::set(&session, "no_junction", "true").unwrap();
+        crate::config::set(&session, "aria2-split", "9").unwrap();
+        crate::config::set(&session, "jobs", "9").unwrap();
+
+        let doc = build_export(
+            &session,
+            ExportSections {
+                config: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let config = doc["config"].as_object().expect("config section");
+        assert_eq!(config["use_sqlite_cache"], true);
+        assert_eq!(config["no_junction"], true);
+        assert_eq!(config["aria2-split"], 9);
+        assert!(
+            !config.contains_key("jobs"),
+            "a hok-only key leaked into upstream's section: {config:?}"
+        );
+        for machine_specific in [
+            "root_path",
+            "cache_path",
+            "global_path",
+            "last_update",
+            "alias",
+        ] {
+            assert!(
+                !config.contains_key(machine_specific),
+                "{machine_specific} leaked into upstream's section"
+            );
+        }
+
+        // Without the flag the section is absent, so a plain `hok export`
+        // stays exactly the document upstream produces.
+        let plain = build_export(&session, ExportSections::default()).unwrap();
+        assert!(plain.get("config").is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

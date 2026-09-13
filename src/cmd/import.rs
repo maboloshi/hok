@@ -15,11 +15,12 @@
 //!   path (`lib/buckets.ps1:112-115`) is skipped instead of handed to git.
 //! - The install runs with `AssumeYes` + `IgnoreFailure` (one non-interactive
 //!   restore), where upstream installs app by app without `-y`.
-//! - Upstream's `config` keys are mapped onto hok's names and reported when hok
-//!   has no equivalent, instead of being written blindly.
+//! - Upstream's `config` keys are mapped onto hok's names (by their canonical
+//!   upstream spelling, see [`libscoop::config::map_official_key`]) and
+//!   reported when hok has no equivalent, instead of being written blindly.
 //! - A Scoopfile's `hok.config` extension (hok's own keys, written by
-//!   `hok export --hok`) is restored verbatim; emitting *upstream's* key names
-//!   (`scoop export -c`) is still open and belongs to the config work (S4).
+//!   `hok export --hok`) is restored verbatim; upstream's key names come from
+//!   `hok export -c` and land in the `config` section this command reads.
 
 use clap::Parser;
 use libscoop::package::import::{self, ImportFile};
