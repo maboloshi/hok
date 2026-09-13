@@ -14,11 +14,18 @@ struct Row {
     size: String,
 }
 
+// Upstream has no `list`/`remove` subcommands: `scoop cache` / `scoop cache
+// <app>` list, and only the literal `rm` removes (`scoop-cache.ps1:61-71`).
+// hok keeps explicit subcommands but mirrors that default — a bare
+// `hok cache` and `hok cache <app>` both list.
 /// Package cache management
 #[derive(Debug, Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    /// App name(s) whose caches are listed (default: all)
+    app: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -41,7 +48,8 @@ pub enum Command {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    match args.command {
+    let command = args.command.unwrap_or(Command::List { app: args.app });
+    match command {
         Command::List { app } => {
             let files = cache::list(session, &app)?;
             let mut total_size: u64 = 0;

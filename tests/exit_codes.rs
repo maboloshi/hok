@@ -62,7 +62,12 @@ fn help_screens_and_usage_errors() {
 
     assert_eq!(env.code(&["not-a-command"]), 1, "unknown subcommand");
     assert_eq!(env.code(&["install"]), 1, "missing <app>");
-    assert_eq!(env.code(&["cache"]), 1, "missing subcommand");
+    // `scoop cleanup` without an app is a usage error
+    // (`scoop-cleanup.ps1:24`), while a bare `scoop cache` lists
+    // (`scoop-cache.ps1:61-71`).
+    assert_eq!(env.code(&["cleanup"]), 1, "missing <app>");
+    assert_eq!(env.code(&["cache", "rm"]), 1, "missing <app(s)>");
+    assert_eq!(env.code(&["cache"]), 0, "bare cache lists");
 }
 
 /// Query commands against an empty installation.

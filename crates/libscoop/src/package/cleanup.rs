@@ -3,6 +3,9 @@
 //! Removes all version directories except the current one for each package,
 //! mirroring Scoop's `cleanup` command.
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
 use crate::{Error, Session, cache, error::Fallible, internal, package::install_state};
 
 /// Behaviour knobs for [`cleanup`].
@@ -14,6 +17,92 @@ pub struct CleanupOptions {
     /// Also drop each app's outdated download cache, keeping its current
     /// version — upstream `cleanup -k` (`scoop-cleanup.ps1:32-33`).
     pub cache: bool,
+}
+
+/// The app directory in an explicit scope: upstream `appdir $app $global`
+/// (`lib/core.ps1`), which takes the scope as a parameter rather than reading
+/// the session's current one.
+fn scope_app_dir(session: &Session, name: &str, global: bool) -> PathBuf {
+    let config = session.config();
+    let root = if global {
+        config.global_path()
+    } else {
+        config.root_path()
+    };
+    root.join("apps").join(name)
+}
+
+/// Whether an existing app directory holds a usable install — upstream `failed`
+/// (`lib/core.ps1:404-409`).
+///
+/// A version must resolve, and in junction mode the `current` junction must be
+/// present: a directory whose junction was lost mid-upgrade is "not installed
+/// correctly" even though a version directory survives. A missing
+/// `install.json` is *not* a failure here — upstream's `Select-CurrentVersion`
+/// reads the version from `current/manifest.json`.
+fn install_failed(pkg_dir: &Path, no_junction: bool) -> bool {
+    let installed = install_state::resolve_current_version(pkg_dir, no_junction).is_some();
+    let has_current = no_junction || pkg_dir.join("current").exists();
+    !(has_current && installed)
+}
+
+/// Resolve the named apps a `cleanup` invocation may act on, reporting the
+/// ones it cannot — upstream `Confirm-InstallationStatus`
+/// (`lib/core.ps1:1084-1121`).
+///
+/// `global` is the requested scope. An app installed only in the *other* scope
+/// is reported with upstream's "try again with/without `--global`" hints
+/// instead of being cleaned; an app directory that exists but has no usable
+/// install is reported as not installed correctly. The return value holds the
+/// cleanable names in `global`, deduplicated and in input order.
+pub fn confirm_installation_status(
+    session: &Session,
+    names: &[String],
+    global: bool,
+) -> Vec<String> {
+    let no_junction = session.config().no_junction();
+    let mut installed = Vec::new();
+    let mut seen = HashSet::new();
+
+    for name in names {
+        // Upstream skips `scoop` itself and deduplicates the app list.
+        if name == "scoop" || !seen.insert(name.as_str()) {
+            continue;
+        }
+
+        let here = scope_app_dir(session, name, global);
+        if here.exists() {
+            if install_failed(&here, no_junction) {
+                session
+                    .output()
+                    .error(hok_i18n::t!("cmd.not_installed_correctly", name = name));
+            } else {
+                installed.push(name.clone());
+            }
+        } else if scope_app_dir(session, name, !global).exists() {
+            if global {
+                session.output().error(hok_i18n::t!(
+                    "cmd.cleanup_not_installed_globally",
+                    name = name
+                ));
+                session.output().warn(hok_i18n::t!("cmd.cleanup_try_local"));
+            } else {
+                session.output().error(hok_i18n::t!(
+                    "cmd.cleanup_not_installed_locally",
+                    name = name
+                ));
+                session
+                    .output()
+                    .warn(hok_i18n::t!("cmd.cleanup_try_global"));
+            }
+        } else {
+            session
+                .output()
+                .error(hok_i18n::t!("cmd.not_installed", name = name));
+        }
+    }
+
+    installed
 }
 
 /// Every installed app name in the session's current scope, excluding `scoop`
@@ -234,6 +323,62 @@ mod tests {
             cache.join("other#1.0#c.zip").exists(),
             "other apps' cache untouched"
         );
+    }
+
+    /// `Confirm-InstallationStatus`: only apps installed in the requested scope
+    /// are returned; duplicates and `scoop` are skipped, and a missing app is
+    /// reported (and dropped) instead of aborting the batch.
+    #[test]
+    fn confirm_installation_status_filters_named_apps() {
+        let (session, root) = setup("confirm_status");
+        crate::test_utils::mark_installed(&root.0, "app", "main", r#"{"version":"1.0.0"}"#, false);
+
+        let picked = confirm_installation_status(
+            &session,
+            &[
+                "app".to_owned(),
+                "app".to_owned(),
+                "ghost".to_owned(),
+                "scoop".to_owned(),
+            ],
+            false,
+        );
+
+        assert_eq!(picked, vec!["app".to_owned()]);
+    }
+
+    /// An app directory whose `current` junction is gone (an interrupted
+    /// upgrade) is not cleanable — upstream `failed` requires the junction —
+    /// so it is reported and dropped instead of being cleaned.
+    #[test]
+    fn confirm_installation_status_rejects_a_damaged_install() {
+        let (session, root) = setup("confirm_damaged");
+        let pkg = root.0.join("apps/app");
+        std::fs::create_dir_all(pkg.join("1.0.0")).unwrap();
+        std::fs::write(
+            pkg.join("1.0.0/install.json"),
+            r#"{"architecture":"64bit"}"#,
+        )
+        .unwrap();
+
+        let picked = confirm_installation_status(&session, &["app".to_owned()], false);
+
+        assert!(picked.is_empty(), "a damaged install must not be cleaned");
+    }
+
+    /// A resolvable `current` manifest is enough, even without `install.json`:
+    /// upstream reads the version from `current/manifest.json`, not from the
+    /// install metadata.
+    #[test]
+    fn confirm_installation_status_accepts_manifest_without_install_info() {
+        let (session, root) = setup("confirm_no_install_json");
+        let current = root.0.join("apps/app/current");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("manifest.json"), r#"{"version":"1.0.0"}"#).unwrap();
+
+        let picked = confirm_installation_status(&session, &["app".to_owned()], false);
+
+        assert_eq!(picked, vec!["app".to_owned()]);
     }
 
     #[test]

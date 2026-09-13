@@ -29,24 +29,32 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // --all or '*' overrides any specific app names
     let all = args.all || args.app.iter().any(|a| a == "*");
 
+    // Upstream refuses a bare `cleanup` rather than sweeping every app
+    // (`scoop-cleanup.ps1:24`).
+    if args.app.is_empty() && !args.all {
+        return Err(anyhow::anyhow!(hok_i18n::t!("cmd.cleanup_app_missing")));
+    }
+
     // Upstream requires elevation for any `--global` cleanup, including the
     // sweep-all form (`scoop-cleanup.ps1:26-28`).
     ensure_global(session, args.global, "cleanup")?;
 
-    // Cleanup is a maintenance operation; individual failures should not abort
-    // it.
+    // Cleanup is a maintenance operation; individual failures should not abort it.
     let options = CleanupOptions {
         ignore_failure: true,
         cache: args.cache,
     };
 
     let mut results = Vec::new();
+    // `Some(0)` means every named app was reported missing/broken: the global
+    // "nothing to clean" line would then contradict the per-app errors.
+    let mut named_targets = None;
 
     if all {
         // Local first, then global — upstream appends the global apps to the
-        // local list (`scoop-cleanup.ps1:67-70`). The target list is always
-        // explicit, so an app list that resolves to nothing cannot fall back
-        // to a full sweep.
+        // local list (`scoop-cleanup.ps1:67-70`). The app list is always
+        // explicit, so a named cleanup that resolved to nothing cannot fall
+        // back to a full sweep.
         session.set_global(false);
         let names = package::cleanup::installed_app_names(session);
         results.extend(package::cleanup::cleanup(session, &names, &options)?);
@@ -56,8 +64,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             results.extend(package::cleanup::cleanup(session, &names, &options)?);
         }
     } else {
+        // Named apps go through upstream's `Confirm-InstallationStatus`
+        // (`lib/core.ps1:1084-1121`): unusable names are reported and dropped,
+        // the rest are cleaned in the requested scope.
+        let names = package::cleanup::confirm_installation_status(session, &args.app, args.global);
+        named_targets = Some(names.len());
         session.set_global(args.global);
-        results.extend(package::cleanup::cleanup(session, &args.app, &options)?);
+        results.extend(package::cleanup::cleanup(session, &names, &options)?);
     }
 
     for (name, count, failed) in &results {
@@ -74,7 +87,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if results.is_empty() {
-        output::info(hok_i18n::t!("cmd.cleanup_no_old"));
+        if named_targets != Some(0) {
+            output::info(hok_i18n::t!("cmd.cleanup_no_old"));
+        }
     } else if all {
         // Sweep-all success tail (Scoop prints this for the non-verbose
         // `--all` form); named-app cleans already reported per-app counts.
