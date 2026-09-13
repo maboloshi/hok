@@ -57,17 +57,25 @@ pub fn glob_to_regex(pattern: &str) -> String {
 /// Determine whether `name` passes `patterns` (Scoop `checkurls` filter).
 ///
 /// Returns `true` when the first pattern is `"*"` (wildcard) or when any
-/// pattern matches `name` as a glob (`*` / `?` wildcards, case-sensitive).
-/// Plain patterns without wildcards match exactly.
+/// pattern matches `name` as a glob (`*` / `?` wildcards). Plain patterns
+/// without wildcards match exactly.
+///
+/// Matching is **case-insensitive**, mirroring Scoop's `-App` handling: the
+/// official commands resolve it through `Get-ChildItem -Filter "$App.json"`,
+/// and PowerShell's `-Filter` (like its default string comparison) ignores
+/// case. `hok checkhashes -d <bucket> FOO` must therefore still find `foo.json`.
 pub fn matches_any_glob(name: &str, patterns: &[String]) -> bool {
     if patterns.first().map(|s| s.as_str()) == Some("*") {
         return true;
     }
     patterns.iter().any(|p| {
         if p.contains('*') || p.contains('?') {
-            regex::Regex::new(&glob_to_regex(p)).is_ok_and(|re| re.is_match(name))
+            regex::RegexBuilder::new(&glob_to_regex(p))
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(name))
         } else {
-            name == p
+            name.eq_ignore_ascii_case(p)
         }
     })
 }
@@ -199,6 +207,18 @@ mod tests {
         let filters = vec!["cur?".to_string()];
         assert!(matches_any_glob("curl", &filters));
         assert!(!matches_any_glob("curl2", &filters));
+    }
+
+    /// Scoop's `-App` filter is PowerShell `-Filter`-based, hence
+    /// case-insensitive; `checkhashes -d <bucket> FOO` must find `foo.json`.
+    #[test]
+    fn filters_are_case_insensitive() {
+        assert!(matches_any_glob("m1-ok", &["M1-OK".to_string()]));
+        assert!(matches_any_glob("M1-OK", &["m1-ok".to_string()]));
+        assert!(matches_any_glob("m1-ok", &["M1*".to_string()]));
+        assert!(matches_any_glob("curl", &["CUR?".to_string()]));
+        // Still a full-name match, not a substring one.
+        assert!(!matches_any_glob("git-lfs", &["GIT".to_string()]));
     }
 
     // ── normalize_jsonpath ───────────────────────────────────────────────────
