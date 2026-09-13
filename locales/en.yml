@@ -428,6 +428,7 @@ error:
   bucket_update_local_changes: "Local changes would be overwritten by the bucket update: %{files}"
   config_in_use: "Could not alter config because it is in use."
   config_key_invalid: "invalid config key '%{key}'"
+  config_key_unsupported: "'%{key}' is an upstream Scoop setting hok has no equivalent for; see 'hok config list --all' for the settings hok supports"
   config_value_invalid: "invalid config value '%{value}'"
   alias_already_exists: "Alias '%{name}' already exists."
   alias_not_found: "Alias '%{name}' doesn't exist."

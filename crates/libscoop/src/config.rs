@@ -584,7 +584,11 @@ impl Config {
         // message all go through the same table, so a new alias cannot drift
         // away from the field it writes.
         let Some(canonical) = canonical_key(key) else {
-            return Err(Error::ConfigKeyInvalid(key.to_owned()));
+            return Err(if is_official_only_key(key) {
+                Error::ConfigKeyUnsupported(key.to_owned())
+            } else {
+                Error::ConfigKeyInvalid(key.to_owned())
+            });
         };
         match canonical {
             "aria2-enabled" => match is_unset {
@@ -1138,6 +1142,38 @@ pub fn map_official_key(key: &str) -> OfficialKey {
         }
     }
     OfficialKey::Unsupported
+}
+
+/// Upstream settings hok deliberately has no equivalent for.
+///
+/// The list exists so a refusal can say *why*: an upstream setting hok does not
+/// implement is a different answer from a key that is not a setting at all (and
+/// `hok import` reports the two apart for the same reason). Upstream's own
+/// settings list is `libexec/scoop-config.ps1:21-153`.
+const OFFICIAL_ONLY_KEYS: &[&str] = &[
+    "aria2-options",
+    "aria2-retry-wait",
+    "aria2-warning-enabled",
+    "autostash_on_conflict",
+    "debug",
+    "force_update",
+    "hold_update_until",
+    "scoop_branch",
+    "scoop_repo",
+    "shim",
+    "show_manifest",
+    "show_update_log",
+    "update_nightly",
+    "use_external_7zip",
+    "use_lessmsi",
+];
+
+/// Whether `key` names an upstream setting hok has no equivalent for, in either
+/// separator spelling.
+fn is_official_only_key(key: &str) -> bool {
+    OFFICIAL_ONLY_KEYS.iter().any(|name| {
+        name.eq_ignore_ascii_case(key) || name.replace('_', "-").eq_ignore_ascii_case(key)
+    })
 }
 
 /// One cell of the config listing.
@@ -1738,9 +1774,10 @@ mod tests {
             .clone()
     }
 
-    /// Scoop-only settings that hok does not support must be rejected by the
-    /// CLI setter (they can still be read from Scoop's read-only file, but
-    /// never written to hok's own file).
+    /// Scoop-only settings that hok does not support must be refused by the CLI
+    /// setter, with the "upstream setting, no hok equivalent" error rather than
+    /// the generic unknown-key one (they can still be read from Scoop's
+    /// read-only file, but never written to hok's own file).
     #[test]
     fn unsupported_keys_rejected() {
         let session = test_session("config_unsupported");
@@ -1760,10 +1797,17 @@ mod tests {
         ] {
             let err = crate::config::set(&session, key, "x").unwrap_err();
             assert!(
-                matches!(err, Error::ConfigKeyInvalid(_)),
+                matches!(err, Error::ConfigKeyUnsupported(_)),
                 "{key}: unexpected error {err}"
             );
         }
+
+        // A key that is not a setting at all keeps the plain unknown-key error.
+        let err = crate::config::set(&session, "totally_unknown_key", "x").unwrap_err();
+        assert!(
+            matches!(err, Error::ConfigKeyInvalid(_)),
+            "unexpected error {err}"
+        );
     }
 
     /// First run migrates supported keys from Scoop's read-only file into a

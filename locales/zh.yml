@@ -428,6 +428,7 @@ error:
   bucket_update_local_changes: "本地更改将被 bucket 更新覆盖：%{files}"
   config_in_use: "无法更改配置，配置正在使用中"
   config_key_invalid: "无效的配置键 '%{key}'"
+  config_key_unsupported: "'%{key}' 是官方 Scoop 的设置项，hok 没有对应实现；用 'hok config list --all' 查看 hok 支持的设置项"
   config_value_invalid: "无效的配置值 '%{value}'"
   alias_already_exists: "别名 '%{name}' 已存在。"
   alias_not_found: "别名 '%{name}' 不存在。"

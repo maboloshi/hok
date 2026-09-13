@@ -67,6 +67,10 @@ pub enum Error {
     #[error("invalid config key '{0}'")]
     ConfigKeyInvalid(String),
 
+    /// An upstream Scoop setting hok has no equivalent for.
+    #[error("config key '{0}' is not supported by hok")]
+    ConfigKeyUnsupported(String),
+
     /// Invalid config value error
     #[error("invalid config value '{0}'")]
     ConfigValueInvalid(String),
@@ -221,6 +225,7 @@ impl Error {
             Error::BucketUpdateLocalChanges(_) => "error.bucket_update_local_changes",
             Error::ConfigInUse => "error.config_in_use",
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
+            Error::ConfigKeyUnsupported(_) => "error.config_key_unsupported",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
             Error::AliasAlreadyExists(_) => "error.alias_already_exists",
             Error::AliasNotFound(_) => "error.alias_not_found",
@@ -294,6 +299,10 @@ mod tests {
         assert_eq!(
             Error::ConfigKeyInvalid("x".into()).error_key(),
             "error.config_key_invalid"
+        );
+        assert_eq!(
+            Error::ConfigKeyUnsupported("x".into()).error_key(),
+            "error.config_key_unsupported"
         );
         assert_eq!(
             Error::ConfigValueInvalid("x".into()).error_key(),

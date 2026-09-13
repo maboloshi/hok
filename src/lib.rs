@@ -84,6 +84,9 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::ConfigKeyInvalid(key) => {
             hok_i18n::t!("error.config_key_invalid", key = key).to_string()
         }
+        libscoop::Error::ConfigKeyUnsupported(key) => {
+            hok_i18n::t!("error.config_key_unsupported", key = key).to_string()
+        }
         libscoop::Error::ConfigValueInvalid(value) => {
             hok_i18n::t!("error.config_value_invalid", value = value).to_string()
         }
