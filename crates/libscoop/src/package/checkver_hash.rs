@@ -9,18 +9,29 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::internal::url;
-use crate::{Session, error::{Error, Fallible}, network};
+use crate::{
+    Session,
+    error::{Error, Fallible},
+    network,
+};
 
-use super::checkver_url::sub_url;
+use super::Substitution;
 
 pub(super) async fn download_and_hash_multi(
     session: &Session,
+    app: &str,
+    version: &str,
     urls: &[String],
     extractions: &[serde_json::Value],
-    tmp_dir: &std::path::Path,
+    base_subs: &Substitution,
+    cache_dir: &std::path::Path,
 ) -> Fallible<Vec<String>> {
     let mut hashes = Vec::new();
     for (i, url) in urls.iter().enumerate() {
+        // Every download URL gets its own `$url`/`$baseurl`/`$basename`/
+        // `$urlNoExt`/`$basenameNoExt` table (upstream `get_hash_for_app`,
+        // lib/autoupdate.ps1:212-219); the version variables are shared.
+        let subs = base_subs.with_url(url);
         let extraction = extractions.get(i);
 
         let hash = match extraction {
@@ -51,12 +62,13 @@ pub(super) async fn download_and_hash_multi(
                 match effective_mode {
                     // ── download: download file + compute hash ──────────────────────
                     "download" | "" if !has_url => {
-                        download_file_compute_hash(session, url, ext, tmp_dir).await?
+                        download_file_compute_hash(session, app, version, url, ext, cache_dir)
+                            .await?
                     }
                     // ── extract (default when hash URL present): fetch + regex/jsonpath/find ──
                     "extract" | "" if has_url => {
                         let hash_url = ext["url"].as_str().unwrap_or(url);
-                        let page_url = sub_url(hash_url, url);
+                        let page_url = subs.apply(hash_url);
                         let page = network::download_page(session, &page_url, 30, None)
                             .await
                             .map_err(|e| {
@@ -64,30 +76,30 @@ pub(super) async fn download_and_hash_multi(
                             })?;
                         // Scoop's find_hash_in_textfile converts a base64 hash
                         // value to hex before returning it (autoupdate.ps1:82-92).
-                        convert_base64_hash_value(&extract_hash_from_page(&page, ext)?)
+                        convert_base64_hash_value(&extract_hash_from_page(&page, ext, &subs)?)
                     }
                     // ── json: fetch JSON + jsonpath extraction ──────────────────────
                     "json" if has_jp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page = network::download_page(session, hash_url, 30, None)
+                        let page_url = subs.apply(hash_url);
+                        let page = network::download_page(session, &page_url, 30, None)
                             .await
                             .map_err(|e| {
-                                Error::Custom(format!("fetch json {}: {}", hash_url, e))
+                                Error::Custom(format!("fetch json {}: {}", page_url, e))
                             })?;
-                        extract_hash_from_page(&page, ext)?
+                        extract_hash_from_page(&page, ext, &subs)?
                     }
                     // ── xpath: fetch XML + xpath extraction ─────────────────────────
                     "xpath" if has_xp || has_url => {
                         let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-                        let page = network::download_page(session, hash_url, 30, None)
+                        let page_url = subs.apply(hash_url);
+                        let page = network::download_page(session, &page_url, 30, None)
                             .await
-                            .map_err(|e| {
-                                Error::Custom(format!("fetch xml {}: {}", hash_url, e))
-                            })?;
-                        extract_hash_from_page(&page, ext)?
+                            .map_err(|e| Error::Custom(format!("fetch xml {}: {}", page_url, e)))?;
+                        extract_hash_from_page(&page, ext, &subs)?
                     }
                     // ── rdf: fetch RDF XML, find digest by basename ─────────────────
-                    "rdf" => fetch_rdf_hash(session, url, ext).await?,
+                    "rdf" => fetch_rdf_hash(session, url, ext, &subs).await?,
                     // ── metalink: HTTP Digest header fallback .meta4 ────────────────
                     "metalink" => fetch_metalink_hash(session, url, ext).await?,
                     // ── fosshub: extract sha256 from fosshub download page ──────────
@@ -101,9 +113,8 @@ pub(super) async fn download_and_hash_multi(
                                 Error::Custom(format!("fetch fosshub page {}: {}", url, e))
                             })?;
                         let regex_str = format!(r#"{filename}.*?"sha256":"([a-fA-F0-9]+)""#);
-                        let re = Regex::new(&regex_str).map_err(|e| {
-                            Error::Custom(format!("bad fosshub regex: {}", e))
-                        })?;
+                        let re = Regex::new(&regex_str)
+                            .map_err(|e| Error::Custom(format!("bad fosshub regex: {}", e)))?;
                         if let Some(caps) = re.captures(&page) {
                             if let Some(h) = caps.get(1) {
                                 h.as_str().to_string()
@@ -126,10 +137,7 @@ pub(super) async fn download_and_hash_multi(
                         // Regex: '"$basename":.*?"sha1":\s*"([a-fA-F0-9]{40})"'
                         let (project, file_path) =
                             url::parse_sourceforge_url(url).ok_or_else(|| {
-                                Error::Custom(format!(
-                                    "could not parse sourceforge URL: {}",
-                                    url
-                                ))
+                                Error::Custom(format!("could not parse sourceforge URL: {}", url))
                             })?;
                         let sf_page_url =
                             format!("https://sourceforge.net/projects/{project}/files/{file_path}");
@@ -141,11 +149,12 @@ pub(super) async fn download_and_hash_multi(
                                     sf_page_url, e
                                 ))
                             })?;
-                        let basename = crate::internal::url::remote_filename(url);
+                        let basename = crate::internal::url::decoded(
+                            &crate::internal::url::url_remote_filename(url),
+                        );
                         let regex_str = format!(r#""{basename}":.*?"sha1":\s*"([a-fA-F0-9]+)""#);
-                        let re = Regex::new(&regex_str).map_err(|e| {
-                            Error::Custom(format!("bad sourceforge regex: {}", e))
-                        })?;
+                        let re = Regex::new(&regex_str)
+                            .map_err(|e| Error::Custom(format!("bad sourceforge regex: {}", e)))?;
                         if let Some(caps) = re.captures(&page) {
                             if let Some(h) = caps.get(1) {
                                 h.as_str().to_string()
@@ -197,13 +206,17 @@ pub(super) async fn download_and_hash_multi(
                         }
                     }
                     // ── unknown mode: fallback to download + compute hash ───────────
-                    _ => download_file_compute_hash(session, url, ext, tmp_dir).await?,
+                    _ => {
+                        download_file_compute_hash(session, app, version, url, ext, cache_dir)
+                            .await?
+                    }
                 }
             }
             None => {
-                // No hash extraction config: download file and compute SHA256
-                let filename = url.rsplit('/').next().unwrap_or("download");
-                let dest = tmp_dir.join(filename);
+                // No hash extraction config: download file and compute SHA256.
+                // Cached like upstream's `Invoke-CachedDownload`, so a repeat
+                // run (or a later install) reuses the same file.
+                let dest = cache_dir.join(crate::package::cache_file_name(app, version, url));
                 network::download_file(session, url, &dest)
                     .await
                     .map_err(|e| Error::Custom(format!("download {}: {}", url, e)))?;
@@ -236,15 +249,20 @@ fn detect_hash_mode(url: &str) -> Option<&'static str> {
     None
 }
 
-/// Download a single file and compute its hash using the algorithm from extraction config.
+/// Download a single file into Scoop's download cache and compute its hash.
+///
+/// The destination mirrors upstream `Invoke-CachedDownload` →
+/// `cache_path $app $version $url` (lib/autoupdate.ps1:319-325), so the file
+/// is reusable instead of being a throwaway temp copy.
 async fn download_file_compute_hash(
     session: &Session,
+    app: &str,
+    version: &str,
     url: &str,
     ext: &serde_json::Value,
-    tmp_dir: &std::path::Path,
+    cache_dir: &std::path::Path,
 ) -> Fallible<String> {
-    let filename = url.rsplit('/').next().unwrap_or("download");
-    let dest = tmp_dir.join(filename);
+    let dest = cache_dir.join(crate::package::cache_file_name(app, version, url));
     network::download_file(session, url, &dest)
         .await
         .map_err(|e| Error::Custom(format!("download {}: {}", url, e)))?;
@@ -253,13 +271,18 @@ async fn download_file_compute_hash(
         .and_then(|a| a.as_str())
         .unwrap_or("sha256");
     crate::internal::hash::compute_file_hash(&dest, algo)
-        .map_err(|e| Error::Custom(format!("compute hash {}: {}", filename, e)))
+        .map_err(|e| Error::Custom(format!("compute hash {}: {}", url, e)))
 }
 
 /// Fetch RDF XML and extract hash by basename (matching Scoop's find_hash_in_rdf).
-async fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -> Fallible<String> {
-    let hash_url = ext.get("url").and_then(|u| u.as_str()).unwrap_or(url);
-    let page = network::download_page(session, hash_url, 30, None)
+async fn fetch_rdf_hash(
+    session: &Session,
+    url: &str,
+    ext: &serde_json::Value,
+    subs: &Substitution,
+) -> Fallible<String> {
+    let hash_url = subs.apply(ext.get("url").and_then(|u| u.as_str()).unwrap_or(url));
+    let page = network::download_page(session, &hash_url, 30, None)
         .await
         .map_err(|e| Error::Custom(format!("fetch rdf {}: {}", hash_url, e)))?;
 
@@ -267,7 +290,7 @@ async fn fetch_rdf_hash(session: &Session, url: &str, ext: &serde_json::Value) -
     // Scoop (find_hash_in_rdf):
     //   $digest = $xml.RDF.Content | Where-Object { [String]$_.about -eq $basename }
     //   return format_hash $digest.sha256
-    let basename = crate::internal::url::remote_filename(url);
+    let basename = crate::internal::url::decoded(&crate::internal::url::url_remote_filename(url));
     find_hash_in_rdf(&page, &basename).ok_or_else(|| {
         Error::Custom(format!(
             "could not find hash for '{}' in RDF at {}",
@@ -446,7 +469,16 @@ fn format_hash(hash: &str) -> Option<String> {
 }
 
 /// Extract hash from page content using HashExtraction rules.
-fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Fallible<String> {
+///
+/// `subs` carries the download URL's variable table
+/// (`$version`/`$url`/`$basename`/...): upstream substitutes the jsonpath
+/// (`json_path`, lib/json.ps1:98) and — regex-escaped — the textfile regex
+/// (`substitute ... $true`, lib/autoupdate.ps1:76).
+fn extract_hash_from_page(
+    content: &str,
+    ext: &serde_json::Value,
+    subs: &Substitution,
+) -> Fallible<String> {
     // JSONPath first
     if let Some(jp) = ext
         .get("jp")
@@ -454,10 +486,16 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Fallible<St
         .and_then(|v| v.as_str())
     {
         use jsonpath_rust::JsonPath;
+        // Upstream escapes the substituted values only for `=~` filters.
+        let jp = if jp.contains("=~") {
+            subs.apply_escaped(jp)
+        } else {
+            subs.apply(jp)
+        };
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(content) {
             // jsonpath-rust cannot parse unquoted field names with special
             // characters (e.g. `$.dist-tags.latest`); normalize to bracket form.
-            let jp = crate::internal::string::normalize_jsonpath(jp);
+            let jp = crate::internal::string::normalize_jsonpath(&jp);
             if let Ok(found) = val.query(&jp) {
                 let found_str = found.first().and_then(|v| match v {
                     serde_json::Value::String(s) => Some(s.clone()),
@@ -474,9 +512,9 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Fallible<St
 
     // Regex
     if let Some(re_str) = ext.get("regex").and_then(|v| v.as_str()) {
-        let _url_for_re = ext.get("url").and_then(|u| u.as_str()).unwrap_or("");
-        let re = Regex::new(re_str)
-            .map_err(|e| Error::Custom(format!("bad hash regex: {}", e)))?;
+        let re_str = subs.apply_escaped(re_str);
+        let re =
+            Regex::new(&re_str).map_err(|e| Error::Custom(format!("bad hash regex: {}", e)))?;
         if let Some(caps) = re.captures(content)
             && let Some(h) = caps.get(1).or_else(|| caps.get(0))
         {
@@ -485,17 +523,17 @@ fn extract_hash_from_page(content: &str, ext: &serde_json::Value) -> Fallible<St
     }
 
     // Find (simple substring + next whitespace-delimited hex token)
-    if let Some(find_str) = ext.get("find").and_then(|v| v.as_str())
-        && let Some(pos) = content.find(find_str)
-    {
-        let after = &content[pos + find_str.len()..];
-        // Scoop heuristic: look for the first hex token
-        if let Some(hash) = after.split_whitespace().next() {
-            let hash = hash.trim_matches(&['"', '\'', ',', ';', ':', '=', ' '][..]);
-            if is_hex_hash(hash) {
-                return Ok(hash.to_string());
+    if let Some(find_str) = ext.get("find").and_then(|v| v.as_str()) {
+        let find_str = subs.apply_escaped(find_str);
+        if let Some(pos) = content.find(&find_str) {
+            let after = &content[pos + find_str.len()..];
+            // Scoop heuristic: look for the first hex token
+            if let Some(hash) = after.split_whitespace().next() {
+                let hash = hash.trim_matches(&['"', '\'', ',', ';', ':', '=', ' '][..]);
+                if is_hex_hash(hash) {
+                    return Ok(hash.to_string());
+                }
             }
-            // Also check next token if first is an equals sign
         }
     }
 

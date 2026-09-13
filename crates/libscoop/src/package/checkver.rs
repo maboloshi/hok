@@ -30,6 +30,7 @@ use crate::{
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use crate::error::{Error, Fallible};
 
@@ -37,8 +38,6 @@ use checkver_hash::download_and_hash_multi;
 
 #[path = "checkver_hash.rs"]
 mod checkver_hash;
-#[path = "checkver_url.rs"]
-mod checkver_url;
 
 // ---------------------------------------------------------------------------
 // TODO(scoop-alignment): Unimplemented Scoop checkver features
@@ -701,22 +700,6 @@ fn extract_named_captures(re: &Regex, caps: &regex::Captures<'_>) -> HashMap<Str
     named
 }
 
-/// Build the autoupdate variable name for a named capture group, matching
-/// Scoop's Get-VersionSubstitution (autoupdate.ps1): a group (?<hash>...)
-/// becomes $matchHash via '$match' + ToTitleCase(name), NOT $hash.
-fn match_var_for_group(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) => {
-            let mut s = String::new();
-            s.extend(first.to_uppercase());
-            s.push_str(&name[first.len_utf8()..].to_lowercase());
-            s
-        }
-        None => name.to_string(),
-    }
-}
-
 // ─── Autoupdate ────────────────────────────────────────────────────────────
 
 /// Apply autoupdate: substitute variables, download files, compute/extract
@@ -744,324 +727,615 @@ pub(crate) async fn apply_autoupdate(
     // Update version
     root["version"] = serde_json::Value::String(new_version.to_string());
 
-    // Build variable substitution (matching Scoop's Get-VersionSubstitution)
-    let first_part = new_version.split('-').next().unwrap_or(new_version);
-    let last_part = new_version.rsplit('-').next().unwrap_or(new_version);
-    let version_parts: Vec<&str> = first_part.split('.').collect();
-    let mut vars: Vec<(String, String)> = vec![
-        ("$version".to_string(), new_version.to_string()),
-        (
-            "$dotVersion".to_string(),
-            new_version.replace(['_', '-', '.'], "."),
-        ),
-        (
-            "$underscoreVersion".to_string(),
-            new_version.replace(['_', '-', '.'], "_"),
-        ),
-        (
-            "$dashVersion".to_string(),
-            new_version.replace(['_', '-', '.'], "-"),
-        ),
-        (
-            "$cleanVersion".to_string(),
-            new_version.replace(['_', '-', '.'], ""),
-        ),
-        (
-            "$majorVersion".to_string(),
-            version_parts.first().copied().unwrap_or("0").to_string(),
-        ),
-        (
-            "$minorVersion".to_string(),
-            version_parts.get(1).copied().unwrap_or("0").to_string(),
-        ),
-        (
-            "$patchVersion".to_string(),
-            version_parts.get(2).copied().unwrap_or("0").to_string(),
-        ),
-        (
-            "$buildVersion".to_string(),
-            version_parts.get(3).copied().unwrap_or("0").to_string(),
-        ),
-        ("$preReleaseVersion".to_string(), last_part.to_string()),
-    ];
-    for (i, cap) in captures.iter().enumerate().skip(1) {
-        vars.push((format!("$match{}", i), cap.clone()));
-    }
-    // Named capture groups (Scoop $matchesHashtable, checkver.ps1 lines 361-362).
-    // Scoop maps each named group `(?<foo>...)` to `$match<Foo>` via
-    // `'$match' + ToTitleCase(name)` in Get-VersionSubstitution (autoupdate.ps1),
-    // so a group `(?<hash>...)` becomes `$matchHash` (NOT `$hash`). Keep the
-    // bare `$<name>` alias too for backward compatibility.
-    for (name, val) in named_captures {
-        vars.push((format!("$match{}", match_var_for_group(name)), val.clone()));
-        vars.push((format!("${}", name), val.clone()));
-    }
-    // Scoop: $matchHead/$matchTail are derived from the version string,
-    // not from capture groups. Regex: (?<head>\d+\.\d+(?:\.\d+)?)(?<tail>.*)
-    if let Some((head, tail)) = extract_version_head_tail(new_version) {
-        vars.push(("$matchHead".to_string(), head));
-        vars.push(("$matchTail".to_string(), tail));
+    // Build the upstream version-substitution table
+    // (`Get-VersionSubstitution`, lib/autoupdate.ps1:429-463).
+    let subs = version_substitutions(new_version, captures, named_captures);
+
+    // Official `Invoke-AutoUpdate` only runs when the manifest has
+    // `autoupdate`; the CLI never calls us otherwise.
+    if manifest.autoupdate().is_none() {
+        crate::internal::fs::write_json(path, &root)?;
+        return Ok(());
     }
 
-    let sub_first = |s: &str| -> String {
-        let mut r = s.to_string();
-        for (k, v) in &vars {
-            r = r.replace(k, v);
-        }
-        r
-    };
+    // Upstream caches the hash fallback download in Scoop's download cache
+    // (`Invoke-CachedDownload`, lib/autoupdate.ps1:319 → `cache_path $app $version $url`),
+    // so a second run — or a later download/install — reuses it. hok used to
+    // drop its own `%TEMP%\hok-autoupdate` copy after every run.
+    let cache_dir = session.config().cache_path().to_path_buf();
+    crate::internal::fs::ensure_dir(&cache_dir)?;
 
-    let au = match manifest.autoupdate() {
-        Some(a) => a,
-        None => {
-            crate::internal::fs::write_json(path, &root)?;
-            return Ok(());
-        }
-    };
+    let app_name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string();
 
-    let tmp_dir = std::env::temp_dir().join("hok-autoupdate");
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    std::fs::create_dir_all(&tmp_dir)?;
-
-    // ── Compute $basename from first URL after initial substitution ─────────
-    if let Some(urls) = &au.url {
-        let first_url = sub_first(urls.devectorize().first().copied().unwrap_or(""));
-        let basename = crate::internal::url::basename(&first_url);
-        vars.push(("$basename".to_string(), basename));
-    }
-
-    // Full substitution including $basename
-    let sub = |s: &str| -> String {
-        let mut r = s.to_string();
-        for (k, v) in &vars {
-            r = r.replace(k.as_str(), v.as_str());
-        }
-        r
-    };
-
-    // ── Read hash extractions from JSON (before mutable borrow) ────────────
-    let top_hash_extractions: Vec<serde_json::Value> = root
+    // ── Properties to update, driven by the autoupdate object itself ────────
+    // `Invoke-AutoUpdate` (lib/autoupdate.ps1:483-490) collects the autoupdate
+    // object's own property names (minus `architecture`, plus every
+    // architecture-level property name) and appends `hash` whenever `url` is
+    // present. Driving that list from the raw JSON — instead of a hardcoded
+    // set — is exactly what gives upstream its coverage: `changelog`,
+    // `extract_to`, `pre_install`, `homepage`, ... are substituted too.
+    let au_obj = root
         .get("autoupdate")
-        .and_then(|au| au.get("hash"))
-        .and_then(|h| h.as_array())
         .cloned()
-        .unwrap_or_default();
-    let arch_hash_extractions: [(&str, Vec<serde_json::Value>); 3] = [
-        (
-            "32bit",
-            root.pointer("/architecture/32bit/autoupdate/hash")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-        ),
-        (
-            "64bit",
-            root.pointer("/architecture/64bit/autoupdate/hash")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-        ),
-        (
-            "arm64",
-            root.pointer("/architecture/arm64/autoupdate/hash")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default(),
-        ),
-    ];
-
-    // ── Top-level URLs ─────────────────────────────────────────────────────
-    if let Some(urls) = &au.url {
-        let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
-        let hashes =
-            download_and_hash_multi(session, &substituted, &top_hash_extractions, &tmp_dir).await?;
-
-        root["url"] = manifest::json_str_array(&substituted);
-        root["hash"] = manifest::update_hash_preserving_style(
-            root.get("hash").unwrap_or(&serde_json::Value::Null),
-            &hashes,
-            Some(&sub),
-        );
+        .unwrap_or(serde_json::Value::Null);
+    let mut props: Vec<String> = Vec::new();
+    if let Some(map) = au_obj.as_object() {
+        for key in map.keys() {
+            if key != "architecture" {
+                push_unique(&mut props, key);
+            }
+        }
     }
-
-    // ── Per-architecture URLs ──────────────────────────────────────────────
-    if let Some(arch) = &au.architecture {
-        for (arch_name, spec_opt, arch_extractions) in [
-            ("32bit", arch.ia32.as_ref(), &arch_hash_extractions[0].1),
-            ("64bit", arch.amd64.as_ref(), &arch_hash_extractions[1].1),
-            ("arm64", arch.aarch64.as_ref(), &arch_hash_extractions[2].1),
-        ] {
-            let Some(spec) = spec_opt else { continue };
-            if let Some(urls) = &spec.url {
-                let substituted: Vec<String> = urls.devectorize().iter().map(|u| sub(u)).collect();
-                let hashes =
-                    download_and_hash_multi(session, &substituted, arch_extractions, &tmp_dir)
-                        .await?;
-
-                let ptr = format!("/architecture/{}", arch_name);
-
-                if let Some(obj) = root.pointer_mut(&ptr) {
-                    obj["url"] = manifest::json_str_array(&substituted);
-                    let existing_hash = obj.get("hash").cloned().unwrap_or(serde_json::Value::Null);
-                    obj["hash"] =
-                        manifest::update_hash_preserving_style(&existing_hash, &hashes, Some(&sub));
+    if let Some(arch) = au_obj.get("architecture").and_then(|a| a.as_object()) {
+        for spec in arch.values() {
+            if let Some(map) = spec.as_object() {
+                for key in map.keys() {
+                    push_unique(&mut props, key);
                 }
             }
         }
     }
-
-    // ── extract_dir ────────────────────────────────────────────────────────
-    if let Some(dirs) = &au.extract_dir {
-        let substituted: Vec<String> = dirs.devectorize().iter().map(|d| sub(d)).collect();
-        root["extract_dir"] = manifest::json_str_array(&substituted);
+    if props.iter().any(|p| p == "url") {
+        push_unique(&mut props, "hash");
     }
 
-    // ── Generic property substitution (Scoop autoupdate.ps1 L392-417) ──────
-    // Every other autoupdate property is variable-substituted and written back
-    // to the matching manifest property — but only when the manifest already
-    // declares it (official `if ($Manifest.$p -and $Manifest.autoupdate.$p)`).
-    // Recurse into nested JSON so arrays of strings / objects (bin, env_set,
-    // installer) are substituted too.
-    fn sub_json_value(v: &serde_json::Value, sub: &dyn Fn(&str) -> String) -> serde_json::Value {
-        match v {
-            serde_json::Value::String(s) => serde_json::Value::String(sub(s)),
-            serde_json::Value::Array(items) => {
-                serde_json::Value::Array(items.iter().map(|i| sub_json_value(i, sub)).collect())
-            }
-            serde_json::Value::Object(map) => serde_json::Value::Object(
-                map.iter()
-                    .map(|(k, vv)| (k.clone(), sub_json_value(vv, sub)))
-                    .collect(),
-            ),
-            other => other.clone(),
+    for prop in &props {
+        if prop == "hash" {
+            // `hash` is the one property with a bespoke pipeline
+            // (`Update-ManifestProperty` lib/autoupdate.ps1:374-391).
+            update_hash_property(
+                session,
+                &mut root,
+                &au_obj,
+                &subs,
+                &cache_dir,
+                &app_name,
+                new_version,
+            )
+            .await?;
+        } else {
+            update_manifest_property(&mut root, &au_obj, prop, &subs);
         }
     }
-
-    let mut set_prop = |prop: &str, value: Option<serde_json::Value>| {
-        if let Some(v) = value
-            && root.get(prop).is_some()
-        {
-            root[prop] = sub_json_value(&v, &sub);
-        }
-    };
-    set_prop(
-        "bin",
-        au.bin.as_ref().and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "env_add_path",
-        au.env_add_path
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "env_set",
-        au.env_set
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "installer",
-        au.installer
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "license",
-        au.license
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "notes",
-        au.notes.as_ref().and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "persist",
-        au.persist
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "psmodule",
-        au.psmodule
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-    set_prop(
-        "shortcuts",
-        au.shortcuts
-            .as_ref()
-            .and_then(|v| serde_json::to_value(v).ok()),
-    );
-
-    // ── Per-architecture generic properties ─────────────────────────────────
-    if let Some(arch) = &au.architecture {
-        for (arch_name, spec_opt) in [
-            ("32bit", arch.ia32.as_ref()),
-            ("64bit", arch.amd64.as_ref()),
-            ("arm64", arch.aarch64.as_ref()),
-        ] {
-            let Some(spec) = spec_opt else { continue };
-            let ptr = format!("/architecture/{}", arch_name);
-            // Official autoupdate.ps1 L406: arch-level property is taken from
-            // `autoupdate.architecture.$arch.$prop`, falling back to the
-            // top-level `autoupdate.$prop`.
-            for prop in [
-                "bin",
-                "env_add_path",
-                "env_set",
-                "extract_dir",
-                "installer",
-                "shortcuts",
-            ] {
-                let value = match prop {
-                    "bin" => spec
-                        .bin
-                        .as_ref()
-                        .or(au.bin.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    "env_add_path" => spec
-                        .env_add_path
-                        .as_ref()
-                        .or(au.env_add_path.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    "env_set" => spec
-                        .env_set
-                        .as_ref()
-                        .or(au.env_set.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    "extract_dir" => spec
-                        .extract_dir
-                        .as_ref()
-                        .or(au.extract_dir.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    "installer" => spec
-                        .installer
-                        .as_ref()
-                        .or(au.installer.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    "shortcuts" => spec
-                        .shortcuts
-                        .as_ref()
-                        .or(au.shortcuts.as_ref())
-                        .and_then(|v| serde_json::to_value(v).ok()),
-                    _ => None,
-                };
-                if let Some(v) = value
-                    && let Some(obj) = root.pointer_mut(&ptr)
-                    && obj.get(prop).is_some()
-                {
-                    obj[prop] = sub_json_value(&v, &sub);
-                }
-            }
-        }
-    }
-
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Write the complete updated JSON (preserving order, 4-space indentation)
     crate::internal::fs::write_json(path, &root)?;
+    Ok(())
+}
+
+// ─── Version substitution (lib/autoupdate.ps1:429-463 + :208-219) ───────────
+
+/// Append `name` to `props` unless it is already present (upstream's
+/// `Select-Object -Unique`, kept in first-seen order).
+fn push_unique(props: &mut Vec<String>, name: &str) {
+    if !props.iter().any(|p| p == name) {
+        props.push(name.to_string());
+    }
+}
+
+/// `$match<Name>` token lookup — PowerShell's hashtables and its `-match`
+/// operator are case-insensitive, so any casing of the token resolves.
+static RE_MATCH_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\$match([A-Za-z0-9_]+)").unwrap());
+
+/// The version-variable table plus the per-URL additions that
+/// `get_hash_for_app` layers on (lib/autoupdate.ps1:208-219).
+///
+/// Two kinds of token live here:
+/// * **exact keys** (`$version`, `$baseurl`, ...), applied longest-key-first
+///   so a shorter key can never eat a longer one — upstream's `Hashtable`
+///   enumeration order is unspecified, which is why it lets `$url` eat
+///   `$urlNoExt` on some manifests;
+/// * **`$match<Name>` keys**, resolved case-insensitively (see
+///   [`RE_MATCH_VAR`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Substitution {
+    vars: Vec<(String, String)>,
+    matches: Vec<(String, String)>,
+}
+
+impl Substitution {
+    /// Plain substitution — upstream `substitute` with `$regexEscape = $false`
+    /// (URLs, jsonpath, xpath, manifest property values).
+    pub(crate) fn apply(&self, input: &str) -> String {
+        self.apply_with(input, false)
+    }
+
+    /// Regex-escaped substitution — upstream `substitute` with
+    /// `$regexEscape = $true` (the hash-file regex, so a substituted value
+    /// cannot change the pattern's meaning).
+    pub(crate) fn apply_escaped(&self, input: &str) -> String {
+        self.apply_with(input, true)
+    }
+
+    fn apply_with(&self, input: &str, escape: bool) -> String {
+        let mut out = input.to_string();
+        let mut keys: Vec<&(String, String)> = self.vars.iter().collect();
+        keys.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+        for (key, value) in keys {
+            if !out.contains(key.as_str()) {
+                continue;
+            }
+            let replacement = if escape {
+                regex::escape(value)
+            } else {
+                value.clone()
+            };
+            out = out.replace(key.as_str(), &replacement);
+        }
+        if !self.matches.is_empty() {
+            out = RE_MATCH_VAR
+                .replace_all(&out, |caps: &regex::Captures<'_>| {
+                    let Some(name) = caps.get(1) else {
+                        return caps
+                            .get(0)
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_default();
+                    };
+                    match self.lookup_match(name.as_str()) {
+                        Some(value) => {
+                            if escape {
+                                regex::escape(value)
+                            } else {
+                                value.to_string()
+                            }
+                        }
+                        None => caps
+                            .get(0)
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_default(),
+                    }
+                })
+                .into_owned();
+        }
+        out
+    }
+
+    fn lookup_match(&self, name: &str) -> Option<&str> {
+        self.matches
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Layer the per-download-URL variables on top of the version table
+    /// (`get_hash_for_app`, lib/autoupdate.ps1:212-219).
+    ///
+    /// Truth values (recorded from upstream, 2026-09-13):
+    /// `https://ex.com/dl/app-1.2.3.zip?download=1` →
+    /// `$url` = fragment-stripped URL, `$baseurl` = `https://ex.com/dl`,
+    /// `$basename` = `app-1.2.3.zip` (URL-decoded), `$urlNoExt` =
+    /// `https://ex.com/dl/app-1.2.3`, `$basenameNoExt` = `app-1.2.3`.
+    pub(crate) fn with_url(&self, url: &str) -> Substitution {
+        let stripped = url::strip_url_fragment(url).to_string();
+        let basename = url::decoded(&url::url_remote_filename(&stripped));
+        let mut out = self.clone();
+        out.vars.push((
+            "$baseurl".to_string(),
+            url::strip_filename(&stripped)
+                .trim_end_matches('/')
+                .to_string(),
+        ));
+        out.vars
+            .push(("$urlNoExt".to_string(), url::strip_ext(&stripped)));
+        out.vars
+            .push(("$basenameNoExt".to_string(), url::strip_ext(&basename)));
+        out.vars.push(("$url".to_string(), stripped));
+        out.vars.push(("$basename".to_string(), basename));
+        out
+    }
+}
+
+/// Build the upstream `Get-VersionSubstitution` table
+/// (lib/autoupdate.ps1:429-463): the ten version variables, `$matchHead`/
+/// `$matchTail` derived from the version string itself, then one
+/// `$match<Name>` per capture group (`$match1`, `$match2`, ... for numbered
+/// groups; `$match<ToTitleCase(name)>` for named ones).
+fn version_substitutions(
+    version: &str,
+    captures: &[String],
+    named_captures: &HashMap<String, String>,
+) -> Substitution {
+    let first_part = version.split('-').next().unwrap_or(version);
+    let last_part = version.rsplit('-').next().unwrap_or(version);
+    let parts: Vec<&str> = first_part.split('.').collect();
+    let vars: Vec<(String, String)> = vec![
+        ("$version".to_string(), version.to_string()),
+        (
+            "$dotVersion".to_string(),
+            version.replace(['_', '-', '.'], "."),
+        ),
+        (
+            "$underscoreVersion".to_string(),
+            version.replace(['_', '-', '.'], "_"),
+        ),
+        (
+            "$dashVersion".to_string(),
+            version.replace(['_', '-', '.'], "-"),
+        ),
+        (
+            "$cleanVersion".to_string(),
+            version.replace(['_', '-', '.'], ""),
+        ),
+        (
+            "$majorVersion".to_string(),
+            parts.first().copied().unwrap_or("0").to_string(),
+        ),
+        (
+            "$minorVersion".to_string(),
+            parts.get(1).copied().unwrap_or("0").to_string(),
+        ),
+        (
+            "$patchVersion".to_string(),
+            parts.get(2).copied().unwrap_or("0").to_string(),
+        ),
+        (
+            "$buildVersion".to_string(),
+            parts.get(3).copied().unwrap_or("0").to_string(),
+        ),
+        ("$preReleaseVersion".to_string(), last_part.to_string()),
+    ];
+
+    let mut matches: Vec<(String, String)> = Vec::new();
+    if let Some((head, tail)) = extract_version_head_tail(version) {
+        matches.push(("Head".to_string(), head));
+        matches.push(("Tail".to_string(), tail));
+    }
+    // Numbered groups: upstream's `$matchesHashtable` carries "0", "1", ...
+    // and `Get-VersionSubstitution` skips only group "0".
+    for (i, capture) in captures.iter().enumerate().skip(1) {
+        matches.push((i.to_string(), capture.clone()));
+    }
+    // Named groups: `'$match' + ToTitleCase($_.Name)`.
+    for (name, value) in named_captures {
+        matches.push((to_title_case(name), value.clone()));
+    }
+
+    Substitution { vars, matches }
+}
+
+/// `.NET TextInfo.ToTitleCase` for an identifier: the first letter of every
+/// word upper-cased and the rest lower-cased, **except** words that are
+/// already entirely upper-case, which are returned unchanged.
+///
+/// Verified against PowerShell 5.1 on 2026-09-13:
+/// `gccversion`→`Gccversion`, `GccVersion`→`Gccversion`, `myGroup`→`Mygroup`,
+/// `tag`→`Tag`, `AB`→`AB`.
+fn to_title_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut word = String::new();
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else {
+            out.push_str(&title_case_word(&word));
+            word.clear();
+            out.push(c);
+        }
+    }
+    out.push_str(&title_case_word(&word));
+    out
+}
+
+fn title_case_word(word: &str) -> String {
+    if word.is_empty() {
+        return String::new();
+    }
+    let has_lower = word.chars().any(|c| c.is_lowercase());
+    let has_upper = word.chars().any(|c| c.is_uppercase());
+    if has_upper && !has_lower {
+        return word.to_string();
+    }
+    let mut out = String::with_capacity(word.len());
+    let mut chars = word.chars();
+    if let Some(first) = chars.next() {
+        out.extend(first.to_uppercase());
+    }
+    out.extend(chars.flat_map(|c| c.to_lowercase()));
+    out
+}
+
+// ─── Property replacement (Update-ManifestProperty, lib/autoupdate.ps1:332-427)
+
+/// PowerShell truthiness, as `Update-ManifestProperty` relies on it
+/// (`if ($Manifest.$p -and $Manifest.autoupdate.$p)`).
+fn ps_truthy(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+        Some(serde_json::Value::String(s)) => !s.is_empty(),
+        Some(serde_json::Value::Array(a)) => !a.is_empty(),
+        Some(serde_json::Value::Object(o)) => !o.is_empty(),
+    }
+}
+
+/// `@($value).Length` — PowerShell's array coercion (`$null` → 0, scalar → 1).
+fn ps_array_len(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Array(items) => items.len(),
+        _ => 1,
+    }
+}
+
+/// `@($value)` — PowerShell's array coercion.
+fn ps_as_array(value: &serde_json::Value) -> Vec<serde_json::Value> {
+    match value {
+        serde_json::Value::Null => Vec::new(),
+        serde_json::Value::Array(items) => items.clone(),
+        other => vec![other.clone()],
+    }
+}
+
+/// Upstream `PropertyHelper` (lib/autoupdate.ps1:527-579): update a manifest
+/// property line by line, keeping any existing entries the replacement does
+/// not cover. Returns `(newValue, changed)`.
+fn property_helper(
+    existing: &serde_json::Value,
+    value: &serde_json::Value,
+) -> (serde_json::Value, bool) {
+    if ps_array_len(existing) < ps_array_len(value) {
+        return (value.clone(), true);
+    }
+    match existing {
+        serde_json::Value::String(_) => match value {
+            serde_json::Value::String(s) => (serde_json::Value::String(s.clone()), true),
+            // `$Value -as [String]` on null yields null → no change.
+            serde_json::Value::Null => (existing.clone(), false),
+            serde_json::Value::Number(n) => (serde_json::Value::String(n.to_string()), true),
+            serde_json::Value::Bool(b) => (
+                serde_json::Value::String(if *b { "True" } else { "False" }.to_string()),
+                true,
+            ),
+            // Arrays/objects: upstream would stringify to their .NET type
+            // name; hok leaves the existing value alone instead of writing a
+            // bogus type name into the manifest.
+            _ => (existing.clone(), false),
+        },
+        serde_json::Value::Array(items) => {
+            let values = ps_as_array(value);
+            let mut out = items.clone();
+            let mut changed = false;
+            for (i, v) in values.iter().enumerate() {
+                if i >= out.len() {
+                    break;
+                }
+                let (new_item, item_changed) = property_helper(&out[i], v);
+                out[i] = new_item;
+                changed |= item_changed;
+            }
+            (serde_json::Value::Array(out), changed)
+        }
+        serde_json::Value::Object(map) => {
+            let serde_json::Value::Object(values) = value else {
+                return (existing.clone(), false);
+            };
+            let mut out = map.clone();
+            let mut changed = false;
+            for (name, current) in map {
+                if !ps_truthy(values.get(name)) {
+                    continue;
+                }
+                let (new_value, value_changed) = property_helper(current, &values[name]);
+                out.insert(name.clone(), new_value);
+                changed |= value_changed;
+            }
+            (serde_json::Value::Object(out), changed)
+        }
+        _ => {
+            if value.is_null() {
+                (existing.clone(), false)
+            } else {
+                (value.clone(), true)
+            }
+        }
+    }
+}
+
+/// Upstream `arch_specific` (lib/manifest.ps1:148-155): the architecture-level
+/// value when it is truthy, otherwise the generic one.
+fn arch_specific(
+    autoupdate: &serde_json::Value,
+    arch: &str,
+    prop: &str,
+) -> Option<serde_json::Value> {
+    if let Some(value) = autoupdate
+        .get("architecture")
+        .and_then(|a| a.get(arch))
+        .and_then(|spec| spec.get(prop))
+        && ps_truthy(Some(value))
+    {
+        return Some(value.clone());
+    }
+    autoupdate.get(prop).filter(|v| ps_truthy(Some(v))).cloned()
+}
+
+/// Recursively substitute every string in a JSON value
+/// (upstream `substitute`, lib/core.ps1:1203-1225).
+fn sub_json_value(v: &serde_json::Value, sub: &dyn Fn(&str) -> String) -> serde_json::Value {
+    match v {
+        serde_json::Value::String(s) => serde_json::Value::String(sub(s)),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(|i| sub_json_value(i, sub)).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, vv)| (k.clone(), sub_json_value(vv, sub)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Substitute an autoupdate URL value (string or array) into a `Vec<String>`.
+fn substituted_urls(value: Option<&serde_json::Value>, subs: &Substitution) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => vec![subs.apply(s)],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| subs.apply(s))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Shape `HashHelper`'s result the way PowerShell hands it back
+/// (lib/autoupdate.ps1:616-628): a one-element array is unrolled to a bare
+/// string, an empty one to `$null`. `PropertyHelper` then compares shapes, so
+/// getting this wrong makes a single-URL hash never overwrite the string the
+/// manifest already holds.
+fn hash_json_value(hashes: Vec<String>) -> serde_json::Value {
+    match hashes.len() {
+        0 => serde_json::Value::Null,
+        1 => serde_json::Value::String(hashes.into_iter().next().unwrap_or_default()),
+        _ => serde_json::Value::Array(hashes.into_iter().map(serde_json::Value::String).collect()),
+    }
+}
+
+/// The names of the architectures the manifest declares
+/// (`$Manifest.architecture | Get-Member -MemberType NoteProperty`).
+fn manifest_arch_names(root: &serde_json::Value) -> Vec<String> {
+    root.get("architecture")
+        .and_then(|a| a.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// One non-`hash` property of `Update-ManifestProperty`
+/// (lib/autoupdate.ps1:392-417).
+///
+/// Official shape:
+/// ```text
+/// if ($Manifest.$p -and $Manifest.autoupdate.$p)      -> global update
+/// elseif ($Manifest.architecture)                      -> per-architecture update
+/// ```
+fn update_manifest_property(
+    root: &mut serde_json::Value,
+    autoupdate: &serde_json::Value,
+    prop: &str,
+    subs: &Substitution,
+) {
+    if ps_truthy(root.get(prop)) && ps_truthy(autoupdate.get(prop)) {
+        let Some(source) = autoupdate.get(prop) else {
+            return;
+        };
+        let value = sub_json_value(source, &|s| subs.apply(s));
+        if let Some(slot) = root.get_mut(prop) {
+            *slot = property_helper(slot, &value).0;
+        }
+        return;
+    }
+
+    for arch in manifest_arch_names(root) {
+        let ptr = format!("/architecture/{}", arch);
+        let existing = root.pointer(&ptr).and_then(|a| a.get(prop)).cloned();
+        if !ps_truthy(existing.as_ref()) {
+            continue;
+        }
+        let Some(spec) = arch_specific(autoupdate, &arch, prop) else {
+            continue;
+        };
+        // Upstream wraps the arch value in `@(...)` and then re-wraps it, but
+        // the observable result (recorded 2026-09-13) keeps the value's shape:
+        // a scalar stays a scalar, an array stays an array.
+        let value = sub_json_value(&spec, &|s| subs.apply(s));
+        if let Some(slot) = root.pointer_mut(&ptr).and_then(|a| a.get_mut(prop)) {
+            *slot = property_helper(slot, &value).0;
+        }
+    }
+}
+
+/// The `hash` property of `Update-ManifestProperty`
+/// (lib/autoupdate.ps1:374-391).
+///
+/// Upstream only computes a hash where the manifest already declares one:
+/// `$Manifest.hash` (global) or, failing that, for each entry of
+/// `$Manifest.architecture`. A manifest with neither is left untouched — hok
+/// used to synthesise a top-level `hash` from `autoupdate.url` regardless.
+#[allow(clippy::too_many_arguments)]
+async fn update_hash_property(
+    session: &Session,
+    root: &mut serde_json::Value,
+    autoupdate: &serde_json::Value,
+    subs: &Substitution,
+    cache_dir: &std::path::Path,
+    app_name: &str,
+    version: &str,
+) -> Fallible<()> {
+    if ps_truthy(root.get("hash")) {
+        let urls = substituted_urls(autoupdate.get("url"), subs);
+        if urls.is_empty() {
+            // Upstream substitutes `$null` and hands `HashHelper` an empty URL
+            // list, which blanks the existing hash. hok leaves it alone rather
+            // than destroying a hash it cannot recompute.
+            return Ok(());
+        }
+        let extractions = autoupdate.get("hash").map(ps_as_array).unwrap_or_default();
+        let hashes = download_and_hash_multi(
+            session,
+            app_name,
+            version,
+            &urls,
+            &extractions,
+            subs,
+            cache_dir,
+        )
+        .await?;
+        let value = hash_json_value(hashes);
+        if let Some(slot) = root.get_mut("hash") {
+            *slot = property_helper(slot, &value).0;
+        }
+        return Ok(());
+    }
+
+    for arch in manifest_arch_names(root) {
+        // Upstream assigns `$Manifest.architecture.$arch.hash`, which throws
+        // when the entry has no `hash` property — so an architecture without a
+        // hash does not gain one (verified 2026-09-13). Skip it, and skip the
+        // `HashHelper` download that would have been thrown away.
+        if root
+            .pointer(&format!("/architecture/{}", arch))
+            .and_then(|a| a.get("hash"))
+            .is_none()
+        {
+            continue;
+        }
+        let Some(url_value) = arch_specific(autoupdate, &arch, "url") else {
+            // Upstream would substitute `$null` and hand an empty URL list to
+            // `HashHelper`, which blanks the hash. hok leaves such an entry
+            // alone rather than writing an empty hash.
+            continue;
+        };
+        let urls = substituted_urls(Some(&url_value), subs);
+        if urls.is_empty() {
+            continue;
+        }
+        let extractions = arch_specific(autoupdate, &arch, "hash")
+            .map(|v| ps_as_array(&v))
+            .unwrap_or_default();
+        let hashes = download_and_hash_multi(
+            session,
+            app_name,
+            version,
+            &urls,
+            &extractions,
+            subs,
+            cache_dir,
+        )
+        .await?;
+        let value = hash_json_value(hashes);
+        let ptr = format!("/architecture/{}", arch);
+        if let Some(obj) = root.pointer_mut(&ptr) {
+            let existing = obj.get("hash").cloned().unwrap_or(serde_json::Value::Null);
+            obj["hash"] = property_helper(&existing, &value).0;
+        }
+    }
     Ok(())
 }
 
@@ -1496,21 +1770,249 @@ mod tests {
         assert_eq!(tail, "");
     }
 
-    // ── match_var_for_group (Scoop $match<Name> autoupdate vars) ───────────
+    // ── to_title_case (Scoop `$match<ToTitleCase(name)>` autoupdate vars) ───
 
     #[test]
-    fn match_var_for_group_title_cases_name() {
-        // we-meet: `(?<hash>...)` must yield `$matchHash` (Scoop autoupdate.ps1
-        // `'$match' + ToTitleCase(name)`), so URLs using $matchHash resolve.
-        assert_eq!(match_var_for_group("hash"), "Hash");
-        assert_eq!(match_var_for_group("version"), "Version");
-        assert_eq!(match_var_for_group("tag"), "Tag");
-        assert_eq!(match_var_for_group("matchHead"), "Matchhead");
+    fn to_title_case_matches_dotnet_textinfo() {
+        // Truth values recorded from PowerShell 5.1 / .NET `TextInfo.ToTitleCase`
+        // (2026-09-13): a mixed-case word is folded to first-upper + rest-lower,
+        // but an all-uppercase word is returned unchanged.
+        assert_eq!(to_title_case("hash"), "Hash");
+        assert_eq!(to_title_case("version"), "Version");
+        assert_eq!(to_title_case("tag"), "Tag");
+        assert_eq!(to_title_case("gccversion"), "Gccversion");
+        assert_eq!(to_title_case("GccVersion"), "Gccversion");
+        assert_eq!(to_title_case("myGroup"), "Mygroup");
+        assert_eq!(to_title_case("AB"), "AB");
+        assert_eq!(to_title_case(""), "");
     }
 
     #[test]
-    fn match_var_for_group_empty_name() {
-        assert_eq!(match_var_for_group(""), "");
+    fn to_title_case_splits_words_on_non_alphanumerics() {
+        assert_eq!(to_title_case("a-b"), "A-B");
+        assert_eq!(to_title_case("a b"), "A B");
+    }
+
+    // ── Substitution (Get-VersionSubstitution + get_hash_for_app) ──────────
+
+    fn subs_for(version: &str) -> Substitution {
+        // `captures` mirrors upstream's `$matchesHashtable`: index 0 is the
+        // full match, index 1 the first group.
+        version_substitutions(
+            version,
+            &[version.to_string(), version.to_string()],
+            &HashMap::new(),
+        )
+    }
+
+    #[test]
+    fn substitution_replaces_version_variables() {
+        let subs = subs_for("1.2.3");
+        assert_eq!(subs.apply("v$version"), "v1.2.3");
+        assert_eq!(subs.apply("$majorVersion.$minorVersion"), "1.2");
+        assert_eq!(subs.apply("$cleanVersion"), "123");
+        assert_eq!(subs.apply("$match1"), "1.2.3");
+    }
+
+    #[test]
+    fn substitution_resolves_match_vars_case_insensitively() {
+        // PowerShell hashtables and `-match` are case-insensitive, so any
+        // casing of `$match<Name>` must resolve.
+        let named = HashMap::from([("tag".to_string(), "v9".to_string())]);
+        let subs = version_substitutions("1.0.0", &[], &named);
+        for token in ["$matchTag", "$matchtag", "$MATCHTAG", "$MatchTag"] {
+            assert_eq!(subs.apply(token), "v9", "token {token}");
+        }
+    }
+
+    #[test]
+    fn substitution_keeps_unknown_match_vars() {
+        let subs = subs_for("1.0.0");
+        assert_eq!(subs.apply("$matchNope"), "$matchNope");
+    }
+
+    #[test]
+    fn substitution_url_variables_match_upstream() {
+        // Truth values recorded from upstream `get_hash_for_app`
+        // (lib/autoupdate.ps1:212-219) / `strip_ext`, 2026-09-13. Note
+        // `strip_ext`'s `\.[^\.]*$` swallows a trailing `?query` too, so
+        // `$urlNoExt` drops `.zip?download=1` — an upstream quirk we keep.
+        let subs = subs_for("1.2.3").with_url("https://ex.com/dl/app-1.2.3.zip?download=1#/dl.7z");
+        assert_eq!(
+            subs.apply("$url"),
+            "https://ex.com/dl/app-1.2.3.zip?download=1"
+        );
+        assert_eq!(
+            subs.apply("$baseurl/checksums.txt"),
+            "https://ex.com/dl/checksums.txt"
+        );
+        assert_eq!(subs.apply("$basename"), "app-1.2.3.zip");
+        assert_eq!(subs.apply("$urlNoExt"), "https://ex.com/dl/app-1.2.3");
+        assert_eq!(subs.apply("$basenameNoExt"), "app-1.2.3");
+    }
+
+    #[test]
+    fn substitution_url_variables_without_query() {
+        let subs = subs_for("1.2.3").with_url("https://ex.com/dl/app-1.2.3.zip");
+        assert_eq!(subs.apply("$url"), "https://ex.com/dl/app-1.2.3.zip");
+        assert_eq!(subs.apply("$baseurl"), "https://ex.com/dl");
+        assert_eq!(subs.apply("$basename"), "app-1.2.3.zip");
+        assert_eq!(subs.apply("$urlNoExt"), "https://ex.com/dl/app-1.2.3");
+        assert_eq!(subs.apply("$basenameNoExt"), "app-1.2.3");
+    }
+
+    #[test]
+    fn substitution_basename_is_url_decoded() {
+        // Upstream wraps `url_remote_filename` in `UrlDecode`.
+        let subs = subs_for("1.0").with_url("https://ex.com/a%20b/app%201.0.zip");
+        assert_eq!(subs.apply("$basename"), "app 1.0.zip");
+    }
+
+    #[test]
+    fn substitution_applies_longest_key_first() {
+        // `$url` must not eat the `$urlNoExt` prefix (upstream's Hashtable
+        // enumeration order is unspecified and does exactly that).
+        let subs = subs_for("1.0.0").with_url("https://ex.com/p/app.zip");
+        assert_eq!(subs.apply("$urlNoExt"), "https://ex.com/p/app");
+        assert_eq!(subs.apply("$basenameNoExt"), "app");
+    }
+
+    #[test]
+    fn substitution_escapes_values_for_regex_use() {
+        let subs = subs_for("1.0.0").with_url("https://ex.com/p/app(1).zip");
+        assert_eq!(subs.apply_escaped("$basename"), r"app\(1\)\.zip");
+        // The plain pass keeps the value verbatim.
+        assert_eq!(subs.apply("$basename"), "app(1).zip");
+    }
+
+    // ── PropertyHelper (lib/autoupdate.ps1:527-579) ────────────────────────
+
+    #[test]
+    fn property_helper_replaces_scalar() {
+        let (value, changed) =
+            property_helper(&serde_json::json!("old"), &serde_json::json!("new"));
+        assert_eq!(value, serde_json::json!("new"));
+        assert!(changed);
+    }
+
+    #[test]
+    fn property_helper_keeps_extra_existing_array_items() {
+        // Upstream updates the array element by element, so entries the
+        // replacement does not cover survive.
+        let (value, changed) = property_helper(
+            &serde_json::json!(["a", "b", "c"]),
+            &serde_json::json!(["A", "B"]),
+        );
+        assert_eq!(value, serde_json::json!(["A", "B", "c"]));
+        assert!(changed);
+    }
+
+    #[test]
+    fn property_helper_replaces_when_value_is_longer() {
+        let (value, changed) =
+            property_helper(&serde_json::json!(["a"]), &serde_json::json!(["A", "B"]));
+        assert_eq!(value, serde_json::json!(["A", "B"]));
+        assert!(changed);
+    }
+
+    #[test]
+    fn property_helper_walks_objects() {
+        let (value, changed) = property_helper(
+            &serde_json::json!({"a": "x", "b": "y"}),
+            &serde_json::json!({"a": "X"}),
+        );
+        assert_eq!(value, serde_json::json!({"a": "X", "b": "y"}));
+        assert!(changed);
+    }
+
+    #[test]
+    fn property_helper_null_value_leaves_string_alone() {
+        let (value, changed) =
+            property_helper(&serde_json::json!("keep"), &serde_json::Value::Null);
+        assert_eq!(value, serde_json::json!("keep"));
+        assert!(!changed);
+    }
+
+    // ── property scope + hash write condition ─────────────────────────────
+
+    fn autoupdate_fixture(root: &serde_json::Value) -> serde_json::Value {
+        root.get("autoupdate").cloned().unwrap()
+    }
+
+    #[test]
+    fn property_scope_is_driven_by_autoupdate_keys() {
+        // A key hok has no typed field for (`changelog`) must still be
+        // substituted, exactly like upstream's PSObject walk.
+        let mut root = serde_json::json!({
+            "version": "1.0.0",
+            "changelog": "https://ex.com/old",
+            "extract_to": "old",
+            "autoupdate": {
+                "changelog": "https://ex.com/$version",
+                "extract_to": "$version"
+            }
+        });
+        let au = autoupdate_fixture(&root);
+        let subs = subs_for("2.0.0");
+        update_manifest_property(&mut root, &au, "changelog", &subs);
+        update_manifest_property(&mut root, &au, "extract_to", &subs);
+        assert_eq!(root["changelog"], serde_json::json!("https://ex.com/2.0.0"));
+        assert_eq!(root["extract_to"], serde_json::json!("2.0.0"));
+        assert_eq!(root["version"], serde_json::json!("1.0.0"));
+    }
+
+    #[test]
+    fn property_only_written_when_manifest_declares_it() {
+        let mut root = serde_json::json!({
+            "version": "1.0.0",
+            "autoupdate": { "changelog": "https://ex.com/$version" }
+        });
+        let au = autoupdate_fixture(&root);
+        update_manifest_property(&mut root, &au, "changelog", &subs_for("2.0.0"));
+        assert!(
+            root.get("changelog").is_none(),
+            "upstream only updates properties the manifest already declares"
+        );
+    }
+
+    // ── ps_truthy / ps_array_len ───────────────────────────────────────────
+
+    #[test]
+    fn truthiness_matches_powershell() {
+        assert!(!ps_truthy(None));
+        assert!(!ps_truthy(Some(&serde_json::Value::Null)));
+        assert!(!ps_truthy(Some(&serde_json::json!(""))));
+        assert!(!ps_truthy(Some(&serde_json::json!([]))));
+        assert!(ps_truthy(Some(&serde_json::json!("x"))));
+        assert!(ps_truthy(Some(&serde_json::json!(["x"]))));
+        assert!(!ps_truthy(Some(&serde_json::json!(0))));
+        assert!(ps_truthy(Some(&serde_json::json!(1))));
+    }
+
+    #[test]
+    fn array_len_matches_powershell_coercion() {
+        assert_eq!(ps_array_len(&serde_json::Value::Null), 0);
+        assert_eq!(ps_array_len(&serde_json::json!("a")), 1);
+        assert_eq!(ps_array_len(&serde_json::json!(["a", "b"])), 2);
+    }
+
+    // ── arch_specific (lib/manifest.ps1:148-155) ───────────────────────────
+
+    #[test]
+    fn arch_specific_prefers_arch_then_falls_back() {
+        let au = serde_json::json!({
+            "url": "https://generic/$version",
+            "architecture": { "64bit": { "url": "https://64/$version" } }
+        });
+        assert_eq!(
+            arch_specific(&au, "64bit", "url").unwrap(),
+            serde_json::json!("https://64/$version")
+        );
+        assert_eq!(
+            arch_specific(&au, "32bit", "url").unwrap(),
+            serde_json::json!("https://generic/$version")
+        );
+        assert!(arch_specific(&au, "arm64", "hash").is_none());
     }
 
     // ── end-to-end with an in-memory network fake ─────────────────────────
@@ -1570,5 +2072,277 @@ mod tests {
             "report: {:?}",
             reports[0]
         );
+    }
+
+    // ── apply_autoupdate end-to-end (S9-2 variable table + write scope) ────
+
+    /// Write `manifest` to `<root>/app.json`, parse it, run
+    /// `apply_autoupdate` against an in-memory network fake serving `canned`,
+    /// and return the rewritten JSON.
+    async fn run_autoupdate(
+        label: &str,
+        manifest_json: &str,
+        version: &str,
+        canned: &[(&str, &[u8])],
+    ) -> serde_json::Value {
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir(label);
+        let session = test_session(&root);
+        let fake = Arc::new(FakeNetwork::new());
+        for (url, body) in canned {
+            fake.serve(url, body.to_vec());
+        }
+        session.set_network(fake).unwrap();
+
+        let path = root.join("app.json");
+        std::fs::write(&path, manifest_json).unwrap();
+        let manifest = manifest::parse_file(&path).unwrap();
+        apply_autoupdate(&session, &path, &manifest, version, &[], &HashMap::new())
+            .await
+            .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = crate::internal::hash::ChecksumBuilder::new()
+            .sha256()
+            .build();
+        hasher.consume(bytes);
+        hasher.finalize()
+    }
+
+    /// A real-bucket shape (`main`/`extras`): the hash lives in a
+    /// `$baseurl/checksums.txt` file and the regex anchors on `$basename`.
+    /// Before S9-2 hok fetched the literal string `$baseurl/checksums.txt`,
+    /// which cannot even be parsed as a URL.
+    #[tokio::test]
+    async fn autoupdate_substitutes_hash_url_and_basename() {
+        let hash = "a".repeat(64);
+        let body = format!("{hash}  app-2.0.0.zip\n");
+        let value = run_autoupdate(
+            "autoupdate_subst",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "autoupdate": {
+                    "url": "https://dl.example.com/app-$version.zip",
+                    "hash": {
+                        "url": "$baseurl/checksums.txt",
+                        "regex": "([a-fA-F0-9]{64})\\s+$basename"
+                    }
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/checksums.txt", body.as_bytes())],
+        )
+        .await;
+        assert_eq!(value["version"], serde_json::json!("2.0.0"));
+        assert_eq!(
+            value["url"],
+            serde_json::json!("https://dl.example.com/app-2.0.0.zip")
+        );
+        assert_eq!(
+            value["hash"],
+            serde_json::json!(hash),
+            "hash file found via $baseurl and matched via $basename"
+        );
+    }
+
+    /// Upstream only writes a hash where the manifest already declares one.
+    /// hok used to synthesise a top-level `hash` from `autoupdate.url`.
+    #[tokio::test]
+    async fn autoupdate_does_not_add_hash_when_manifest_has_none() {
+        let value = run_autoupdate(
+            "autoupdate_no_hash",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "autoupdate": { "url": "https://dl.example.com/app-$version.zip" }
+            }"#,
+            "2.0.0",
+            &[],
+        )
+        .await;
+        assert_eq!(value["version"], serde_json::json!("2.0.0"));
+        assert_eq!(
+            value["url"],
+            serde_json::json!("https://dl.example.com/app-2.0.0.zip")
+        );
+        assert!(
+            value.get("hash").is_none(),
+            "no manifest hash and no architecture -> upstream writes no hash: {value}"
+        );
+    }
+
+    /// With `architecture` but no top-level `hash`, upstream updates the
+    /// per-architecture hash instead.
+    #[tokio::test]
+    async fn autoupdate_updates_arch_hash_when_no_top_level_hash() {
+        let hash = "b".repeat(64);
+        let body = format!("{hash}\n");
+        let value = run_autoupdate(
+            "autoupdate_arch_hash",
+            r#"{
+                "version": "1.0.0",
+                "architecture": {
+                    "64bit": {
+                        "url": "https://dl.example.com/64/app-1.0.0.zip",
+                        "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                },
+                "autoupdate": {
+                    "architecture": {
+                        "64bit": {
+                            "url": "https://dl.example.com/64/app-$version.zip",
+                            "hash": {
+                                "url": "$baseurl/checksums.txt",
+                                "regex": "([a-fA-F0-9]{64})"
+                            }
+                        }
+                    }
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/64/checksums.txt", body.as_bytes())],
+        )
+        .await;
+        assert_eq!(
+            value["architecture"]["64bit"]["url"],
+            serde_json::json!("https://dl.example.com/64/app-2.0.0.zip")
+        );
+        assert_eq!(
+            value["architecture"]["64bit"]["hash"],
+            serde_json::json!(hash)
+        );
+        assert!(value.get("hash").is_none());
+    }
+
+    /// An architecture entry that has no `hash` does not gain one: upstream's
+    /// `$Manifest.architecture.$arch.hash = ...` throws there (verified
+    /// 2026-09-13), and the sibling entry that *does* have a hash is updated.
+    #[tokio::test]
+    async fn autoupdate_does_not_add_arch_hash_when_absent() {
+        let hash = "c".repeat(64);
+        let body = format!("{hash}\n");
+        let value = run_autoupdate(
+            "autoupdate_arch_no_hash",
+            r#"{
+                "version": "1.0.0",
+                "architecture": {
+                    "64bit": {
+                        "url": "https://dl.example.com/64/app-1.0.0.zip",
+                        "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    "32bit": { "url": "https://dl.example.com/32/app-1.0.0.zip" }
+                },
+                "autoupdate": {
+                    "architecture": {
+                        "64bit": {
+                            "url": "https://dl.example.com/64/app-$version.zip",
+                            "hash": { "url": "$baseurl/checksums.txt", "regex": "([a-fA-F0-9]{64})" }
+                        },
+                        "32bit": { "url": "https://dl.example.com/32/app-$version.zip" }
+                    }
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/64/checksums.txt", body.as_bytes())],
+        )
+        .await;
+        assert_eq!(
+            value["architecture"]["64bit"]["hash"],
+            serde_json::json!(hash)
+        );
+        assert_eq!(
+            value["architecture"]["32bit"]["url"],
+            serde_json::json!("https://dl.example.com/32/app-2.0.0.zip")
+        );
+        assert!(
+            value["architecture"]["32bit"].get("hash").is_none(),
+            "an architecture without a hash must not gain one: {value}"
+        );
+    }
+
+    /// Without any `autoupdate.hash` template the file is downloaded and
+    /// hashed — and (S9-2) cached under Scoop's cache dir instead of a
+    /// throwaway temp copy.
+    #[tokio::test]
+    async fn autoupdate_download_fallback_uses_the_cache_dir() {
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let payload = b"payload-bytes".to_vec();
+        let fake = Arc::new(FakeNetwork::new());
+        fake.serve("https://dl.example.com/app-2.0.0.zip", payload.clone());
+        let root = tmpdir("autoupdate_cache");
+        let session = test_session(&root);
+        session.set_network(fake).unwrap();
+        let path = root.join("app.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "autoupdate": { "url": "https://dl.example.com/app-$version.zip" }
+            }"#,
+        )
+        .unwrap();
+        let manifest = manifest::parse_file(&path).unwrap();
+        apply_autoupdate(&session, &path, &manifest, "2.0.0", &[], &HashMap::new())
+            .await
+            .unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["hash"], serde_json::json!(sha256_hex(&payload)));
+
+        let cached = session
+            .config()
+            .cache_path()
+            .join(crate::package::cache_file_name(
+                "app",
+                "2.0.0",
+                "https://dl.example.com/app-2.0.0.zip",
+            ));
+        assert!(
+            cached.is_file(),
+            "hash fallback must populate the Scoop cache: {}",
+            cached.display()
+        );
+        assert_eq!(std::fs::read(&cached).unwrap(), payload);
+    }
+
+    /// Any autoupdate key is substituted, not just the typed ones — this is
+    /// what upstream's PSObject walk buys (`changelog`, `extract_to`, ...).
+    #[tokio::test]
+    async fn autoupdate_substitutes_untyped_properties() {
+        let payload = b"payload".to_vec();
+        let value = run_autoupdate(
+            "autoupdate_untyped",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "changelog": "https://ex.com/old",
+                "extract_to": "old",
+                "autoupdate": {
+                    "url": "https://dl.example.com/app-$version.zip",
+                    "changelog": "https://ex.com/$version",
+                    "extract_to": "$cleanVersion"
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/app-2.0.0.zip", &payload)],
+        )
+        .await;
+        assert_eq!(
+            value["changelog"],
+            serde_json::json!("https://ex.com/2.0.0")
+        );
+        assert_eq!(value["extract_to"], serde_json::json!("200"));
     }
 }
