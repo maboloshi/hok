@@ -88,6 +88,7 @@ cmd:
   list_header_name: "名称"
   list_header_version: "版本"
   list_header_source: "源"
+  list_header_updated: "更新时间"
   list_header_info: "状态"
   list_info_deprecated: "已弃用包"
   list_summary: "已安装 %{count} 个，锁定 %{held} 个，可更新 %{upgradable} 个，损坏 %{broken} 个，游离 %{orphaned} 个，隔离 %{isolated} 个"

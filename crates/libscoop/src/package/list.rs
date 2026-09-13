@@ -2,7 +2,8 @@
 //!
 //! Scans the version directories under `<root>/apps/<name>/` and reports them
 //! in descending version order, flagging the one the `current` link points to
-//! — the business logic behind the `hok list --versions` flag.
+//! — the business logic behind the `hok list --versions` flag. Also resolves
+//! the app's `Updated` timestamp for the plain listing.
 
 use std::cmp::Ordering;
 
@@ -68,6 +69,24 @@ pub fn list_installed_versions(session: &Session, name: &str) -> Fallible<Vec<In
         .collect())
 }
 
+/// The `Updated` timestamp of an installed app, formatted as local
+/// `yyyy-MM-dd HH:mm:ss`.
+///
+/// Upstream starts from the app directory's `LastWriteTime` and overrides it
+/// with the current version's `install.json` `LastWriteTime` when that file
+/// exists (`scoop-list.ps1:34-40`), rendered through the format string in
+/// `supporting/formats/ScoopTypes.Format.ps1xml:22-25`. Returns `None` when
+/// neither path can be stat'ed (an app whose directory vanished), so the
+/// caller renders an empty cell instead of a bogus date.
+pub fn update_time(session: &Session, name: &str, version: &str) -> Option<String> {
+    let install_json = session.versioned_dir(name, version).join("install.json");
+    let stamp = std::fs::metadata(&install_json)
+        .and_then(|m| m.modified())
+        .or_else(|_| std::fs::metadata(session.app_dir(name)).and_then(|m| m.modified()))
+        .ok()?;
+    crate::internal::time::format_updated_local(stamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +123,40 @@ mod tests {
         assert_eq!(compare_versions_desc("beta", "alpha"), Ordering::Less);
         assert_eq!(compare_versions_desc("alpha", "beta"), Ordering::Greater);
         assert_eq!(compare_versions_desc("beta", "beta"), Ordering::Equal);
+    }
+
+    /// `Updated` uses `install.json`'s mtime when present (even an old one),
+    /// and falls back to the app directory's when the file is missing;
+    /// a vanished app yields `None`.
+    #[test]
+    fn update_time_prefers_install_json_and_falls_back_to_the_app_dir() {
+        let root = crate::test_utils::tmpdir("list_update_time");
+        let session = crate::test_utils::test_session(&root);
+        let version_dir = root.join("apps/app/1.0.0");
+        std::fs::create_dir_all(&version_dir).unwrap();
+
+        // No install.json yet: the app directory is the fallback source.
+        let fallback = update_time(&session, "app", "1.0.0").expect("app dir exists");
+        assert_eq!(fallback.len(), 19, "yyyy-MM-dd HH:mm:ss: {fallback}");
+
+        // With an install.json pinned to a known instant, that mtime wins —
+        // even though it is far older than the app directory.
+        let install_json = version_dir.join("install.json");
+        std::fs::write(&install_json, b"{}").unwrap();
+        let pinned = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&install_json)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(pinned))
+            .unwrap();
+        assert_eq!(
+            update_time(&session, "app", "1.0.0").unwrap(),
+            crate::internal::time::format_updated_local(pinned).unwrap()
+        );
+
+        // Neither the version dir nor the app dir exists.
+        std::fs::remove_dir_all(root.join("apps/app")).unwrap();
+        assert!(update_time(&session, "app", "1.0.0").is_none());
     }
 }

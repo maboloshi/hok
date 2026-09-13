@@ -88,6 +88,7 @@ cmd:
   list_header_name: "Name"
   list_header_version: "Version"
   list_header_source: "Source"
+  list_header_updated: "Updated"
   list_header_info: "Info"
   list_info_deprecated: "Deprecated package"
   list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable, %{broken} broken, %{orphaned} orphaned, %{isolated} isolated"

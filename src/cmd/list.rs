@@ -9,7 +9,9 @@
 //! commands cannot drift, but the wording itself is per-command: upstream says
 //! `Deprecated package` in `list` and `Deprecated` in `status`, which is what
 //! the `InfoContext` argument selects. `list` additionally folds the outdated
-//! "-> new" arrow into Info because it has no Latest column.
+//! "-> new" arrow into Info — a hok extension, kept even though the table now
+//! carries upstream's `Updated` column (upstream's `list` gives no update
+//! indication at all).
 
 use clap::{ArgAction, Parser};
 use libscoop::{QueryOption, Session, package};
@@ -44,6 +46,10 @@ struct Row {
     name: String,
     version: String,
     source: String,
+    /// `Updated` column: the `install.json` / app-dir mtime rendered as local
+    /// `yyyy-MM-dd HH:mm:ss` (`package::list::update_time`); empty when it
+    /// cannot be read.
+    updated: String,
     /// Info column text (coloured per row kind when laid out); it is the last
     /// column and is never padded.
     info: String,
@@ -105,9 +111,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         }
 
         // Shared info words (same order as `status`). `list` has no Latest
-        // column, so an outdated app folds its "-> new" arrow in here; a
-        // future Updated column could move that out of Info.
-        // TODO: 未来加 Updated 列 后，把 outdated 的 → <new> 从 Info 挪走。
+        // column, so an outdated app folds its "-> new" arrow in here. That
+        // arrow is a hok extension and deliberately stays in Info even though
+        // the Upstream `Updated` column now exists — upstream's `list` shows
+        // no update indication at all.
         let mut words = st
             .info_kinds()
             .into_iter()
@@ -126,6 +133,8 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             name: pkg.name().to_owned(),
             version: pkg.version().to_owned(),
             source: st.bucket,
+            updated: package::list::update_time(session, pkg.name(), pkg.version())
+                .unwrap_or_default(),
             info,
             dimmed: false,
         });
@@ -207,6 +216,7 @@ fn continuation(version: &str, note: impl AsRef<str>) -> Row {
         name: String::new(),
         version: version.to_owned(),
         source: String::new(),
+        updated: String::new(),
         info: note.as_ref().to_string(),
         dimmed: true,
     }
@@ -214,34 +224,40 @@ fn continuation(version: &str, note: impl AsRef<str>) -> Row {
 
 /// Lay out the table: bold header, dashed rule, then one line per row.
 ///
-/// `info` is the last column and is never padded, so a row without info ends
-/// right after `source` — no rendered line carries trailing spaces.
-fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
-    let [hdr_name, hdr_ver, hdr_src, hdr_info] = headers;
+/// Columns are upstream's Name | Version | Source | Updated | Info
+/// (`scoop-list.ps1:35-48`, `ScoopTypes.Format.ps1xml:22-28`); `info` is the
+/// last column and is never padded, and a trailing all-empty Updated column is
+/// trimmed too, so no rendered line carries trailing spaces.
+fn layout(rows: &[Row], headers: [&str; 5]) -> Vec<String> {
+    let [hdr_name, hdr_ver, hdr_src, hdr_updated, hdr_info] = headers;
 
     let mut w_name = visual_width(hdr_name);
     let mut w_ver = visual_width(hdr_ver);
     let mut w_src = visual_width(hdr_src);
+    let mut w_updated = visual_width(hdr_updated);
     let w_info = visual_width(hdr_info);
     for row in rows {
         w_name = w_name.max(visual_width(&row.name));
         w_ver = w_ver.max(visual_width(&row.version));
         w_src = w_src.max(visual_width(&row.source));
+        w_updated = w_updated.max(visual_width(&row.updated));
     }
 
     let mut lines = vec![
         format!(
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}  {}  {}",
             style::accent_bold(pad_visual(hdr_name, w_name)),
             style::accent_bold(pad_visual(hdr_ver, w_ver)),
             style::accent_bold(pad_visual(hdr_src, w_src)),
+            style::accent_bold(pad_visual(hdr_updated, w_updated)),
             style::accent_bold(hdr_info),
         ),
         format!(
-            "  {}  {}  {}  {}",
+            "  {}  {}  {}  {}  {}",
             style::dim("-".repeat(w_name)),
             style::dim("-".repeat(w_ver)),
             style::dim("-".repeat(w_src)),
+            style::dim("-".repeat(w_updated)),
             style::dim("-".repeat(w_info)),
         ),
     ];
@@ -249,17 +265,29 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
     for row in rows {
         let name = pad_visual(&row.name, w_name);
         let version = pad_visual(&row.version, w_ver);
-        // Trailing padding is pointless when nothing follows the source.
-        let source = if row.info.is_empty() {
-            row.source.clone()
-        } else {
+        let has_updated = !row.updated.is_empty();
+        let has_info = !row.info.is_empty();
+        // Trailing padding is pointless when nothing follows the column.
+        let source = if has_updated || has_info {
             pad_visual(&row.source, w_src)
+        } else {
+            row.source.clone()
+        };
+        let updated = if has_info {
+            pad_visual(&row.updated, w_updated)
+        } else {
+            row.updated.clone()
         };
 
-        let (name, version, source) = if row.dimmed {
-            (style::dim(name), style::dim(version), style::dim(source))
+        let (name, version, source, updated) = if row.dimmed {
+            (
+                style::dim(name),
+                style::dim(version),
+                style::dim(source),
+                style::dim(updated),
+            )
         } else {
-            (style::emphasis(name), version, source)
+            (style::emphasis(name), version, source, updated)
         };
         // Attention words are danger red; a continuation row's note is dim.
         let info = if row.dimmed {
@@ -268,11 +296,14 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
             style::danger(&row.info)
         };
 
-        if row.info.is_empty() {
-            lines.push(format!("  {}  {}  {}", name, version, source));
-        } else {
-            lines.push(format!("  {}  {}  {}  {}", name, version, source, info));
+        let mut line = format!("  {}  {}  {}", name, version, source);
+        if has_updated || has_info {
+            line.push_str(&format!("  {}", updated));
         }
+        if has_info {
+            line.push_str(&format!("  {}", info));
+        }
+        lines.push(line);
     }
 
     lines
@@ -283,6 +314,7 @@ fn render(rows: &[Row]) {
     let name = hok_i18n::t!("cmd.list_header_name");
     let version = hok_i18n::t!("cmd.list_header_version");
     let source = hok_i18n::t!("cmd.list_header_source");
+    let updated = hok_i18n::t!("cmd.list_header_updated");
     let info = hok_i18n::t!("cmd.list_header_info");
 
     for line in layout(
@@ -291,6 +323,7 @@ fn render(rows: &[Row]) {
             name.as_str(),
             version.as_str(),
             source.as_str(),
+            updated.as_str(),
             info.as_str(),
         ],
     ) {
@@ -302,11 +335,12 @@ fn render(rows: &[Row]) {
 mod tests {
     use super::*;
 
-    fn row(name: &str, version: &str, source: &str, info: &str) -> Row {
+    fn row(name: &str, version: &str, source: &str, updated: &str, info: &str) -> Row {
         Row {
             name: name.to_owned(),
             version: version.to_owned(),
             source: source.to_owned(),
+            updated: updated.to_owned(),
             info: info.to_owned(),
             dimmed: false,
         }
@@ -334,36 +368,53 @@ mod tests {
     }
 
     /// Covers the whole table: the header, the rule and the rows line up
-    /// column by column (CJK names included), and a row whose `info` is empty
-    /// ends at `source` instead of trailing spaces.
+    /// column by column (CJK names included), and a row whose trailing
+    /// `updated`/`info` columns are empty ends at the last non-empty column
+    /// instead of trailing spaces.
     #[test]
-    fn layout_aligns_columns_and_trims_an_empty_info_column() {
+    fn layout_aligns_columns_and_trims_empty_trailing_columns() {
         let rows = vec![
-            row("7zip", "26.03", "main", ""),
+            row("7zip", "26.03", "main", "2026-07-25 10:48:34", ""),
             row(
                 "directoryopus-cn",
                 "13.25.3",
                 "scoop-app",
+                "",
                 "Update available",
             ),
-            row("中文包", "1.0", "main", "Held package"),
+            row(
+                "中文包",
+                "1.0",
+                "main",
+                "2026-01-02 03:04:05",
+                "Held package",
+            ),
         ];
-        let lines = layout(&rows, ["名称", "版本", "源", "状态"])
+        let lines = layout(&rows, ["名称", "版本", "源", "更新时间", "状态"])
             .iter()
             .map(|l| plain(l))
             .collect::<Vec<_>>();
 
         let version_col = 2 + visual_width("directoryopus-cn") + 2;
         let source_col = version_col + visual_width("13.25.3") + 2;
+        let updated_col = source_col + visual_width("scoop-app") + 2;
+        let info_col = updated_col + visual_width("2026-07-25 10:48:34") + 2;
         for (line, version) in lines[2..].iter().zip(["26.03", "13.25.3", "1.0"]) {
             assert_eq!(value_column(line, version), version_col, "on `{line}`");
         }
         for (line, source) in lines[2..].iter().zip(["main", "scoop-app", "main"]) {
             assert_eq!(value_column(line, source), source_col, "on `{line}`");
         }
+        // Rows 1 and 3 carry an updated timestamp at the Updated column; row
+        // 2's updated cell is empty, yet its Info still starts at `info_col`.
+        assert_eq!(value_column(&lines[2], "2026-07-25 10:48:34"), updated_col);
+        assert_eq!(value_column(&lines[4], "2026-01-02 03:04:05"), updated_col);
+        assert_eq!(value_column(&lines[3], "Update available"), info_col);
+        assert_eq!(value_column(&lines[4], "Held package"), info_col);
 
-        // The empty info row ends right after `source`; the others carry theirs.
-        assert!(lines[2].ends_with("main"), "row 1: {}", lines[2]);
+        // Row 1 has no info, so it ends right after `updated`; row 2 carries
+        // its info after the (empty) updated cell.
+        assert!(lines[2].ends_with("10:48:34"), "row 1: {}", lines[2]);
         assert!(
             lines[3].ends_with("Update available"),
             "row 2: {}",
@@ -375,20 +426,38 @@ mod tests {
         );
     }
 
+    /// A row with neither an updated timestamp nor info ends right after the
+    /// source column (the empty-cell trimming rule, one column further).
+    #[test]
+    fn layout_trims_both_empty_updated_and_info() {
+        let rows = vec![row("7zip", "26.03", "main", "", "")];
+        let lines = layout(&rows, ["Name", "Version", "Source", "Updated", "Info"])
+            .iter()
+            .map(|l| plain(l))
+            .collect::<Vec<_>>();
+
+        assert!(lines[2].ends_with("main"), "row: {}", lines[2]);
+        assert!(
+            lines.iter().all(|l| !l.ends_with(' ')),
+            "trailing spaces: {lines:#?}"
+        );
+    }
+
     /// A dimmed continuation row lays out in the same columns as a normal one.
     #[test]
     fn layout_keeps_continuation_rows_aligned() {
         let rows = vec![
-            row("git", "2.51.0", "main", ""),
+            row("git", "2.51.0", "main", "2026-07-25 10:48:34", ""),
             Row {
                 name: String::new(),
                 version: "2.50.0".to_owned(),
                 source: String::new(),
+                updated: String::new(),
                 info: "old".to_owned(),
                 dimmed: true,
             },
         ];
-        let lines = layout(&rows, ["Name", "Version", "Source", "Info"])
+        let lines = layout(&rows, ["Name", "Version", "Source", "Updated", "Info"])
             .iter()
             .map(|l| plain(l))
             .collect::<Vec<_>>();
