@@ -159,8 +159,6 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         output::done(hok_i18n::t!("reinstall.reheld"));
     }
 
-    output::done(hok_i18n::t!("output.ok_all"));
-
     Ok(())
 }
 

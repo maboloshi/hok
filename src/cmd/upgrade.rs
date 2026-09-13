@@ -94,10 +94,9 @@ pub(super) async fn execute_upgrade(
     // (which would expand `*` to every bucket package).
     options.push(SyncOption::OnlyUpgrade);
     // A named target that isn't installed must NOT be reported as up-to-date:
-    // the batch still runs so `sync` reports it (`Confirm-InstallationStatus`,
-    // `lib/core.ps1:1084-1121`), and the closing success footer is then
-    // suppressed — Scoop reports the app and exits 0 without a success line
-    // (`scoop-update.ps1:424-427,468`).
+    // the batch still runs so `sync` reports it and the command exits 0
+    // (`Confirm-InstallationStatus`, `lib/core.ps1:1084-1121`;
+    // `scoop-update.ps1:424-427,468`).
     let mut missing_target = false;
     for &q in &queries {
         if q != "*" && package::query::query_installed(session, &[q], &[])?.is_empty() {
@@ -139,17 +138,11 @@ pub(super) async fn execute_upgrade(
 
     let sync_result = package::sync::sync(session, queries, options).await;
     handle.await.unwrap();
-    // A declined confirmation is not a failure: exit 0 without ok_all.
+    // A declined confirmation is not a failure: exit 0.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
         return Ok(());
     }
     sync_result?;
-
-    if missing_target {
-        return Ok(());
-    }
-
-    output::done(hok_i18n::t!("output.ok_all"));
 
     Ok(())
 }

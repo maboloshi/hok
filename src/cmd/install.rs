@@ -125,8 +125,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let sync_result = package::sync::sync(session, to_install.clone(), options).await;
     handle.await.unwrap();
-    // A declined confirmation is not a failure: exit 0 without the
-    // "Everything is ok!" message.
+    // A declined confirmation is not a failure: exit 0.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
         return Ok(());
     }
@@ -145,8 +144,6 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     if args.download_only {
         output::done(hok_i18n::t!("output.downloaded_only"));
-    } else {
-        output::done(hok_i18n::t!("output.ok_all"));
     }
 
     Ok(())
