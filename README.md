@@ -107,7 +107,7 @@ hok config --help         # full settings reference with defaults
 | `editor` | string | *(empty)* | Text editor used by `hok config edit` (e.g. `code --wait`); falls back to `$EDITOR`, then the system default handler |
 | `global_path` | path | `$SCOOP_GLOBAL` or `%ProgramData%\scoop` | Root directory for globally installed apps |
 | `gh_token` | string | *(empty)* | GitHub API token used for authenticated requests |
-| `ignore-failures` | bool | `true` | Continue multi-package operations despite individual failures |
+| `ignore-failures` | bool | `false` | Continue multi-package operations despite individual failures |
 | `ignore_running_processes` | bool | `false` | Proceed even if the app is running (warning instead of abort) |
 | `language` | `auto`\|`en`\|`zh` | `auto` | CLI language for messages and help text |
 | `last_update` | string | *(empty)* | Timestamp of the last bucket update (managed by hok; edit the file only) |

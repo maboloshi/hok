@@ -1119,7 +1119,7 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
     rows.push(row(
         "ignore-failures",
         ConfigCell::text(fmt_bool(config.ignore_failures())),
-        ConfigCell::text("true"),
+        ConfigCell::text("false"),
     ));
     rows.push(row(
         "ignore_running_processes",
@@ -1490,11 +1490,46 @@ mod tests {
         );
     }
 
+    /// A row's default column is a promise about the runtime: for every
+    /// boolean key it must equal the getter's value on a fresh (all-unset)
+    /// config. This is the guard for the drift S12 found — the runtime default
+    /// was changed to `false` while the column kept the old `true`.
+    #[test]
+    fn boolean_default_column_matches_the_runtime_default() {
+        let session = test_session("config_bool_defaults");
+        let rows = crate::config::list_all_rows(&session).unwrap();
+        let config = session.config();
+        for (key, actual) in [
+            ("aria2-enabled", config.aria2_enabled()),
+            ("ignore-failures", config.ignore_failures()),
+            ("ignore_running_processes", config.ignore_running_processes()),
+            ("no-color", config.no_color()),
+            ("confirm", config.confirm()),
+            ("script-engine", config.script_engine()),
+            ("no_junction", config.no_junction()),
+            ("use_sqlite_cache", config.use_sqlite_cache()),
+        ] {
+            assert_eq!(
+                default_of(&rows, key),
+                ConfigCell::Text(fmt_bool(actual).to_owned()),
+                "{key}: the default column disagrees with the runtime default"
+            );
+        }
+    }
+
     fn value_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
         rows.iter()
             .find(|r| r.key == key)
             .unwrap_or_else(|| panic!("missing row {key}"))
             .value
+            .clone()
+    }
+
+    fn default_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
+        rows.iter()
+            .find(|r| r.key == key)
+            .unwrap_or_else(|| panic!("missing row {key}"))
+            .default
             .clone()
     }
 

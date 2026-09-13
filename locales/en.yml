@@ -588,7 +588,7 @@ cli_help:
             Root directory for globally installed apps.
       gh_token: string, default none
             GitHub API token used for authenticated requests.
-      ignore-failures: bool, default true
+      ignore-failures: bool, default false
             Continue multi-package operations despite individual failures.
       ignore_running_processes: bool, default false
             Proceed even if the app is running (warning instead of abort).

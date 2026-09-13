@@ -588,7 +588,7 @@ cli_help:
             全局应用安装的根目录。
       gh_token: 字符串，默认无
             用于认证请求的 GitHub API token。
-      ignore-failures: bool，默认 true
+      ignore-failures: bool，默认 false
             多包操作中单个包失败时继续处理其余包。
       ignore_running_processes: bool，默认 false
             应用正在运行时仍继续（仅警告，不中止）。

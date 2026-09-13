@@ -152,7 +152,7 @@ hok config --help         # 完整设置参考（含默认值与取值样式）
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | 自动检测 | 安装时使用的首选架构 |
 | `global_path` | 路径 | `$SCOOP_GLOBAL` 或 `%ProgramData%\scoop` | 全局应用安装的根目录 |
 | `gh_token` | 字符串 | *(空)* | 用于认证请求的 GitHub API token |
-| `ignore-failures` | bool | `true` | 多包操作中单个包失败时继续处理其余包 |
+| `ignore-failures` | bool | `false` | 多包操作中单个包失败时继续处理其余包 |
 | `ignore_running_processes` | bool | `false` | 应用正在运行时仍继续（仅警告，不中止） |
 | `language` | `auto`\|`en`\|`zh` | `auto` | 消息与帮助文本使用的 CLI 语言 |
 | `last_update` | 字符串 | *(空)* | 上次 bucket 更新时间戳（由 hok 管理，仅可编辑文件） |
