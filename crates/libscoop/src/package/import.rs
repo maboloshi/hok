@@ -548,8 +548,8 @@ mod tests {
 
     /// Upstream's canonical key spellings — the ones its own `get_config` calls
     /// read, i.e. underscores except the hyphenated `aria2-*` family — map onto
-    /// hok, the machine-specific ones are refused, and the other separator is
-    /// tolerated for a hand-written Scoopfile.
+    /// hok and the machine-specific ones are refused. Only those spellings map:
+    /// the other separator is as unknown as `config` treats it.
     #[test]
     fn config_keys_map_onto_hok() {
         use crate::config::{OfficialKey, map_official_key};
@@ -571,17 +571,19 @@ mod tests {
             map_official_key("aria2-min-split-size"),
             OfficialKey::Supported("aria2-min-split-size")
         );
-        assert_eq!(
-            map_official_key("use-sqlite-cache"),
-            OfficialKey::Supported("use_sqlite_cache")
-        );
         assert_eq!(map_official_key("root_path"), OfficialKey::MachineSpecific);
-        assert_eq!(map_official_key("root-path"), OfficialKey::MachineSpecific);
         assert_eq!(map_official_key("scoop_repo"), OfficialKey::Unsupported);
         assert_eq!(
             map_official_key("aria2-warning-enabled"),
             OfficialKey::Unsupported
         );
+        for unknown in ["use-sqlite-cache", "root-path", "aria2_warning_enabled"] {
+            assert_eq!(
+                map_official_key(unknown),
+                OfficialKey::Unsupported,
+                "{unknown} is not an upstream spelling"
+            );
+        }
 
         assert_eq!(
             config_value_to_string(&serde_json::json!(true)).as_deref(),

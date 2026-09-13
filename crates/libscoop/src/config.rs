@@ -1008,46 +1008,50 @@ pub fn list(session: &crate::Session) -> Fallible<String> {
     config.pretty()
 }
 
-/// The canonical (config file) name of a key spelling the CLI accepts.
+/// Every setting `config` accepts, under the one spelling it accepts it by.
 ///
-/// The single spelling table for settings: [`Config::set`], [`value`] and the
-/// rejection message all resolve through it, so an alias cannot drift away from
-/// the field it writes. The canonical name is the key's `serde` name in
-/// [`ConfigInner`], which is also the name the file holds.
+/// There are no aliases: the spelling is the key's `serde` name in
+/// [`ConfigInner`] — which is also the name the config file holds, and, for a
+/// setting upstream shares, the name upstream's own `get_config` calls read
+/// (`libexec/scoop-config.ps1:21-153`) — so an alternate spelling
+/// (`aria2_split`, `no_junctions`, `ignore_failure`, ...) is refused like any
+/// other unknown key.
 ///
-/// Spellings are matched exactly, like the CLI always has (upstream's
-/// `set_config` lower-cases first; hok's are already lower-case, so the only
-/// difference is a key typed in the wrong case).
+/// [`Config::set`], [`value`] and the rejection message all resolve through this
+/// one list, so a setting cannot drift out of the CLI's vocabulary.
+const SETTINGS: &[&str] = &[
+    // Upstream's aria2 family, hyphenated there too.
+    "aria2-enabled",
+    "aria2-max-connection-per-server",
+    "aria2-min-split-size",
+    "aria2-split",
+    // Shared with upstream, under upstream's spelling.
+    "cache_path",
+    "cat_style",
+    "default_architecture",
+    "gh_token",
+    "global_path",
+    "ignore_running_processes",
+    "last_update",
+    "no_junction",
+    "proxy",
+    "root_path",
+    "use_isolated_path",
+    "use_sqlite_cache",
+    "virustotal_api_key",
+    // hok's own settings (upstream has no such key).
+    "confirm",
+    "editor",
+    "ignore-failures",
+    "jobs",
+    "language",
+    "no-color",
+    "script-engine",
+];
+
+/// The canonical spelling of `key`, or `None` when `key` is not a setting.
 pub(crate) fn canonical_key(key: &str) -> Option<&'static str> {
-    Some(match key {
-        "aria2_enabled" | "aria2-enabled" => "aria2-enabled",
-        "aria2_split" | "aria2-split" => "aria2-split",
-        "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => {
-            "aria2-max-connection-per-server"
-        }
-        "aria2_min_split_size" | "aria2-min-split-size" => "aria2-min-split-size",
-        "cat_style" => "cat_style",
-        "confirm" => "confirm",
-        "editor" => "editor",
-        "script_engine" | "script-engine" => "script-engine",
-        "ignore_failure" | "ignore_failures" | "ignore-failures" => "ignore-failures",
-        "ignore_running_processes" => "ignore_running_processes",
-        "gh_token" => "gh_token",
-        "last_update" => "last_update",
-        "use_isolated_path" => "use_isolated_path",
-        "default_architecture" => "default_architecture",
-        "use_sqlite_cache" => "use_sqlite_cache",
-        "proxy" => "proxy",
-        "no_junction" | "no_junctions" => "no_junction",
-        "no_color" | "no-color" => "no-color",
-        "jobs" => "jobs",
-        "language" => "language",
-        "virustotal_api_key" => "virustotal_api_key",
-        "root_path" => "root_path",
-        "global_path" => "global_path",
-        "cache_path" => "cache_path",
-        _ => return None,
-    })
+    SETTINGS.iter().copied().find(|name| *name == key)
 }
 
 /// The value a setting currently holds in the config **file**, as stored — not
@@ -1067,7 +1071,7 @@ pub(crate) fn canonical_key(key: &str) -> Option<&'static str> {
 pub fn value(session: &crate::Session, key: &str) -> Fallible<Option<serde_json::Value>> {
     // A key outside the table is looked up verbatim: `private_hosts` and the
     // legacy `alias` index are file-only settings that read back but are not
-    // writable through `config set`.
+    // writable from the CLI.
     let name = canonical_key(key).unwrap_or(key);
     let document: serde_json::Value = serde_json::from_str(&list(session)?)?;
     Ok(document.get(name).cloned())
@@ -1115,33 +1119,33 @@ pub enum OfficialKey {
     Unsupported,
 }
 
+/// Upstream keys hok must never import: the paths (and the alias index) only
+/// make sense on the machine that exported them, and upstream's own `-c`
+/// strips them (`libexec/scoop-export.ps1:13`).
+const MACHINE_SPECIFIC_KEYS: &[&str] = &[
+    "alias",
+    "cache_path",
+    "global_path",
+    "last_update",
+    "root_path",
+];
+
 /// Map an upstream config key onto hok's config.
 ///
 /// Upstream stores a key exactly as the user typed it (`set_config` only
 /// lower-cases it, `libexec/scoop-config.ps1:112`) and reads it back through
 /// `get_config NAME`, so the canonical upstream spellings are the ones its own
 /// calls use: underscores for everything but the `aria2-*` family, which is
-/// hyphenated (`libexec/scoop-config.ps1:21-153`). The other separator is
-/// accepted too, because a hand-written Scoopfile may carry either.
+/// hyphenated (`libexec/scoop-config.ps1:21-153`). Only those spellings are
+/// recognized — the same strictness `config` itself applies.
 pub fn map_official_key(key: &str) -> OfficialKey {
     let key = key.to_ascii_lowercase();
-    // Checked before the table: a path captured on the exporting machine (hok
-    // records them in its `--hok` extension) must not clobber this one's.
-    if matches!(
-        key.replace('-', "_").as_str(),
-        "alias" | "cache_path" | "global_path" | "last_update" | "root_path"
-    ) {
+    // Checked before the settings: a path captured on the exporting machine
+    // (hok records them in its `--hok` extension) must not clobber this one's.
+    if MACHINE_SPECIFIC_KEYS.contains(&key.as_str()) {
         return OfficialKey::MachineSpecific;
     }
-    if let Some(canonical) = canonical_key(&key) {
-        return OfficialKey::Supported(canonical);
-    }
-    for variant in [key.replace('-', "_"), key.replace('_', "-")] {
-        if let Some(canonical) = canonical_key(&variant) {
-            return OfficialKey::Supported(canonical);
-        }
-    }
-    OfficialKey::Unsupported
+    canonical_key(&key).map_or(OfficialKey::Unsupported, OfficialKey::Supported)
 }
 
 /// Upstream settings hok deliberately has no equivalent for.
@@ -1168,12 +1172,12 @@ const OFFICIAL_ONLY_KEYS: &[&str] = &[
     "use_lessmsi",
 ];
 
-/// Whether `key` names an upstream setting hok has no equivalent for, in either
-/// separator spelling.
+/// Whether `key` names an upstream setting hok has no equivalent for, under
+/// upstream's own spelling (case aside).
 fn is_official_only_key(key: &str) -> bool {
-    OFFICIAL_ONLY_KEYS.iter().any(|name| {
-        name.eq_ignore_ascii_case(key) || name.replace('_', "-").eq_ignore_ascii_case(key)
-    })
+    OFFICIAL_ONLY_KEYS
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(key))
 }
 
 /// One cell of the config listing.
@@ -1460,13 +1464,16 @@ pub fn edit(session: &crate::Session) -> Fallible<bool> {
 /// A [`ConfigInUse`][1] error will be returned if the config is borrowed
 /// elsewhere.
 ///
-/// A [`ConfigKeyInvalid`][2] error will be returned if the key is invalid.
+/// A [`ConfigKeyInvalid`][2] error will be returned if the key is invalid, or
+/// [`ConfigKeyUnsupported`][4] when it is an upstream setting hok has no
+/// equivalent for.
 ///
 /// A [`ConfigValueInvalid`][3] error will be returned if the value is invalid.
 ///
 /// [1]: crate::Error::ConfigInUse
 /// [2]: crate::Error::ConfigKeyInvalid
 /// [3]: crate::Error::ConfigValueInvalid
+/// [4]: crate::Error::ConfigKeyUnsupported
 pub fn set(session: &crate::Session, key: &str, value: &str) -> Fallible<()> {
     {
         let mut config = session.config_mut()?;
@@ -1489,14 +1496,14 @@ mod tests {
             "no_junction" => config.no_junction,
             "no-color" => config.no_color,
             "ignore_running_processes" => config.ignore_running_processes,
-            "script-engine" | "script_engine" => config.script_engine,
+            "script-engine" => config.script_engine,
             _ => panic!("not a bool key: {key}"),
         }
     }
 
     fn u32_field(config: &ConfigInner, key: &str) -> Option<u32> {
         match key {
-            "aria2-split" | "aria2_split" => config.aria2_split,
+            "aria2-split" => config.aria2_split,
             "aria2-max-connection-per-server" => config.aria2_max_connection_per_server,
             "jobs" => config.jobs,
             _ => panic!("not a u32 key: {key}"),
@@ -1513,8 +1520,8 @@ mod tests {
         }
     }
 
-    /// Every key reachable through `hok config set` must round-trip:
-    /// set a value, verify it landed, then unset and verify it cleared.
+    /// Every setting `config` accepts must round-trip: set a value, verify it
+    /// landed, then unset and verify it cleared.
     #[test]
     fn set_unset_roundtrip() {
         let session = test_session("config_set_roundtrip");
@@ -1525,7 +1532,6 @@ mod tests {
             "no-color",
             "ignore_running_processes",
             "script-engine",
-            "script_engine",
         ] {
             crate::config::set(&session, key, "true").unwrap();
             assert_eq!(bool_field(&session.config().inner, key), Some(true));
@@ -1535,13 +1541,8 @@ mod tests {
             assert_eq!(bool_field(&session.config().inner, key), None);
         }
 
-        // u32 keys (including underscore alias)
-        for key in [
-            "aria2-split",
-            "aria2_split",
-            "aria2-max-connection-per-server",
-            "jobs",
-        ] {
+        // u32 keys
+        for key in ["aria2-split", "aria2-max-connection-per-server", "jobs"] {
             crate::config::set(&session, key, "7").unwrap();
             assert_eq!(u32_field(&session.config().inner, key), Some(7));
             crate::config::set(&session, key, "").unwrap();
@@ -1591,59 +1592,56 @@ mod tests {
         }
     }
 
-    /// Every spelling `set` accepts reads back through [`crate::config::value`],
-    /// under the spelling used and under the canonical one alike, and an
-    /// unknown key answers `None` (upstream `scoop config <name>`).
+    /// Every setting reads back through [`crate::config::value`] under its own
+    /// spelling, an unknown key answers `None` (upstream `scoop config <name>`),
+    /// and an alternate spelling is refused like any other unknown key.
     #[test]
-    fn value_reads_back_every_accepted_spelling() {
+    fn value_reads_back_every_setting() {
         use serde_json::json;
         let session = test_session("config_value_read");
-        let cases: Vec<(&str, &str, &str, serde_json::Value)> = vec![
-            ("aria2_enabled", "aria2-enabled", "true", json!(true)),
-            ("aria2-enabled", "aria2-enabled", "false", json!(false)),
-            ("aria2_split", "aria2-split", "7", json!(7)),
-            ("aria2-split", "aria2-split", "8", json!(8)),
-            (
-                "aria2_max_connection_per_server",
-                "aria2-max-connection-per-server",
-                "9",
-                json!(9),
-            ),
-            (
-                "aria2_min_split_size",
-                "aria2-min-split-size",
-                "5M",
-                json!("5M"),
-            ),
-            ("script_engine", "script-engine", "true", json!(true)),
-            ("script-engine", "script-engine", "false", json!(false)),
-            ("ignore_failure", "ignore-failures", "true", json!(true)),
-            ("ignore_failures", "ignore-failures", "false", json!(false)),
-            ("ignore-failures", "ignore-failures", "true", json!(true)),
-            ("no_junctions", "no_junction", "true", json!(true)),
-            ("no_junction", "no_junction", "false", json!(false)),
-            ("no_color", "no-color", "true", json!(true)),
-            ("no-color", "no-color", "false", json!(false)),
+        let cases: Vec<(&str, &str, serde_json::Value)> = vec![
+            ("aria2-enabled", "true", json!(true)),
+            ("aria2-split", "7", json!(7)),
+            ("aria2-max-connection-per-server", "9", json!(9)),
+            ("aria2-min-split-size", "5M", json!("5M")),
+            ("script-engine", "true", json!(true)),
+            ("ignore-failures", "true", json!(true)),
+            ("no_junction", "true", json!(true)),
+            ("no-color", "true", json!(true)),
         ];
-        for (spelling, canonical, value, expected) in cases {
-            crate::config::set(&session, spelling, value).unwrap();
-            for lookup in [spelling, canonical] {
-                assert_eq!(
-                    crate::config::value(&session, lookup).unwrap(),
-                    Some(expected.clone()),
-                    "{lookup} after setting {spelling}={value}"
-                );
-            }
-            crate::config::set(&session, spelling, "").unwrap();
+        for (key, value, expected) in cases {
+            crate::config::set(&session, key, value).unwrap();
             assert_eq!(
-                crate::config::value(&session, spelling).unwrap(),
+                crate::config::value(&session, key).unwrap(),
+                Some(expected),
+                "{key} after setting it to {value}"
+            );
+            crate::config::set(&session, key, "").unwrap();
+            assert_eq!(
+                crate::config::value(&session, key).unwrap(),
                 None,
-                "{spelling} after unset"
+                "{key} after unset"
             );
         }
 
-        // A key outside the table is not a setting: it reads as unset rather
-        // than erroring, like `scoop config <unknown>`.
+        // An alternate spelling is not a setting: `set` refuses it instead of
+        // silently writing the field behind the canonical key ...
+        for alias in [
+            "aria2_split",
+            "no_junctions",
+            "no_color",
+            "script_engine",
+            "ignore_failure",
+        ] {
+            let err = crate::config::set(&session, alias, "true").unwrap_err();
+            assert!(
+                matches!(err, Error::ConfigKeyInvalid(_)),
+                "{alias}: unexpected error {err}"
+            );
+        }
+
+        // ... and an unknown key reads as unset rather than erroring, like
+        // `scoop config <unknown>`.
         assert_eq!(
             crate::config::value(&session, "totally_unknown").unwrap(),
             None
