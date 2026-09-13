@@ -66,6 +66,24 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                     output::err(hok_i18n::t!("error.bucket_already_exists", name = name));
                     return Err(crate::ExitCode(2).into());
                 }
+                // Upstream's `Convert-RepositoryUri` reports the bad URL and
+                // where to read the accepted forms, then `add_bucket` returns 1
+                // (`lib/buckets.ps1:97-99,137`).
+                Err(libscoop::Error::BucketInvalidGitUrl(repo)) => {
+                    output::err(hok_i18n::t!("error.bucket_invalid_git_url", repo = repo));
+                    output::err(hok_i18n::t!("error.bucket_invalid_git_url_hint"));
+                    return Err(crate::ExitCode(1).into());
+                }
+                // `warn "Bucket $bucket already exists for $repo"` + return 2
+                // (`lib/buckets.ps1:143-144`).
+                Err(libscoop::Error::BucketRepoAlreadyExists(bucket, repo)) => {
+                    output::warn(hok_i18n::t!(
+                        "error.bucket_repo_already_exists",
+                        bucket = bucket,
+                        repo = repo
+                    ));
+                    return Err(crate::ExitCode(2).into());
+                }
                 Err(err) => return Err(err.into()),
             }
             Ok(())

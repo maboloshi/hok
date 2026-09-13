@@ -38,6 +38,17 @@ pub enum Error {
     #[error("'{0}' is not a known bucket, <repo> is required")]
     BucketAddRemoteRequired(String),
 
+    /// Thrown when the repository URL is not a valid git URL, i.e. upstream's
+    /// `Convert-RepositoryUri` rejects it (`lib/buckets.ps1:83-102,135-138`).
+    #[error("{0} is not a valid Git URL!")]
+    BucketInvalidGitUrl(String),
+
+    /// Thrown when the target bucket name is free and the URL is valid, but an
+    /// already-added bucket subscribes to the same repository
+    /// (`lib/buckets.ps1:139-147`). Carries `(bucket name, repository url)`.
+    #[error("bucket '{0}' already exists for {1}")]
+    BucketRepoAlreadyExists(String, String),
+
     /// Bucket not found error
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
@@ -219,6 +230,8 @@ impl Error {
         match self {
             Error::BucketAlreadyExists(_) => "error.bucket_already_exists",
             Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
+            Error::BucketInvalidGitUrl(_) => "error.bucket_invalid_git_url",
+            Error::BucketRepoAlreadyExists(_, _) => "error.bucket_repo_already_exists",
             Error::BucketNotFound(_) => "error.bucket_not_found",
             Error::BucketUpdateNotFastForward(_) => "error.bucket_update_not_fast_forward",
             Error::BucketUpdateMergeConflict(_) => "error.bucket_update_merge_conflict",
@@ -278,6 +291,14 @@ mod tests {
         assert_eq!(
             Error::BucketAddRemoteRequired("main".into()).error_key(),
             "error.bucket_add_remote_required"
+        );
+        assert_eq!(
+            Error::BucketInvalidGitUrl("not-a-url".into()).error_key(),
+            "error.bucket_invalid_git_url"
+        );
+        assert_eq!(
+            Error::BucketRepoAlreadyExists("extras".into(), "https://e/x.git".into()).error_key(),
+            "error.bucket_repo_already_exists"
         );
         assert_eq!(
             Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(),

@@ -5,7 +5,8 @@
 //! large (aws-lc-rs, quinn-proto, h2, icu — causing 20+ min first build).
 
 use git2::{CredentialType, FetchOptions, Repository};
-use std::{collections::HashMap, path::Path, result::Result};
+use regex::Regex;
+use std::{collections::HashMap, path::Path, result::Result, sync::LazyLock};
 
 use crate::error::{Error, Fallible};
 
@@ -45,6 +46,36 @@ fn fetch_options(proxy: Option<&str>) -> FetchOptions<'static> {
     }
 
     fo
+}
+
+/// Normalize a git remote URL the way upstream's `Convert-RepositoryUri`
+/// does (`lib/buckets.ps1:83-102`).
+///
+/// Every clone URL form git accepts — `https://host/user/repo(.git)`,
+/// `git@host:user/repo.git`, `ssh://user@host[:port]/user/repo`, with
+/// credentials and/or a port — collapses to `provider/user/repo`, so two
+/// spellings of the same repository compare equal. A `None` return means
+/// upstream would reject the string as "not a valid Git URL!".
+///
+/// This is the single entry point for both the add-time validation and the
+/// duplicate-repository scan (`lib/buckets.ps1:135-147`), so the two can
+/// never disagree about what a repository is.
+pub fn normalize_git_uri(uri: &str) -> Option<String> {
+    // The pattern is upstream's verbatim. PowerShell's `-match` is
+    // case-insensitive, hence `(?i)`; the crate's leftmost-first search and
+    // backtracking otherwise agree with .NET on every form in the test table.
+    static URI: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)(?:@|/{1,3})(?:www\.|.*@)?(?P<provider>[^/]+?)(?::\d+)?[:/](?P<user>.+)/(?P<repo>.+?)(?:\.git)?/?$",
+        )
+        .expect("the upstream Convert-RepositoryUri pattern compiles")
+    });
+
+    let caps = URI.captures(uri)?;
+    Some(format!(
+        "{}/{}/{}",
+        &caps["provider"], &caps["user"], &caps["repo"]
+    ))
 }
 
 pub fn clone_repo<S, P>(remote_url: S, path: P, proxy: Option<S>) -> Fallible<()>
@@ -865,5 +896,79 @@ mod tests {
         assert!(last_commit_for_file(&untracked).is_none());
 
         cleanup(&dir);
+    }
+
+    /// The normalization table was evaluated against upstream's
+    /// `Convert-RepositoryUri` (`lib/buckets.ps1:83-102`) in Windows
+    /// PowerShell 5.1 before the port, so hok accepts exactly the URLs Scoop
+    /// accepts and derives the same `provider/user/repo` key from them.
+    #[test]
+    fn normalize_git_uri_matches_upstream() {
+        let cases: [(&str, Option<&str>); 16] = [
+            (
+                "https://github.com/ScoopInstaller/Extras.git",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "https://github.com/ScoopInstaller/Extras",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "git@github.com:ScoopInstaller/Extras.git",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "ssh://git@github.com/ScoopInstaller/Extras.git",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "https://github.com:443/ScoopInstaller/Extras.git",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "https://user:pass@github.com/ScoopInstaller/Extras.git",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            (
+                "git://github.com/owner/repo.git",
+                Some("github.com/owner/repo"),
+            ),
+            (
+                "https://gitee.com/owner/repo.git",
+                Some("gitee.com/owner/repo"),
+            ),
+            ("file:///D:/buckets/local", Some("D//buckets/local")),
+            ("D:\\local\\bucket", None),
+            (
+                "https://github.com/owner/repo/tree/main",
+                Some("github.com/owner/repo/tree/main"),
+            ),
+            ("https://github.com/owner", None),
+            ("not-a-url", None),
+            ("", None),
+            (
+                "https://github.com/ScoopInstaller/Extras/",
+                Some("github.com/ScoopInstaller/Extras"),
+            ),
+            ("https://github.com/a/b/c/d", Some("github.com/a/b/c/d")),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_git_uri(input).as_deref(),
+                expected,
+                "on `{input}`"
+            );
+        }
+    }
+
+    /// Two spellings of one repository normalize to the same key; the
+    /// duplicate scan then compares case-insensitively (PowerShell's `-eq`).
+    #[test]
+    fn normalize_git_uri_folds_remote_spellings() {
+        let https = normalize_git_uri("https://github.com/ScoopInstaller/Extras.git").unwrap();
+        let ssh = normalize_git_uri("git@github.com:ScoopInstaller/Extras.git").unwrap();
+        assert_eq!(https, ssh);
+        assert!(https.eq_ignore_ascii_case("GITHUB.COM/scoopinstaller/extras"));
     }
 }

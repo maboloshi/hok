@@ -414,8 +414,10 @@ impl BucketUpdateState {
 ///
 /// # Errors
 ///
-/// This method will return an error if the bucket already exists, or the remote
-/// url is not specified when adding a non built-in bucket.
+/// This method will return an error if the bucket already exists, the
+/// repository URL is not a valid git URL, another added bucket already
+/// subscribes to that repository, or the remote url is not specified when
+/// adding a non built-in bucket.
 ///
 /// A git error will be returned if failed to clone the bucket.
 pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()> {
@@ -444,6 +446,27 @@ pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()
             .map(|&(_, remote)| remote)
             .ok_or_else(|| Error::BucketAddRemoteRequired(name.to_owned()))?,
     };
+
+    // Upstream validates (and normalizes) the URL — and only then looks for an
+    // existing subscription to the same repository — before it touches the
+    // network (`lib/buckets.ps1:135-147`).
+    let normalized = internal::git::normalize_git_uri(remote_url)
+        .ok_or_else(|| Error::BucketInvalidGitUrl(remote_url.to_owned()))?;
+
+    for bucket in bucket_added(session)? {
+        // `https://host/user/repo` and `git@host:user/repo.git` are the same
+        // subscription, and PowerShell's `-eq` folds case, so the comparison
+        // is case-insensitive.
+        if let Some(remote) = bucket.remote_url()
+            && internal::git::normalize_git_uri(remote)
+                .is_some_and(|other| other.eq_ignore_ascii_case(&normalized))
+        {
+            return Err(Error::BucketRepoAlreadyExists(
+                bucket.name().to_owned(),
+                remote_url.to_owned(),
+            ));
+        }
+    }
 
     session
         .git()
@@ -831,18 +854,110 @@ mod tests {
         let fake = Arc::new(FakeGit::default());
         session.set_git(fake.clone()).unwrap();
 
-        crate::bucket::add(&session, "extras", "https://example.com/extras.git")
+        // A repository URL upstream's `Convert-RepositoryUri` accepts (host +
+        // owner + repo); `https://example.com/extras.git` would be rejected as
+        // a single-segment path.
+        crate::bucket::add(&session, "extras", "https://example.com/owner/extras.git")
             .await
             .unwrap();
 
         let clones = fake.clones.lock().unwrap();
         assert_eq!(clones.len(), 1);
-        assert_eq!(clones[0].0, "https://example.com/extras.git");
+        assert_eq!(clones[0].0, "https://example.com/owner/extras.git");
         assert!(
             clones[0].1.to_string_lossy().ends_with("buckets\\extras"),
             "clone path: {:?}",
             clones[0].1
         );
+    }
+
+    /// A repository URL upstream rejects never reaches git
+    /// (`lib/buckets.ps1:135-138`).
+    #[tokio::test]
+    async fn bucket_add_rejects_an_invalid_git_url() {
+        use crate::test_utils::{test_session, tmpdir};
+
+        let root = tmpdir("bucket_add_invalid_url");
+        let session = test_session(&root);
+
+        let err = crate::bucket::add(&session, "foo", "not-a-url")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, crate::Error::BucketInvalidGitUrl(url) if url == "not-a-url"),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            !root.join("buckets").join("foo").exists(),
+            "an invalid URL must not create the bucket directory"
+        );
+    }
+
+    /// A bucket already subscribing to the same repository is refused — and
+    /// the comparison folds both the URL spelling (`https://` vs `git@`) and
+    /// letter case, like upstream's `Convert-RepositoryUri` + PowerShell `-eq`
+    /// (`lib/buckets.ps1:139-147`).
+    #[tokio::test]
+    async fn bucket_add_rejects_a_repository_already_subscribed() {
+        use crate::test_utils::{test_session, tmpdir};
+
+        let root = tmpdir("bucket_add_duplicate_repo");
+        let session = test_session(&root);
+
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://github.com/ScoopInstaller/Extras.git")
+            .unwrap();
+
+        let err = crate::bucket::add(
+            &session,
+            "other",
+            "git@github.com:scoopinstaller/extras.git",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                crate::Error::BucketRepoAlreadyExists(bucket, repo)
+                    if bucket == "extras" && repo == "git@github.com:scoopinstaller/extras.git"
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            !root.join("buckets").join("other").exists(),
+            "a duplicate repository must not be cloned under the new name"
+        );
+    }
+
+    /// A bucket on a different repository is unaffected by the duplicate scan.
+    #[tokio::test]
+    async fn bucket_add_allows_a_different_repository() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_add_other_repo");
+        let session = test_session(&root);
+
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://github.com/ScoopInstaller/Extras.git")
+            .unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        session.set_git(fake.clone()).unwrap();
+
+        crate::bucket::add(
+            &session,
+            "other",
+            "https://github.com/ScoopInstaller/Main.git",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fake.clones.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

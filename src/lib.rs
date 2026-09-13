@@ -78,6 +78,15 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::BucketAlreadyExists(name) => {
             hok_i18n::t!("error.bucket_already_exists", name = name).to_string()
         }
+        libscoop::Error::BucketInvalidGitUrl(repo) => {
+            hok_i18n::t!("error.bucket_invalid_git_url", repo = repo).to_string()
+        }
+        libscoop::Error::BucketRepoAlreadyExists(bucket, repo) => hok_i18n::t!(
+            "error.bucket_repo_already_exists",
+            bucket = bucket,
+            repo = repo
+        )
+        .to_string(),
         libscoop::Error::PackageNotFound(name) => {
             hok_i18n::t!("error.package_not_found", name = name).to_string()
         }
