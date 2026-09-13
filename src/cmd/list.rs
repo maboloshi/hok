@@ -4,15 +4,17 @@
 //! same table: one row per package, plus dimmed continuation rows for the
 //! retained (non-current) versions when `--versions` is given.
 //!
-//! The info column reuses `status`'s word set and order
+//! The info column takes its word set and order from `status`
 //! (`AppStatus::info_kinds`, localized by `status_info_word`) so the two
-//! commands cannot drift; `list` additionally folds the outdated "-> new"
-//! arrow into Info because it has no Latest column.
+//! commands cannot drift, but the wording itself is per-command: upstream says
+//! `Deprecated package` in `list` and `Deprecated` in `status`, which is what
+//! the `InfoContext` argument selects. `list` additionally folds the outdated
+//! "-> new" arrow into Info because it has no Latest column.
 
 use clap::{ArgAction, Parser};
 use libscoop::{QueryOption, Session, package};
 
-use crate::cmd::status_info_word;
+use crate::cmd::{InfoContext, status_info_word};
 use crate::format::{pad_visual, visual_width};
 use crate::output::style;
 use crate::{Result, output};
@@ -109,7 +111,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         let mut words = st
             .info_kinds()
             .into_iter()
-            .map(status_info_word)
+            .map(|kind| status_info_word(kind, InfoContext::List))
             .collect::<Vec<_>>();
         if let Some(upgrade) = pkg.upgradable_version() {
             words.push(format!("→ {}", upgrade));
@@ -118,7 +120,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
         // The Info column is styled at render time (attention words danger
         // red, continuation notes dim), so it is built as plain text here.
-        let info = words.join(" · ");
+        let info = words.join(", ");
 
         rows.push(Row {
             name: pkg.name().to_owned(),
@@ -160,7 +162,16 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         return Err(crate::ExitCode(1).into());
     }
 
-    output::header(hok_i18n::t!("cmd.header_installed_apps"));
+    // Upstream echoes the query it filtered on (`scoop-list.ps1:25`); hok
+    // accepts several queries, so they are all echoed.
+    if args.query.is_empty() {
+        output::header(hok_i18n::t!("cmd.header_installed_apps"));
+    } else {
+        output::header(hok_i18n::t!(
+            "cmd.header_installed_apps_matching",
+            query = args.query.join("', '")
+        ));
+    }
 
     if rows.is_empty() {
         output::info(hok_i18n::t!("cmd.list_no_match"));

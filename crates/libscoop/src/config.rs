@@ -156,33 +156,26 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     alias: Option<HashMap<String, String>>,
 
-    #[serde(alias = "aria2_enabled")]
     #[serde(rename = "aria2-enabled")]
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_enabled: Option<bool>,
 
-    #[serde(alias = "aria2_max_connection_per_server")]
     #[serde(rename = "aria2-max-connection-per-server")]
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_max_connection_per_server: Option<u32>,
 
-    #[serde(alias = "aria2_min_split_size")]
     #[serde(rename = "aria2-min-split-size")]
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_min_split_size: Option<String>,
 
-    #[serde(alias = "aria2_split")]
     #[serde(rename = "aria2-split")]
     #[serde(skip_serializing_if = "Option::is_none")]
     aria2_split: Option<u32>,
 
     /// Concurrent package downloads (cross-package). Defaults to 4.
-    #[serde(alias = "jobs")]
-    #[serde(rename = "jobs")]
     #[serde(skip_serializing_if = "Option::is_none")]
     jobs: Option<u32>,
 
-    #[serde(alias = "cachePath")]
     #[serde(default = "default::cache_path")]
     #[serde(skip_serializing_if = "default::is_default_cache_path")]
     cache_path: PathBuf,
@@ -196,18 +189,15 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     editor: Option<String>,
 
-    #[serde(alias = "language")]
     #[serde(skip_serializing_if = "Option::is_none")]
     language: Option<String>,
 
-    #[serde(alias = "no-color")]
     #[serde(skip_serializing_if = "Option::is_none")]
     no_color: Option<bool>,
 
     /// Whether to show the interactive transaction confirmation gate by
     /// default (`false` — sync commands don't wait for Y/n unless `--confirm`
     /// is given or this is `true`).
-    #[serde(alias = "confirm")]
     #[serde(skip_serializing_if = "Option::is_none")]
     confirm: Option<bool>,
 
@@ -215,7 +205,6 @@ pub struct ConfigInner {
     /// (reusing one long-lived pwsh worker across stages) instead of spawning
     /// a fresh `pwsh -File` per stage. Defaults to `false` — the well-trodden
     /// per-stage spawn path stays the default; the engine path is opt-in.
-    #[serde(alias = "script-engine")]
     #[serde(skip_serializing_if = "Option::is_none")]
     script_engine: Option<bool>,
 
@@ -223,7 +212,6 @@ pub struct ConfigInner {
     /// config, see `Get-DefaultArchitecture`). When set, it overrides the
     /// runtime-detected host architecture for manifest field selection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "deafult_architecture")]
     default_architecture: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -232,12 +220,10 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub virustotal_api_key: Option<String>,
 
-    #[serde(alias = "globalPath")]
     #[serde(default = "default::global_path")]
     #[serde(skip_serializing_if = "default::is_default_global_path")]
     global_path: PathBuf,
 
-    #[serde(alias = "lastupdate")]
     #[serde(skip_serializing_if = "Option::is_none")]
     last_update: Option<String>,
 
@@ -260,13 +246,10 @@ pub struct ConfigInner {
     ///
     /// It was renamed to `no_junction` in Aug, 2022 (later in release v0.3.0):
     /// <https://github.com/ScoopInstaller/Scoop/pull/5116>
-    #[serde(alias = "no_junctions")]
     #[serde(skip_serializing_if = "Option::is_none")]
     no_junction: Option<bool>,
 
     /// Continue multi-package operations despite individual package failures.
-    #[serde(alias = "ignore_failure")]
-    #[serde(alias = "ignore-failures")]
     #[serde(skip_serializing_if = "Option::is_none")]
     ignore_failures: Option<bool>,
 
@@ -292,7 +275,6 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy: Option<String>,
 
-    #[serde(alias = "rootPath")]
     #[serde(default = "default::root_path")]
     #[serde(skip_serializing_if = "default::is_default_root_path")]
     root_path: PathBuf,

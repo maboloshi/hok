@@ -59,24 +59,32 @@ use crate::Result;
 /// `libscoop::package::status::AppStatus::info_kinds` and shared verbatim by
 /// `status` and `list`; this function only translates a kind into the
 /// currently selected language, so the two commands can never drift.
-pub(crate) fn status_info_word(kind: libscoop::package::status::InfoKind) -> String {
+///
+/// The wording itself is **not** shared: upstream spells the same state
+/// differently per command (`list` says `Deprecated package`, `status` says
+/// `Deprecated`), so the command is part of the lookup key rather than each
+/// command growing its own copy of the table.
+#[derive(Clone, Copy)]
+pub(crate) enum InfoContext {
+    List,
+    Status,
+}
+
+pub(crate) fn status_info_word(
+    kind: libscoop::package::status::InfoKind,
+    context: InfoContext,
+) -> String {
+    use libscoop::package::status::InfoKind;
     match kind {
-        libscoop::package::status::InfoKind::InstallFailed => {
-            hok_i18n::t!("cmd.status_install_failed").to_string()
-        }
-        libscoop::package::status::InfoKind::Held => hok_i18n::t!("cmd.status_held").to_string(),
-        libscoop::package::status::InfoKind::Deprecated => {
-            hok_i18n::t!("cmd.status_deprecated").to_string()
-        }
-        libscoop::package::status::InfoKind::Orphaned => {
-            hok_i18n::t!("cmd.status_removed").to_string()
-        }
-        libscoop::package::status::InfoKind::BucketMissing => {
-            hok_i18n::t!("cmd.status_bucket_missing").to_string()
-        }
-        libscoop::package::status::InfoKind::SourceUnknown => {
-            hok_i18n::t!("cmd.status_source_unknown").to_string()
-        }
+        InfoKind::InstallFailed => hok_i18n::t!("cmd.status_install_failed").to_string(),
+        InfoKind::Held => hok_i18n::t!("cmd.status_held").to_string(),
+        InfoKind::Deprecated => match context {
+            InfoContext::List => hok_i18n::t!("cmd.list_info_deprecated").to_string(),
+            InfoContext::Status => hok_i18n::t!("cmd.status_deprecated").to_string(),
+        },
+        InfoKind::Orphaned => hok_i18n::t!("cmd.status_removed").to_string(),
+        InfoKind::BucketMissing => hok_i18n::t!("cmd.status_bucket_missing").to_string(),
+        InfoKind::SourceUnknown => hok_i18n::t!("cmd.status_source_unknown").to_string(),
     }
 }
 

@@ -3,7 +3,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{Session, package};
 
-use crate::cmd::status_info_word;
+use crate::cmd::{InfoContext, status_info_word};
 use crate::format::{pad_visual, visual_width};
 use crate::output::style;
 use crate::{Result, output};
@@ -158,26 +158,25 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         .collect();
 
     if shown.is_empty() {
-        output::info(hok_i18n::t!("cmd.install_ok"));
+        output::done(hok_i18n::t!("output.ok_all"));
         return Ok(());
     }
 
-    output::header(hok_i18n::t!("cmd.header_status"));
     let rows = shown
         .iter()
         .map(|s| {
             let info = s
                 .info_kinds()
                 .into_iter()
-                .map(status_info_word)
+                .map(|kind| status_info_word(kind, InfoContext::Status))
                 .collect::<Vec<_>>()
-                .join(" · ");
+                .join(", ");
             Row {
                 name: s.name.clone(),
                 source: s.bucket.clone(),
                 installed: s.installed_version.clone().unwrap_or_default(),
                 latest: s.latest_version.clone().unwrap_or_default(),
-                missing: s.missing_deps.join(" · "),
+                missing: s.missing_deps.join(" | "),
                 info,
             }
         })
