@@ -376,6 +376,7 @@ cmd:
   total_download_size: "总下载大小: %{size}"
   total_download_size_estimated: "总下载大小: %{size}（预估）"
   nothing_to_download: "无需下载，均已在缓存中。"
+  download_size_unknown: "无法获取下载大小。"
   cache_ignored: "忽略缓存。"
   running_process_update: "检测到进程正在运行，跳过更新 '%{name}'。"
   running_process_reinstall: "检测到进程正在运行，跳过重装 '%{name}'。"

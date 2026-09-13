@@ -289,8 +289,8 @@ fn print_transaction_plan(transaction: &Transaction) {
     }
 
     if let Some(download_size) = transaction.download_size() {
-        let out = format::humansize(download_size.total, true);
         if download_size.total > 0 {
+            let out = format::humansize(download_size.total, true);
             if download_size.estimated {
                 println!(
                     "\n{}",
@@ -299,6 +299,14 @@ fn print_transaction_plan(transaction: &Transaction) {
             } else {
                 println!("\n{}", hok_i18n::t!("cmd.total_download_size", size = out));
             }
+        } else if download_size.estimated {
+            // `estimated` means the HEAD probe could not size at least one
+            // file, so a zero total says nothing about the cache. Claiming
+            // "all cached" here is how an unreachable/403 URL got reported as a
+            // cache hit right before the download failed; only a fully measured
+            // zero total is a cache hit (same predicate as `sync_install`'s
+            // offline decision).
+            println!("\n{}", hok_i18n::t!("cmd.download_size_unknown"));
         } else {
             println!("\n{}", hok_i18n::t!("cmd.nothing_to_download"));
         }

@@ -376,6 +376,7 @@ cmd:
   total_download_size: "Total download size: %{size}"
   total_download_size_estimated: "Total download size: %{size} (estimated)"
   nothing_to_download: "Nothing to download, all cached."
+  download_size_unknown: "Could not determine the download size."
   cache_ignored: "Cache is being ignored."
   running_process_update: "Running process detected, skip updating '%{name}'."
   running_process_reinstall: "Running process detected, skip reinstalling '%{name}'."
