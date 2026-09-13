@@ -1,9 +1,10 @@
 //! Clean up apps by removing old versions.
 
 use clap::{ArgAction, Parser};
-use libscoop::{cache, package, Session};
+use libscoop::package::cleanup::CleanupOptions;
+use libscoop::{Session, cache, package};
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Cleanup apps by removing old versions
 #[derive(Debug, Parser)]
@@ -18,7 +19,7 @@ pub struct Args {
     /// Cleanup a globally installed app
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     global: bool,
-    /// Remove download cache simultaneously
+    /// Remove outdated download cache simultaneously
     #[arg(short = 'k', long, action = ArgAction::SetTrue)]
     cache: bool,
 }
@@ -26,17 +27,32 @@ pub struct Args {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     session.set_global(args.global);
     // --all or '*' overrides any specific app names
-    let apps: Vec<String> = if args.all || args.app.iter().any(|a| a == "*") {
-        Vec::new() // empty means "all apps" in package_cleanup
+    let all = args.all || args.app.iter().any(|a| a == "*");
+
+    // Cleanup is a maintenance operation; individual failures should not abort
+    // it.
+    let options = CleanupOptions {
+        ignore_failure: true,
+        cache: args.cache,
+    };
+
+    // The target list is always explicit: an empty list means "nothing to
+    // clean", never "every app", so the sweep-all form enumerates the apps
+    // itself (`installed_app_names`).
+    let names = if all {
+        package::cleanup::installed_app_names(session)
     } else {
         args.app
     };
-    // Cleanup is a maintenance operation; individual failures should not abort it
-    let results = package::cleanup::cleanup(session, &apps, true)?;
+    let results = package::cleanup::cleanup(session, &names, &options)?;
 
     for (name, count, failed) in &results {
         let msg = if *failed > 0 {
-            hok_i18n::t!("cmd.cleanup_removed_failed", count = *count, failed = *failed)
+            hok_i18n::t!(
+                "cmd.cleanup_removed_failed",
+                count = *count,
+                failed = *failed
+            )
         } else {
             hok_i18n::t!("cmd.cleanup_removed", count = *count)
         };
@@ -45,15 +61,16 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     if results.is_empty() {
         output::info(hok_i18n::t!("cmd.cleanup_no_old"));
-    } else if apps.is_empty() {
+    } else if all {
         // Sweep-all success tail (Scoop prints this for the non-verbose
         // `--all` form); named-app cleans already reported per-app counts.
         output::done(hok_i18n::t!("cmd.cleanup_all_done"));
     }
 
     if args.cache {
-        cache::remove(session, &["*".to_owned()])?;
-        output::info(hok_i18n::t!("cmd.cache_cleaned"));
+        // Upstream clears leftover partial downloads once, after the sweep
+        // (`scoop-cleanup.ps1:79-81`).
+        cache::remove_incomplete(session)?;
     }
 
     Ok(())

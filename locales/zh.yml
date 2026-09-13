@@ -130,7 +130,6 @@ cmd:
   cleanup_all_done: "一切正常！"
   checkver_autoupdate: "可用 autoupdate 更新"
   create_failed: "创建清单失败：%{e}"
-  cache_cleaned: "缓存已清理。"
   cache_all_removed: "所有下载缓存已移除。"
   cache_matching_removed: "匹配 '%{query}' 的缓存已全部移除。"
   cache_app_missing: "缺少 <app(s)>"

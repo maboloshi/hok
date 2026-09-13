@@ -3,46 +3,67 @@
 //! Removes all version directories except the current one for each package,
 //! mirroring Scoop's `cleanup` command.
 
-use crate::{Error, Session, error::Fallible, internal};
+use crate::{Error, Session, cache, error::Fallible, internal, package::install_state};
+
+/// Behaviour knobs for [`cleanup`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CleanupOptions {
+    /// Continue after a failed version-dir removal instead of aborting the
+    /// rest of the batch.
+    pub ignore_failure: bool,
+    /// Also drop each app's outdated download cache, keeping its current
+    /// version — upstream `cleanup -k` (`scoop-cleanup.ps1:32-33`).
+    pub cache: bool,
+}
+
+/// Every installed app name in the session's current scope, excluding `scoop`
+/// itself — upstream `installed_apps` (`lib/core.ps1:396-399`).
+///
+/// The sweep-all forms enumerate the apps through this and pass the explicit
+/// list to [`cleanup`]: an empty list then means "nothing to do", never
+/// "everything".
+pub fn installed_app_names(session: &Session) -> Vec<String> {
+    let apps_dir = session.apps_dir();
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && let Some(name) = entry.file_name().to_str()
+                && name != "scoop"
+            {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names.sort();
+    names
+}
 
 /// Cleanup old versions of packages.
 ///
-/// Removes all version directories except the current one for each package.
-/// If `names` is empty, cleans up all installed packages.
-/// Returns a list of (package_name, removed_count, failed_count).
+/// Removes all version directories except the current one for each named
+/// package, and returns a list of (package_name, removed_count, failed_count).
+/// `names` is always an explicit target list (upstream's `$apps`): an empty
+/// list cleans nothing, so callers sweeping every app must enumerate it
+/// through [`installed_app_names`]. A name that does not exist yields
+/// [`PackageNotFound`][1] unless `options.ignore_failure` is set.
 ///
 /// # Errors
 ///
 /// A [`PackageNotFound`][1] error will be returned if a named package does not
-/// exist and `ignore_failure` is false.
+/// exist and `options.ignore_failure` is false.
 ///
 /// [1]: crate::Error::PackageNotFound
 pub fn cleanup(
     session: &Session,
     names: &[String],
-    ignore_failure: bool,
+    options: &CleanupOptions,
 ) -> Fallible<Vec<(String, usize, usize)>> {
+    let ignore_failure = options.ignore_failure;
     let apps_dir = session.apps_dir();
     let mut results = Vec::new();
 
-    // If no names given, scan all installed packages
-    let scan_names: Vec<String> = if names.is_empty() {
-        let mut all = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir())
-                    && let Some(name) = entry.file_name().to_str()
-                {
-                    all.push(name.to_owned());
-                }
-            }
-        }
-        all
-    } else {
-        names.to_vec()
-    };
-
-    for name in &scan_names {
+    for name in names {
         let pkg_dir = apps_dir.join(name);
         if !pkg_dir.exists() {
             if !ignore_failure {
@@ -56,13 +77,21 @@ pub fn cleanup(
         // diverges from it on broken/nightly installs, and deleting the wrong
         // dir here is destructive.
         let current_version =
-            super::install_state::resolve_current_version(&pkg_dir, session.config().no_junction())
+            install_state::resolve_current_version(&pkg_dir, session.config().no_junction())
                 .map(|resolved| resolved.version);
 
         let Some(ref current_ver) = current_version else {
             // No install info — skip broken package
             continue;
         };
+
+        // Upstream drops the app's outdated cache before touching its version
+        // dirs, and it does so for every app in the batch — including one with
+        // no old versions. The current version is excluded so a reinstall does
+        // not re-download it.
+        if options.cache {
+            cache::remove_outdated(session, name, current_ver)?;
+        }
 
         // Collect old version directories
         let mut old_dirs = Vec::new();
@@ -117,6 +146,13 @@ pub fn cleanup(
 mod tests {
     use super::*;
 
+    fn opts(ignore_failure: bool) -> CleanupOptions {
+        CleanupOptions {
+            ignore_failure,
+            cache: false,
+        }
+    }
+
     /// Create a temp root with a session rooted at it, plus a drop guard.
     fn setup(test_name: &str) -> (Session, PathBufGuard) {
         let root = crate::test_utils::tmpdir(&format!("cleanup_{}", test_name));
@@ -154,7 +190,7 @@ mod tests {
         let (session, root) = setup("old_versions");
         install_versions(&root.0, "app", &["1.0.0", "0.9.0", "0.8.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
         assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
         assert!(root.0.join("apps/app/1.0.0").exists(), "current kept");
@@ -162,23 +198,66 @@ mod tests {
         assert!(!root.0.join("apps/app/0.8.0").exists(), "old removed");
     }
 
+    /// `cleanup -k` drops the app's outdated cached downloads but keeps the
+    /// current version's (upstream excludes `$app#$current_version#*`) and
+    /// leaves other apps' cache alone.
+    #[test]
+    fn cleanup_with_cache_keeps_current_version_download() {
+        let (session, root) = setup("keep_current_cache");
+        install_versions(&root.0, "app", &["2.0.0", "1.0.0"], "2.0.0");
+        let cache = root.0.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        for name in ["app#1.0.0#a.zip", "app#2.0.0#b.zip", "other#1.0#c.zip"] {
+            std::fs::write(cache.join(name), b"x").unwrap();
+        }
+
+        let results = cleanup(
+            &session,
+            &["app".to_owned()],
+            &CleanupOptions {
+                ignore_failure: false,
+                cache: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results, vec![("app".to_owned(), 1, 0)]);
+        assert!(
+            !cache.join("app#1.0.0#a.zip").exists(),
+            "outdated cache dropped"
+        );
+        assert!(
+            cache.join("app#2.0.0#b.zip").exists(),
+            "current version cache kept"
+        );
+        assert!(
+            cache.join("other#1.0#c.zip").exists(),
+            "other apps' cache untouched"
+        );
+    }
+
     #[test]
     fn cleanup_no_old_versions_returns_empty() {
         let (session, root) = setup("only_current");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
         assert!(results.is_empty(), "nothing to clean");
     }
 
+    /// The sweep-all form enumerates every installed app and cleans each —
+    /// and `scoop` itself is never a target (upstream `installed_apps`).
     #[test]
-    fn cleanup_empty_names_scans_all() {
+    fn cleanup_all_apps_via_explicit_names() {
         let (session, root) = setup("scan_all");
         install_versions(&root.0, "app1", &["2.0.0", "1.0.0"], "2.0.0");
         install_versions(&root.0, "app2", &["1.5.0", "1.0.0"], "1.5.0");
+        std::fs::create_dir_all(root.0.join("apps/scoop/1.0.0")).unwrap();
 
-        let results = cleanup(&session, &[], false).unwrap();
+        let names = installed_app_names(&session);
+        assert_eq!(names, ["app1", "app2"], "scoop excluded, order stable");
+        let results = cleanup(&session, &names, &opts(false)).unwrap();
 
         let mut cleaned = results
             .iter()
@@ -188,11 +267,27 @@ mod tests {
         assert_eq!(cleaned, vec![("app1", 1, 0), ("app2", 1, 0)]);
     }
 
+    /// An empty target list cleans nothing — it must never be re-read as
+    /// "every app", or a `cleanup <not-installed>` would sweep the install.
+    #[test]
+    fn cleanup_with_no_targets_is_a_noop() {
+        let (session, root) = setup("no_targets");
+        install_versions(&root.0, "app", &["2.0.0", "1.0.0"], "2.0.0");
+
+        let results = cleanup(&session, &[], &opts(false)).unwrap();
+
+        assert!(results.is_empty());
+        assert!(
+            root.0.join("apps/app/1.0.0").exists(),
+            "an empty list cleaned an app"
+        );
+    }
+
     #[test]
     fn cleanup_missing_package_errors_without_ignore() {
         let (session, _root) = setup("missing");
 
-        let err = cleanup(&session, &["nope".to_owned()], false).unwrap_err();
+        let err = cleanup(&session, &["nope".to_owned()], &opts(false)).unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "nope"));
     }
@@ -202,7 +297,12 @@ mod tests {
         let (session, root) = setup("missing_ignored");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
-        let results = cleanup(&session, &["nope".to_owned(), "app".to_owned()], true).unwrap();
+        let results = cleanup(
+            &session,
+            &["nope".to_owned(), "app".to_owned()],
+            &opts(true),
+        )
+        .unwrap();
 
         assert!(results.is_empty(), "missing skipped, nothing to clean");
     }
@@ -213,7 +313,7 @@ mod tests {
         // apps/app exists but has no `current` symlink
         std::fs::create_dir_all(root.0.join("apps/app/1.0.0")).unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
         assert!(results.is_empty(), "broken package skipped");
     }
@@ -279,7 +379,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], false).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
         assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
         assert!(pkg_dir.join("2.0.0").exists(), "newest version kept");
