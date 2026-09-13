@@ -54,30 +54,54 @@ pub fn glob_to_regex(pattern: &str) -> String {
     format!("^{re_str}$")
 }
 
+/// Whether `pattern` matches `stem` — the shared per-pattern half of
+/// [`matches_any_glob`].
+///
+/// A trailing `.json` is ignored so callers can pass either an app name or a
+/// manifest file name (`hok formatjson curl` and `hok formatjson curl.json`
+/// are the same request), and matching is case-insensitive, mirroring
+/// PowerShell's `Get-ChildItem -Filter "$App.json"`.
+fn matches_glob(stem: &str, pattern: &str) -> bool {
+    // PowerShell appends `.json` to the filter itself, so the caller may or may
+    // not have spelled the extension — and `Curl.JSON` is as valid an input as
+    // `curl.json`.
+    let pattern = strip_json_suffix(pattern).unwrap_or(pattern);
+    if pattern.contains('*') || pattern.contains('?') {
+        regex::RegexBuilder::new(&glob_to_regex(pattern))
+            .case_insensitive(true)
+            .build()
+            .is_ok_and(|re| re.is_match(stem))
+    } else {
+        stem.eq_ignore_ascii_case(pattern)
+    }
+}
+
+/// `pattern` without a trailing `.json` (matched case-insensitively), or
+/// `None` when there is none — or when nothing would be left of it.
+fn strip_json_suffix(pattern: &str) -> Option<&str> {
+    const EXT: &str = ".json";
+    if pattern.len() <= EXT.len() {
+        return None;
+    }
+    let (head, tail) = pattern.split_at(pattern.len() - EXT.len());
+    tail.eq_ignore_ascii_case(EXT).then_some(head)
+}
+
 /// Determine whether `name` passes `patterns` (Scoop `checkurls` filter).
 ///
 /// Returns `true` when the first pattern is `"*"` (wildcard) or when any
 /// pattern matches `name` as a glob (`*` / `?` wildcards). Plain patterns
 /// without wildcards match exactly.
 ///
-/// Matching is **case-insensitive**, mirroring Scoop's `-App` handling: the
-/// official commands resolve it through `Get-ChildItem -Filter "$App.json"`,
-/// and PowerShell's `-Filter` (like its default string comparison) ignores
-/// case. `hok checkhashes -d <bucket> FOO` must therefore still find `foo.json`.
+/// Matching is **case-insensitive** and ignores a trailing `.json` on either
+/// side of the comparison, so `curl`, `Curl` and `Curl.json` all select the
+/// same manifest — mirroring `Get-ChildItem -Filter "$App.json"`, whose
+/// PowerShell `-Filter` comparison likewise ignores case.
 pub fn matches_any_glob(name: &str, patterns: &[String]) -> bool {
-    if patterns.first().map(|s| s.as_str()) == Some("*") {
+    if patterns.first().is_some_and(|p| matches_glob("*", p)) {
         return true;
     }
-    patterns.iter().any(|p| {
-        if p.contains('*') || p.contains('?') {
-            regex::RegexBuilder::new(&glob_to_regex(p))
-                .case_insensitive(true)
-                .build()
-                .is_ok_and(|re| re.is_match(name))
-        } else {
-            name.eq_ignore_ascii_case(p)
-        }
-    })
+    patterns.iter().any(|p| matches_glob(name, p))
 }
 
 /// Normalize a JSONPath expression so `jsonpath-rust` can parse dotted field
@@ -219,6 +243,30 @@ mod tests {
         assert!(matches_any_glob("curl", &["CUR?".to_string()]));
         // Still a full-name match, not a substring one.
         assert!(!matches_any_glob("git-lfs", &["GIT".to_string()]));
+    }
+
+    /// Manifest discovery mirrors PowerShell's case-insensitive
+    /// `Get-ChildItem -Filter "$App.json"`: `hok formatjson Curl` must still
+    /// find `curl.json`, and a mixed-case glob must match too.
+    #[test]
+    fn filters_match_case_insensitively() {
+        let exact = vec!["curl".to_string()];
+        assert!(matches_any_glob("Curl", &exact));
+        assert!(matches_any_glob("CURL", &exact));
+
+        let glob = vec!["Cur*".to_string()];
+        assert!(matches_any_glob("curl", &glob));
+        assert!(matches_any_glob("CURL-7Z", &glob));
+    }
+
+    /// A `.json` suffix on the pattern is accepted and ignored, and a
+    /// `.json`-suffixed wildcard still matches everything.
+    #[test]
+    fn filters_ignore_json_suffix() {
+        assert!(matches_any_glob("curl", &["curl.json".to_string()]));
+        assert!(matches_any_glob("curl", &["Curl.JSON".to_string()]));
+        assert!(matches_any_glob("anyapp", &["*.json".to_string()]));
+        assert!(!matches_any_glob("curl", &["wget.json".to_string()]));
     }
 
     // ── normalize_jsonpath ───────────────────────────────────────────────────

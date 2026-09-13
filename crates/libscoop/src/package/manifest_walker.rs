@@ -59,10 +59,11 @@ pub(crate) fn discover(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// Combines [`discover`] with Scoop's app-pattern filtering
 /// ([`crate::internal::string::matches_any_glob`]): a first pattern of
 /// `"*"` matches everything; otherwise each stem must match at least one
-/// pattern (glob `*`/`?` supported, plain patterns match exactly).
+/// pattern (glob `*`/`?` supported, matching case-insensitive, a trailing
+/// `.json` on the pattern ignored).
 ///
 /// Shared by the bucket-scanning commands `checkhashes` / `checkver` /
-/// `checkurls`.
+/// `checkurls` / `formatjson` / `missing_checkver`.
 pub(crate) fn discover_matching(
     dir: &Path,
     app: &[String],
