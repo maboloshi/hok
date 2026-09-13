@@ -3,6 +3,8 @@
 //! Thin wrappers over [`crate::internal::network`], plus [`ScoopRequest`] — the
 //! single place where hok resolves the headers upstream Scoop sends (proxy,
 //! User-Agent, Referer, PRIVATE_HOSTS extra headers and GitHub API auth).
+//! Downloads deliberately keep the Referer off the wire; see
+//! [`HeaderProfile::referer`].
 //!
 //! # Design
 //!
@@ -142,11 +144,12 @@ pub async fn head_url(
 /// proxy.
 ///
 /// Upstream reaches these downloads through `Invoke-CachedDownload` /
-/// `Invoke-Download` as well (`lib/download.ps1:23`, `:53-96`), so the full
-/// download header contract applies — User-Agent, Referer (suppressed for
-/// SourceForge/PortableApps), PRIVATE_HOSTS and GitHub API headers. Upstream
-/// passes no cookies on either of the two callers of this function
-/// (`bin/checkhashes.ps1:122`, `lib/autoupdate.ps1:319`), so none are sent.
+/// `Invoke-Download` as well (`lib/download.ps1:23`, `:53-96`), so the download
+/// header contract applies — User-Agent, PRIVATE_HOSTS and GitHub API headers,
+/// and **no Referer** on downloads (a deliberate deviation; see
+/// [`HeaderProfile::referer`]). Upstream passes no cookies on either of the two
+/// callers of this function (`bin/checkhashes.ps1:122`,
+/// `lib/autoupdate.ps1:319`), so none are sent.
 pub async fn download_file(session: &Session, url: &str, dest: &Path) -> Fallible<()> {
     let request = ScoopRequest::for_url(session, url, HeaderProfile::Download);
     let opts = request.options(120);
@@ -264,10 +267,29 @@ mod tests {
         Session::new_with(&config_path).unwrap()
     }
 
-    /// `Invoke-Download` (`lib/download.ps1:88-111`): User-Agent, Referer and
-    /// PRIVATE_HOSTS must all be on the wire for file downloads.
+    /// A session whose PRIVATE_HOSTS entry injects a `Referer` — the escape
+    /// hatch downloads rely on now that hok never derives one.
+    fn session_with_private_referer(root: &Path) -> Session {
+        let config_path = root.join("hok-referer.json");
+        let escaped = |p: &Path| p.to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}",
+                     "private_hosts": [{{"match": "127\\.0\\.0\\.1", "headers": "Referer=https://example.com/"}}]}}"#,
+                escaped(root),
+                escaped(&root.join("cache")),
+            ),
+        )
+        .unwrap();
+        Session::new_with(&config_path).unwrap()
+    }
+
+    /// Downloads carry the User-Agent and PRIVATE_HOSTS headers but **no**
+    /// Referer: the value upstream derives (`lib/download.ps1:94-96`) is the
+    /// download host itself, which Referer anti-leech rejects.
     #[tokio::test]
-    async fn download_file_sends_the_download_header_contract() {
+    async fn download_file_sends_the_download_header_contract_without_a_referer() {
         let root = crate::test_utils::tmpdir("d4_download_headers");
         let session = session_with_private_hosts(&root);
         let (url, server) = capture_one_request();
@@ -283,12 +305,9 @@ mod tests {
             )),
             "User-Agent missing or wrong:\n{head}"
         );
-        let port = url
-            .trim_start_matches("http://")
-            .trim_end_matches("/pkg.bin");
         assert!(
-            head.contains(&format!("referer: http://{port}/")),
-            "Referer missing or wrong:\n{head}"
+            !head.contains("referer:"),
+            "downloads must not carry a Referer:\n{head}"
         );
         assert!(
             head.contains("x-private: yes"),
@@ -297,14 +316,13 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"fixture-payload");
     }
 
-    /// `lib/download.ps1:94`: SourceForge/PortableApps downloads carry no
-    /// Referer.
+    /// The escape hatch: a host that really needs a Referer gets exactly one
+    /// from PRIVATE_HOSTS, with nothing appended by the download profile.
     #[tokio::test]
-    async fn download_file_suppresses_the_referer_for_sourceforge_urls() {
-        let root = crate::test_utils::tmpdir("d4_download_no_referer");
-        let session = session_with_private_hosts(&root);
+    async fn download_file_takes_its_referer_from_private_hosts() {
+        let root = crate::test_utils::tmpdir("d4_download_private_referer");
+        let session = session_with_private_referer(&root);
         let (url, server) = capture_one_request();
-        let url = format!("{url}?mirror=downloads.sourceforge.net");
 
         download_file(&session, &url, &root.join("out.bin"))
             .await
@@ -312,15 +330,13 @@ mod tests {
         let head = server.join().unwrap();
 
         assert!(
-            head.contains(&format!(
-                "user-agent: {}",
-                DEFAULT_USER_AGENT.to_lowercase()
-            )),
-            "User-Agent missing:\n{head}"
+            head.contains("referer: https://example.com/"),
+            "PRIVATE_HOSTS Referer missing or wrong:\n{head}"
         );
-        assert!(
-            !head.contains("referer:"),
-            "Referer must be suppressed for SourceForge:\n{head}"
+        assert_eq!(
+            head.matches("referer:").count(),
+            1,
+            "exactly one Referer must reach the wire:\n{head}"
         );
     }
 

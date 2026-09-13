@@ -178,10 +178,10 @@ async fn download_one_package<'a>(
             // file is smaller than the configured chunk count.
             && chunk_count <= dlinfo.remote_size;
 
-        // Scoop's download header contract for this file (`lib/download.ps1:88-111`):
-        // User-Agent, Referer (suppressed for SourceForge/PortableApps),
-        // PRIVATE_HOSTS extra headers and GitHub API auth. Resolved per URL
-        // because the Referer depends on it.
+        // hok's download header contract for this file: User-Agent,
+        // PRIVATE_HOSTS extra headers and GitHub API auth — and deliberately no
+        // Referer (`HeaderProfile::referer`). Resolved per URL because the
+        // PRIVATE_HOSTS match depends on it.
         let request = ScoopRequest::for_url(session, dlinfo.url, HeaderProfile::Download);
         let file_opts = internal::network::RequestOptions {
             cookies: cookie_map.as_ref(),
@@ -712,7 +712,7 @@ impl<'a> PackageSet<'a> {
                 let net = net.clone();
                 async move {
                     // Same header contract as the download itself, so the HEAD
-                    // probe sees the same Referer/PRIVATE_HOSTS as the GET.
+                    // probe sees the same headers as the GET.
                     let request = ScoopRequest::for_url(session, &url, HeaderProfile::Download);
                     let opts = internal::network::RequestOptions {
                         cookies: cookie_map.as_ref(),

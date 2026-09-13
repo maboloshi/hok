@@ -74,10 +74,10 @@ pub struct RequestOptions<'a> {
 /// Which upstream call site's header rules a request follows.
 ///
 /// Upstream assembles request headers in four places, each with slightly
-/// different rules (Referer suppression, PRIVATE_HOSTS, GitHub API auth). This
-/// enum is the single description of those differences, so every hok request
-/// path can be checked against its upstream counterpart by name instead of by
-/// re-reading each call site.
+/// different rules (downloads send no Referer, PRIVATE_HOSTS, GitHub API auth).
+/// This enum is the single description of those differences, so every hok
+/// request path can be checked against its upstream counterpart by name instead
+/// of by re-reading each call site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderProfile {
     /// `Invoke-Download` (`lib/download.ps1:88-111`) — the file downloader
@@ -92,20 +92,31 @@ pub enum HeaderProfile {
     Autoupdate,
 }
 
-/// Hosts whose downloads omit `Referer` (`lib/download.ps1:94-96`). Matched as
-/// substrings against the whole URL, exactly like upstream's `-match`.
-const NO_REFERER_HOSTS: [&str; 2] = ["sourceforge.net", "portableapps.com"];
-
 /// Host fragment that marks a GitHub REST API URL.
 const GITHUB_API_HOST: &str = "api.github.com";
 
 impl HeaderProfile {
-    /// `Referer` value for `url`, or `None` when upstream omits the header.
+    /// `Referer` value for `url`, or `None` when hok sends no Referer.
+    ///
+    /// **Downloads send no `Referer` at all**, where upstream's
+    /// `Invoke-Download` (`lib/download.ps1:94-96`) derives one from the URL's
+    /// own directory and drops it only for SourceForge/PortableApps. That
+    /// derived value *is* the download host, and Referer anti-leech rejects it:
+    /// `updatecdn.meeting.qq.com` answers 403 for it but 200 when the header is
+    /// absent (measured 2026-09-13, HEAD and GET). A host that needs a specific
+    /// Referer gets one from `PRIVATE_HOSTS` (`config.private_hosts`), the
+    /// mechanism upstream already offers for per-host headers.
+    ///
+    /// Deliberate deviation from upstream, registered as such: matching
+    /// `lib/download.ps1` here makes real packages undownloadable.
+    ///
+    /// The probe profiles keep upstream's Referer (`bin/checkurls.ps1:60`,
+    /// `bin/checkver.ps1:246`, `lib/autoupdate.ps1:25,55,117,145,186`).
     pub fn referer(self, url: &str) -> Option<String> {
-        if self == Self::Download && NO_REFERER_HOSTS.iter().any(|host| url.contains(host)) {
-            return None;
+        match self {
+            Self::Download => None,
+            Self::CheckUrls | Self::Checkver | Self::Autoupdate => Some(strip_filename(url)),
         }
-        Some(strip_filename(url))
     }
 
     /// Does upstream attach the GitHub API *download* headers to `url`?
@@ -647,32 +658,23 @@ mod tests {
     // ── HeaderProfile (upstream's per-call-site header contract) ────────────
 
     #[test]
-    fn download_referer_drops_the_filename() {
-        assert_eq!(
-            HeaderProfile::Download
-                .referer("https://example.com/a/b/file.zip")
-                .as_deref(),
-            Some("https://example.com/a/b/")
-        );
-    }
-
-    #[test]
-    fn download_referer_is_suppressed_for_sourceforge_and_portableapps() {
-        // `lib/download.ps1:94`: SourceForge and PortableApps reject a foreign
-        // Referer. Upstream matches the whole URL with `-match`.
-        assert_eq!(
-            HeaderProfile::Download.referer("https://downloads.sourceforge.net/project/x/y.exe"),
-            None
-        );
-        assert_eq!(
-            HeaderProfile::Download.referer("https://portableapps.com/x.exe"),
-            None
-        );
-        // Anywhere in the URL, mirroring upstream's substring match.
-        assert_eq!(
-            HeaderProfile::Download.referer("https://mirror.test/x.exe?src=sourceforge.net"),
-            None
-        );
+    fn download_profile_never_sends_a_referer() {
+        // Deliberate deviation from `lib/download.ps1:94-96`: the Referer
+        // upstream derives is the download host itself, and Referer anti-leech
+        // rejects that (`updatecdn.meeting.qq.com`: 403 with it, 200 without).
+        // A host that needs one gets it from PRIVATE_HOSTS.
+        for url in [
+            "https://example.com/a/b/file.zip",
+            "https://downloads.sourceforge.net/project/x/y.exe",
+            "https://portableapps.com/x.exe",
+            "https://updatecdn.meeting.qq.com/cos/abc/pkg.exe#/dl.7z",
+        ] {
+            assert_eq!(
+                HeaderProfile::Download.referer(url),
+                None,
+                "downloads must not carry a Referer: {url}"
+            );
+        }
     }
 
     #[test]
