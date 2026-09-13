@@ -438,7 +438,9 @@ pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()
         false => remote_url,
         true => crate::constant::BUILTIN_BUCKET_LIST
             .iter()
-            .find(|&&(n, _)| n == name)
+            // Upstream resolves a known bucket name case-insensitively
+            // (`lib/buckets.ps1:43-46`).
+            .find(|&&(n, _)| n.eq_ignore_ascii_case(name))
             .map(|&(_, remote)| remote)
             .ok_or_else(|| Error::BucketAddRemoteRequired(name.to_owned()))?,
     };
@@ -461,7 +463,20 @@ pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()
 /// I/O errors will be returned if the `buckets` directory is not readable.
 pub fn list(session: &Session) -> Fallible<Vec<Bucket>> {
     bucket_added(session).map(|mut buckets| {
-        buckets.sort_by_key(|b| b.name().to_lowercase());
+        // Upstream hoists the known buckets to the front in `buckets.json`
+        // order and leaves the rest in directory order
+        // (`lib/buckets.ps1:56-75`). `sort_by_key` is stable, so the unknown
+        // buckets keep the directory order `bucket_added` produced.
+        buckets.sort_by_key(|b| {
+            let name = b.name().to_lowercase();
+            match crate::constant::BUILTIN_BUCKET_LIST
+                .iter()
+                .position(|&(n, _)| n.eq_ignore_ascii_case(&name))
+            {
+                Some(idx) => (0usize, idx),
+                None => (1usize, 0usize),
+            }
+        });
         buckets
     })
 }

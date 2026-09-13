@@ -106,7 +106,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         Command::Known => {
-            render_known(&bucket::list_known());
+            // Upstream prints the bare known-bucket names
+            // (`lib/buckets.ps1:48-50`); `bucket list -k` keeps the table as a
+            // hok extension.
+            for (name, _) in bucket::list_known() {
+                println!("{name}");
+            }
             Ok(())
         }
         Command::Remove { name } => {
@@ -125,12 +130,13 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 /// Lay out the added-bucket table: an emphasized header, a dim dashed rule,
 /// then one line per bucket.
 ///
-/// `manifests` is a numeric column (right-aligned) and `source` is last, so the
-/// long repository URL never pads and no rendered line carries trailing spaces.
-/// The rule under the last column spans the header width only — the same rule
-/// `list` applies to its `Info` column.
+/// Column order follows upstream (`lib/buckets.ps1:107-118`):
+/// Name | Source | Updated | Manifests. `manifests` is the trailing numeric
+/// column (right-aligned) and `source` is padded, so no rendered line carries
+/// trailing spaces; the rule under the last column spans the header width
+/// only — the same rule `list` applies to its `Info` column.
 fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
-    let [hdr_name, hdr_manifests, hdr_updated, hdr_source] = headers;
+    let [hdr_name, hdr_source, hdr_updated, hdr_manifests] = headers;
 
     let w_name = visual_width(hdr_name).max(
         rows.iter()
@@ -138,9 +144,9 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
             .max()
             .unwrap_or(0),
     );
-    let w_manifests = visual_width(hdr_manifests).max(
+    let w_source = visual_width(hdr_source).max(
         rows.iter()
-            .map(|r| visual_width(&r.manifests))
+            .map(|r| visual_width(&r.source))
             .max()
             .unwrap_or(0),
     );
@@ -150,22 +156,27 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
             .max()
             .unwrap_or(0),
     );
-    let w_source = visual_width(hdr_source);
+    let w_manifests = visual_width(hdr_manifests).max(
+        rows.iter()
+            .map(|r| visual_width(&r.manifests))
+            .max()
+            .unwrap_or(0),
+    );
 
     let mut lines = vec![
         format!(
             "  {}  {}  {}  {}",
             style::accent_bold(pad_visual(hdr_name, w_name)),
-            style::accent_bold(pad_visual_right(hdr_manifests, w_manifests)),
+            style::accent_bold(pad_visual(hdr_source, w_source)),
             style::accent_bold(pad_visual(hdr_updated, w_updated)),
-            style::accent_bold(hdr_source),
+            style::accent_bold(pad_visual_right(hdr_manifests, w_manifests)),
         ),
         format!(
             "  {}  {}  {}  {}",
             style::dim("-".repeat(w_name)),
-            style::dim("-".repeat(w_manifests)),
-            style::dim("-".repeat(w_updated)),
             style::dim("-".repeat(w_source)),
+            style::dim("-".repeat(w_updated)),
+            style::dim("-".repeat(w_manifests)),
         ),
     ];
 
@@ -173,9 +184,9 @@ fn layout(rows: &[Row], headers: [&str; 4]) -> Vec<String> {
         lines.push(format!(
             "  {}  {}  {}  {}",
             style::emphasis(pad_visual(&row.name, w_name)),
-            pad_visual_right(&row.manifests, w_manifests),
+            pad_visual(&row.source, w_source),
             pad_visual(&row.updated, w_updated),
-            row.source,
+            pad_visual_right(&row.manifests, w_manifests),
         ));
     }
 
@@ -230,9 +241,9 @@ fn render(rows: &[Row]) {
         rows,
         [
             name.as_str(),
-            manifests.as_str(),
-            updated.as_str(),
             source.as_str(),
+            updated.as_str(),
+            manifests.as_str(),
         ],
     ) {
         println!("{line}");
@@ -303,24 +314,26 @@ mod tests {
             ),
             row("中文仓库", "58", "", "D:\\本地\\bucket"),
         ];
-        let lines = layout(&rows, ["名称", "清单数", "更新时间", "来源"])
+        let lines = layout(&rows, ["名称", "来源", "更新时间", "清单数"])
             .iter()
             .map(|l| plain(l))
             .collect::<Vec<_>>();
 
-        // The widest name is the CJK one (`中文仓库` = 8 columns).
-        let manifests_col = 2 + visual_width("中文仓库") + 2;
-        // `manifests` is right-aligned: its *right edge* is what lines up.
-        let manifests_end = manifests_col + visual_width("清单数");
-        let updated_col = manifests_end + 2;
+        // Name | Source | Updated | Manifests (`lib/buckets.ps1:107-118`).
+        let w_name = visual_width("中文仓库");
+        let source_col = 2 + w_name + 2;
+        let w_source = visual_width("https://github.com/ScoopInstaller/Extras");
+        let updated_col = source_col + w_source + 2;
+        let w_updated = visual_width("2026/9/12 0:31:15");
+        let manifests_end = updated_col + w_updated + 2 + visual_width("清单数");
 
-        assert_eq!(value_column(&lines[0], "清单数"), manifests_col, "header");
-        for (line, manifests) in lines[2..].iter().zip(["2383", "1644", "58"]) {
-            assert_eq!(
-                value_column(line, manifests) + visual_width(manifests),
-                manifests_end,
-                "on `{line}`"
-            );
+        assert_eq!(value_column(&lines[0], "来源"), source_col, "header");
+        for (line, source) in lines[2..].iter().zip([
+            "https://github.com/ScoopInstaller/Extras",
+            "https://github.com/ScoopInstaller/Main",
+            "D:\\本地\\bucket",
+        ]) {
+            assert_eq!(value_column(line, source), source_col, "on `{line}`");
         }
 
         assert_eq!(value_column(&lines[0], "更新时间"), updated_col, "header");
@@ -329,6 +342,15 @@ mod tests {
             .zip(["2026/9/12 0:31:15", "2026/9/12 0:31:14"])
         {
             assert_eq!(value_column(line, updated), updated_col, "on `{line}`");
+        }
+
+        // The manifest count is the trailing column: its *right edge* lines up.
+        for (line, manifests) in lines[2..].iter().zip(["2383", "1644", "58"]) {
+            assert_eq!(
+                value_column(line, manifests) + visual_width(manifests),
+                manifests_end,
+                "on `{line}`"
+            );
         }
 
         assert!(
@@ -345,7 +367,7 @@ mod tests {
             row("main", "1644", "2026/9/12", "https://m"),
             row("scoop-app", "17597", "2026/9/12", "https://s"),
         ];
-        let lines = layout(&rows, ["Name", "Manifests", "Updated", "Source"])
+        let lines = layout(&rows, ["Name", "Source", "Updated", "Manifests"])
             .iter()
             .map(|l| plain(l))
             .collect::<Vec<_>>();
@@ -362,12 +384,16 @@ mod tests {
     #[test]
     fn layout_leaves_an_unknown_update_date_empty() {
         let rows = vec![row("local", "3", "", "D:\\bucket")];
-        let lines = layout(&rows, ["Name", "Manifests", "Updated", "Source"])
+        let lines = layout(&rows, ["Name", "Source", "Updated", "Manifests"])
             .iter()
             .map(|l| plain(l))
             .collect::<Vec<_>>();
 
-        assert!(lines[2].ends_with("  D:\\bucket"), "row: {}", lines[2]);
+        // The source keeps its column, the empty Updated cell keeps its width,
+        // and the trailing count stays right-aligned.
+        let source_col = 2 + visual_width("Name").max(visual_width("local")) + 2;
+        assert_eq!(value_column(&lines[2], "D:\\bucket"), source_col);
+        assert!(lines[2].ends_with("        3"), "row: {}", lines[2]);
         assert!(!lines[2].contains("none"), "row: {}", lines[2]);
     }
 
