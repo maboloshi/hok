@@ -89,6 +89,7 @@ that writes**. `formatjson`, and `checkhashes`/`checkver` with `-u/--update` or
 $ hok formatjson
 error: formatjson writes to disk, so the target must be given explicitly: pass -d <dir>. (Read-only runs default to the current directory; a write run never scans it implicitly.)
 $ hok formatjson -d ./bucket
+  Formatting ./bucket/7zip.json...
 Formatted 1 manifest(s).
 ```
 
@@ -102,6 +103,9 @@ file looks like a Scoop manifest. Run in a source checkout, a bare
 declaring `-Dir` `Mandatory = $true` (`bin/formatjson.ps1`,
 `bin/checkhashes.ps1`, `bin/checkurls.ps1`, `bin/missing-checkver.ps1`) or by
 throwing (`bin/checkver.ps1`).
+
+`formatjson` additionally names every file it rewrites (upstream prints
+nothing), so the blast radius is visible as it happens.
 
 Read-only runs are untouched: `checkurls`, `missing-checkver`, a plain
 `checkhashes` (no `-u`/`-f`) and a plain `checkver` (no `-u`/`-f`) all keep

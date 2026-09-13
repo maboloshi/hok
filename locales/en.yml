@@ -184,6 +184,7 @@ cmd:
   dir_required_for_write: "%{cmd} writes to disk, so the target must be given explicitly: pass -d <dir>. (Read-only runs default to the current directory; a write run never scans it implicitly.)"
   err_download: "download failed: %{e}"
   formatjson_none: "No manifests needed formatting."
+  formatjson_writing: "Formatting %{path}..."
   formatjson_count: "Formatted %{count} manifest(s)."
   already_held: "'%{name}' is already held."
   not_held: "'%{name}' is not held."

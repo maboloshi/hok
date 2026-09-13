@@ -134,6 +134,38 @@ fn formats_in_place_and_is_idempotent() {
     assert!(text.contains("No manifests needed formatting."), "{text}");
 }
 
+/// Every rewritten file is named before the summary.
+///
+/// Upstream prints nothing at all here, so this is a deliberate hok addition:
+/// the destructive part of `formatjson` is that it rewrites *any* JSON file it
+/// finds, which makes the blast radius exactly the thing the user needs to see.
+/// Only files that actually changed are named.
+#[test]
+fn names_every_rewritten_file() {
+    let env = Env::new("per_file");
+    env.write("curl.json", COMPACT);
+    env.write("wget.json", COMPACT);
+    let dir = env.dir().to_str().unwrap().to_string();
+
+    let (code, text) = env.run(&["formatjson", "-d", &dir]);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("Formatting"), "per-file line missing: {text}");
+    assert!(text.contains("curl.json"), "{text}");
+    assert!(text.contains("wget.json"), "{text}");
+    assert_eq!(
+        text.matches("Formatting").count(),
+        2,
+        "exactly the rewritten files are named: {text}"
+    );
+    assert!(text.contains("Formatted 2 manifest(s)."), "{text}");
+
+    // Nothing changes on a second pass, so nothing is named.
+    let (code, text) = env.run(&["formatjson", "-d", &dir]);
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("Formatting"), "{text}");
+    assert!(text.contains("No manifests needed formatting."), "{text}");
+}
+
 /// An unparsable manifest is reported and left byte-identical: the official
 /// script would truncate it (`$null` piped into `WriteAllLines`), which is the
 /// destructive behavior hok deliberately does not copy.

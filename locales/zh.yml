@@ -184,6 +184,7 @@ cmd:
   dir_required_for_write: "%{cmd} 会写盘，因此必须显式指定目标：请传入 -d <目录>。（只读运行默认使用当前目录；写盘运行不会隐式扫描它。）"
   err_download: "下载失败: %{e}"
   formatjson_none: "没有清单需要格式化。"
+  formatjson_writing: "正在格式化 %{path}..."
   formatjson_count: "已格式化 %{count} 个清单。"
   already_held: "'%{name}' 已处于锁定状态。"
   not_held: "'%{name}' 未处于锁定状态。"

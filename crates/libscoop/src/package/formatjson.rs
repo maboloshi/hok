@@ -41,7 +41,7 @@
 use crate::package::manifest_walker;
 use crate::{Error, error::Fallible, internal};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Format a single manifest JSON file in place using Scoop conventions.
 ///
@@ -72,8 +72,14 @@ pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
 /// Batch result of [`format_manifests`].
 #[derive(Debug, Clone, Default)]
 pub struct FormatReport {
-    /// Manifests that were rewritten.
-    pub formatted: u32,
+    /// Manifests that were rewritten, in the order they were processed.
+    ///
+    /// Kept as paths rather than a bare count so the command can report every
+    /// file it rewrote: the destructive part of `formatjson` is that it
+    /// rewrites any JSON file it finds, so "which files changed" is the piece
+    /// of information the user most needs. Use
+    /// [`FormatReport::formatted_count`] for the summary count.
+    pub formatted: Vec<PathBuf>,
     /// Manifests already correctly formatted (not rewritten).
     pub unchanged: u32,
     /// Error messages from manifests that could not be formatted.
@@ -83,6 +89,13 @@ pub struct FormatReport {
     /// absence (upstream never validates them), but such manifests cannot
     /// be installed meaningfully, so `formatjson` calls them out.
     pub warnings: Vec<String>,
+}
+
+impl FormatReport {
+    /// Number of manifests rewritten by this run.
+    pub fn formatted_count(&self) -> usize {
+        self.formatted.len()
+    }
 }
 
 /// Format every manifest under `dir`, filtered by `app` patterns.
@@ -100,7 +113,7 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
     let mut report = FormatReport::default();
     for (path, _stem) in manifest_walker::discover_matching(dir, app)? {
         match format_manifest_file(&path) {
-            Ok(true) => report.formatted += 1,
+            Ok(true) => report.formatted.push(path.clone()),
             Ok(false) => report.unchanged += 1,
             Err(e) => report.errors.push(e.to_string()),
         }
@@ -514,13 +527,13 @@ mod tests {
         std::fs::write(dir.join("app2.json"), "{\"b\":[\"y\"]}").unwrap();
 
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 2);
+        assert_eq!(report.formatted_count(), 2);
         assert_eq!(report.unchanged, 0);
         assert!(report.errors.is_empty());
 
         // Idempotent second pass: nothing to rewrite.
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 0);
+        assert_eq!(report.formatted_count(), 0);
         assert_eq!(report.unchanged, 2);
     }
 
@@ -532,7 +545,7 @@ mod tests {
 
         // Plain pattern matches exactly: only app1 is formatted.
         let report = format_manifests(&dir, &["app1".to_string()]).unwrap();
-        assert_eq!(report.formatted, 1);
+        assert_eq!(report.formatted_count(), 1);
         assert_eq!(report.unchanged, 0);
     }
 
@@ -609,7 +622,7 @@ mod tests {
         std::fs::write(dir.join("bad.json"), "{ not json").unwrap();
 
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 1, "app.json formatted");
+        assert_eq!(report.formatted_count(), 1, "app.json formatted");
         assert_eq!(report.errors.len(), 1, "bad.json collected as error");
         assert!(
             !report.errors[0].contains("package.json"),

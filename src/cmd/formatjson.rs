@@ -39,12 +39,22 @@ pub async fn execute(args: Args) -> Result<()> {
         output::warn(msg);
     }
 
-    if report.formatted == 0 && report.errors.is_empty() {
+    // Name every rewritten file: the risk of this command is that the scan is
+    // blind to manifest shape, so the blast radius must be visible (upstream
+    // prints nothing — hok value-add, a registered deliberate deviation).
+    for path in &report.formatted {
+        output::status(hok_i18n::t!(
+            "cmd.formatjson_writing",
+            path = path.display()
+        ));
+    }
+
+    if report.formatted_count() == 0 && report.errors.is_empty() {
         output::info(hok_i18n::t!("cmd.formatjson_none"));
     } else {
         output::info(hok_i18n::t!(
             "cmd.formatjson_count",
-            count = report.formatted
+            count = report.formatted_count()
         ));
     }
 
