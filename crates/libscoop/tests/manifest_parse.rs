@@ -1,4 +1,4 @@
-use libscoop::{parse_file, Manifest};
+use libscoop::{Manifest, parse_file};
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -215,4 +215,73 @@ fn test_parse_installer_file() {
     assert_eq!(uninstaller.file(), Some("uninstall.exe"));
     assert_eq!(uninstaller.args(), Some(vec!["/S", "/D=$dir"]));
     assert!(uninstaller.script().is_none());
+}
+
+// ── autoupdate.hash.mode: github ──────────────────────────────────────────
+
+#[test]
+fn test_parse_hash_mode_github_real_manifest() {
+    // Real `scoop-app` manifest (provenance: tests/fixtures/README.md).
+    // `autoupdate.hash.mode` is `github` — a value the official `schema.json`
+    // `mode` enum omits (schema.json:51-62), but which the official runtime
+    // accepts via `switch ($hashmode)` (lib/autoupdate.ps1:271-302). 220 such
+    // manifests in a real bucket failed to parse before this variant existed,
+    // and because a parse failure is swallowed by the manifest walk
+    // (package/query.rs:120,285) the packages silently disappeared from
+    // `install`/`search`/`info` instead of reporting an error.
+    let manifest = parse_file(fixture_path("0x7eTeamTools.json")).expect("mode: github must parse");
+    assert_eq!(manifest.version(), "1.2");
+    assert_eq!(manifest.license().identifier(), "Apache-2.0");
+
+    let au = manifest.autoupdate().expect("should have autoupdate");
+    assert_eq!(
+        au.url.as_ref().map(|u| u.devectorize()),
+        Some(vec![
+            "https://github.com/0x7eTeam/0x7eTeamTools/releases/download/$version/0x7eTeamTools.v$version.zip"
+        ])
+    );
+    assert!(au.hash.is_some(), "autoupdate.hash must be modeled");
+
+    // The `rename` must round-trip: re-serializing the parsed manifest
+    // (`to_pretty_json`, used by `hok cat`) must not respell the mode.
+    let json = manifest.to_pretty_json().expect("serialize");
+    assert!(
+        json.contains("\"mode\": \"github\""),
+        "mode must round-trip as `github`: {json}"
+    );
+}
+
+#[test]
+fn test_parse_hash_mode_github_arch_specific() {
+    // The same mode also appears at `autoupdate.architecture.<arch>.hash`
+    // (e.g. `scoop-app`'s `smart-svg-viewer.json`), which is a separate
+    // `HashExtraction` entry point from the top-level one.
+    let json = r#"{
+        "version": "1.0.0",
+        "homepage": "https://example.com",
+        "license": "MIT",
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/o/r/releases/download/v$version/r-$version.zip",
+                "hash": "69c92b607e1d19555ab59db532920ddf4d30d5374cbada14a853fe4581605887"
+            }
+        },
+        "autoupdate": {
+            "architecture": {
+                "64bit": {
+                    "url": "https://github.com/o/r/releases/download/v$version/r-$version.zip",
+                    "hash": { "mode": "github" }
+                }
+            }
+        }
+    }"#;
+    let manifest =
+        Manifest::from_json("arch-github-mode", json).expect("arch-level mode must parse");
+    assert_eq!(manifest.version(), "1.0.0");
+
+    let json = manifest.to_pretty_json().expect("serialize");
+    assert!(
+        json.contains("\"mode\": \"github\""),
+        "arch-level mode must round-trip as `github`: {json}"
+    );
 }

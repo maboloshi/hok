@@ -550,6 +550,18 @@ pub enum HashExtractionMode {
     Fosshub,
     #[serde(rename = "sourceforge")]
     Sourceforge,
+    /// Read the asset digest from the GitHub Releases API.
+    ///
+    /// Not listed in the official `schema.json` `mode` enum
+    /// (`schema.json:51-62`), but official Scoop never validates a manifest
+    /// against the schema — the mode is dispatched by
+    /// `switch ($hashmode)` in `lib/autoupdate.ps1:271-302`, which handles
+    /// `'github'` (`:298-301`; the API URL is built there when the download
+    /// URL matches the GitHub releases pattern of `:267-269`). Real-world
+    /// buckets rely on it (220 `scoop-app` manifests failed to parse without
+    /// this variant), so it must be accepted.
+    #[serde(rename = "github")]
+    Github,
 }
 
 impl<T: Serialize> Serialize for Vectorized<T> {
