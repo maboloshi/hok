@@ -5,6 +5,7 @@ use libscoop::package::cleanup::CleanupOptions;
 use libscoop::{Session, cache, package};
 
 use crate::cmd::shared_args::ensure_global;
+use crate::output::style;
 use crate::{Result, output};
 
 /// Cleanup apps by removing old versions
@@ -23,6 +24,12 @@ pub struct Args {
     /// Remove outdated download cache simultaneously
     #[arg(short = 'k', long, action = ArgAction::SetTrue)]
     cache: bool,
+    /// Also report apps that are already clean
+    // A count, not a flag: `-v` is the CLI's global verbosity option, so
+    // `hok cleanup -v` and `hok -v cleanup` share it (as `alias list` and
+    // `info` already do).
+    #[arg(short = 'v', long, action = ArgAction::Count)]
+    verbose: u8,
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
@@ -73,27 +80,43 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         results.extend(package::cleanup::cleanup(session, &names, &options)?);
     }
 
-    for (name, count, failed) in &results {
-        let msg = if *failed > 0 {
-            hok_i18n::t!(
-                "cmd.cleanup_removed_failed",
-                count = *count,
-                failed = *failed
-            )
-        } else {
-            hok_i18n::t!("cmd.cleanup_removed", count = *count)
-        };
-        output::named(name.as_str(), msg);
+    // Upstream renders the removed versions on the app's line
+    // (`Removing $app: <v1> <v2>`, `scoop-cleanup.ps1:43-46`); its verbose
+    // `"$app is already clean"` note (`:39`) maps to hok's `-v`. `reported`
+    // tracks whether any per-app line was emitted, so the fallback summary
+    // does not repeat what those lines already said.
+    let mut reported = false;
+    for res in &results {
+        if !res.removed.is_empty() {
+            println!(
+                "  {} {}",
+                style::warning(hok_i18n::t!("cmd.cleanup_removing", name = res.name)),
+                res.removed.join(" ")
+            );
+            reported = true;
+        } else if args.verbose > 0 && res.failed == 0 {
+            output::done(hok_i18n::t!("cmd.cleanup_already_clean", name = res.name));
+            reported = true;
+        }
+
+        if res.failed > 0 {
+            output::named(
+                res.name.as_str(),
+                hok_i18n::t!(
+                    "cmd.cleanup_removed_failed",
+                    count = res.removed.len(),
+                    failed = res.failed
+                ),
+            );
+        }
     }
 
-    if results.is_empty() {
-        if named_targets != Some(0) {
-            output::info(hok_i18n::t!("cmd.cleanup_no_old"));
-        }
-    } else if all {
-        // Sweep-all success tail (Scoop prints this for the non-verbose
-        // `--all` form); named-app cleans already reported per-app counts.
+    // Upstream closes the sweep-all form with this line unconditionally
+    // (`scoop-cleanup.ps1:83-85`); the named form has no summary.
+    if all {
         output::done(hok_i18n::t!("cmd.cleanup_all_done"));
+    } else if !reported && named_targets != Some(0) {
+        output::info(hok_i18n::t!("cmd.cleanup_no_old"));
     }
 
     if args.cache {

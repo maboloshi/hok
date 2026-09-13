@@ -167,8 +167,9 @@ cmd:
   cleanup_try_local: "Try again without the --global (or -g) flag instead."
   cleanup_not_installed_locally: "'%{name}' isn't installed locally, but it may be installed globally."
   cleanup_try_global: "Try again with the --global (or -g) flag instead."
-  cleanup_removed: "%{count} old version(s) removed"
   cleanup_removed_failed: "%{count} old version(s) removed, %{failed} failed (retry after restart)"
+  cleanup_removing: "Removing %{name}:"
+  cleanup_already_clean: "%{name} is already clean"
   cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_removed: "Config '%{key}' has been removed"
@@ -558,6 +559,7 @@ cli_help:
       all: Cleanup all apps (alternative to '*')
       global: Cleanup a globally installed app
       cache: Remove download cache simultaneously
+      verbose: Also report apps that are already clean
   completions:
     args:
       shell: The shell type

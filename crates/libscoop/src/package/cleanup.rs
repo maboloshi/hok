@@ -19,6 +19,23 @@ pub struct CleanupOptions {
     pub cache: bool,
 }
 
+/// What [`cleanup`] did to one app.
+///
+/// Carries the removed version strings (not just a count) so the CLI can
+/// render upstream's per-app `Removing <app>: <version> ...` line
+/// (`scoop-cleanup.ps1:43-46`). An entry with an empty `removed` and zero
+/// `failed` is an app that was already clean (upstream's verbose
+/// `"<app> is already clean"`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CleanupResult {
+    /// The app name.
+    pub name: String,
+    /// Old versions actually removed, newest first.
+    pub removed: Vec<String>,
+    /// Old versions that could not be removed.
+    pub failed: usize,
+}
+
 /// The app directory in an explicit scope: upstream `appdir $app $global`
 /// (`lib/core.ps1`), which takes the scope as a parameter rather than reading
 /// the session's current one.
@@ -131,11 +148,12 @@ pub fn installed_app_names(session: &Session) -> Vec<String> {
 /// Cleanup old versions of packages.
 ///
 /// Removes all version directories except the current one for each named
-/// package, and returns a list of (package_name, removed_count, failed_count).
-/// `names` is always an explicit target list (upstream's `$apps`): an empty
-/// list cleans nothing, so callers sweeping every app must enumerate it
-/// through [`installed_app_names`]. A name that does not exist yields
-/// [`PackageNotFound`][1] unless `options.ignore_failures` is set.
+/// package, and returns one [`CleanupResult`] per app it processed (including
+/// apps that were already clean). `names` is always an explicit target list
+/// (upstream's `$apps`): an empty list cleans nothing, so callers sweeping
+/// every app must enumerate it through [`installed_app_names`]. A name that
+/// does not exist yields [`PackageNotFound`][1] unless `options.ignore_failures`
+/// is set.
 ///
 /// # Errors
 ///
@@ -147,7 +165,7 @@ pub fn cleanup(
     session: &Session,
     names: &[String],
     options: &CleanupOptions,
-) -> Fallible<Vec<(String, usize, usize)>> {
+) -> Fallible<Vec<CleanupResult>> {
     let ignore_failures = options.ignore_failures;
     let apps_dir = session.apps_dir();
     let mut results = Vec::new();
@@ -201,11 +219,23 @@ pub fn cleanup(
             }
         }
 
+        // `read_dir` returns an arbitrary order; sorting newest-first makes
+        // both the removal order and the rendered version list reproducible.
+        old_dirs.sort_by(|a, b| super::list::compare_versions_desc(a, b));
+
         if old_dirs.is_empty() {
+            // Upstream reports nothing here (its `"$app is already clean"` is
+            // verbose-only) but the caller needs to know the app was visited,
+            // so an empty entry is still recorded.
+            results.push(CleanupResult {
+                name: name.clone(),
+                removed: Vec::new(),
+                failed: 0,
+            });
             continue;
         }
 
-        let mut removed = 0u32;
+        let mut removed = Vec::new();
         let mut failed = 0u32;
         for ver in &old_dirs {
             let ver_dir = pkg_dir.join(ver);
@@ -219,13 +249,15 @@ pub fn cleanup(
                     return Err(Error::Custom(msg));
                 }
             } else {
-                removed += 1;
+                removed.push(ver.clone());
             }
         }
 
-        if removed > 0 || failed > 0 {
-            results.push((name.clone(), removed as usize, failed as usize));
-        }
+        results.push(CleanupResult {
+            name: name.clone(),
+            removed,
+            failed: failed as usize,
+        });
     }
 
     Ok(results)
@@ -281,7 +313,14 @@ mod tests {
 
         let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
-        assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
+        assert_eq!(
+            results,
+            vec![CleanupResult {
+                name: "app".to_owned(),
+                removed: vec!["0.9.0".to_owned(), "0.8.0".to_owned()],
+                failed: 0,
+            }]
+        );
         assert!(root.0.join("apps/app/1.0.0").exists(), "current kept");
         assert!(!root.0.join("apps/app/0.9.0").exists(), "old removed");
         assert!(!root.0.join("apps/app/0.8.0").exists(), "old removed");
@@ -310,7 +349,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(results, vec![("app".to_owned(), 1, 0)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "app");
+        assert_eq!(results[0].removed, ["1.0.0"]);
+        assert_eq!(results[0].failed, 0);
         assert!(
             !cache.join("app#1.0.0#a.zip").exists(),
             "outdated cache dropped"
@@ -382,13 +424,16 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_no_old_versions_returns_empty() {
+    fn cleanup_no_old_versions_reports_an_already_clean_app() {
         let (session, root) = setup("only_current");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
         let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
-        assert!(results.is_empty(), "nothing to clean");
+        assert_eq!(results.len(), 1, "the app was visited");
+        assert_eq!(results[0].name, "app");
+        assert!(results[0].removed.is_empty(), "nothing to clean");
+        assert_eq!(results[0].failed, 0);
     }
 
     /// The sweep-all form enumerates every installed app and cleans each —
@@ -406,7 +451,7 @@ mod tests {
 
         let mut cleaned = results
             .iter()
-            .map(|(n, r, f)| (n.as_str(), *r, *f))
+            .map(|r| (r.name.as_str(), r.removed.len(), r.failed))
             .collect::<Vec<_>>();
         cleaned.sort();
         assert_eq!(cleaned, vec![("app1", 1, 0), ("app2", 1, 0)]);
@@ -449,7 +494,9 @@ mod tests {
         )
         .unwrap();
 
-        assert!(results.is_empty(), "missing skipped, nothing to clean");
+        assert_eq!(results.len(), 1, "missing skipped, the present app visited");
+        assert_eq!(results[0].name, "app");
+        assert!(results[0].removed.is_empty(), "nothing to clean");
     }
 
     #[test]
@@ -526,7 +573,10 @@ mod tests {
 
         let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
 
-        assert_eq!(results, vec![("app".to_owned(), 2, 0)]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "app");
+        assert_eq!(results[0].removed.len(), 2);
+        assert_eq!(results[0].failed, 0);
         assert!(pkg_dir.join("2.0.0").exists(), "newest version kept");
         assert!(!pkg_dir.join("1.0.0").exists(), "old version removed");
         assert!(!pkg_dir.join("_1.0.0.old").exists(), "old dir removed");

@@ -167,8 +167,9 @@ cmd:
   cleanup_try_local: "请去掉 --global（或 -g）参数重试。"
   cleanup_not_installed_locally: "'%{name}' 未本地安装，但可能已全局安装。"
   cleanup_try_global: "请加上 --global（或 -g）参数重试。"
-  cleanup_removed: "已清理 %{count} 个旧版本"
   cleanup_removed_failed: "已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）"
+  cleanup_removing: "正在移除 %{name}："
+  cleanup_already_clean: "%{name} 已清理干净"
   cleanup_remove_failed: "无法移除 %{name} v%{ver}：%{e}"
   config_set: "配置项 '%{key}' 已设置为 '%{value}'"
   config_removed: "配置项 '%{key}' 已删除"
@@ -558,6 +559,7 @@ cli_help:
       all: 清理所有应用
       global: 清理全局安装的应用
       cache: 同时删除下载缓存
+      verbose: 同时报告已清理干净的应用
   completions:
     args:
       shell: Shell 类型
