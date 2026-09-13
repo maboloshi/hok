@@ -526,19 +526,26 @@ pub fn query(
     Ok(packages)
 }
 
-/// Prune already-installed packages from a list of queries.
+/// What [`prune_installed`] split a query list into.
 ///
-/// Returns `(to_install, already_installed)` where `to_install` contains
-/// queries that are not yet installed, and `already_installed` contains
-/// the names of packages that are already installed.
+/// A named struct rather than a tuple: the nested `Vec<(String, String)>` made
+/// the signature trip `clippy::type_complexity`, and the fields read better at
+/// the call site than positional indices.
+pub struct PrunedInstall<'s> {
+    /// Queries that are not installed yet, ready to hand to the installer.
+    pub to_install: Vec<&'s str>,
+    /// `(name, installed version)` for queries that are already installed —
+    /// upstream names the installed version in its message
+    /// (`libexec/scoop-install.ps1:83`).
+    pub already_installed: Vec<(String, String)>,
+}
+
+/// Prune already-installed packages from a list of queries.
 ///
 /// # Errors
 ///
 /// Returns an error if the installed package list cannot be queried.
-pub fn prune_installed<'s>(
-    session: &Session,
-    queries: &[&'s str],
-) -> Fallible<(Vec<&'s str>, Vec<String>)> {
+pub fn prune_installed<'s>(session: &Session, queries: &[&'s str]) -> Fallible<PrunedInstall<'s>> {
     // Normalize queries to bare app names before matching installed
     // packages, mirroring upstream `parse_app`: `app@version`, manifest
     // URLs and local paths are matched by their install name
@@ -556,7 +563,7 @@ pub fn prune_installed<'s>(
     let mut to_install = Vec::new();
 
     for (q, bare) in queries.iter().zip(&bare_names) {
-        let installed_names: Vec<&str> = installed
+        let installed_matches: Vec<(&str, &str)> = installed
             .iter()
             .filter(|p| {
                 let q_normalized = bare.to_lowercase();
@@ -564,17 +571,20 @@ pub fn prune_installed<'s>(
                 let p_ident = p.ident().to_lowercase();
                 q_normalized == p_name || q_normalized == p_ident
             })
-            .map(|p| p.name())
+            .map(|p| (p.name(), p.version()))
             .collect();
 
-        if installed_names.is_empty() {
-            to_install.push(*q);
+        if let Some(&(name, version)) = installed_matches.first() {
+            already_installed.push((name.to_owned(), version.to_owned()));
         } else {
-            already_installed.push(installed_names[0].to_string());
+            to_install.push(*q);
         }
     }
 
-    Ok((to_install, already_installed))
+    Ok(PrunedInstall {
+        to_install,
+        already_installed,
+    })
 }
 
 /// Reduce an install query to the bare app name used for installed-package

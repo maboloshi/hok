@@ -392,7 +392,7 @@ cmd:
   manifests_updated: "%{count} manifest(s) updated"
   installer_added_path: "Installer added '%{path}' to path. Removing."
   installer_added_system_path: "Installer added '%{path}' to system path. You might want to remove this manually (requires admin permission)."
-  already_installed_skip: "'%{name}' is already installed. Skipping."
+  already_installed: "'%{name}' (%{version}) is already installed.\nUse 'hok update %{name}%{global}' to install a new version."
   suggests_install: "'%{pkg}' suggests installing '%{names}'."
   cache_total_label: "Total:"
   cache_total: "%{count} files, %{size}"

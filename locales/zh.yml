@@ -392,7 +392,7 @@ cmd:
   manifests_updated: "已更新 %{count} 个 manifest"
   installer_added_path: "安装程序将 '%{path}' 添加到了 PATH，正在移除。"
   installer_added_system_path: "安装程序将 '%{path}' 添加到了系统 PATH，你可能需要手动移除（需要管理员权限）。"
-  already_installed_skip: "包 '%{name}' 已安装，跳过。"
+  already_installed: "包 '%{name}' (%{version}) 已安装。\n请用 'hok update %{name}%{global}' 安装新版本。"
   suggests_install: "包 '%{pkg}' 建议安装 '%{names}'。"
   cache_total_label: "合计:"
   cache_total: "共 %{count} 个文件，%{size}"

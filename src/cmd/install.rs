@@ -106,9 +106,19 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
     // Prune already-installed packages (matching PS1's prune_installed behavior)
-    let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
-    for name in &already_installed {
-        output::warn(hok_i18n::t!("cmd.already_installed_skip", name = name));
+    let package::query::PrunedInstall {
+        to_install,
+        already_installed,
+    } = package::query::prune_installed(session, &queries)?;
+    for (name, version) in &already_installed {
+        // Upstream names the installed version and points at `scoop update`
+        // (`libexec/scoop-install.ps1:83`).
+        output::warn(hok_i18n::t!(
+            "cmd.already_installed",
+            name = name,
+            version = version,
+            global = if args.global { " --global" } else { "" }
+        ));
     }
     if to_install.is_empty() {
         return Ok(());
