@@ -56,10 +56,6 @@ pub struct Args {
     #[arg(short = 'R', long, action = ArgAction::SetTrue)]
     no_replace: bool,
 
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    escape_hold: bool,
-
     /// Do not upgrade package(s)
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
     no_upgrade: bool,
@@ -84,7 +80,6 @@ impl SyncFlags for Args {
             skip_hash_check: self.skip_hash_check,
             independent: self.independent,
             no_replace: self.no_replace,
-            escape_hold: self.escape_hold,
             no_upgrade: self.no_upgrade,
             no_cache: self.no_cache,
             download_only: self.download_only,

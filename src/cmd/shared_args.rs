@@ -52,10 +52,6 @@ pub struct SyncArgs {
     #[arg(short = 'R', long, action = clap::ArgAction::SetTrue)]
     pub no_replace: bool,
 
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
-    pub escape_hold: bool,
-
     /// Do not upgrade package(s)
     #[arg(short = 'U', long, action = clap::ArgAction::SetTrue)]
     pub no_upgrade: bool,
@@ -78,9 +74,6 @@ impl SyncArgs {
         }
         if self.download_only {
             options.push(SyncOption::DownloadOnly);
-        }
-        if self.escape_hold {
-            options.push(SyncOption::EscapeHold);
         }
         if self.ignore_failures || session.config().ignore_failures() {
             options.push(SyncOption::IgnoreFailures);

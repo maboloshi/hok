@@ -66,17 +66,6 @@ pub enum SyncOption {
     /// the download is done.
     DownloadOnly,
 
-    /// Force operations on held packages.
-    ///
-    /// # Note
-    ///
-    /// Held packages are ignored during the replace, upgrade or uninstall
-    /// operations by default. The option can be used to escape the hold and
-    /// enforce operations on the held packages.
-    ///
-    /// Packages will be held again after the replace or upgrade operation.
-    EscapeHold,
-
     /// Ignore local cache and force package download.
     ///
     /// # Note

@@ -16,9 +16,6 @@ pub struct Args {
     /// 'hok config ignore_failures true')
     #[arg(long, action = clap::ArgAction::SetTrue)]
     ignore_failures: bool,
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
-    escape_hold: bool,
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
     assume_yes: bool,
@@ -40,10 +37,6 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     if args.purge {
         options.push(SyncOption::Purge);
-    }
-
-    if args.escape_hold {
-        options.push(SyncOption::EscapeHold);
     }
 
     if args.assume_yes {

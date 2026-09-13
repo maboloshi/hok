@@ -23,9 +23,6 @@ pub struct Args {
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
     assume_yes: bool,
-    /// Escape hold to allow to upgrade held package(s)
-    #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    escape_hold: bool,
     /// Skip package integrity check
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     skip_hash_check: bool,
@@ -51,7 +48,6 @@ impl SyncFlags for Args {
             skip_hash_check: self.skip_hash_check,
             independent: false,
             no_replace: false,
-            escape_hold: self.escape_hold,
             no_upgrade: false,
             no_cache: false,
             download_only: false,

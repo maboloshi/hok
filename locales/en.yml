@@ -257,6 +257,7 @@ cmd:
   found: "Found %{count} package(s) for query '%{query}'"
   no_download_urls: "no download URLs"
   held_skip: "'%{name}' is held to version %{version}"
+  held_install_skip: "'%{name}' is held to version %{version}. Run 'hok unhold %{name}' to install or upgrade it."
   reinstall_not_installed: "'%{name}' is not installed. Use 'hok install' to install it."
   admin_rights_required: "ERROR: you need admin rights to %{verb} global apps"
   update_global_no_app: "hok update: --global is invalid when <app> is not specified."
@@ -761,7 +762,6 @@ cli_help:
       arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
       assume_yes: Assume yes to all prompts and run non-interactively
       download_only: Download package(s) without performing installation
-      escape_hold: Escape hold to allow changes on held package(s)
       global: Install globally (to $SCOOP_GLOBAL)
       no_cache: "Don't use the download cache"
       ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
@@ -858,7 +858,6 @@ cli_help:
     about: Uninstall package(s)
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
-      escape_hold: Escape hold to allow changes on held package(s)
       global: Uninstall a globally installed app (from $SCOOP_GLOBAL)
       ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
       skip_hash_check: Skip package integrity check
@@ -869,7 +868,6 @@ cli_help:
     long_about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
-      escape_hold: Escape hold to allow to upgrade held package(s)
       force: "Force update even when there isn't a newer version"
       no_cache: "Don't use the download cache"
       ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
@@ -886,7 +884,6 @@ cli_help:
     args:
       all: Update all installed packages (alternative to '*')
       assume_yes: Assume yes to all prompts and run non-interactively
-      escape_hold: Escape hold to allow to upgrade held package(s)
       force: "Force upgrade: reinstall apps that are already at the requested version"
       global: Install globally (to $SCOOP_GLOBAL)
       ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"

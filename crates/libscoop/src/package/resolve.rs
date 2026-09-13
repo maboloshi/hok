@@ -301,10 +301,13 @@ pub(crate) async fn select_candidate(
 /// depended by other installed packages.
 ///
 /// The purpose is to support cascading removal of installed packages.
+///
+/// A held dependency is never cascaded away: that errors with
+/// [`Error::PackageCascadeRemoveHold`], so the user has to `hok unhold` it
+/// explicitly — hold has no CLI bypass.
 pub(crate) fn resolve_cascade(
     session: &Session,
     packages: &mut Vec<Package>,
-    escape_hold: bool,
 ) -> Fallible<()> {
     let mut to_resolve = packages.clone();
 
@@ -374,7 +377,7 @@ pub(crate) fn resolve_cascade(
                     .any(|p| !packages.contains(p) && !unneeded.contains(p));
 
                 if !needed {
-                    if dep_pkg.is_held() && !escape_hold {
+                    if dep_pkg.is_held() {
                         return Err(Error::PackageCascadeRemoveHold(dep_pkg.name().to_owned()));
                     }
                     unneeded.push(dep_pkg.to_owned());
@@ -705,7 +708,7 @@ mod tests {
 
         // a depends on b, and nothing else depends on b → b becomes unneeded
         let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, false).unwrap();
+        resolve_cascade(&session, &mut packages).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a", "b"]);
@@ -722,34 +725,21 @@ mod tests {
 
         // a depends on b, but c also depends on b → b stays
         let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, false).unwrap();
+        resolve_cascade(&session, &mut packages).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a"], "b is still needed by c");
     }
 
     #[tokio::test]
-    async fn cascade_held_dependency_blocks_without_escape() {
+    async fn cascade_held_dependency_blocks() {
         let (session, root) = setup("cascade_held");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
 
         let mut packages = vec![pkg("main", "a", &["b"])];
-        let err = resolve_cascade(&session, &mut packages, false).unwrap_err();
+        let err = resolve_cascade(&session, &mut packages).unwrap_err();
 
         assert!(matches!(err, Error::PackageCascadeRemoveHold(name) if name == "b"));
-    }
-
-    #[tokio::test]
-    async fn cascade_held_dependency_removed_when_escaping() {
-        let (session, root) = setup("cascade_escape");
-        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
-        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
-
-        let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, true).unwrap();
-
-        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
-        assert_eq!(names, vec!["a", "b"]);
     }
 }

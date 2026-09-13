@@ -30,7 +30,6 @@ use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
 /// Sync operation: remove packages.
 pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
-    let escape_hold = options.contains(&SyncOption::EscapeHold);
     let no_dependent_check = options.contains(&SyncOption::NoDependentCheck);
 
     // Query target packages directly instead of scanning all installed.
@@ -55,9 +54,6 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
             continue;
         }
         let pkg = matched.into_iter().next().unwrap();
-        if pkg.is_held() && !escape_hold {
-            continue;
-        }
         packages.push(pkg);
     }
 
@@ -102,13 +98,13 @@ pub async fn remove(session: &Session, queries: &[&str], options: &[SyncOption])
 
     let is_cascade = options.contains(&SyncOption::Cascade);
     if is_cascade {
-        resolve::resolve_cascade(session, &mut packages, escape_hold)?;
+        resolve::resolve_cascade(session, &mut packages)?;
     }
 
     let transaction = Transaction::default();
 
-    // Nothing to remove (all held, or all failed under IgnoreFailures) —
-    // no confirmation needed for an empty transaction.
+    // Nothing to remove (every named app was missing, or all failed under
+    // IgnoreFailures) — no confirmation needed for an empty transaction.
     if packages.is_empty() {
         return Ok(());
     }

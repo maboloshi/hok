@@ -257,6 +257,7 @@ cmd:
   found: "找到 %{count} 个包匹配查询 '%{query}'"
   no_download_urls: "没有下载 URL"
   held_skip: "'%{name}' 已锁定到版本 %{version}"
+  held_install_skip: "'%{name}' 已锁定到版本 %{version}。如需安装或升级，请先运行 'hok unhold %{name}'。"
   reinstall_not_installed: "'%{name}' 未安装。请使用 'hok install' 进行安装。"
   admin_rights_required: "错误：需要管理员权限才能对全局应用执行 %{verb} 操作"
   update_global_no_app: "hok update：未指定 <app> 时 --global 参数无效。"
@@ -757,7 +758,6 @@ cli_help:
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       download_only: 仅下载包而不执行安装
-      escape_hold: 绕过锁定以允许更改被锁定的包
       global: 全局安装（到 $SCOOP_GLOBAL）
       no_cache: "不使用下载缓存"
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
@@ -851,7 +851,6 @@ cli_help:
     about: 卸载包
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
-      escape_hold: 绕过锁定以允许更改被锁定的包
       global: 卸载全局安装的应用（来自 $SCOOP_GLOBAL）
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
       skip_hash_check: 跳过包完整性检查
@@ -862,7 +861,6 @@ cli_help:
     long_about: "获取并更新已订阅的仓库，或升级已安装的包\n\n示例:\n  hok update            仅更新仓库\n  hok update <应用>     升级特定包（兼容 Scoop）\n  hok update *          升级所有包"
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
-      escape_hold: 绕过锁定以允许升级被锁定的包
       force: "即使没有新版本也强制更新"
       no_cache: "不使用下载缓存"
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
@@ -879,7 +877,6 @@ cli_help:
     args:
       all: 升级所有已安装的包（相当于 '*'）
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
-      escape_hold: 绕过锁定以允许升级被锁定的包
       force: "强制升级：对已达请求版本的包重新安装"
       global: 全局安装（到 $SCOOP_GLOBAL）
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"

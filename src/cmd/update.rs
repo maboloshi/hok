@@ -33,10 +33,6 @@ pub struct Args {
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
     assume_yes: bool,
 
-    /// Escape hold to allow to upgrade held package(s)
-    #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    escape_hold: bool,
-
     /// Skip package integrity check
     #[arg(short = 's', long, action = ArgAction::SetTrue)]
     skip_hash_check: bool,
@@ -80,7 +76,6 @@ impl SyncFlags for Args {
             skip_hash_check: self.skip_hash_check,
             independent: self.independent,
             no_replace: self.no_replace,
-            escape_hold: self.escape_hold,
             no_upgrade: self.no_upgrade,
             no_cache: self.no_cache,
             // `update` never downloads without installing (unlike `install`)

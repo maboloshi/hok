@@ -90,7 +90,6 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
     let force = options.contains(&SyncOption::Force);
-    let escape_hold = options.contains(&SyncOption::EscapeHold);
     let ignore_failures = options.contains(&SyncOption::IgnoreFailures);
 
     if only_upgrade {
@@ -230,8 +229,15 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                 1 => {
                     let p = matched.pop().unwrap();
 
-                    if p.is_held() && !escape_hold {
-                        // Skipping held package returns nothing to frontend...
+                    if p.is_held() {
+                        // An installed, held app: this install would upgrade it,
+                        // which is what the hold forbids. Report the skip
+                        // instead of returning nothing to the frontend.
+                        session.output().warn(hok_i18n::t!(
+                            "cmd.held_install_skip",
+                            name = p.name(),
+                            version = p.installed_version().unwrap_or(p.version())
+                        ));
                         continue;
                     }
 
@@ -240,9 +246,12 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
                     }
                 }
                 _ => {
-                    let is_held = matched.iter().any(|p| p.is_held());
-
-                    if is_held && !escape_hold {
+                    if let Some(held) = matched.iter().find(|p| p.is_held()) {
+                        session.output().warn(hok_i18n::t!(
+                            "cmd.held_install_skip",
+                            name = held.name(),
+                            version = held.installed_version().unwrap_or(held.version())
+                        ));
                         continue;
                     }
 
@@ -319,25 +328,21 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 
     let no_upgrade = options.contains(&SyncOption::NoUpgrade);
     if !no_upgrade && !upgradable.is_empty() {
-        if !escape_hold {
-            let (held, upgradable_list): (Vec<_>, Vec<_>) =
-                upgradable.into_iter().partition(|p| p.is_held());
+        let (held, upgradable_list): (Vec<_>, Vec<_>) =
+            upgradable.into_iter().partition(|p| p.is_held());
 
-            // Emit PackageHeld for each held package
-            for p in &held {
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.try_send(Event::PackageHeld {
-                        name: p.name().to_string(),
-                        version: p.version().to_string(),
-                    });
-                }
+        // Emit PackageHeld for each held package
+        for p in &held {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageHeld {
+                    name: p.name().to_string(),
+                    version: p.version().to_string(),
+                });
             }
+        }
 
-            if !upgradable_list.is_empty() {
-                transaction.set_upgrade(upgradable_list);
-            }
-        } else {
-            transaction.set_upgrade(upgradable);
+        if !upgradable_list.is_empty() {
+            transaction.set_upgrade(upgradable_list);
         }
     }
 

@@ -47,7 +47,6 @@ impl SyncFlags for Args {
             skip_hash_check: self.skip_hash_check,
             independent: false,
             no_replace: false,
-            escape_hold: false,
             no_upgrade: false,
             no_cache: self.no_cache,
             download_only: false,
