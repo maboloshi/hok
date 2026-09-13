@@ -14,6 +14,7 @@
 //! - These functions do not validate the URL; invalid URLs typically return the entire input string.
 
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// Extracts the filename portion of a URL (the last path segment, percent-decoded).
 ///
@@ -64,17 +65,90 @@ pub fn url_filename(url: &str) -> &str {
     leaf.split('?').next().unwrap_or(leaf)
 }
 
-/// Extract the original filename from the URL, ignoring any Scoop rename
-/// fragment (`#/dl.7z`), mirroring upstream `url_remote_filename`
-/// (lib/download.ps1): "Unlike url_filename which can be tricked by
-/// appending a URL fragment (e.g. #/dl.7z, useful for coercing a local
-/// filename), this function extracts the original filename from the URL."
+/// Extract the original filename from a URL, mirroring upstream
+/// `url_remote_filename` (`lib/download.ps1:686-702`) exactly:
+///
+/// 1. take the URI's `PathAndQuery` leaf (a `#/dl.7z` rename fragment is not
+///    part of it, so it cannot trick this function — unlike [`url_filename`]);
+/// 2. if it carries a `?param=name` / `=name` suffix, unwrap to that name;
+/// 3. if the result has no extension or is a bare version (`^[v.\d]+$`), fall
+///    back to the URI's `AbsolutePath` leaf.
+///
+/// The result is still percent-encoded; upstream callers decode it with
+/// `UrlDecode` where a display/URL variable is wanted (see
+/// [`decoded`]).
 ///
 /// Used where the on-disk name must match the actual download target (e.g.
-/// checkhashes cache naming) rather than the rename hint.
-pub fn url_remote_filename(url: &str) -> &str {
-    url_filename(strip_url_fragment(url))
+/// checkhashes cache naming) and as the source of checkver's `$basename`
+/// autoupdate variable (`lib/autoupdate.ps1:212`).
+pub fn url_remote_filename(url: &str) -> String {
+    let Ok(uri) = reqwest::Url::parse(url) else {
+        // Upstream `New-Object URI $url` would throw; keep the previous
+        // best-effort leaf rather than failing a whole autoupdate run.
+        return url_filename(url).to_string();
+    };
+
+    // `$uri.PathAndQuery` — path plus `?query`, fragment excluded.
+    let path_and_query = match uri.query() {
+        Some(query) => format!("{}?{}", uri.path(), query),
+        None => uri.path().to_string(),
+    };
+    let mut basename = path_leaf(&path_and_query).to_string();
+
+    // `If ($basename -match '.*[?=]+([\w._-]+)') { $basename = $matches[1] }`
+    if let Some(caps) = RE_URL_PARAM_VALUE.captures(&basename)
+        && let Some(m) = caps.get(1)
+    {
+        basename = m.as_str().to_string();
+    }
+
+    // `If (($basename -notlike '*.*') -or ($basename -match '^[v.\d]+$'))`
+    if !basename.contains('.') || RE_BARE_VERSION.is_match(&basename) {
+        basename = path_leaf(uri.path()).to_string();
+    }
+
+    basename
 }
+
+/// Remove the last path segment from `path`, mirroring upstream
+/// `strip_filename` (`lib/core.ps1:597`:
+/// `$path -replace [regex]::escape((fname $path))`).
+///
+/// The replacement is unanchored, so *every* occurrence of the leaf is
+/// removed, exactly like PowerShell's `-replace`. Used for the `$baseurl`
+/// autoupdate variable (`lib/autoupdate.ps1:216`).
+pub fn strip_filename(path: &str) -> String {
+    let leaf = path_leaf(path);
+    if leaf.is_empty() {
+        return path.to_string();
+    }
+    path.replace(leaf, "")
+}
+
+/// Strip the last extension from `fname`, mirroring upstream `strip_ext`
+/// (`lib/core.ps1:596`: `$fname -replace '\.[^\.]*$', ''`).
+///
+/// Used for the `$urlNoExt` / `$basenameNoExt` autoupdate variables
+/// (`lib/autoupdate.ps1:218-219`).
+pub fn strip_ext(fname: &str) -> String {
+    RE_LAST_EXT.replace(fname, "").to_string()
+}
+
+/// The last `/`- or `\`-separated segment of `path` — PowerShell's
+/// `Split-Path -Leaf`.
+fn path_leaf(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// `.*[?=]+([\w._-]+)` — upstream's `?param=filename` unwrapping.
+static RE_URL_PARAM_VALUE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r".*[?=]+([\w._-]+)").unwrap());
+
+/// `^[v.\d]+$` — upstream's "the leaf is just a version" test.
+static RE_BARE_VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[v.0-9]+$").unwrap());
+
+/// `\.[^\.]*$` — upstream `strip_ext`.
+static RE_LAST_EXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.[^.]*$").unwrap());
 
 /// Decode URL percent-encoding, replacing `%XX` with the corresponding byte character.
 ///
@@ -267,6 +341,76 @@ mod tests {
         assert_eq!(
             url_remote_filename("https://example.com/foo.zip?download=1"),
             "foo.zip"
+        );
+    }
+
+    /// Truth values recorded from upstream PowerShell
+    /// (`lib/download.ps1:686-702`), 2026-09-13 — see
+    /// `autoupdate.ps1:212` for the `$basename` wiring.
+    #[test]
+    fn url_remote_filename_matches_upstream_battery() {
+        for (url, expected) in [
+            ("https://example.com/foo.zip", "foo.zip"),
+            ("https://example.com/foo.zip?download=1", "foo.zip"),
+            ("https://example.com/foo.exe#/dl.7z", "foo.exe"),
+            (
+                "https://github.com/x/y/releases/download/v1.0/app-1.2.3.zip",
+                "app-1.2.3.zip",
+            ),
+            // `?file=name` unwrapping beats the path leaf.
+            ("https://example.com/download?file=app.zip", "app.zip"),
+            // `p?dwl=name` (fosshub shape).
+            ("https://ex.com/p?dwl=thing.zip", "thing.zip"),
+            // A bare version leaf is rejected in favour of the absolute path leaf.
+            ("https://ex.com/dl/1.2.3", "1.2.3"),
+            ("https://ex.com/dl/v1.2.3", "v1.2.3"),
+            // Percent-encoding survives (upstream decodes later with UrlDecode).
+            ("https://ex.com/a%20b/app%201.2.3.zip", "app%201.2.3.zip"),
+            // No extension and no `?`/`=` → absolute path leaf.
+            ("https://ex.com/noext", "noext"),
+            ("https://ex.com/x=1", "x=1"),
+        ] {
+            assert_eq!(
+                url_remote_filename(url),
+                expected,
+                "url_remote_filename({url})"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_filename_removes_last_segment() {
+        // Upstream `strip_filename` (lib/core.ps1:597); the unanchored replace
+        // also removes any *repeated* occurrence of the leaf.
+        for (path, expected) in [
+            ("https://example.com/foo.zip", "https://example.com/"),
+            (
+                "https://example.com/dl/app-1.2.3.zip",
+                "https://example.com/dl/",
+            ),
+            (
+                "https://github.com/x/y/releases/download/v1.0/app.zip",
+                "https://github.com/x/y/releases/download/v1.0/",
+            ),
+        ] {
+            assert_eq!(strip_filename(path), expected, "strip_filename({path})");
+        }
+    }
+
+    #[test]
+    fn strip_ext_removes_only_last_extension() {
+        // Upstream `strip_ext` (lib/core.ps1:596).
+        assert_eq!(strip_ext("foo.tar.gz"), "foo.tar");
+        assert_eq!(strip_ext("foo.zip"), "foo");
+        assert_eq!(strip_ext("noext"), "noext");
+        // Applied to a whole URL in `$urlNoExt` it only trims the URL's tail.
+        assert_eq!(
+            strip_ext("https://example.com/dl/app-1.2.3.zip"),
+            "https://example.com/dl/app-1.2.3"
+        );
+        assert_eq!(
+            strip_ext("https://ex.com/dl/1.2.3"),
+            "https://ex.com/dl/1.2"
         );
     }
 
