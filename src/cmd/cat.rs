@@ -1,11 +1,11 @@
 //! Inspect the manifest of a package.
 
 use clap::Parser;
-use libscoop::{QueryOption, Session, fs, os, package};
+use libscoop::{Session, fs, os, package};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use crate::{Result, output};
+use crate::Result;
 
 /// Inspect the manifest of a package
 #[derive(Debug, Parser)]
@@ -15,14 +15,14 @@ pub struct Args {
     package: String,
 }
 
-/// Pretty-print a manifest as JSON, rendering from the in-memory content so it
-/// also works when the manifest is served by the (SQLite) manifest cache where
-/// the on-disk path may not exist.
-fn pretty_manifest(pkg: &package::Package) -> Result<String> {
-    let manifest = pkg.manifest();
+/// Pretty-print a resolved manifest as JSON, rendering from the in-memory
+/// content so it also works when the manifest is served by the (SQLite)
+/// manifest cache or came from a URL.
+fn pretty_manifest(resolved: &package::GetManifest) -> Result<String> {
+    let manifest = &resolved.manifest;
     // Prefer the retained raw text; else read the on-disk manifest file; else
-    // (SQLite manifest cache - no raw text, virtual path) render the parsed
-    // spec so the content is always shown.
+    // (SQLite manifest cache / URL - no raw text, virtual path) render the
+    // parsed spec so the content is always shown.
     let content: String = if let Some(raw) = manifest.raw() {
         raw.to_string()
     } else if manifest.path().is_file() {
@@ -57,36 +57,19 @@ fn run_bat(json: &str, style: &str) -> std::io::Result<()> {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let query = args.package;
 
-    let mut result = package::query::query(
+    // Source resolution (URL / UNC / local file / installed record / bucket)
+    // is `Get-Manifest`, shared with `home`; the picker only kicks in for a
+    // bare, uninstalled name held by several buckets.
+    let resolved = super::resolve_manifest_query(
         session,
-        vec![query.as_str()],
-        vec![QueryOption::Explicit],
-        false,
-    )?;
+        &query,
+        |count| hok_i18n::t!("cmd.found", count = count, query = query).to_string(),
+        hok_i18n::t!("cmd.cat_not_found", query = query).to_string(),
+        hok_i18n::t!("cmd.cat_invalid").to_string(),
+    )
+    .await?;
 
-    let pkg = if result.is_empty() {
-        return Err(anyhow::anyhow!(hok_i18n::t!(
-            "cmd.cat_not_found",
-            query = query
-        )));
-    } else if result.len() == 1 {
-        result.remove(0)
-    } else {
-        result.sort_by_key(|p| p.ident());
-        output::info(hok_i18n::t!(
-            "cmd.found",
-            count = result.len(),
-            query = query
-        ));
-        for (idx, pkg) in result.iter().enumerate() {
-            println!("  {idx}. {}/{}", pkg.bucket(), pkg.name());
-        }
-        let index = output::prompt_select(result.len())
-            .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.cat_invalid")))?;
-        result.remove(index)
-    };
-
-    let json = pretty_manifest(&pkg)?;
+    let json = pretty_manifest(&resolved)?;
 
     // Only delegate to bat when a style is configured and bat is on PATH;
     // otherwise (or if bat cannot start) print the plain pretty JSON so the

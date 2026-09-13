@@ -53,6 +53,60 @@ include!("__cmd_reg__.rs");
 
 use crate::Result;
 
+/// Resolve a manifest query for the read-only manifest commands
+/// (`cat`, `home`).
+///
+/// The source resolution itself is **not** done here: it lives in
+/// `libscoop::package::manifest_source::get_manifest`, the one `Get-Manifest`
+/// implementation shared by every command (URL / UNC / local file / installed
+/// record / bucket, in upstream's order). The only CLI-level concern kept here
+/// is hok's interactive pick when a bare, uninstalled name matches several
+/// buckets: the resolution entry reports the candidate set
+/// (`GetManifest::candidates`) rather than silently taking the first bucket
+/// the way upstream does (`lib/manifest.ps1:107-109`), and the pick is then
+/// re-resolved against the chosen bucket.
+///
+/// `multiple` renders the command's own "several candidates" heading for the
+/// candidate count; `not_found` and `invalid` are that command's already
+/// localized messages.
+pub(crate) async fn resolve_manifest_query(
+    session: &Session,
+    query: &str,
+    multiple: impl Fn(usize) -> String,
+    not_found: String,
+    invalid: String,
+) -> Result<libscoop::package::GetManifest> {
+    let resolved =
+        match libscoop::package::manifest_source::get_manifest(session, query, None).await {
+            Ok(resolved) => resolved,
+            // Each command keeps its own "not found" wording; everything else
+            // (an unreachable URL, an unreadable file, a parse failure) passes
+            // through untouched.
+            Err(libscoop::Error::PackageNotFound(_)) => {
+                return Err(anyhow::anyhow!(not_found));
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+    if resolved.candidates.len() <= 1 {
+        return Ok(resolved);
+    }
+
+    crate::output::info(multiple(resolved.candidates.len()));
+    for (index, bucket) in resolved.candidates.iter().enumerate() {
+        println!("  {index}. {bucket}/{}", resolved.name);
+    }
+    let index = crate::output::prompt_select(resolved.candidates.len())
+        .ok_or_else(|| anyhow::anyhow!(invalid))?;
+
+    Ok(libscoop::package::manifest_source::get_manifest(
+        session,
+        query,
+        Some(&resolved.candidates[index]),
+    )
+    .await?)
+}
+
 /// Localized Info-column word for one concern kind.
 ///
 /// The *order* of the words is fixed once in

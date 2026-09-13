@@ -14,20 +14,23 @@ pub struct Args {
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    // Upstream `scoop prefix` prints `currentdir $app` (libexec/scoop-prefix.ps1),
-    // which under NO_JUNCTION is the resolved version dir — there is no
-    // `current` junction to print.
-    let app_dir = session.app_current_dir(&args.package);
+    // Upstream `scoop prefix` prints `currentdir $app` (libexec/scoop-prefix.ps1:12),
+    // trying the local root first and then the global one — so a globally
+    // installed app is found without `-g`. Under NO_JUNCTION the resolved
+    // version dir is printed; there is no `current` junction to print.
+    let found = [false, true].into_iter().find_map(|global| {
+        session
+            .app_current_dir_in(&args.package, global)
+            .filter(|dir| dir.exists())
+    });
 
-    let Some(app_dir) = app_dir.filter(|dir| dir.exists()) else {
-        // Check if the app directory exists at all (without /current)
-        let base_dir = session.app_dir(&args.package);
-        let msg = if base_dir.exists() {
-            hok_i18n::t!("cmd.prefix_installed", pkg = args.package)
-        } else {
-            hok_i18n::t!("cmd.prefix_no_pkg", pkg = args.package)
-        };
-        return Err(anyhow::anyhow!(msg));
+    let Some(app_dir) = found else {
+        // One message for "not installed", "broken install" and "installed
+        // without a current link" alike (upstream's single `abort`).
+        return Err(anyhow::anyhow!(hok_i18n::t!(
+            "cmd.prefix_not_found",
+            pkg = args.package
+        )));
     };
 
     println!("{}", app_dir.display());

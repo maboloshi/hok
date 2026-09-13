@@ -349,7 +349,23 @@ impl Session {
     /// `$null` upstream still builds `"$appdir\"` (a half-empty path); here
     /// the caller gets `None` and reports a broken install instead.
     pub fn app_current_dir(&self, name: &str) -> Option<std::path::PathBuf> {
-        let pkg_dir = self.app_dir(name);
+        self.app_current_dir_in(name, self.is_global())
+    }
+
+    /// [`Session::app_current_dir`] for an explicit scope.
+    ///
+    /// Upstream `currentdir $app $global` takes the scope as an argument and
+    /// callers pass each one in turn — `prefix` tries the local root and then
+    /// the global one (`libexec/scoop-prefix.ps1:12-15`). Using
+    /// [`Session::app_current_dir`] for that would silently resolve both
+    /// probes against whichever scope the session happens to be in.
+    pub fn app_current_dir_in(&self, name: &str, global: bool) -> Option<std::path::PathBuf> {
+        let root = if global {
+            self.config().global_path().to_path_buf()
+        } else {
+            self.config().root_path().to_path_buf()
+        };
+        let pkg_dir = root.join("apps").join(name);
         if !self.config().no_junction() {
             return Some(pkg_dir.join("current"));
         }
