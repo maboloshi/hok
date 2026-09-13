@@ -240,7 +240,7 @@ pub async fn for_package(session: &Session, pkg: &Package, verbose: bool) -> Fal
 /// Assemble the `info` view of a standalone query: a manifest URL, a UNC path
 /// or a local manifest file (upstream `Get-Manifest`'s `$url` branch).
 async fn standalone(session: &Session, query: &str, verbose: bool) -> Fallible<Info> {
-    let resolved = manifest_source::resolve_manifest(session, query, None).await?;
+    let resolved = manifest_source::get_manifest(session, query, None).await?;
     let name = resolved.name;
 
     // Upstream absolutizes a local path before using it as the source

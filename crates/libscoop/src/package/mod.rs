@@ -57,7 +57,7 @@ pub(crate) mod install_state;
 pub mod list;
 pub(crate) mod manifest;
 pub mod manifest_cache;
-pub(crate) mod manifest_source;
+pub mod manifest_source;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
 pub(crate) mod operations;
@@ -76,6 +76,7 @@ use std::cell::OnceCell;
 use std::{fmt, path::PathBuf};
 
 pub use manifest::{HashString, InstallInfo, License, Manifest};
+pub use manifest_source::GetManifest;
 pub use query_matcher::QueryOption;
 pub use source::SourceState;
 pub use sync::SyncOption;

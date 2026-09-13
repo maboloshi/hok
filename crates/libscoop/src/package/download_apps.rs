@@ -131,16 +131,14 @@ pub async fn download_apps(
 
 /// Resolve one download query to a [`Package`], mirroring the install
 /// pipeline's dispatch: `name@version` → `generate_user_manifest`, anything
-/// else → `resolve_manifest` (URL / local path / bucket lookup).
+/// else → `get_manifest` (URL / local path / installed record / bucket lookup).
 async fn resolve_download_query(session: &Session, query: &str) -> Fallible<Package> {
     if let Some(pkg) = manifest_source::resolve_isolated_query(session, query).await? {
         return Ok(pkg);
     }
-    // Plain bucket reference: resolve directly — download has no
-    // installed-package semantics, so no bucket scanning is needed.
+    // Plain bucket reference: resolve through the one `Get-Manifest` entry.
     let aq = identity::parse_app(query).ok_or_else(|| Error::PackageNotFound(query.to_owned()))?;
-    let resolved =
-        manifest_source::resolve_manifest(session, &aq.app, aq.bucket.as_deref()).await?;
+    let resolved = manifest_source::get_manifest(session, &aq.app, aq.bucket.as_deref()).await?;
     Ok(Package::from(
         &resolved.name,
         ISOLATED_PACKAGE_BUCKET,
