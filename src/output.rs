@@ -45,6 +45,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
 static SHOW_STEPS: AtomicBool = AtomicBool::new(false);
+static SHOW_DETAILS: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable colored output.
 pub fn set_color_enabled(enabled: bool) {
@@ -62,6 +63,21 @@ pub fn show_steps() -> bool {
 /// startup from the global verbosity level).
 pub fn set_show_steps(enabled: bool) {
     SHOW_STEPS.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether high-verbosity detail lines are enabled (the global `-vv` and above).
+///
+/// A step ([`step`]) names *what* an operation is doing; a detail ([`detail`])
+/// spells out the data behind a message (which processes hold an app back).
+/// The second is one notch more granular, so it needs `-vv`.
+pub fn show_details() -> bool {
+    SHOW_DETAILS.load(Ordering::Relaxed)
+}
+
+/// Turn high-verbosity detail lines on/off (set once at startup from the
+/// global verbosity level, next to [`set_show_steps`]).
+pub fn set_show_details(enabled: bool) {
+    SHOW_DETAILS.store(enabled, Ordering::Relaxed);
 }
 
 /// Whether colored output is enabled (see [`set_color_enabled`]).
@@ -181,6 +197,20 @@ pub fn step(sentence: impl AsRef<str>, object: Option<impl AsRef<str>>) {
         }
         None => println!("  {}", style::dim(sentence)),
     }
+}
+
+/// Render a high-verbosity detail line: `  {dim text}`, on **stderr**.
+///
+/// Detail is the data behind a message — the running processes that hold an
+/// app back, for instance. It belongs *under* the message it explains, and
+/// that message is a warning on stderr ([`warn`]), so the detail goes there
+/// too: a redirected run must never split a warning from its own explanation.
+/// Printed only at `-vv` and above; at `-v` and below nothing is emitted.
+pub fn detail(msg: impl AsRef<str>) {
+    if !show_details() {
+        return;
+    }
+    eprintln!("  {}", style::dim(msg.as_ref()));
 }
 
 /// Section heading: `:: resolving...` (accent bold).

@@ -100,15 +100,22 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     // Per-package running-process check. A running app is skipped — the check
     // printed the reason — and the rest of the batch is reinstalled, matching
-    // Scoop's uninstall/update behaviour. Skipped apps are also dropped from
-    // the hold set so their hold is never released.
+    // Scoop's uninstall/update behaviour; `ignore_running_processes` turns that
+    // skip into a carry-on. Skipped apps are also dropped from the hold set so
+    // their hold is never released.
     let mut keep = Vec::new();
     for q in &exact_queries {
         let name = q.rsplit('/').next().unwrap_or(q.as_str());
-        match package::sync::check_not_running(session, name, &hok_i18n::t!("action.reinstall")) {
-            Ok(package::sync::RunningCheck::NotRunning) => keep.push(q.clone()),
+        match package::sync::check_not_running(
+            session,
+            name,
+            package::sync::RunningAction::Reinstall,
+        ) {
             Ok(package::sync::RunningCheck::Running) => {
                 hold_set.remove(name);
+            }
+            Ok(package::sync::RunningCheck::NotRunning | package::sync::RunningCheck::Ignored) => {
+                keep.push(q.clone());
             }
             Err(e) => return Err(e.into()),
         }

@@ -30,6 +30,14 @@ pub enum Output {
     Warn(String),
     /// Error message (stderr).
     Error(String),
+    /// Secondary detail attached to the message just emitted (e.g. the
+    /// processes that are holding an app back).
+    ///
+    /// Unlike the other variants this is *verbosity-gated detail*, not a
+    /// message of its own: the frontend renders it only at high verbosity
+    /// (`-vv` and above). Emitting it unconditionally keeps library code
+    /// agnostic to how much the frontend chooses to show.
+    Detail(String),
     /// Operation-completed message.
     Done(String),
     /// "ok" marker, typically paired with [`Output::Progress`].
@@ -82,6 +90,11 @@ impl<'a> OutputHandle<'a> {
     /// Emit an error message.
     pub fn error(&self, msg: impl Into<String>) {
         self.emit(Output::Error(msg.into()));
+    }
+
+    /// Emit a high-verbosity detail line (see [`Output::Detail`]).
+    pub fn detail(&self, msg: impl Into<String>) {
+        self.emit(Output::Detail(msg.into()));
     }
 
     /// Emit an operation-completed message.
@@ -147,9 +160,10 @@ mod tests {
         session.output().warn("warn msg");
         session.output().error("error msg");
         session.output().info("info msg");
+        session.output().detail("detail msg");
 
         let got = received.lock().unwrap();
-        assert_eq!(got.len(), 8);
+        assert_eq!(got.len(), 9);
         assert_eq!(got[0], Output::Header("Auto PR".into()));
         assert_eq!(
             got[1],
@@ -170,6 +184,7 @@ mod tests {
         assert_eq!(got[5], Output::Warn("warn msg".into()));
         assert_eq!(got[6], Output::Error("error msg".into()));
         assert_eq!(got[7], Output::Info("info msg".into()));
+        assert_eq!(got[8], Output::Detail("detail msg".into()));
     }
 
     #[test]

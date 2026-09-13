@@ -549,6 +549,7 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
             libscoop::output::Output::Info(msg) => crate::output::info(msg),
             libscoop::output::Output::Warn(msg) => crate::output::warn(msg),
             libscoop::output::Output::Error(msg) => crate::output::err(msg),
+            libscoop::output::Output::Detail(msg) => crate::output::detail(msg),
             libscoop::output::Output::Done(msg) => crate::output::done(msg),
             libscoop::output::Output::Ok => crate::output::ok(),
             libscoop::output::Output::Progress { action, target } => {
@@ -588,6 +589,9 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     // Verbose step output: the global `-v` (warn) and above turns on the
     // per-package lifecycle transcript. Read before `args.command` is moved.
     crate::output::set_show_steps(args.verbose.tracing_level_filter() >= LevelFilter::WARN);
+    // High-verbosity detail: the global `-vv` (info) and above adds the data
+    // behind a message (e.g. the running processes an app is held by).
+    crate::output::set_show_details(args.verbose.tracing_level_filter() >= LevelFilter::INFO);
 
     match args.command {
         Command::Alias(args) => alias::execute(args, &session).await,

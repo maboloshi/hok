@@ -23,8 +23,8 @@ use crate::{
 };
 
 use super::sync_install::{
-    RunningCheck, check_not_running, emit_step, joined_or_none, psmodule_display_name,
-    shim_display_names, shortcut_display_names,
+    RunningAction, RunningCheck, check_not_running, emit_step, joined_or_none,
+    psmodule_display_name, shim_display_names, shortcut_display_names,
 };
 use super::{SyncOption, Transaction, confirm_transaction, should_gate};
 
@@ -232,8 +232,9 @@ async fn commit_one_remove(
         // Check if the app is currently running after running pre_uninstall
         // (mirrors scoop-uninstall.ps1:62-67: the pre_uninstall hook runs
         // first, then test_running_process). Scoop skips the running app and
-        // continues with the next one; the check printed the reason.
-        if check_not_running(session, package.name(), &hok_i18n::t!("action.uninstall"))?
+        // continues with the next one; the check printed the reason — unless
+        // `ignore_running_processes` says to carry on with this one.
+        if check_not_running(session, package.name(), RunningAction::Uninstall)?
             == RunningCheck::Running
         {
             return Ok(());
@@ -529,9 +530,9 @@ pub async fn reset(
 
     // Check if the app is currently running before resetting (mirrors
     // scoop-reset.ps1:71-74: test_running_process before re-linking). A
-    // running app is skipped — the check printed the reason and the process
-    // list — instead of aborting the reset.
-    if check_not_running(session, name, &hok_i18n::t!("action.reset"))? == RunningCheck::Running {
+    // running app is skipped — the check printed the reason — instead of
+    // aborting the reset, unless `ignore_running_processes` says to carry on.
+    if check_not_running(session, name, RunningAction::Reset)? == RunningCheck::Running {
         return Ok(());
     }
 

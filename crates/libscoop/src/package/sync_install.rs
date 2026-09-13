@@ -431,20 +431,60 @@ pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]
 pub enum RunningCheck {
     /// No process is running under `apps/<name>`; the operation may proceed.
     NotRunning,
-    /// A process is running under `apps/<name>`: skip this package and carry
-    /// on with the rest of the batch. The reason and the process list were
-    /// already printed; the severity is picked by `ignore_running_processes`.
+    /// A process is running under `apps/<name>` and `ignore_running_processes`
+    /// is off: this package is skipped (the warning was already printed) while
+    /// the rest of the batch carries on.
     ///
-    /// Scoop skips the package either way — the config only chooses between
-    /// `warn` and `error` text (`lib/install.ps1:534-551`), it never turns a
-    /// skip into a proceed.
+    /// Scoop's default branch returns `$true`, which every caller turns into a
+    /// skip (`lib/install.ps1:543-547`, `scoop-update.ps1:297-300`,
+    /// `scoop-uninstall.ps1:65-67`, `scoop-reset.ps1:71-74`).
     Running,
+    /// A process is running under `apps/<name>` but `ignore_running_processes`
+    /// is on: the operation proceeds and rewrites an app that is still open
+    /// (the warning was already printed).
+    ///
+    /// Scoop's ignore branch returns `$false` — "not running" — so the caller
+    /// carries on (`lib/install.ps1:539-542`); that is the configuration's
+    /// documented meaning, "proceed while the app is running".
+    Ignored,
+}
+
+/// The sync verb that asks whether an app is running.
+///
+/// It selects the localized skip wording ("skip updating" / "skip
+/// reinstalling", ...). A gerund cannot be derived from a bare verb in every
+/// locale, so each verb owns its own message key instead of being interpolated
+/// into one template.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunningAction {
+    /// `hok update` / `hok upgrade` (the upgrade half of `install`).
+    Update,
+    /// `hok reinstall`.
+    Reinstall,
+    /// `hok uninstall`.
+    Uninstall,
+    /// `hok reset`.
+    Reset,
+}
+
+impl RunningAction {
+    /// The localized "Running process detected, skip <verb>ing '%{name}'."
+    /// message for this verb.
+    fn skip_message(self, name: &str) -> String {
+        match self {
+            Self::Update => hok_i18n::t!("cmd.running_process_update", name = name),
+            Self::Reinstall => hok_i18n::t!("cmd.running_process_reinstall", name = name),
+            Self::Uninstall => hok_i18n::t!("cmd.running_process_uninstall", name = name),
+            Self::Reset => hok_i18n::t!("cmd.running_process_reset", name = name),
+        }
+    }
 }
 
 /// Drop packages whose app is currently running, *before* the transaction is
 /// assembled, so the confirmation list matches what will actually be
-/// processed. A running app is skipped, never fatal: Scoop skips it and keeps
-/// updating the rest of the batch (`scoop-update.ps1:296-300`).
+/// processed. A running app is skipped unless `ignore_running_processes` says
+/// to carry on — Scoop skips it by default and keeps updating the rest of the
+/// batch (`scoop-update.ps1:296-300`).
 fn filter_not_running(
     session: &Session,
     upgradable: Vec<Package>,
@@ -453,10 +493,11 @@ fn filter_not_running(
     let filter = |packages: Vec<Package>| -> Fallible<Vec<Package>> {
         let mut kept = Vec::new();
         for pkg in packages {
-            match check_not_running(session, pkg.name(), &hok_i18n::t!("action.update"))? {
-                RunningCheck::NotRunning => kept.push(pkg),
-                // The check printed the reason (and the process list).
+            match check_not_running(session, pkg.name(), RunningAction::Update)? {
+                // The check printed the reason: a `Running` app is dropped
+                // from the batch, an `Ignored` one is carried through.
                 RunningCheck::Running => {}
+                RunningCheck::NotRunning | RunningCheck::Ignored => kept.push(pkg),
             }
         }
         Ok(kept)
@@ -467,16 +508,23 @@ fn filter_not_running(
 /// Check whether the given package's process is running under `apps/<name>`
 /// (matches PS1's `test_running_process`).
 ///
-/// A running process is a *skip*, not a failure: the reason and the process
-/// list are printed here — as a warning when `ignore_running_processes` is
-/// enabled, as an error otherwise, exactly the two branches of
-/// `lib/install.ps1:534-551` — and [`RunningCheck::Running`] tells the caller
-/// to leave this package out of the batch.
+/// A running process warns — never fails — and the message it prints is the
+/// whole decision: without `ignore_running_processes` the app is skipped
+/// ([`RunningCheck::Running`]), with it the operation carries on
+/// ([`RunningCheck::Ignored`]). Those are exactly the two branches of
+/// `lib/install.ps1:534-551`: the default one returns `$true` (skip), the
+/// ignore one `$false` (proceed).
 ///
-/// `action` is the already-localized verb phrase the caller is performing
-/// (`t!("action.update")` and friends); it is interpolated into that message
-/// verbatim, so callers must translate it rather than pass English.
-pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
+/// The individual processes are emitted as [`Output::Detail`][1] rather than
+/// baked into the message, so a frontend shows them only where it is verbose
+/// enough for them; libscoop stays agnostic to that choice.
+///
+/// [1]: crate::output::Output::Detail
+pub fn check_not_running(
+    session: &Session,
+    name: &str,
+    action: RunningAction,
+) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
     // Process enumeration failure must not be silently treated as "nothing
     // is running" — that could overwrite an app which is in use. Fail
@@ -495,29 +543,30 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
         return Ok(RunningCheck::NotRunning);
     }
 
-    let procs = running
-        .iter()
-        .map(|p| format!("  {} (pid {})", p.name, p.pid))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if session.config().ignore_running_processes() {
-        // Scoop's IGNORE_RUNNING_PROCESSES branch warns, but the package is
-        // skipped all the same (`lib/install.ps1:539-542`).
-        session.output().warn(hok_i18n::t!(
-            "cmd.running_process_skip",
-            name = name,
-            action = action,
-            procs = procs
-        ));
+    let ignored = session.config().ignore_running_processes();
+    if ignored {
+        // The ignore branch rewrites an app that is still open, so say what
+        // that risks instead of announcing a skip that will not happen.
+        session
+            .output()
+            .warn(hok_i18n::t!("cmd.running_process_ignored", name = name));
     } else {
-        session.output().error(hok_i18n::t!(
-            "cmd.running_process_close",
-            name = name,
-            action = action,
-            procs = procs
-        ));
+        session.output().warn(action.skip_message(name));
     }
-    Ok(RunningCheck::Running)
+
+    // The process list trails the message it belongs to, as gated detail
+    // rather than part of the message.
+    for p in &running {
+        session
+            .output()
+            .detail(format!("{} (pid {})", p.name, p.pid));
+    }
+
+    Ok(if ignored {
+        RunningCheck::Ignored
+    } else {
+        RunningCheck::Running
+    })
 }
 
 /// Commit package installation: extract files, run scripts, create symlinks,
@@ -1406,13 +1455,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A running app is a *skip*, never a failure, and
-    /// `ignore_running_processes` only chooses the message severity —
-    /// matching Scoop, where `test_running_process` returns true for both
-    /// branches (`lib/install.ps1:534-551`) and the callers skip the package
-    /// (`scoop-uninstall.ps1:65-67`, `scoop-update.ps1:297-300`).
+    /// A running app is a *skip* by default and a *carry-on* once
+    /// `ignore_running_processes` is enabled, matching Scoop's
+    /// `test_running_process` (`lib/install.ps1:534-551`: the default branch
+    /// returns `$true` → the callers skip, the ignore branch `$false` → they
+    /// carry on). Both outcomes warn; neither fails.
+    ///
+    /// The running processes are reported as `Detail`, not baked into the
+    /// message, so only a frontend that is verbose enough shows them.
     #[test]
-    fn check_not_running_skips_and_picks_severity() {
+    fn check_not_running_skips_by_default_and_continues_when_ignored() {
         use std::sync::{Arc, Mutex};
 
         let root = crate::test_utils::tmpdir("check_not_running");
@@ -1456,42 +1508,66 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        let warnings = Arc::new(Mutex::new(Vec::new()));
-        let errors = Arc::new(Mutex::new(Vec::new()));
+        // One ordered transcript of every message, so the assertions below pin
+        // both the wording and the order (the process list must *trail* its
+        // message, never precede it).
+        let events = Arc::new(Mutex::new(Vec::<(&'static str, String)>::new()));
         {
-            let warnings = Arc::clone(&warnings);
-            let errors = Arc::clone(&errors);
+            let events = Arc::clone(&events);
             session
                 .set_output(Arc::new(move |out: crate::output::Output| match out {
-                    crate::output::Output::Warn(m) => warnings.lock().unwrap().push(m),
-                    crate::output::Output::Error(m) => errors.lock().unwrap().push(m),
+                    crate::output::Output::Warn(m) => events.lock().unwrap().push(("warn", m)),
+                    crate::output::Output::Error(m) => events.lock().unwrap().push(("error", m)),
+                    crate::output::Output::Detail(m) => events.lock().unwrap().push(("detail", m)),
                     _ => {}
                 }))
                 .unwrap();
         }
 
-        // Default config: an error explaining that the app must be closed, but
-        // the caller still gets `Running` (skip), not an error.
+        // Default config: the app is skipped with the action's skip wording,
+        // and the single live process follows it as one `name (pid N)` detail
+        // (the name and the pid are live, so only the shape is asserted).
         assert_eq!(
-            check_not_running(&session, "app", "update").unwrap(),
+            check_not_running(&session, "app", RunningAction::Update).unwrap(),
             RunningCheck::Running
         );
-        assert_eq!(errors.lock().unwrap().len(), 1, "one error message");
-        assert_eq!(warnings.lock().unwrap().len(), 0);
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 2, "one warning plus one detail");
+            assert_eq!(events[0].0, "warn", "a skip is not an error");
+            assert_eq!(
+                events[0].1,
+                hok_i18n::t!("cmd.running_process_update", name = "app")
+            );
+            assert_eq!(events[1].0, "detail");
+            assert!(
+                events[1].1.starts_with("app (pid ") && events[1].1.ends_with(')'),
+                "unexpected detail line: {}",
+                events[1].1
+            );
+        }
 
-        // `ignore_running_processes` only downgrades the message to a warning;
-        // the outcome stays "skip".
+        // `ignore_running_processes` carries on instead of skipping: the same
+        // warning-then-detail shape, a different outcome and wording.
         session
             .config_mut()
             .unwrap()
             .set("ignore_running_processes", "true")
             .unwrap();
         assert_eq!(
-            check_not_running(&session, "app", "update").unwrap(),
-            RunningCheck::Running
+            check_not_running(&session, "app", RunningAction::Update).unwrap(),
+            RunningCheck::Ignored
         );
-        assert_eq!(errors.lock().unwrap().len(), 1, "no extra error message");
-        assert_eq!(warnings.lock().unwrap().len(), 1, "one warning message");
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 4, "the second check appends");
+            assert_eq!(events[2].0, "warn");
+            assert_eq!(
+                events[2].1,
+                hok_i18n::t!("cmd.running_process_ignored", name = "app")
+            );
+            assert_eq!(events[3].0, "detail");
+        }
 
         let _ = child.kill();
         let _ = child.wait();
