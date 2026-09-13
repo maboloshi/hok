@@ -26,7 +26,6 @@ pub struct CheckHashesReport {
     pub passed: u32,
     pub failed: u32,
     pub updated: u32,
-    pub skipped: u32,
     pub items: Vec<CheckHashesItem>,
 }
 
@@ -440,7 +439,6 @@ mod tests {
         assert_eq!(r.passed, 0);
         assert_eq!(r.failed, 0);
         assert_eq!(r.updated, 0);
-        assert_eq!(r.skipped, 0);
         assert!(r.items.is_empty());
     }
 
