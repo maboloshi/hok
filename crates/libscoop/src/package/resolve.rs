@@ -305,10 +305,7 @@ pub(crate) async fn select_candidate(
 /// A held dependency is never cascaded away: that errors with
 /// [`Error::PackageCascadeRemoveHold`], so the user has to `hok unhold` it
 /// explicitly — hold has no CLI bypass.
-pub(crate) fn resolve_cascade(
-    session: &Session,
-    packages: &mut Vec<Package>,
-) -> Fallible<()> {
+pub(crate) fn resolve_cascade(session: &Session, packages: &mut Vec<Package>) -> Fallible<()> {
     let mut to_resolve = packages.clone();
 
     // For performance reason, a wildcard query is done here to get all the

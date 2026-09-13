@@ -87,11 +87,23 @@ impl SyncFlags for Args {
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // --all is a shorthand for upgrading all packages (like passing '*')
     if args.all && args.package.is_empty() {
-        return super::upgrade::execute_upgrade(session, &[String::from("*")], &args.sync_args(), args.force).await;
+        return super::upgrade::execute_upgrade(
+            session,
+            &[String::from("*")],
+            &args.sync_args(),
+            args.force,
+        )
+        .await;
     }
 
     if !args.package.is_empty() {
-        return super::upgrade::execute_upgrade(session, &args.package, &args.sync_args(), args.force).await;
+        return super::upgrade::execute_upgrade(
+            session,
+            &args.package,
+            &args.sync_args(),
+            args.force,
+        )
+        .await;
     }
 
     // Bucket update mode (no packages specified).
@@ -242,4 +254,3 @@ fn cache_refresh_message(outcome: &package::manifest_cache::RefreshOutcome) -> S
         _ => hok_i18n::t!("cmd.cache_done"),
     }
 }
-
