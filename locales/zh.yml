@@ -189,6 +189,7 @@ cmd:
   hold_not_installed_global: "'%{name}' 未全局安装。"
   import_complete: "导入完成。"
   import_no_pkgs: "导入文件中没有找到包。"
+  header_status: "已安装应用状态"
   status_header_name: "名称"
   status_header_source: "来源"
   status_header_installed: "已安装版本"

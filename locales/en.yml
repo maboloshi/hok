@@ -189,6 +189,7 @@ cmd:
   hold_not_installed_global: "'%{name}' is not installed globally."
   import_complete: "Import complete."
   import_no_pkgs: "No packages found in import file."
+  header_status: "Status of installed apps"
   status_header_name: "Name"
   status_header_source: "Source"
   status_header_installed: "Installed Version"

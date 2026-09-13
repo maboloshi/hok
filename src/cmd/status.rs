@@ -162,6 +162,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         return Ok(());
     }
 
+    // hok keeps a section heading for every table it renders (the unified
+    // `:: <heading>` style); upstream prints the table bare. Registered as an
+    // intentional deviation.
+    output::header(hok_i18n::t!("cmd.header_status"));
     let rows = shown
         .iter()
         .map(|s| {
