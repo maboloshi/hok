@@ -367,6 +367,7 @@ cmd:
   total_download_size: "Total download size: %{size}"
   total_download_size_estimated: "Total download size: %{size} (estimated)"
   nothing_to_download: "Nothing to download, all cached."
+  cache_ignored: "Cache is being ignored."
   running_process_skip: "'%{name}' is still running; hok is configured to ignore this condition (ignore_running_processes), skipping %{action}.\n%{procs}"
   running_process_close: "'%{name}' is still running! Close the app(s) and retry; skipping %{action}.\n%{procs}"
   not_installed: "'%{name}' isn't installed."

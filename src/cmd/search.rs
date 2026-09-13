@@ -10,12 +10,12 @@ use crate::{Result, output};
 /// Search available package(s) from synced buckets.
 /// The query is performed against package names by default, use
 /// --with-description or --with-binary to search through package
-/// descriptions or binaries.
+/// descriptions or binaries. With no query every available package is listed,
+/// matching upstream's empty-regex search (`libexec/scoop-search.ps1:8-9`).
 #[derive(Debug, Parser)]
-#[clap(arg_required_else_help = true)]
 pub struct Args {
     /// The query string (regex supported by default)
-    #[arg(required = true, action = ArgAction::Append)]
+    #[arg(action = ArgAction::Append)]
     query: Vec<String>,
     /// Turn regex off and use explicit matching
     #[arg(short = 'e', long, action = ArgAction::SetTrue, conflicts_with_all = &["with_binary", "with_description"])]

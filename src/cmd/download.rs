@@ -7,7 +7,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{package, Session};
 
-use crate::Result;
+use crate::{Result, output};
 
 /// Download package(s) into the cache folder without installing
 #[derive(Debug, Parser)]
@@ -42,6 +42,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         force: args.force,
         check_hash: !args.skip_hash_check,
     };
+
+    // Upstream announces once that `-f` ignores the cache
+    // (`libexec/scoop-download.ps1:55`).
+    if args.force {
+        output::warn(hok_i18n::t!("cmd.cache_ignored"));
+    }
 
     let handle = crate::eventloop::run_event_loop_default(session);
     let result = package::download::download_apps(session, &queries, &opts).await;

@@ -81,7 +81,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     let name = args.app.unwrap();
     let version = args.version.as_deref();
-    package::sync::reset(session, &name, version, 1, 1).await?;
+    match package::sync::reset(session, &name, version, 1, 1).await {
+        Ok(()) => {}
+        // Upstream reports a missing app and still exits 0
+        // (`libexec/scoop-reset.ps1:44`, final `exit 0` at :94).
+        Err(libscoop::Error::PackageNotFound(_)) => {
+            output::err(hok_i18n::t!("cmd.not_installed", name = name));
+        }
+        Err(e) => return Err(e.into()),
+    }
     drain_steps(session);
     Ok(())
 }
