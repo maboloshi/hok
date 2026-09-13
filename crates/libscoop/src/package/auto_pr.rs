@@ -150,6 +150,7 @@ pub async fn run_auto_pr(
         skip_updated: config.skip_updated,
         version: None,
         timeout: 30,
+        throw_error: false,
     };
     let _ = crate::package::checkver::execute(cv_args, session, |report| {
         if let Some(cb) = on_report.as_mut() {
@@ -176,6 +177,7 @@ pub async fn run_auto_pr(
             skip_updated: false,
             version: None,
             timeout: 30,
+            throw_error: false,
         };
         let _ = crate::package::checkver::execute(cv_args, session, |report| {
             if let Some(cb) = on_report.as_mut() {

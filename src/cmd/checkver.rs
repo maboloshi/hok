@@ -1,12 +1,12 @@
 //! Check for outdated package manifests.
 
 use clap::Parser;
-use libscoop::package::checkver::{self, ReportSeverity};
 use libscoop::Session;
+use libscoop::package::checkver::{self, ReportSeverity};
 use std::path::PathBuf;
 
 use crate::cmd::shared_args::{scan_dir, validate_dir, write_dir};
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Check manifest for a newer version
 #[derive(Debug, Parser)]
@@ -41,6 +41,10 @@ pub struct Args {
     /// Request timeout in seconds
     #[arg(short = 't', long, default_value = "30")]
     timeout: u64,
+
+    /// Throw on the first error instead of reporting it and continuing
+    #[arg(long = "throw", action = clap::ArgAction::SetTrue)]
+    throw_error: bool,
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
@@ -63,6 +67,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         skip_updated: args.skip_updated,
         version: args.version,
         timeout: args.timeout,
+        throw_error: args.throw_error,
     };
 
     // Stream results: each manifest is reported as soon as its check completes,
@@ -94,7 +99,8 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
             }
         }
-    }).await?;
+    })
+    .await?;
 
     Ok(())
 }

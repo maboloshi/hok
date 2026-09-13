@@ -13,10 +13,8 @@
 //! * `-match` is case-insensitive in PowerShell, so every hash-file pattern is
 //!   compiled case-insensitively here.
 
-use std::io::Read;
 use std::sync::LazyLock;
 
-use flate2::read::GzDecoder;
 use regex::{Regex, RegexBuilder};
 
 use crate::internal::url;
@@ -130,7 +128,7 @@ async fn get_hash_for_app(
         }
     }
 
-    let gh_token = session.config().gh_token.clone();
+    let gh_token = crate::network::github_token(session);
     let token = gh_token.as_deref();
 
     let hash: Option<String> = match hashmode.as_str() {
@@ -453,21 +451,7 @@ async fn fetch_hash_file(session: &Session, url: &str, token: Option<&str>) -> O
     let raw = network::download_bytes(session, url, 30, token)
         .await
         .ok()?;
-    // `if ($data[0] -eq 0x1F -and $data[1] -eq 0x8B) { GZipStream }`
-    let body = if raw.starts_with(&[0x1f, 0x8b]) {
-        let mut inflate = GzDecoder::new(raw.as_slice());
-        let mut out = Vec::new();
-        match inflate.read_to_end(&mut out) {
-            Ok(_) => out,
-            Err(_) => raw,
-        }
-    } else {
-        raw
-    };
-    // Upstream reads with the response's charset (defaulting to UTF-8) and a
-    // `StreamReader` never throws, so an undecodable body is replaced rather
-    // than aborting the update.
-    Some(String::from_utf8_lossy(&body).into_owned())
+    Some(crate::internal::network::decode_body(&raw))
 }
 
 /// Upstream's hash-template table (lib/autoupdate.ps1:44-51), applied with

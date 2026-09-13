@@ -154,10 +154,8 @@ cmd:
   checkhashes_path_not_found: "JSON 中找不到路径 %{path}"
   checkver_updated_to: "已更新到 %{ver}"
   checkver_update_failed: "更新失败: %{e}"
-  checkver_no_version: "脚本未返回版本号"
   checkver_script_err: "脚本错误: %{e}"
-  checkver_github_err: "无法从主页提取 GitHub 仓库信息"
-  checkver_sourceforge_err: "无法提取 SourceForge 项目"
+  checkver_github_err: "%{name} 的 checkver 要求主页为 GitHub 仓库"
   checkver_no_url: "没有 checkver URL"
   checkver_no_extract: "无法提取版本号"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
@@ -582,6 +580,7 @@ cli_help:
       skip_updated: 跳过已是最新的清单
       version: 更新清单到指定版本（跳过版本检测）
       timeout: 请求超时秒数
+      throw_error: 遇到首个错误即抛出，而不是继续处理其余清单
   cleanup:
     about: 通过删除旧版本清理应用
     args:

@@ -213,22 +213,9 @@ pub fn strip_url_query(raw: &str) -> String {
 // GitHub / SourceForge URL detection & parsing
 // ---------------------------------------------------------------------------
 
-/// Whether `url` is a github.com web URL (homepage, releases page, or release
-/// download asset), excluding the `api.github.com` host.
-pub fn is_github_web_url(url: &str) -> bool {
-    url.contains("github.com/") && !url.contains("api.github.com")
-}
-
 /// Whether `url` points at the `api.github.com` host.
 pub fn is_github_api_url(url: &str) -> bool {
     url.contains("api.github.com")
-}
-
-/// Whether `url` is a github.com releases page or asset URL (contains
-/// `/releases/` on the github.com host, e.g. `/releases/latest` or
-/// `/releases/download/...`).
-pub fn is_github_releases_url(url: &str) -> bool {
-    is_github_web_url(url) && url.contains("/releases/")
 }
 
 /// Extract `(owner, repo)` from a github.com URL.
@@ -243,7 +230,7 @@ pub fn is_github_releases_url(url: &str) -> bool {
 /// A trailing `.git` suffix is stripped. Returns `None` for non-github URLs
 /// and for `api.github.com` URLs.
 pub fn github_owner_repo(url: &str) -> Option<(String, String)> {
-    if url.contains("api.github.com") {
+    if is_github_api_url(url) {
         return None;
     }
     let re = Regex::new(r"github\.com[:/]([^/]+)/([^/]+?)(?:/|$)").ok()?;
@@ -256,24 +243,10 @@ pub fn github_owner_repo(url: &str) -> Option<(String, String)> {
     Some((owner, repo.to_string()))
 }
 
-/// Build the GitHub API "latest release" URL (`.../releases/latest`) from a
-/// github.com homepage or releases URL.
-pub fn github_releases_api_url(url_or_homepage: &str) -> Option<String> {
-    github_owner_repo(url_or_homepage)
-        .map(|(owner, repo)| format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"))
-}
-
 /// Build the GitHub API releases-list URL (`.../releases`) from a github.com URL.
 pub fn github_releases_list_api_url(url: &str) -> Option<String> {
     github_owner_repo(url)
         .map(|(owner, repo)| format!("https://api.github.com/repos/{owner}/{repo}/releases"))
-}
-
-/// Extract SourceForge project name from a homepage URL.
-pub fn extract_sourceforge_project(homepage: &str) -> Option<String> {
-    let re = Regex::new(r"sourceforge\.net/projects/([^/]+)").ok()?;
-    let caps = re.captures(homepage)?;
-    caps.get(1).map(|m| m.as_str().to_string())
 }
 
 #[cfg(test)]
@@ -501,51 +474,12 @@ mod tests {
         assert_eq!(strip_url_query(""), "");
     }
 
-    // ── is_github_web_url / is_github_api_url ───────────────────────────────
-
-    #[test]
-    fn github_web_url_detected() {
-        assert!(is_github_web_url("https://github.com/BurntSushi/ripgrep"));
-        assert!(is_github_web_url(
-            "https://github.com/sharkdp/bat/releases/latest"
-        ));
-        assert!(is_github_web_url(
-            "https://github.com/owner/repo/releases/download/1.0/app.zip"
-        ));
-    }
-
-    #[test]
-    fn github_web_url_excludes_api_host() {
-        assert!(!is_github_web_url(
-            "https://api.github.com/repos/owner/repo"
-        ));
-    }
-
-    #[test]
-    fn github_web_url_non_github_false() {
-        assert!(!is_github_web_url("https://example.com/owner/repo"));
-    }
+    // ── is_github_api_url ───────────────────────────────────────────────────
 
     #[test]
     fn github_api_url_detected() {
         assert!(is_github_api_url("https://api.github.com/repos/owner/repo"));
         assert!(!is_github_api_url("https://github.com/owner/repo"));
-    }
-
-    // ── is_github_releases_url ──────────────────────────────────────────────
-
-    #[test]
-    fn github_releases_url_detected() {
-        assert!(is_github_releases_url(
-            "https://github.com/owner/repo/releases/latest"
-        ));
-        assert!(is_github_releases_url(
-            "https://github.com/owner/repo/releases/download/1.0/app.zip"
-        ));
-        assert!(!is_github_releases_url("https://github.com/owner/repo"));
-        assert!(!is_github_releases_url(
-            "https://api.github.com/repos/owner/repo/releases"
-        ));
     }
 
     // ── github_owner_repo ───────────────────────────────────────────────────
@@ -605,30 +539,7 @@ mod tests {
         );
     }
 
-    // ── github_releases_api_url / github_releases_list_api_url ──────────────
-
-    #[test]
-    fn github_releases_api_url_from_homepage() {
-        let result = github_releases_api_url("https://github.com/BurntSushi/ripgrep");
-        assert!(result.is_some());
-        let url = result.unwrap();
-        assert!(url.contains("api.github.com"));
-        assert!(url.contains("BurntSushi/ripgrep"));
-        assert!(url.ends_with("/releases/latest"));
-    }
-
-    #[test]
-    fn github_releases_api_url_from_releases_url() {
-        let result = github_releases_api_url("https://github.com/sharkdp/bat/releases/latest");
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("api.github.com"));
-    }
-
-    #[test]
-    fn github_releases_api_url_non_github_returns_none() {
-        let result = github_releases_api_url("https://example.com/owner/repo");
-        assert!(result.is_none());
-    }
+    // ── github_releases_list_api_url ────────────────────────────────────────
 
     #[test]
     fn github_releases_list_api_url_builds_list_endpoint() {
@@ -648,19 +559,5 @@ mod tests {
             github_releases_list_api_url("https://example.com/owner/repo"),
             None
         );
-    }
-
-    // ── extract_sourceforge_project ─────────────────────────────────────────
-
-    #[test]
-    fn sourceforge_extracts_project_from_homepage() {
-        let result = extract_sourceforge_project("https://sourceforge.net/projects/sevenzip/");
-        assert_eq!(result.as_deref(), Some("sevenzip"));
-    }
-
-    #[test]
-    fn sourceforge_returns_none_for_non_sf_url() {
-        let result = extract_sourceforge_project("https://example.com/project");
-        assert!(result.is_none());
     }
 }

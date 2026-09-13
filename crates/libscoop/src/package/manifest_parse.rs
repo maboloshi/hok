@@ -316,54 +316,41 @@ impl<'de> Deserialize<'de> for Checkver {
             where
                 E: de::Error,
             {
-                let regex = match s {
-                    "github" => Some("/releases/tag/(?:v|V)?([\\d.]+)".to_owned()),
-                    _ => Some(s.to_owned()),
-                };
-
-                Ok(Checkver {
-                    regex,
-                    url: None,
-                    jsonpath: None,
-                    xpath: None,
-                    reverse: None,
-                    replace: None,
-                    useragent: None,
-                    script: None,
-                    sourceforge: None,
-                })
+                let mut cv = Checkver::default();
+                match s {
+                    // Upstream's shortcut strings are not regexes
+                    // (bin/checkver.ps1:150/171); their URL and default regex
+                    // are resolved at run time, where the homepage and the app
+                    // name are available.
+                    "github" => cv.github_homepage = true,
+                    "sourceforge" => cv.sourceforge_homepage = true,
+                    // Any other string is the regex itself
+                    // (`if (!$jsonpath -and !$regex -and !$xpath) { $regex = $json.checkver }`).
+                    _ => cv.regex = Some(s.to_owned()),
+                }
+                Ok(cv)
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
                 A: de::MapAccess<'de>,
             {
-                let mut regex = None;
-                let mut url = None;
-                let mut jsonpath = None;
-                let mut xpath = None;
-                let mut reverse = None;
-                let mut replace = None;
-                let mut useragent = None;
-                let mut script = None;
-                let mut sourceforge = None;
+                let mut cv = Checkver::default();
+                let mut keys = 0usize;
 
                 while let Some(key) = map.next_key::<String>()? {
+                    keys += 1;
                     match key.as_str() {
-                        "github" => {
-                            let prefix = map.next_value::<String>()?;
-                            url = Some(format!("{}/releases/latest", prefix));
-                            regex = Some("/releases/tag/(?:v|V)?([\\d.]+)".to_owned());
-                        }
-                        "re" | "regex" => regex = Some(map.next_value()?),
-                        "url" => url = Some(map.next_value()?),
-                        "jp" | "jsonpath" => jsonpath = Some(map.next_value()?),
-                        "xpath" => xpath = Some(map.next_value()?),
-                        "reverse" => reverse = Some(map.next_value()?),
-                        "replace" => replace = Some(map.next_value()?),
-                        "useragent" => useragent = Some(map.next_value()?),
-                        "script" => script = Some(map.next_value()?),
-                        "sourceforge" => sourceforge = Some(map.next_value()?),
+                        "github" => cv.github = Some(map.next_value()?),
+                        "re" | "regex" => cv.regex = Some(map.next_value()?),
+                        "url" => cv.url = Some(map.next_value()?),
+                        "jp" | "jsonpath" => cv.jsonpath = Some(map.next_value()?),
+                        "xpath" => cv.xpath = Some(map.next_value()?),
+                        "reverse" => cv.reverse = Some(map.next_value()?),
+                        "replace" => cv.replace = Some(map.next_value()?),
+                        "useragent" => cv.useragent = Some(map.next_value()?),
+                        "script" => cv.script = Some(map.next_value()?),
+                        "sourceforge" => cv.sourceforge = Some(map.next_value()?),
                         _ => {
                             // skip invalid fields
                             map.next_value::<serde_json::Value>()?;
@@ -372,17 +359,10 @@ impl<'de> Deserialize<'de> for Checkver {
                     }
                 }
 
-                Ok(Checkver {
-                    regex,
-                    url,
-                    jsonpath,
-                    xpath,
-                    reverse,
-                    replace,
-                    useragent,
-                    script,
-                    sourceforge,
-                })
+                // `$json.checkver.PSObject.Properties.Count -eq 1`: upstream
+                // counts every key, including ones it does not recognise.
+                cv.github_solo = keys == 1 && cv.github.is_some();
+                Ok(cv)
             }
         }
 

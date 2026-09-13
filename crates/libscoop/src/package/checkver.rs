@@ -31,6 +31,10 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Serial number for the per-run `checkver.script` scratch directory.
+static CHECKVER_JSON_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use crate::error::{Error, Fallible};
 
@@ -83,6 +87,10 @@ pub struct CheckverOptions {
 
     /// Request timeout in seconds
     pub timeout: u64,
+
+    /// Throw on the first failure instead of reporting it and continuing
+    /// (upstream `-ThrowError`).
+    pub throw_error: bool,
 }
 
 // ─── Execute ────────────────────────────────────────────────────────────────
@@ -131,18 +139,36 @@ impl CheckverReport {
     }
 }
 
-/// Outcome of fetching the check page for a single manifest (either a
-/// download or a `checkver.script` execution, both run in worker threads).
+/// Outcome of fetching the check page for a single manifest.
 enum CheckverFetch {
-    /// Page content ready for version extraction.
+    /// Page content ready for version extraction (the downloaded body, or the
+    /// output of `checkver.script` when one is configured).
     Page(String),
-    /// Download failed.
+    /// Download failed (`$err.message` upstream).
     DownloadError(String),
-    /// Script ran but produced no version output.
-    ScriptNoVersion,
-    /// Script execution failed.
+    /// The checkver script failed. Upstream lets that escape and kill the whole
+    /// run; hok reports it per manifest and continues.
     ScriptError(String),
 }
+
+/// Upstream's default GitHub regex (`bin/checkver.ps1:148`).
+const GITHUB_DEFAULT_REGEX: &str = "/releases/tag/(?:v|V)?([\\d.]+)";
+
+/// Upstream's default SourceForge regex (`bin/checkver.ps1:169`).
+const SOURCEFORGE_DEFAULT_REGEX: &str = "(?!\\.)([\\d.]+)(?<=\\d)";
+
+/// `//(www\.)?github\.com/`, rewritten to `//api.github.com/repos/` when the
+/// GitHub API is used with a token (`bin/checkver.ps1:222`).
+static GITHUB_WEB_HOST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"//(www\.)?github\.com/").unwrap());
+
+/// SourceForge homepage/project forms (`bin/checkver.ps1:172`).
+static SOURCEFORGE_HOMEPAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"//(sourceforge|sf)\.net/projects/(?<project>[^/]+)(/files/(?<path>[^/]+))?|//(?<project2>[^.]+)\.(sourceforge\.(net|io)|sf\.net)",
+    )
+    .unwrap()
+});
 
 pub async fn execute(
     options: CheckverOptions,
@@ -163,6 +189,15 @@ pub async fn execute(
     let proxy = session.config().proxy().map(|s| s.to_string());
     let timeout = options.timeout;
 
+    // Scratch directory for the `$json` handed to `checkver.script`; unique per
+    // call (not merely per process, so two concurrent runs cannot delete each
+    // other's files) and removed on the way out.
+    let json_dir = std::env::temp_dir().join(format!(
+        "hok-checkver-{}-{}",
+        std::process::id(),
+        CHECKVER_JSON_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
     /// A manifest that needs version checking.
     struct PendingItem {
         stem: String,
@@ -170,18 +205,21 @@ pub async fn execute(
         manifest: Manifest,
         /// Current version string (pre-extracted for comparison)
         current: String,
-        /// URL to download (fully resolved with homepage fallback, GitHub API transform, etc.)
+        /// Fully resolved URL (homepage fallback, shortcut override, API rewrite).
         url: String,
-        /// Whether this is a GitHub checkver (for v/V prefix stripping)
-        github_mode: bool,
-        /// JSONPath override for version extraction (e.g. "$.tag_name" for GitHub API)
-        effective_jsonpath: Option<String>,
-        /// Regex override for version extraction (e.g. sourceforge default)
-        effective_regex: Option<String>,
-        /// The checkver configuration (cloned for extraction)
+        /// The regex the body is matched against (user regex, shortcut default,
+        /// or the bare `checkver` string); `None` means "no regex in play".
+        regex: Option<String>,
+        jsonpath: Option<String>,
+        /// The checkver configuration (cloned for extraction).
         cv: crate::Checkver,
-        /// Script text to execute instead of downloading (script output overrides page content)
+        /// Script text to run after the download (its stdout replaces the body).
         script_text: Option<String>,
+        /// The manifest as JSON, handed to `checkver.script` as `$json`.
+        manifest_json_path: Option<PathBuf>,
+        /// A non-fatal message emitted before the version report (upstream's
+        /// `error "$name checkver expects the homepage to be a github repository"`).
+        pre_message: Option<String>,
     }
 
     let mut pending: Vec<PendingItem> = Vec::new();
@@ -219,119 +257,74 @@ pub async fn execute(
                 .await
                 {
                     Ok(()) => report.updated = true,
-                    Err(e) => {
-                        report.message =
-                            Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
-                        report.severity = ReportSeverity::Error;
-                    }
+                    Err(e) => report.message = Some(update_failed_message(&e)),
                 }
+            }
+            let failed = report.message.is_some() && !report.updated;
+            if failed && options.throw_error {
+                return Err(Error::Custom(report.message.clone().unwrap_or_default()));
             }
             on_report(&report);
             continue;
         }
 
-        // Default regex override (used by sourceforge shortcut)
-        let mut effective_regex = None;
+        let resolved = resolve_checkver_source(
+            &cv,
+            &manifest,
+            &stem,
+            crate::network::github_token(session).is_some(),
+        );
 
-        // Determine URL and regex to use
-        // Detect GitHub checkver: the deserializer sets specific regex (/releases/tag/) for
-        // `checkver: "github"` and `checkver.github: "owner/repo"`. Also detect via URL pattern.
-        let mut github_mode = is_github_checkver(&cv);
-        let mut url = if let Some(u) = &cv.url {
-            if url::is_github_releases_url(u) {
-                github_mode = true;
-            }
-            u.clone()
-        } else if let Some(sf) = &cv.sourceforge {
-            let extracted = url::extract_sourceforge_project(manifest.homepage());
-            let project = sf.project.as_deref().or(extracted.as_deref());
-            match project {
-                Some(proj) => {
-                    if cv.regex.is_none() && cv.jsonpath.is_none() {
-                        effective_regex = Some(r"/([\d.]+)/".to_string());
-                    }
-                    // Official checkver.ps1: `?path=/...` only when a path is present
-                    let mut rss = format!("https://sourceforge.net/projects/{}/rss", proj);
-                    if let Some(p) = &sf.path
-                        && !p.is_empty()
-                    {
-                        rss = format!("{rss}?path=/{}", p.trim_start_matches('/'));
-                    }
-                    rss
-                }
-                None => {
-                    let mut report = CheckverReport::new(stem, current);
-                    report.message = Some(hok_i18n::t!("cmd.checkver_sourceforge_err").to_string());
-                    report.severity = ReportSeverity::Error;
-                    on_report(&report);
-                    continue;
-                }
-            }
-        } else if github_mode {
-            // No cv.url set but github detected: extract repo from homepage
-            match url::github_releases_api_url(manifest.homepage()) {
-                Some(api_url) => api_url,
-                None => {
-                    let mut report = CheckverReport::new(stem, current);
-                    report.message = Some(hok_i18n::t!("cmd.checkver_github_err").to_string());
-                    report.severity = ReportSeverity::Error;
-                    on_report(&report);
-                    continue;
-                }
-            }
-        } else {
-            // Homepage fallback when checkver.url is absent (Scoop L125-129)
-            let hp = manifest.homepage().to_string();
-            if hp.is_empty() {
-                let mut report = CheckverReport::new(stem, current);
-                report.message = Some(hok_i18n::t!("cmd.checkver_no_url").to_string());
-                report.severity = ReportSeverity::Error;
-                on_report(&report);
-                continue;
-            }
-            hp
-        };
-
-        // Transform github.com releases URLs to API URLs (Scoop's useGithubAPI behavior)
-        if github_mode
-            && url::is_github_web_url(&url)
-            && let Some(api_url) = url::github_releases_api_url(&url)
-        {
-            url = api_url;
+        if resolved.url.is_empty() {
+            let mut report = CheckverReport::new(stem, current);
+            report.message = Some(hok_i18n::t!("cmd.checkver_no_url").to_string());
+            report.severity = ReportSeverity::Error;
+            on_report(&report);
+            continue;
         }
 
-        // Automatically add `$.tag_name` JSONPath for GitHub API responses.
-        // This substitutes for the *default* github regex `/releases/tag/...`
-        // (which cannot match API JSON); when a custom regex is present, the
-        // jsonpath result is chained into it inside extract_version (Scoop
-        // checkver.ps1 lines 342-345).
-        let mut effective_jsonpath = cv.jsonpath.clone();
-        if effective_jsonpath.is_none() && url::is_github_api_url(&url) {
-            effective_jsonpath = Some("$.tag_name".to_string());
-        }
+        // Fall back to the raw file when the parsed manifest cannot be
+        // re-serialised (the script's `$json` must always be present).
+        let manifest_json = manifest
+            .to_pretty_json()
+            .or_else(|| std::fs::read_to_string(&path).ok())
+            .unwrap_or_default();
 
         let script_text = cv.script.as_ref().map(|s| s.devectorize().join("\r\n"));
+        let jsonpath = cv.jsonpath.clone();
+
+        // `checkver.script` runs in a child PowerShell, where `$json` has to be
+        // reconstructed. It is loaded from a file rather than embedded in the
+        // command line: Windows caps a command line at ~32k characters and a
+        // manifest plus a script can exceed that.
+        let manifest_json_path = match &script_text {
+            None => None,
+            Some(_) => {
+                crate::internal::fs::ensure_dir(&json_dir)?;
+                let file = json_dir.join(format!("{stem}.json"));
+                std::fs::write(&file, &manifest_json)?;
+                Some(file)
+            }
+        };
 
         pending.push(PendingItem {
             stem,
             path,
             manifest,
             current,
-            url,
-            github_mode,
-            effective_jsonpath,
-            effective_regex,
+            url: resolved.url,
+            regex: resolved.regex,
+            jsonpath,
             cv,
             script_text,
+            manifest_json_path,
+            pre_message: resolved.pre_message,
         });
     }
 
-    // ── Phase 2: Fetch all URLs and run scripts concurrently ────────────
-    // (matching Scoop's async downloads in checkver.ps1 lines 110-248; each
-    // manifest gets a concurrent task that either downloads its URL — 真
-    // async I/O via reqwest — or runs its checkver.script. Tasks yield in
-    // completion order via `buffer_unordered`, matching the original
-    // channel-based worker threads).
+    // ── Phase 2: fetch all URLs (and run scripts) concurrently ──────────
+    // Upstream downloads every URL up front and then waits on the completed
+    // events (bin/checkver.ps1:110-248, 255-419).
     let net = session.network();
     let cancel = session.cancellation_token();
     let fetch_results: Vec<(usize, CheckverFetch)> =
@@ -339,56 +332,59 @@ pub async fn execute(
             .map(|(i, item)| {
                 let url = item.url.clone();
                 let script = item.script_text.clone();
-                let script_url = item.cv.url.clone();
-                let manifest_user_agent = item.cv.useragent.clone();
+                let manifest_user_agent = checkver_user_agent(&item.cv, &item.current);
+                let manifest_json_path = item.manifest_json_path.clone();
+                let app = item.stem.clone();
+                let expected_ver = item.current.clone();
                 let net = net.clone();
                 let cancel = cancel.clone();
                 let proxy_ref = proxy.as_deref();
                 async move {
-                    let fetch = if let Some(script) = script {
-                        // Script-based check: the script's stdout is the page
-                        // (matching Scoop checkver.ps1 lines 298-301).
-                        match run_checkver_script(
-                            &script,
-                            script_url.as_deref(),
-                            proxy_ref,
-                            timeout,
-                            &cancel,
-                        )
-                        .await
-                        {
-                            Ok(Some(page)) => CheckverFetch::Page(page),
-                            Ok(None) => CheckverFetch::ScriptNoVersion,
-                            Err(e) => CheckverFetch::ScriptError(e.to_string()),
-                        }
-                    } else {
-                        // Scoop's checkver header contract
-                        // (`bin/checkver.ps1:118-246`): User-Agent (the
-                        // manifest's `checkver.useragent` wins), Referer,
-                        // PRIVATE_HOSTS, and the GitHub token only for
-                        // `api.github.com` URLs.
-                        let request = ScoopRequest::for_url(session, &url, HeaderProfile::Checkver)
-                            .with_user_agent(manifest_user_agent.as_deref());
-                        match net
-                            .download(&url, &request.options(timeout))
-                            .await
-                            .and_then(|data| String::from_utf8(data).map_err(|e| e.to_string()))
-                        {
-                            Ok(page) => CheckverFetch::Page(page),
-                            Err(e) => CheckverFetch::DownloadError(e),
-                        }
+                    // Scoop's checkver header contract (`bin/checkver.ps1:118-246`)
+                    // through the shared entry point: User-Agent (the manifest's
+                    // `checkver.useragent` wins), Referer, PRIVATE_HOSTS and the
+                    // GitHub token only for `api.github.com` URLs.
+                    let request = ScoopRequest::for_url(session, &url, HeaderProfile::Checkver)
+                        .with_user_agent(manifest_user_agent.as_deref());
+                    // Upstream downloads first even when `checkver.script` is
+                    // set: a download failure skips the manifest before the
+                    // script ever runs (bin/checkver.ps1:282-301).
+                    let body = match net.download(&url, &request.options(timeout)).await {
+                        Ok(bytes) => crate::internal::network::decode_body(&bytes),
+                        Err(e) => return (i, CheckverFetch::DownloadError(e)),
                     };
-                    (i, fetch)
+                    match script {
+                        None => (i, CheckverFetch::Page(body)),
+                        Some(script) => {
+                            let preamble = manifest_json_path
+                                .as_deref()
+                                .map(|p| script_preamble(&app, &expected_ver, p))
+                                .unwrap_or_default();
+                            let script = format!("{preamble}{script}");
+                            match run_checkver_script(
+                                &script,
+                                Some(&url),
+                                proxy_ref,
+                                timeout,
+                                &cancel,
+                            )
+                            .await
+                            {
+                                Ok(Some(page)) => (i, CheckverFetch::Page(page)),
+                                // An empty script output is a page with nothing
+                                // to extract, exactly like an empty body.
+                                Ok(None) => (i, CheckverFetch::Page(String::new())),
+                                Err(e) => (i, CheckverFetch::ScriptError(e.to_string())),
+                            }
+                        }
+                    }
                 }
             })
             .buffer_unordered(pending.len())
             .collect()
             .await;
 
-    // ── Phase 3: Process each result as it completes ────────────────
-    // (matching Scoop's event loop in checkver.ps1 lines 257-419; both
-    // downloads and scripts run concurrently, so every completed item is
-    // reported immediately, in completion order)
+    // ── Phase 3: process each result as it completes ────────────────
     for (idx, fetch) in fetch_results {
         let PendingItem {
             stem,
@@ -396,62 +392,64 @@ pub async fn execute(
             manifest,
             current,
             url: _,
-            github_mode,
-            effective_jsonpath,
-            effective_regex,
+            regex,
+            jsonpath,
             cv,
             script_text: _,
+            manifest_json_path: _,
+            pre_message,
         } = &pending[idx];
 
         let mut report = CheckverReport::new(stem.clone(), current.clone());
 
-        // Get the page content (download or script output), reporting
-        // failures immediately (matching Scoop's error handling)
+        // Upstream's non-fatal `error` for a `checkver: "github"` manifest whose
+        // homepage is not a GitHub repository; it still performs the request.
+        if let Some(message) = pre_message {
+            let mut notice = CheckverReport::new(stem.clone(), current.clone());
+            notice.message = Some(message.clone());
+            notice.severity = ReportSeverity::Error;
+            on_report(&notice);
+        }
+
         let raw = match fetch {
             CheckverFetch::Page(content) => content,
             CheckverFetch::DownloadError(e) => {
                 report.message = Some(hok_i18n::t!("cmd.err_download", e = e).to_string());
                 report.severity = ReportSeverity::Error;
-                on_report(&report);
-                continue;
-            }
-            CheckverFetch::ScriptNoVersion => {
-                report.message = Some(hok_i18n::t!("cmd.checkver_no_version").to_string());
-                report.severity = ReportSeverity::Warn;
+                if options.throw_error {
+                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                }
                 on_report(&report);
                 continue;
             }
             CheckverFetch::ScriptError(e) => {
                 report.message = Some(hok_i18n::t!("cmd.checkver_script_err", e = e).to_string());
                 report.severity = ReportSeverity::Error;
+                if options.throw_error {
+                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                }
                 on_report(&report);
                 continue;
             }
         };
 
         // Extract version
-        let extract_result = extract_version(
-            &raw,
-            cv,
-            effective_jsonpath.as_deref(),
-            effective_regex.as_deref(),
-        );
+        let subs = version_substitutions(current, &[], &HashMap::new());
+        let extract_result =
+            extract_version(&raw, cv, jsonpath.as_deref(), regex.as_deref(), &subs);
 
-        // Auto-strip leading v/V prefix only for GitHub API JSONPath results
-        // (matching Scoop checkver.ps1 lines 219-224 — targeted, not global)
-        let (mut ver, captures, named_captures) = match extract_result {
-            Some((ref ver, ref caps, ref named)) => (ver.clone(), caps.clone(), named.clone()),
+        let (ver, captures, named_captures) = match extract_result {
+            Some((ver, caps, named)) => (ver, caps, named),
             None => {
                 report.message = Some(hok_i18n::t!("cmd.checkver_no_extract").to_string());
                 report.severity = ReportSeverity::Error;
+                if options.throw_error {
+                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                }
                 on_report(&report);
                 continue;
             }
         };
-
-        if *github_mode && cv.jsonpath.is_none() && cv.replace.is_none() {
-            ver = ver.trim_start_matches(['v', 'V']).to_string();
-        }
 
         report.new_version = Some(ver.clone());
         report.autoupdate_available = manifest.autoupdate().is_some()
@@ -472,8 +470,7 @@ pub async fn execute(
                 {
                     Ok(()) => report.updated = true,
                     Err(e) => {
-                        report.message =
-                            Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                        report.message = Some(update_failed_message(&e));
                         report.severity = ReportSeverity::Error;
                     }
                 }
@@ -483,34 +480,207 @@ pub async fn execute(
             {
                 Ok(()) => report.updated = true,
                 Err(e) => {
-                    report.message =
-                        Some(hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string());
+                    report.message = Some(update_failed_message(&e));
                     report.severity = ReportSeverity::Error;
                 }
             }
         }
+
+        // `catch { if ($ThrowError) { throw $_ } else { error ... } }`
+        if options.throw_error
+            && let Some(message) = &report.message
+        {
+            return Err(Error::Custom(message.clone()));
+        }
         on_report(&report);
     }
+
+    // Drop the `$json` scratch files created for `checkver.script`.
+    let _ = std::fs::remove_dir_all(&json_dir);
 
     Ok(())
 }
 
-// ─── URL helpers ────────────────────────────────────────────────────────────
+fn update_failed_message(e: &dyn std::fmt::Display) -> String {
+    hok_i18n::t!("cmd.checkver_update_failed", e = e).to_string()
+}
 
-fn is_github_checkver(cv: &crate::Checkver) -> bool {
-    // Check by regex pattern (set by deserializer for checkver: "github" / checkver.github: "owner/repo")
-    if cv
+// ─── Source resolution (`bin/checkver.ps1:114-247`) ─────────────────────────
+
+struct ResolvedSource {
+    url: String,
+    regex: Option<String>,
+    pre_message: Option<String>,
+}
+
+/// Resolve the URL and regex for one manifest.
+///
+/// This is upstream's pre-download block, in order:
+///
+/// 1. `$url = $json.checkver.url` else `$json.homepage`;
+/// 2. the shortcut blocks — `checkver: "github"`, `checkver.github`,
+///    `checkver: "sourceforge"`, `checkver.sourceforge` — each of which
+///    **unconditionally** overrides the URL and the regex;
+/// 3. `$useGithubAPI` is set by the string/map shortcut, or by a URL that
+///    already points at `api.github.com`;
+/// 4. **only when `$useGithubAPI` and a token is configured** is the URL
+///    rewritten to the API.
+///
+/// Step 4 is the load-bearing one: hok used to rewrite unconditionally and
+/// inject a `$.tag_name` jsonpath, which sent custom regexes an API payload
+/// they cannot match and burned the anonymous API quota.
+///
+/// Everything else about the request — User-Agent (`checkver.useragent`),
+/// Referer, PRIVATE_HOSTS and the `Authorization` header — is resolved by the
+/// shared [`ScoopRequest`] entry point. Step 4 is a *URL* decision that the
+/// shared entry point cannot make, because it depends on the shortcut form
+/// rather than on the URL; `has_github_token` is its only extra input.
+fn resolve_checkver_source(
+    cv: &crate::Checkver,
+    manifest: &Manifest,
+    stem: &str,
+    has_github_token: bool,
+) -> ResolvedSource {
+    let homepage = manifest.homepage();
+    let mut pre_message = None;
+
+    let mut url = cv.url.clone().unwrap_or_else(|| homepage.to_string());
+
+    // `$githubRegex = if ($regex) { $regex } else { '/releases/tag/(?:v|V)?([\d.]+)' }`
+    let github_regex = cv
         .regex
+        .clone()
+        .unwrap_or_else(|| GITHUB_DEFAULT_REGEX.to_string());
+    let mut regex = cv.regex.clone();
+    let mut use_github_api = false;
+
+    if cv.github_homepage {
+        if !homepage.starts_with("https://github.com/") {
+            pre_message = Some(hok_i18n::t!("cmd.checkver_github_err", name = stem).to_string());
+        }
+        url = github_releases_latest(homepage);
+        regex = Some(github_regex.clone());
+        use_github_api = true;
+    }
+    if let Some(repo) = &cv.github {
+        url = github_releases_latest(repo);
+        regex = Some(github_regex);
+        // `if ($json.checkver.PSObject.Properties.Count -eq 1)`
+        if cv.github_solo {
+            use_github_api = true;
+        }
+    }
+
+    let sourceforge_regex = regex
+        .clone()
+        .unwrap_or_else(|| SOURCEFORGE_DEFAULT_REGEX.to_string());
+    if cv.sourceforge_homepage {
+        let (project, path) = sourceforge_project_from_homepage(homepage)
+            .unwrap_or_else(|| (crate::internal::url::strip_ext(stem), None));
+        url = sourceforge_rss(&project, path.as_deref());
+        regex = Some(sourceforge_cdata_regex(path.as_deref(), &sourceforge_regex));
+    }
+    if let Some(sf) = &cv.sourceforge {
+        url = sourceforge_rss(sf.project.as_deref().unwrap_or(""), sf.path.as_deref());
+        regex = Some(sourceforge_cdata_regex(
+            sf.path.as_deref(),
+            &sourceforge_regex,
+        ));
+    }
+
+    // `if ($url -like '*api.github.com/*') { $useGithubAPI = $true }`
+    if url.contains("api.github.com/") {
+        use_github_api = true;
+    }
+
+    // `if ($useGithubAPI -and ($null -ne $GitHubToken)) { $url = $url -replace ... }`
+    if use_github_api && has_github_token {
+        url = GITHUB_WEB_HOST
+            .replace_all(&url, "//api.github.com/repos/")
+            .into_owned();
+    }
+
+    ResolvedSource {
+        url,
+        regex,
+        pre_message,
+    }
+}
+
+/// `substitute $json.checkver.useragent $substitutions` (`bin/checkver.ps1:118`).
+///
+/// The manifest's User-Agent is version-substituted before it reaches the
+/// request layer, which applies it via `ScoopRequest::with_user_agent`. hok
+/// leaves the session default in place when the manifest sets no User-Agent.
+fn checkver_user_agent(cv: &crate::Checkver, version: &str) -> Option<String> {
+    cv.useragent
         .as_deref()
-        .is_some_and(|r| r.contains("/releases/tag/"))
-    {
-        return true;
+        .map(|ua| version_substitutions(version, &[], &HashMap::new()).apply(ua))
+}
+
+/// `$json.checkver.github.TrimEnd('/') + '/releases/latest'`
+/// (`bin/checkver.ps1:160`).
+///
+/// Upstream appends the suffix *unconditionally*, so a `checkver.github` that
+/// already ends in `/releases` becomes `.../releases/releases/latest` and the
+/// request cannot resolve. Measured against the installed Scoop 0.5.3 on
+/// 2026-09-13: `arc.json` — whose value is
+/// `https://api.github.com/repos/mholt/archiver/releases` — reports
+/// `URL https://api.github.com/repos/mholt/archiver/releases/releases/latest is
+/// not valid`, and roughly 999 manifests in the local buckets use that shape.
+///
+/// hok deliberately deviates here (a superset fix, like `formatjson` not
+/// truncating empty files): the suffix is appended only when the value does not
+/// already end in `/releases` or `/releases/latest`.
+fn github_releases_latest(prefix: &str) -> String {
+    let base = prefix.trim_end_matches('/');
+    if base.ends_with("/releases/latest") || base.ends_with("/releases") {
+        base.to_string()
+    } else {
+        format!("{base}/releases/latest")
     }
-    // Check by URL pattern (for cases where cv.url is set to a github releases URL)
-    if cv.url.as_deref().is_some_and(url::is_github_releases_url) {
-        return true;
+}
+
+/// `if ($json.homepage -match '//(sourceforge|sf)\.net/projects/...')`
+/// (bin/checkver.ps1:172).
+fn sourceforge_project_from_homepage(homepage: &str) -> Option<(String, Option<String>)> {
+    let caps = SOURCEFORGE_HOMEPAGE.captures(homepage)?;
+    let project = caps
+        .name("project")
+        .or_else(|| caps.name("project2"))?
+        .as_str()
+        .to_string();
+    let path = caps.name("path").map(|m| m.as_str().to_string());
+    Some((project, path))
+}
+
+fn sourceforge_rss(project: &str, path: Option<&str>) -> String {
+    let mut url = format!("https://sourceforge.net/projects/{project}/rss");
+    if let Some(path) = path.filter(|p| !p.is_empty()) {
+        url.push_str(&format!("?path=/{}", path.trim_start_matches('/')));
     }
-    false
+    url
+}
+
+/// `"CDATA\[/$path/.*?$regex.*?\]".Replace('//', '/')` (bin/checkver.ps1:182).
+fn sourceforge_cdata_regex(path: Option<&str>, regex: &str) -> String {
+    let path = path.unwrap_or("");
+    format!(r"CDATA\[/{path}/.*?{regex}.*?\]").replace("//", "/")
+}
+
+/// `$script -join "`r`n"` runs in-process upstream, where `$json`, `$app` and
+/// `$expected_ver` are already in scope. hok runs the script in a child
+/// PowerShell, so those variables are reconstructed as a preamble; `$json` is
+/// read from `manifest_json_path` so a large manifest cannot overflow the
+/// command line.
+fn script_preamble(app: &str, expected_ver: &str, manifest_json_path: &std::path::Path) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    format!(
+        "$json = Get-Content -LiteralPath {} -Raw | ConvertFrom-Json\r\n$app = {}\r\n$expected_ver = {}\r\n",
+        quote(&manifest_json_path.display().to_string()),
+        quote(app),
+        quote(expected_ver)
+    )
 }
 
 // ─── Version extraction ─────────────────────────────────────────────────────
@@ -520,77 +690,167 @@ fn is_github_checkver(cv: &crate::Checkver) -> bool {
 /// Returns `(version, numbered_captures, named_captures)` where `named_captures`
 /// maps named group names to their values (Scoop `$matchesHashtable`, checkver.ps1
 /// lines 361-362).
+///
+/// `subs` carries the version substitution table, which upstream applies to the
+/// jsonpath (`json_path`, lib/json.ps1:98) and to the legacy jsonpath walk.
 fn extract_version(
     content: &str,
     cv: &crate::Checkver,
-    jsonpath_override: Option<&str>,
-    regex_override: Option<&str>,
+    jsonpath: Option<&str>,
+    regex: Option<&str>,
+    subs: &Substitution,
 ) -> Option<(String, Vec<String>, HashMap<String, String>)> {
-    // JSONPath: use override first (for GitHub API), then cv.jsonpath
-    if let Some(jp) = jsonpath_override.or(cv.jsonpath.as_deref()) {
-        use jsonpath_rust::JsonPath;
-        let value: serde_json::Value = serde_json::from_str(content).ok()?;
-        // jsonpath-rust cannot parse unquoted field names with special
-        // characters (e.g. `$.dist-tags.latest`); normalize to bracket form.
-        let jp = crate::internal::string::normalize_jsonpath(jp);
-        let found = value.query(&jp).ok()?;
-        let ver = found.first()?.as_str()?;
-        if !ver.is_empty() {
-            // Chaining: when a custom regex is in play, the jsonpath result
-            // becomes the page for the regex (Scoop checkver.ps1 lines
-            // 342-345: `$page = $ver; $ver = ''`). The github default regex
-            // `/releases/tag/...` is excluded — it only makes sense against
-            // HTML pages and cannot match a bare tag value.
-            if let Some(regex_str) = regex_override.or(cv.regex.as_deref())
-                && !regex_str.contains("/releases/tag/")
-            {
-                let rev = cv.reverse.unwrap_or(false);
-                return match_regex(ver, regex_str, rev, cv.replace.as_deref());
-            }
-            let caps = vec![ver.to_string()];
-            let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
-            return Some((v, caps, HashMap::new()));
+    let replace = cv.replace.as_deref();
+    let reverse = cv.reverse.unwrap_or(false);
+    // `$noregex = [String]::IsNullOrEmpty($regexp)`
+    let noregex = regex.is_none();
+
+    // JSONPath, with upstream's legacy fallback (bin/checkver.ps1:303-318).
+    if let Some(jsonpath) = jsonpath {
+        // `json_path $page $jsonpath $null ($reverse -and $noregex) $noregex`
+        let mut ver =
+            json_path(content, jsonpath, reverse && noregex, noregex, subs).unwrap_or_default();
+        if ver.is_empty() {
+            ver = json_path_legacy(content, jsonpath, subs).unwrap_or_default();
         }
+        if ver.is_empty() {
+            return None;
+        }
+        return finish_extraction(&ver, regex, reverse, replace);
     }
 
-    // XPath: evaluate XPath expression on XML content
-    if let Some(xp) = &cv.xpath
-        && let Some(ver) = extract_xpath(content, xp)
-    {
-        let caps = vec![ver.clone()];
-        let v = apply_replace(&caps, &HashMap::new(), cv.replace.as_deref());
-        return Some((v, caps, HashMap::new()));
+    // XPath (`bin/checkver.ps1:320-340`).
+    if let Some(xpath) = &cv.xpath {
+        let ver = extract_xpath(content, xpath)?;
+        if ver.is_empty() {
+            return None;
+        }
+        return finish_extraction(&ver, regex, reverse, replace);
     }
 
-    // Regex: use override first (sourceforge default), then cv.regex
-    if let Some(regex_str) = regex_override.or(cv.regex.as_deref()) {
-        let rev = cv.reverse.unwrap_or(false);
-        return match_regex(content, regex_str, rev, cv.replace.as_deref());
+    if let Some(regex) = regex {
+        return match_regex(content, regex, reverse, replace);
     }
 
+    // No selector at all: hok's long-standing fallback is the trimmed body.
+    // Upstream would try to compile the checkver object as a regex and abort.
     let trimmed = content.trim();
-    if !trimmed.is_empty() {
-        let ver = apply_replace(
-            &[trimmed.to_string()],
-            &HashMap::new(),
-            cv.replace.as_deref(),
-        );
-        Some((ver, vec![trimmed.to_string()], HashMap::new()))
+    if trimmed.is_empty() {
+        return None;
+    }
+    let ver = apply_replace(&[trimmed.to_string()], &HashMap::new(), replace);
+    Some((ver, vec![trimmed.to_string()], HashMap::new()))
+}
+
+/// The tail shared by the jsonpath/xpath branches: when a regex is also in
+/// play the selected value becomes the page and the regex runs on it
+/// (`if ($jsonpath -and $regexp) { $page = $ver; $ver = '' }`). A regex that
+/// does not match then fails the whole extraction, exactly like upstream's
+/// `next "couldn't match ..."`.
+fn finish_extraction(
+    value: &str,
+    regex: Option<&str>,
+    reverse: bool,
+    replace: Option<&str>,
+) -> Option<(String, Vec<String>, HashMap<String, String>)> {
+    if let Some(regex) = regex {
+        return match_regex(value, regex, reverse, replace);
+    }
+    let captures = vec![value.to_string()];
+    let ver = apply_replace(&captures, &HashMap::new(), replace);
+    Some((ver, captures, HashMap::new()))
+}
+
+/// `json_path` (lib/json.ps1:95-127) with the substitutions the caller passes.
+///
+/// `single` is upstream's `$noregex`: with a regex in play several tokens are
+/// serialised as a JSON array for the regex to run against; otherwise the
+/// first token is stringified.
+fn json_path(
+    content: &str,
+    jsonpath: &str,
+    reverse: bool,
+    single: bool,
+    subs: &Substitution,
+) -> Option<String> {
+    use jsonpath_rust::JsonPath;
+
+    // `substitute $jsonpath $substitutions ($jsonpath -like "*=~*")`
+    let jsonpath = if jsonpath.contains("=~") {
+        subs.apply_escaped(jsonpath)
     } else {
+        subs.apply(jsonpath)
+    };
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    // jsonpath-rust cannot parse unquoted field names with special characters
+    // (e.g. `$.dist-tags.latest`); normalize to bracket form.
+    let jsonpath = crate::internal::string::normalize_jsonpath(&jsonpath);
+    let found = value.query(&jsonpath).ok()?;
+    let mut items: Vec<serde_json::Value> = found.iter().map(|v| (*v).clone()).collect();
+    if reverse {
+        items.reverse();
+    }
+    if single || items.len() == 1 {
+        // `if ([Count] -eq 1 -or $single) { First().ToString() }`; an empty
+        // selection throws upstream and yields `$null`.
+        items.first().map(json_value_text)
+    } else if items.is_empty() {
         None
+    } else {
+        Some(serde_json::Value::Array(items).to_string())
     }
 }
 
-/// Match `regex_str` against `content` (honoring `reverse`), returning
+/// `json_path_legacy` (lib/json.ps1:129-159): a dotted property walk, used when
+/// the real JSONPath query returns nothing. Real buckets rely on it — 40
+/// manifests use a bare `assets.browser_download_url` / `tag_name`.
+fn json_path_legacy(content: &str, jsonpath: &str, subs: &Substitution) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let is_jsonpath = jsonpath.starts_with('$');
+    let mut current = value;
+    for segment in jsonpath.split('.') {
+        let segment = subs.apply(segment);
+        // `if ($el -eq '$' -and $isJsonPath) { return }`
+        if segment == "$" && is_jsonpath {
+            continue;
+        }
+        // `if ($el -match '^(?<property>\w+)?\[(?<index>\d+)\]$')`
+        if let Some(caps) = LEGACY_INDEX.captures(&segment) {
+            let index: usize = caps.name("index")?.as_str().parse().ok()?;
+            current = match caps.name("property") {
+                Some(prop) => current.get(prop.as_str())?.as_array()?.get(index)?.clone(),
+                None => current.as_array()?.get(index)?.clone(),
+            };
+            continue;
+        }
+        current = current.get(segment.as_str())?.clone();
+    }
+    Some(json_value_text(&current))
+}
+
+/// `^(?<property>\w+)?\[(?<index>\d+)\]$` from the legacy jsonpath walk.
+static LEGACY_INDEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?<property>\w+)?\[(?<index>\d+)\]$").unwrap());
+
+/// PowerShell's `.ToString()` on a JSON token.
+fn json_value_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// Match `regex` against `content` (honoring `reverse`), returning
 /// `(version, numbered_captures, named_captures)`. Shared by the regex branch
 /// and the jsonpath→regex chaining.
 fn match_regex(
     content: &str,
-    regex_str: &str,
+    regex: &str,
     reverse: bool,
     replace: Option<&str>,
 ) -> Option<(String, Vec<String>, HashMap<String, String>)> {
-    let re = Regex::new(regex_str).ok()?;
+    let re = Regex::new(regex).ok()?;
 
     // If reverse is enabled, take the last match
     let caps = if reverse {
@@ -1472,17 +1732,25 @@ mod tests {
     use crate::Checkver;
 
     fn checkver_default() -> Checkver {
-        Checkver {
-            regex: None,
-            url: None,
-            jsonpath: None,
-            xpath: None,
-            reverse: None,
-            replace: None,
-            useragent: None,
-            script: None,
-            sourceforge: None,
-        }
+        Checkver::default()
+    }
+
+    /// Test-local wrapper: `extract_version` takes the resolved regex and the
+    /// substitution table, which these unit tests take from the config and
+    /// leave empty respectively.
+    fn extract_version(
+        content: &str,
+        cv: &Checkver,
+        jsonpath: Option<&str>,
+        regex: Option<&str>,
+    ) -> Option<(String, Vec<String>, HashMap<String, String>)> {
+        super::extract_version(
+            content,
+            cv,
+            jsonpath.or(cv.jsonpath.as_deref()),
+            regex.or(cv.regex.as_deref()),
+            &Substitution::default(),
+        )
     }
 
     // ── apply_replace ────────────────────────────────────────────────────────
@@ -1548,38 +1816,382 @@ mod tests {
         );
     }
 
-    // ── is_github_checkver ───────────────────────────────────────────────────
+    // ── resolve_checkver_source (upstream's shortcut blocks) ────────────────
 
-    #[tokio::test]
-    async fn is_github_regex_match() {
-        let cv = Checkver {
-            regex: Some(r"/releases/tag/v?([\d.]+)".to_string()),
-            ..checkver_default()
-        };
-        assert!(is_github_checkver(&cv));
+    /// A minimal manifest parsed from `manifest_json`, fed to
+    /// `resolve_checkver_source` with a per-test temp dir.
+    fn resolve_with(
+        label: &str,
+        cv: &Checkver,
+        manifest_json: &str,
+        stem: &str,
+        has_token: bool,
+    ) -> ResolvedSource {
+        let root = crate::test_utils::tmpdir(label);
+        let path = root.join("app.json");
+        std::fs::write(&path, manifest_json).unwrap();
+        let manifest = manifest::parse_file(&path).unwrap();
+        resolve_checkver_source(cv, &manifest, stem, has_token)
     }
 
-    #[tokio::test]
-    async fn is_github_url_match() {
-        let cv = Checkver {
-            url: Some("https://github.com/owner/repo/releases/latest".to_string()),
-            ..checkver_default()
-        };
-        assert!(is_github_checkver(&cv));
+    #[test]
+    fn github_string_shortcut_derives_url_from_homepage() {
+        let mut cv = checkver_default();
+        cv.github_homepage = true;
+        let resolved = resolve_with(
+            "sv_gh_home",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://github.com/o/r"}"#,
+            "app",
+            false,
+        );
+        assert_eq!(resolved.url, "https://github.com/o/r/releases/latest");
+        assert_eq!(resolved.regex.as_deref(), Some(GITHUB_DEFAULT_REGEX));
+        assert!(resolved.pre_message.is_none());
     }
 
-    #[tokio::test]
-    async fn is_github_false_when_unrelated() {
-        let cv = Checkver {
-            url: Some("https://example.com/latest.txt".to_string()),
-            ..checkver_default()
-        };
-        assert!(!is_github_checkver(&cv));
+    #[test]
+    fn github_string_shortcut_with_a_token_rewrites_to_the_api() {
+        let mut cv = checkver_default();
+        cv.github_homepage = true;
+        let resolved = resolve_with(
+            "sv_gh_home_tok",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://github.com/o/r/"}"#,
+            "app",
+            true,
+        );
+        assert_eq!(
+            resolved.url,
+            "https://api.github.com/repos/o/r/releases/latest"
+        );
     }
 
-    #[tokio::test]
-    async fn is_github_false_when_empty() {
-        assert!(!is_github_checkver(&checkver_default()));
+    #[test]
+    fn github_string_shortcut_without_a_token_keeps_the_html_page() {
+        // `if ($useGithubAPI -and ($null -ne $GitHubToken))` — the rewrite is
+        // gated on a token, so an unauthenticated run does not burn the
+        // anonymous API quota.
+        let mut cv = checkver_default();
+        cv.github_homepage = true;
+        let resolved = resolve_with(
+            "sv_gh_home_notok",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://github.com/o/r/"}"#,
+            "app",
+            false,
+        );
+        assert_eq!(resolved.url, "https://github.com/o/r/releases/latest");
+    }
+
+    #[test]
+    fn github_string_shortcut_warns_on_a_non_github_homepage() {
+        let mut cv = checkver_default();
+        cv.github_homepage = true;
+        let resolved = resolve_with(
+            "sv_gh_home_bad",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://www.7-zip.org"}"#,
+            "7zip",
+            true,
+        );
+        // Upstream still performs the request after the non-fatal error.
+        assert_eq!(
+            resolved.url, "https://www.7-zip.org/releases/latest",
+            "the homepage is used verbatim"
+        );
+        assert!(resolved.pre_message.is_some());
+    }
+
+    #[test]
+    fn github_map_with_another_key_keeps_the_html_page() {
+        // `$json.checkver.PSObject.Properties.Count -eq 1` is false, so upstream
+        // never switches to the API — even with a token.
+        let mut cv = checkver_default();
+        cv.github = Some("https://github.com/JFLarvoire/the_silver_searcher".to_string());
+        cv.regex = Some(r"([\d.]+)-Windows".to_string());
+        cv.github_solo = false;
+        let resolved = resolve_with(
+            "sv_gh_map_re",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://github.com/JFLarvoire/the_silver_searcher"}"#,
+            "ag",
+            true,
+        );
+        assert_eq!(
+            resolved.url,
+            "https://github.com/JFLarvoire/the_silver_searcher/releases/latest"
+        );
+        assert_eq!(resolved.regex.as_deref(), Some(r"([\d.]+)-Windows"));
+    }
+
+    #[test]
+    fn github_map_solo_uses_the_api_with_a_token() {
+        let mut cv = checkver_default();
+        cv.github = Some("https://github.com/ip7z/7zip".to_string());
+        cv.github_solo = true;
+        let resolved = resolve_with(
+            "sv_gh_solo",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://www.7-zip.org"}"#,
+            "7zip",
+            true,
+        );
+        assert_eq!(
+            resolved.url,
+            "https://api.github.com/repos/ip7z/7zip/releases/latest"
+        );
+    }
+
+    #[test]
+    fn github_map_solo_without_a_token_keeps_the_html_page() {
+        let mut cv = checkver_default();
+        cv.github = Some("https://github.com/ip7z/7zip".to_string());
+        cv.github_solo = true;
+        let resolved = resolve_with(
+            "sv_gh_solo_notok",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://www.7-zip.org"}"#,
+            "7zip",
+            false,
+        );
+        assert_eq!(resolved.url, "https://github.com/ip7z/7zip/releases/latest");
+    }
+
+    /// Upstream appends `/releases/latest` to `checkver.github` unconditionally
+    /// (`bin/checkver.ps1:160`), so a value that already ends in `/releases`
+    /// produces a doubled path that cannot resolve: verified against the
+    /// installed Scoop 0.5.3 on 2026-09-13, where `arc.json` reports
+    /// `URL https://api.github.com/repos/mholt/archiver/releases/releases/latest is not valid`.
+    /// hok deliberately deviates (a superset fix) and keeps such a value as-is.
+    #[test]
+    fn github_map_keeps_an_already_complete_api_prefix() {
+        let mut cv = checkver_default();
+        cv.github = Some("https://api.github.com/repos/aptos-labs/aptos-core/releases".to_string());
+        cv.regex = Some(r"(?i)download/aptos-cli-v([\d.]+)/aptos-cli".to_string());
+        cv.github_solo = false;
+        let resolved = resolve_with(
+            "sv_gh_api_prefix",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://aptosnetwork.com"}"#,
+            "aptos-cli",
+            true,
+        );
+        assert_eq!(
+            resolved.url, "https://api.github.com/repos/aptos-labs/aptos-core/releases",
+            "the doubled path upstream produces is not reproduced"
+        );
+    }
+
+    #[test]
+    fn github_map_keeps_an_already_complete_latest_suffix() {
+        let mut cv = checkver_default();
+        cv.github =
+            Some("https://api.github.com/repos/bflattened/bflat/releases/latest/".to_string());
+        cv.github_solo = false;
+        let resolved = resolve_with(
+            "sv_gh_latest_suffix",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://github.com/bflattened/bflat"}"#,
+            "bflat",
+            false,
+        );
+        assert_eq!(
+            resolved.url,
+            "https://api.github.com/repos/bflattened/bflat/releases/latest"
+        );
+    }
+
+    #[test]
+    fn github_releases_latest_appends_only_when_missing() {
+        assert_eq!(
+            github_releases_latest("https://github.com/o/r"),
+            "https://github.com/o/r/releases/latest"
+        );
+        assert_eq!(
+            github_releases_latest("https://github.com/o/r/"),
+            "https://github.com/o/r/releases/latest"
+        );
+        assert_eq!(
+            github_releases_latest("https://api.github.com/repos/o/r/releases"),
+            "https://api.github.com/repos/o/r/releases"
+        );
+        assert_eq!(
+            github_releases_latest("https://api.github.com/repos/o/r/releases/latest"),
+            "https://api.github.com/repos/o/r/releases/latest"
+        );
+    }
+
+    #[test]
+    fn sourceforge_string_shortcut_uses_the_homepage_project_and_a_cdata_regex() {
+        let mut cv = checkver_default();
+        cv.sourceforge_homepage = true;
+        let resolved = resolve_with(
+            "sv_sf_home",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://sourceforge.net/projects/sevenzip/files/7-Zip/"}"#,
+            "7zip",
+            false,
+        );
+        assert_eq!(
+            resolved.url, "https://sourceforge.net/projects/sevenzip/rss?path=/7-Zip",
+            "the homepage path capture is a single segment"
+        );
+        assert_eq!(
+            resolved.regex.as_deref(),
+            Some(r"CDATA\[/7-Zip/.*?(?!\.)([\d.]+)(?<=\d).*?\]"),
+            "the CDATA anchor wraps the default sourceforge regex"
+        );
+    }
+
+    #[test]
+    fn sourceforge_string_shortcut_falls_back_to_strip_ext_of_the_name() {
+        let mut cv = checkver_default();
+        cv.sourceforge_homepage = true;
+        let resolved = resolve_with(
+            "sv_sf_fallback",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://example.com/"}"#,
+            "7zip-24.json",
+            false,
+        );
+        assert_eq!(resolved.url, "https://sourceforge.net/projects/7zip-24/rss");
+        assert_eq!(
+            resolved.regex.as_deref(),
+            Some(r"CDATA\[/.*?(?!\.)([\d.]+)(?<=\d).*?\]")
+        );
+    }
+
+    #[test]
+    fn sourceforge_map_form_uses_its_own_project_and_path() {
+        let mut cv = checkver_default();
+        cv.sourceforge = Some(crate::package::manifest::Sourceforge {
+            project: Some("foo".to_string()),
+            path: Some("/bar".to_string()),
+        });
+        let resolved = resolve_with(
+            "sv_sf_map",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://example.com"}"#,
+            "app",
+            false,
+        );
+        assert_eq!(
+            resolved.url,
+            "https://sourceforge.net/projects/foo/rss?path=/bar"
+        );
+    }
+
+    #[test]
+    fn plain_source_uses_the_manifest_url_then_the_homepage() {
+        let mut cv = checkver_default();
+        cv.url = Some("https://example.com/latest.txt".to_string());
+        let resolved = resolve_with(
+            "sv_plain_url",
+            &cv,
+            r#"{"version":"1.0.0","homepage":"https://example.com"}"#,
+            "app",
+            false,
+        );
+        assert_eq!(resolved.url, "https://example.com/latest.txt");
+        assert!(resolved.regex.is_none());
+
+        let resolved = resolve_with(
+            "sv_plain_home",
+            &checkver_default(),
+            r#"{"version":"1.0.0","homepage":"https://example.com"}"#,
+            "app",
+            false,
+        );
+        assert_eq!(resolved.url, "https://example.com");
+        assert!(resolved.regex.is_none());
+    }
+
+    #[test]
+    fn checkver_user_agent_substitutes_the_version_variables() {
+        // `substitute $json.checkver.useragent $substitutions`
+        // (bin/checkver.ps1:118) — 6 manifests in the local buckets rely on it.
+        let mut cv = checkver_default();
+        cv.useragent = Some("Fiddler/$version".to_string());
+        assert_eq!(
+            checkver_user_agent(&cv, "2.5.1").as_deref(),
+            Some("Fiddler/2.5.1")
+        );
+        // A variable the substitution table does not know stays literal, exactly
+        // as upstream: `$app` is in scope only for `checkver.script`.
+        cv.useragent = Some("$app/$version".to_string());
+        assert_eq!(checkver_user_agent(&cv, "2.0").as_deref(), Some("$app/2.0"));
+        // No manifest value means "keep the session default".
+        assert_eq!(checkver_user_agent(&checkver_default(), "1.0"), None);
+    }
+
+    // ── json_path_legacy ────────────────────────────────────────────────────
+
+    #[test]
+    fn json_path_legacy_walks_dotted_properties() {
+        let json = r#"{"assets":{"browser_download_url":"https://x/app.zip"}}"#;
+        assert_eq!(
+            json_path_legacy(
+                json,
+                "assets.browser_download_url",
+                &Substitution::default()
+            ),
+            Some("https://x/app.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn json_path_legacy_skips_a_leading_dollar() {
+        let json = r#"{"tag_name":"v1.2.3"}"#;
+        assert_eq!(
+            json_path_legacy(json, "$.tag_name", &Substitution::default()),
+            Some("v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn json_path_legacy_indexes_arrays() {
+        let json = r#"{"asset":[{"name":"a"},{"name":"b"}]}"#;
+        assert_eq!(
+            json_path_legacy(json, "$.asset[1].name", &Substitution::default()),
+            Some("b".to_string())
+        );
+    }
+
+    #[test]
+    fn json_path_legacy_missing_property_is_none() {
+        assert_eq!(
+            json_path_legacy(r#"{"a":1}"#, "b.c", &Substitution::default()),
+            None
+        );
+    }
+
+    // ── json_path (single/multi result shape) ──────────────────────────────
+
+    #[test]
+    fn json_path_serialises_multiple_tokens_for_a_regex() {
+        // With a regex in play (`$single = $false`) several tokens are handed
+        // over as a JSON array.
+        let json = r#"{"a":["x","y"]}"#;
+        let text = json_path(json, "$.a[*]", false, false, &Substitution::default()).unwrap();
+        assert!(text.starts_with('['), "got {text}");
+    }
+
+    #[test]
+    fn json_path_takes_the_first_token_without_a_regex() {
+        let json = r#"{"a":["x","y"]}"#;
+        assert_eq!(
+            json_path(json, "$.a[*]", false, true, &Substitution::default()).as_deref(),
+            Some("x")
+        );
+    }
+
+    #[test]
+    fn json_path_empty_selection_is_none() {
+        assert_eq!(
+            json_path(r#"{"a":1}"#, "$.b", false, false, &Substitution::default()),
+            None
+        );
     }
 
     // ── extract_version (regex) ──────────────────────────────────────────────
@@ -1702,19 +2314,31 @@ mod tests {
     }
 
     #[test]
-    fn extract_version_jsonpath_skips_github_default_regex() {
-        // `checkver: "github"` default regex cannot match a bare tag value,
-        // so the jsonpath value is returned as-is (no chaining). Note the
-        // leading `v` is kept: v/V prefix stripping happens in `execute`
-        // (github_mode && cv.jsonpath.is_none()), not inside extract_version.
+    fn extract_version_jsonpath_chaining_fails_when_the_regex_does_not_match() {
+        // With a jsonpath *and* a regex the jsonpath value becomes the page,
+        // and a regex that cannot match it fails the whole extraction
+        // (upstream's `next "couldn't match ..."`). The default GitHub regex is
+        // a plain regex in this model — hok no longer special-cases it.
         let cv = Checkver {
             regex: Some(r"/releases/tag/(?:v|V)?([\d.]+)".to_string()),
             ..checkver_default()
         };
         let json = r#"{"tag_name": "v1.5.0", "name": "Release 1.5.0"}"#;
         let result = extract_version(json, &cv, Some("$.tag_name"), None);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().0, "v1.5.0");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn extract_version_jsonpath_chaining_runs_the_regex_on_the_tag() {
+        // The real-world `{github, jsonpath: "$.tag_name", regex: "v([\\d.]+)"}`
+        // shape (e.g. bflat.json): the tag feeds the user regex.
+        let cv = Checkver {
+            regex: Some(r"v([\d.]+)".to_string()),
+            ..checkver_default()
+        };
+        let json = r#"{"tag_name": "v1.5.0", "name": "Release 1.5.0"}"#;
+        let result = extract_version(json, &cv, Some("$.tag_name"), None);
+        assert_eq!(result.expect("chained").0, "1.5.0");
     }
 
     // ── extract_version (github + custom regex) ──────────────────────────────
@@ -2056,6 +2680,7 @@ mod tests {
             skip_updated: false,
             version: None,
             timeout: 10,
+            throw_error: false,
         };
 
         let mut reports = Vec::new();
@@ -2428,5 +3053,131 @@ mod tests {
             serde_json::json!("https://ex.com/2.0.0")
         );
         assert_eq!(value["extract_to"], serde_json::json!("200"));
+    }
+
+    // ── execute end-to-end: github shortcut + checkver.script ──────────────
+
+    /// Run `execute` over a single-manifest bucket dir with a network fake.
+    async fn run_execute(
+        label: &str,
+        manifest_json: &str,
+        canned: &[(&str, &[u8])],
+    ) -> Vec<CheckverReport> {
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir(label);
+        let session = test_session(&root);
+        let fake = Arc::new(FakeNetwork::new());
+        for (url, body) in canned {
+            fake.serve(url, body.to_vec());
+        }
+        session.set_network(fake).unwrap();
+
+        let bucket_dir = root.join("bucket");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        std::fs::write(bucket_dir.join("app.json"), manifest_json).unwrap();
+
+        let opts = CheckverOptions {
+            dir: bucket_dir,
+            app: vec!["*".to_string()],
+            update: false,
+            force_update: false,
+            skip_updated: false,
+            version: None,
+            timeout: 30,
+            throw_error: false,
+        };
+        let mut reports = Vec::new();
+        execute(opts, &session, |r| reports.push(r.clone()))
+            .await
+            .unwrap();
+        reports
+    }
+
+    /// `{github: "https://github.com/o/r", regex: ...}` must fetch the HTML
+    /// release page and run the user regex on it. hok used to rewrite the URL
+    /// to `api.github.com` and feed the regex a JSON tag, which no real
+    /// manifest regex can match (619 manifests in main+extras).
+    #[tokio::test]
+    async fn github_with_a_custom_regex_uses_the_html_page() {
+        let html = br#"<a href="/o/r/releases/tag/v9.9.9">release</a>"#;
+        let reports = run_execute(
+            "cv_gh_regex",
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://github.com/o/r",
+                "checkver": {
+                    "github": "https://github.com/o/r",
+                    "regex": "releases/tag/v([\\d.]+)"
+                }
+            }"#,
+            // Only the web page is served: an API rewrite would fail the test.
+            &[("https://github.com/o/r/releases/latest", html)],
+        )
+        .await;
+        assert_eq!(reports.len(), 1);
+        assert_eq!(
+            reports[0].new_version.as_deref(),
+            Some("9.9.9"),
+            "report: {:?}",
+            reports[0]
+        );
+    }
+
+    /// The `checkver: "github"` string shortcut without a token fetches the
+    /// HTML page and applies upstream's default `/releases/tag/...` regex
+    /// (no anonymous API call).
+    #[tokio::test]
+    async fn github_string_shortcut_without_a_token_uses_the_html_page() {
+        let html = br#"<a href="/o/r/releases/tag/v9.9.9">release</a>"#;
+        let reports = run_execute(
+            "cv_gh_string",
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://github.com/o/r",
+                "checkver": "github"
+            }"#,
+            &[("https://github.com/o/r/releases/latest", html)],
+        )
+        .await;
+        assert_eq!(reports[0].new_version.as_deref(), Some("9.9.9"));
+    }
+
+    /// `checkver.script` runs in a child PowerShell, so upstream's in-scope
+    /// `$json`, `$app` and `$expected_ver` are reconstructed as a preamble.
+    /// The download still happens first (the URL is served here).
+    #[tokio::test]
+    async fn checkver_script_receives_app_expected_ver_and_json() {
+        let reports = run_execute(
+            "cv_script",
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "checkver": {
+                    "url": "https://example.com/latest.txt",
+                    "script": "Write-Output ($app + '|' + $expected_ver + '|' + $json.version)"
+                }
+            }"#,
+            &[("https://example.com/latest.txt", b"ignored body")],
+        )
+        .await;
+        assert_eq!(
+            reports[0].new_version.as_deref(),
+            Some("app|1.0.0|1.0.0"),
+            "the script must see $app, $expected_ver and $json ($json.version)"
+        );
+    }
+
+    #[test]
+    fn script_preamble_quotes_single_quotes() {
+        let preamble = script_preamble("app's", "1.0.0", std::path::Path::new(r"C:\tmp\it's.json"));
+        assert!(
+            preamble.contains("$json = Get-Content -LiteralPath"),
+            "got {preamble}"
+        );
+        assert!(preamble.contains(r"'C:\tmp\it''s.json'"), "got {preamble}");
+        assert!(preamble.contains("$app = 'app''s'"));
+        assert!(preamble.contains("$expected_ver = '1.0.0'"));
     }
 }

@@ -24,6 +24,21 @@ use crate::{Error, Session, error::Fallible, internal};
 
 pub(crate) use internal::network::HeaderProfile;
 
+/// The GitHub token hok would send, or `None`.
+///
+/// `Get-GitHubToken` (`lib/download.ps1:580-582`) prefers the environment
+/// variable and falls back to the config key, treating an empty value as
+/// absent. Every GitHub-authenticated request path resolves it here, so the
+/// "is a token configured?" question has one answer.
+pub(crate) fn github_token(session: &Session) -> Option<String> {
+    if let Ok(token) = std::env::var("SCOOP_GH_TOKEN")
+        && !token.is_empty()
+    {
+        return Some(token);
+    }
+    session.config().gh_token.clone().filter(|t| !t.is_empty())
+}
+
 /// Upstream's request header contract for one URL, resolved to owned values.
 ///
 /// Every config-derived value is copied out here so the session's config read
@@ -49,7 +64,7 @@ impl ScoopRequest {
     /// Resolve proxy, User-Agent, Referer, PRIVATE_HOSTS and GitHub API headers
     /// for `url`.
     pub(crate) fn for_url(session: &Session, url: &str, profile: HeaderProfile) -> Self {
-        let (proxy, extra_headers, gh_token) = {
+        let (proxy, extra_headers) = {
             let config = session.config();
             (
                 config.proxy().map(|s| s.to_owned()),
@@ -59,9 +74,9 @@ impl ScoopRequest {
                         url,
                     )
                 }),
-                config.gh_token.clone(),
             )
         };
+        let gh_token = github_token(session);
         Self {
             proxy,
             user_agent: session

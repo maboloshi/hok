@@ -280,7 +280,7 @@ pub struct Sourceforge {
     pub path: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Checkver {
     #[serde(alias = "re")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,6 +310,29 @@ pub struct Checkver {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sourceforge: Option<Sourceforge>,
+
+    /// `"checkver": "github"` — upstream's string shortcut. The repository is
+    /// taken from `homepage`, and this form always sets `useGithubAPI`
+    /// (`bin/checkver.ps1:150-157`).
+    #[serde(skip)]
+    pub github_homepage: bool,
+
+    /// `"checkver": { "github": "owner/repo" }` — the map shortcut
+    /// (`bin/checkver.ps1:159-163`).
+    #[serde(skip)]
+    pub github: Option<String>,
+
+    /// Upstream only lets the `github` map form use the GitHub API when it is
+    /// the *only* key of the checkver object
+    /// (`$json.checkver.PSObject.Properties.Count -eq 1`).
+    #[serde(skip)]
+    pub github_solo: bool,
+
+    /// `"checkver": "sourceforge"` — the string shortcut. Unlike the
+    /// `sourceforge` map form it derives the project from `homepage`, falling
+    /// back to `strip_ext($name)` (`bin/checkver.ps1:171-183`).
+    #[serde(skip)]
+    pub sourceforge_homepage: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -174,6 +174,10 @@ pub(crate) fn apply_headers<'a>(
         }
     }
     if let Some(token) = opts.token {
+        // GitHub's documented scheme is `Bearer <token>`; upstream writes
+        // `token <token>` (`bin/checkver.ps1:223`) and GitHub accepts both.
+        // hok deliberately uses the standard spelling — a registered,
+        // intentional deviation from the reference implementation.
         req = req.header(AUTHORIZATION, format!("Bearer {token}"));
     }
     if opts.github_api {
@@ -322,6 +326,29 @@ pub async fn download(url: &str, opts: &RequestOptions<'_>) -> Result<Vec<u8>, S
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+/// Decode a downloaded body into text the way upstream's `StreamReader` does
+/// (`lib/autoupdate.ps1:58-64`, `bin/checkver.ps1:289-295`): a body that starts
+/// with the gzip magic is inflated, and decoding never fails — an undecodable
+/// sequence becomes replacement characters rather than aborting the run.
+///
+/// Upstream picks the charset from the response's `Content-Type`; the
+/// [`Network`] trait only hands back bytes, so hok decodes as UTF-8 and
+/// substitutes on error.
+pub fn decode_body(raw: &[u8]) -> String {
+    let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read;
+        let mut inflate = flate2::read::GzDecoder::new(raw);
+        let mut out = Vec::new();
+        match inflate.read_to_end(&mut out) {
+            Ok(_) => out,
+            Err(_) => raw.to_vec(),
+        }
+    } else {
+        raw.to_vec()
+    };
+    String::from_utf8_lossy(&bytes).into_owned()
+}
 
 /// Strip filename from a URL to produce a Referer value.
 /// Matches Scoop's `strip_filename` in lib/core.ps1.
@@ -571,11 +598,7 @@ mod tests {
         let body = download("https://api.github.com/", &opts)
             .await
             .expect("HTTPS request must succeed with the configured TLS backend");
-        assert!(
-            body.len() > 16,
-            "unexpected body length: {}",
-            body.len()
-        );
+        assert!(body.len() > 16, "unexpected body length: {}", body.len());
     }
 
     #[test]

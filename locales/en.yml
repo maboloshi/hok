@@ -154,10 +154,8 @@ cmd:
   checkhashes_path_not_found: "path %{path} not found in JSON"
   checkver_updated_to: "updated to %{ver}"
   checkver_update_failed: "update failed: %{e}"
-  checkver_no_version: "script returned no version"
   checkver_script_err: "script error: %{e}"
-  checkver_github_err: "could not extract GitHub repo from homepage"
-  checkver_sourceforge_err: "could not extract SourceForge project"
+  checkver_github_err: "%{name} checkver expects the homepage to be a github repository"
   checkver_no_url: "no checkver url"
   checkver_no_extract: "could not extract version"
   checkurls_summary: "Checked %{total} URLs: %{valid} valid, %{invalid} invalid."
@@ -582,6 +580,7 @@ cli_help:
       skip_updated: Skip manifests that are already up-to-date
       version: Update manifest to specific version (skip version detection)
       timeout: Request timeout in seconds
+      throw_error: Throw on the first error instead of reporting it and continuing
   cleanup:
     about: Cleanup apps by removing old versions
     args:
