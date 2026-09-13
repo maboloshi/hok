@@ -231,11 +231,6 @@ pub fn is_github_releases_url(url: &str) -> bool {
     is_github_web_url(url) && url.contains("/releases/")
 }
 
-/// Whether `url` is a github.com `/releases/download/...` asset URL.
-pub fn is_github_releases_download_url(url: &str) -> bool {
-    is_github_web_url(url) && url.contains("/releases/download/")
-}
-
 /// Extract `(owner, repo)` from a github.com URL.
 ///
 /// Accepts all common forms:
@@ -279,19 +274,6 @@ pub fn extract_sourceforge_project(homepage: &str) -> Option<String> {
     let re = Regex::new(r"sourceforge\.net/projects/([^/]+)").ok()?;
     let caps = re.captures(homepage)?;
     caps.get(1).map(|m| m.as_str().to_string())
-}
-
-/// Parse a SourceForge download URL to extract `(project, file_path)`.
-pub fn parse_sourceforge_url(url: &str) -> Option<(String, String)> {
-    // Scoop regex: '(?:downloads\.)?sourceforge.net\/projects?\/(?<project>[^\/]+)\/(?:files\/)?(?<file>.*)'
-    let re = Regex::new(
-        r"(?:downloads\.)?(?:sourceforge\.net|sf\.net)/projects?/([^/]+)(?:/files)?/(.*)",
-    )
-    .ok()?;
-    let caps = re.captures(url)?;
-    let project = caps.get(1)?.as_str().to_string();
-    let file_path = caps.get(2)?.as_str().trim_end_matches('/').to_string();
-    Some((project, file_path))
 }
 
 #[cfg(test)]
@@ -550,7 +532,7 @@ mod tests {
         assert!(!is_github_api_url("https://github.com/owner/repo"));
     }
 
-    // ── is_github_releases_url / is_github_releases_download_url ────────────
+    // ── is_github_releases_url ──────────────────────────────────────────────
 
     #[test]
     fn github_releases_url_detected() {
@@ -563,16 +545,6 @@ mod tests {
         assert!(!is_github_releases_url("https://github.com/owner/repo"));
         assert!(!is_github_releases_url(
             "https://api.github.com/repos/owner/repo/releases"
-        ));
-    }
-
-    #[test]
-    fn github_releases_download_url_detected() {
-        assert!(is_github_releases_download_url(
-            "https://github.com/owner/repo/releases/download/1.0/app.zip"
-        ));
-        assert!(!is_github_releases_download_url(
-            "https://github.com/owner/repo/releases/latest"
         ));
     }
 
@@ -678,7 +650,7 @@ mod tests {
         );
     }
 
-    // ── extract_sourceforge_project / parse_sourceforge_url ─────────────────
+    // ── extract_sourceforge_project ─────────────────────────────────────────
 
     #[test]
     fn sourceforge_extracts_project_from_homepage() {
@@ -690,31 +662,5 @@ mod tests {
     fn sourceforge_returns_none_for_non_sf_url() {
         let result = extract_sourceforge_project("https://example.com/project");
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn parse_sourceforge_download_url() {
-        let (project, file_path) = parse_sourceforge_url(
-            "https://downloads.sourceforge.net/project/sevenzip/7-Zip/24.09/7z2409-x64.exe",
-        )
-        .unwrap();
-        assert_eq!(project, "sevenzip");
-        assert_eq!(file_path, "7-Zip/24.09/7z2409-x64.exe");
-    }
-
-    #[test]
-    fn parse_sourceforge_url_sf_net_shortcut() {
-        let (project, file_path) =
-            parse_sourceforge_url("https://sf.net/projects/foo/files/bar/baz.zip").unwrap();
-        assert_eq!(project, "foo");
-        assert_eq!(file_path, "bar/baz.zip");
-    }
-
-    #[test]
-    fn parse_sourceforge_url_non_sf_returns_none() {
-        assert_eq!(
-            parse_sourceforge_url("https://example.com/files/x.zip"),
-            None
-        );
     }
 }

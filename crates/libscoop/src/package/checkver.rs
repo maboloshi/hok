@@ -2316,6 +2316,90 @@ mod tests {
         assert_eq!(std::fs::read(&cached).unwrap(), payload);
     }
 
+    /// The real-bucket shape with **no** `regex`: a `checksums.txt` line. Only
+    /// the default `^\s*([a-fA-F0-9]+)\s*$` plus the filename fallback can
+    /// resolve this — hok used to abort with "could not extract hash".
+    #[tokio::test]
+    async fn autoupdate_uses_the_default_hash_file_regex() {
+        let hash = "a".repeat(64);
+        let body = format!("{hash}  app-2.0.0.zip\n");
+        // Only the checksums file is served: a download fallback would fail.
+        let value = run_autoupdate(
+            "autoupdate_default_regex",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "autoupdate": {
+                    "url": "https://dl.example.com/app-$version.zip",
+                    "hash": { "url": "$baseurl/checksums.txt" }
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/checksums.txt", body.as_bytes())],
+        )
+        .await;
+        assert_eq!(
+            value["hash"],
+            serde_json::json!(hash),
+            "a bare hash line must be picked up without any configured regex"
+        );
+    }
+
+    /// `find` is a *regex* whose first group is the hash
+    /// (lib/autoupdate.ps1:246-251), and the `$sha256` template expands to its
+    /// capture group. hok used to `content.find()` the literal string.
+    #[tokio::test]
+    async fn autoupdate_find_is_a_regex_with_template_expansion() {
+        let hash = "b".repeat(64);
+        let body = format!("{hash}  app-2.0.0.zip\n");
+        let value = run_autoupdate(
+            "autoupdate_find_regex",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "autoupdate": {
+                    "url": "https://dl.example.com/app-$version.zip",
+                    "hash": {
+                        "url": "$baseurl/SHA256SUMS",
+                        "find": "$sha256\\s+$basename"
+                    }
+                }
+            }"#,
+            "2.0.0",
+            &[("https://dl.example.com/SHA256SUMS", body.as_bytes())],
+        )
+        .await;
+        assert_eq!(value["hash"], serde_json::json!(hash));
+    }
+
+    /// A hash file that yields nothing is not an error: upstream downloads the
+    /// artefact and computes SHA-256 (lib/autoupdate.ps1:304-329).
+    #[tokio::test]
+    async fn autoupdate_falls_back_to_downloading_when_the_hash_file_yields_nothing() {
+        let payload = b"payload-bytes".to_vec();
+        let value = run_autoupdate(
+            "autoupdate_hash_file_miss",
+            r#"{
+                "version": "1.0.0",
+                "url": "https://dl.example.com/app-1.0.0.zip",
+                "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+                "autoupdate": {
+                    "url": "https://dl.example.com/app-$version.zip",
+                    "hash": { "url": "$baseurl/checksums.txt" }
+                }
+            }"#,
+            "2.0.0",
+            &[
+                ("https://dl.example.com/checksums.txt", b"no hash here"),
+                ("https://dl.example.com/app-2.0.0.zip", &payload),
+            ],
+        )
+        .await;
+        assert_eq!(value["hash"], serde_json::json!(sha256_hex(&payload)));
+    }
+
     /// Any autoupdate key is substituted, not just the typed ones — this is
     /// what upstream's PSObject walk buys (`changelog`, `extract_to`, ...).
     #[tokio::test]

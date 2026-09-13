@@ -12,6 +12,7 @@
 //!   `info -v`).
 //! - [`download_file`] — download to a local path (`create`, `checkhashes`,
 //!   checkver's download-and-hash).
+//! - [`download_bytes`] — download as raw bytes, for payload sniffing.
 //! - [`download_page`] — download as a UTF-8 string, optionally with a Bearer
 //!   token for GitHub API (`checkver`).
 
@@ -146,26 +147,43 @@ pub async fn download_file(session: &Session, url: &str, dest: &Path) -> Fallibl
     Ok(())
 }
 
-/// Download a URL's content as a UTF-8 string with Scoop's `autoupdate` headers
+/// Download a URL's raw bytes with Scoop's `autoupdate` headers
 /// (`lib/autoupdate.ps1:20-206`).
 ///
-/// `token` is optional — pass `Some("ghp_...")` for GitHub API Bearer auth.
+/// `token` is optional and only overrides the token the profile resolved.
+///
+/// Callers that need to sniff the payload before decoding it (checkver's hash
+/// files are gzip-compressed on some hosts, `lib/autoupdate.ps1:58-64`) use
+/// this directly; [`download_page`] is the text-only wrapper.
+pub async fn download_bytes(
+    session: &Session,
+    url: &str,
+    timeout_secs: u64,
+    token: Option<&str>,
+) -> Fallible<Vec<u8>> {
+    let request = ScoopRequest::for_url(session, url, HeaderProfile::Autoupdate);
+    let mut opts = request.options(timeout_secs);
+    if token.is_some() {
+        opts.token = token;
+    }
+    session
+        .network()
+        .download(url, &opts)
+        .await
+        .map_err(Error::Custom)
+}
+
+/// Download a URL's content as a UTF-8 string with Scoop-compatible headers.
+///
+/// See [`download_bytes`] for the header injection; this adds a strict UTF-8
+/// decode.
 pub async fn download_page(
     session: &Session,
     url: &str,
     timeout_secs: u64,
     token: Option<&str>,
 ) -> Fallible<String> {
-    let request = ScoopRequest::for_url(session, url, HeaderProfile::Autoupdate);
-    let mut opts = request.options(timeout_secs);
-    if token.is_some() {
-        opts.token = token;
-    }
-    let data = session
-        .network()
-        .download(url, &opts)
-        .await
-        .map_err(Error::Custom)?;
+    let data = download_bytes(session, url, timeout_secs, token).await?;
     String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
 }
 
