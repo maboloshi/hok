@@ -10,8 +10,10 @@ use std::{collections::HashMap, path::Path, result::Result, sync::LazyLock};
 
 use crate::error::{Error, Fallible};
 
-fn fetch_options(proxy: Option<&str>) -> FetchOptions<'static> {
-    let mut fo = FetchOptions::new();
+/// The credential callback every remote operation shares: an explicit
+/// username when one is requested, the configured credential helper for
+/// user/password, otherwise libgit2's default resolution.
+fn remote_callbacks() -> git2::RemoteCallbacks<'static> {
     let mut cb = git2::RemoteCallbacks::new();
 
     cb.credentials(
@@ -31,17 +33,27 @@ fn fetch_options(proxy: Option<&str>) -> FetchOptions<'static> {
         },
     );
 
-    fo.remote_callbacks(cb);
+    cb
+}
 
-    if let Some(proxy) = proxy {
-        let mut proxy = proxy.to_owned();
+/// The proxy settings for a configured `proxy` value, if any.
+fn proxy_options(proxy: Option<&str>) -> Option<git2::ProxyOptions<'static>> {
+    let mut url = proxy?.to_owned();
 
-        if !(proxy.starts_with("http") || proxy.starts_with("socks")) {
-            proxy.insert_str(0, "http://");
-        }
+    if !(url.starts_with("http") || url.starts_with("socks")) {
+        url.insert_str(0, "http://");
+    }
 
-        let mut po = git2::ProxyOptions::new();
-        po.url(proxy.as_str());
+    let mut po = git2::ProxyOptions::new();
+    po.url(url.as_str());
+    Some(po)
+}
+
+fn fetch_options(proxy: Option<&str>) -> FetchOptions<'static> {
+    let mut fo = FetchOptions::new();
+    fo.remote_callbacks(remote_callbacks());
+
+    if let Some(po) = proxy_options(proxy) {
         fo.proxy_options(po);
     }
 
@@ -91,6 +103,36 @@ where
         .clone(remote_url.as_ref(), path.as_ref())
         .map_err(|e| e.into())
         .map(|_| {})
+}
+
+/// `git ls-remote <url>`: connect to the remote and take its ref
+/// advertisement without cloning anything — upstream's `Checking repo... `
+/// precheck before `bucket add` creates the bucket directory
+/// (`lib/buckets.ps1:149-154`).
+///
+/// A detached remote needs no repository and leaves no temporary clone
+/// behind; the connection carries the same credentials and proxy a fetch
+/// would use.
+pub fn ls_remote<S>(remote_url: S, proxy: Option<S>) -> Fallible<()>
+where
+    S: AsRef<str>,
+{
+    let proxy = proxy.as_ref().map(|s| s.as_ref());
+    let mut remote = git2::Remote::create_detached(remote_url.as_ref())?;
+    // The connect handshake is what decides whether the URL is a repository at
+    // all: it resolves the transport, authenticates and reads the ref
+    // advertisement, so a dead host, a missing repository or a non-repo path
+    // all fail here. Deliberately no `RemoteConnection::list()` afterwards:
+    // git2 0.19 builds that slice with `from_raw_parts(null, 0)` for a remote
+    // advertising no refs (an empty repository), which trips Rust's
+    // non-null-pointer precondition and aborts the process.
+    let _connection = remote.connect_auth(
+        git2::Direction::Fetch,
+        Some(remote_callbacks()),
+        proxy_options(proxy),
+    )?;
+
+    Ok(())
 }
 
 // Update a bucket repo with `git pull` semantics (Scoop-compatible):
@@ -429,6 +471,10 @@ pub trait Git: Send + Sync {
     /// Clone a remote repository into `path`.
     async fn clone_repo(&self, remote_url: &str, path: &Path, proxy: Option<&str>) -> Fallible<()>;
 
+    /// Check that `remote_url` is a reachable git repository (`git ls-remote`)
+    /// without cloning it (see [`ls_remote`]).
+    async fn ls_remote(&self, remote_url: &str, proxy: Option<&str>) -> Fallible<()>;
+
     /// Update a bucket repo with `git pull` semantics.
     async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()>;
 
@@ -478,6 +524,15 @@ impl Git for RealGit {
         tokio::task::spawn_blocking(move || pull(path, proxy))
             .await
             .map_err(|e| Error::Custom(format!("git pull task panicked: {}", e)))?
+    }
+
+    async fn ls_remote(&self, remote_url: &str, proxy: Option<&str>) -> Fallible<()> {
+        // Blocking network I/O: the same offload as clone_repo.
+        let remote_url = remote_url.to_owned();
+        let proxy = proxy.map(|s| s.to_owned());
+        tokio::task::spawn_blocking(move || ls_remote(remote_url, proxy))
+            .await
+            .map_err(|e| Error::Custom(format!("git ls-remote task panicked: {}", e)))?
     }
 
     fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>> {
@@ -970,5 +1025,34 @@ mod tests {
         let ssh = normalize_git_uri("git@github.com:ScoopInstaller/Extras.git").unwrap();
         assert_eq!(https, ssh);
         assert!(https.eq_ignore_ascii_case("GITHUB.COM/scoopinstaller/extras"));
+    }
+
+    /// `ls_remote` reads a repository over the local transport and fails on a
+    /// path that is not one — no clone, no temporary directory left behind.
+    #[test]
+    fn ls_remote_reads_a_local_repository() {
+        let origin = temp_dir("ls-remote-origin");
+        let repo = Repository::init(&origin).unwrap();
+        commit_file(&repo, "a.txt", "a\n", "base");
+
+        assert!(ls_remote(origin.to_str().unwrap(), None).is_ok());
+
+        let not_a_repo = origin.join("nested");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+        assert!(ls_remote(not_a_repo.to_str().unwrap(), None).is_err());
+
+        cleanup(&origin);
+    }
+
+    /// A repository that advertises no refs is still reachable — and, unlike
+    /// `RemoteConnection::list()`, must not abort the process.
+    #[test]
+    fn ls_remote_accepts_an_empty_repository() {
+        let origin = temp_dir("ls-remote-empty");
+        Repository::init_bare(&origin).unwrap();
+
+        assert!(ls_remote(origin.to_str().unwrap(), None).is_ok());
+
+        cleanup(&origin);
     }
 }

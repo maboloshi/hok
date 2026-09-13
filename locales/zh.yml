@@ -441,6 +441,7 @@ error:
   bucket_invalid_git_url: "%{repo} 不是有效的 Git URL！"
   bucket_invalid_git_url_hint: "有效形式请参见 https://git-scm.com/docs/git-clone#_git_urls。"
   bucket_repo_already_exists: "仓库 %{repo} 已存在（bucket：%{bucket}）"
+  bucket_repo_unreachable: "'%{repo}' 看起来不是有效的 git 仓库\n\n错误信息：\n%{output}"
   bucket_update_not_fast_forward: "无法快进更新 bucket '%{ref}'：历史分叉或无关（远程可能已被改写）"
   bucket_update_merge_conflict: "更新 bucket '%{ref}' 时发生合并冲突；请在 bucket 目录解决冲突后重试"
   bucket_update_local_changes: "本地更改将被 bucket 更新覆盖：%{files}"

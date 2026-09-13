@@ -485,16 +485,32 @@ pub fn resolve(session: &Session, name: &str, remote_url: &str) -> Fallible<Reso
 
 /// Clone a bucket resolved by [`resolve`].
 ///
+/// The repository is prechecked with `git ls-remote` first, so an unreachable
+/// or non-git URL fails before anything is created on disk.
+///
 /// # Errors
 ///
-/// A git error will be returned if cloning the bucket failed.
+/// [`Error::BucketRepoUnreachable`] when the repository cannot be listed, and
+/// a git error when cloning it failed.
 pub async fn add_resolved(session: &Session, bucket: &ResolvedBucket) -> Fallible<()> {
-    // The proxy is read before the await so a concurrent `config_mut()` is
-    // never blocked by the clone.
+    // The proxy is read before the awaits so a concurrent `config_mut()` is
+    // never blocked by the network work.
     let proxy = {
         let config = session.config();
         config.proxy().map(|s| s.to_owned())
     };
+
+    // Upstream's `Checking repo... ` precheck: reach the remote and take its
+    // ref advertisement before creating the bucket, so a typo, a dead host or
+    // a missing repository is reported without leaving a half-made clone
+    // behind (`lib/buckets.ps1:149-154`).
+    session
+        .git()
+        .ls_remote(&bucket.remote_url, proxy.as_deref())
+        .await
+        .map_err(|e| {
+            Error::BucketRepoUnreachable(bucket.remote_url.clone(), one_line(&e.to_string()))
+        })?;
 
     // Upstream creates the buckets directory right before the clone
     // (`lib/buckets.ps1:155-157`).
@@ -912,6 +928,48 @@ mod tests {
             clones[0].1.to_string_lossy().ends_with("buckets\\extras"),
             "clone path: {:?}",
             clones[0].1
+        );
+        drop(clones);
+
+        // Upstream lists the remote (`Checking repo... `) before cloning.
+        assert_eq!(
+            fake.ls_remotes.lock().unwrap().as_slice(),
+            ["https://example.com/owner/extras.git"]
+        );
+    }
+
+    /// A repository `git ls-remote` cannot reach is refused before anything is
+    /// created (`lib/buckets.ps1:149-154`).
+    #[tokio::test]
+    async fn bucket_add_rejects_an_unreachable_repository() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+
+        let root = tmpdir("bucket_add_unreachable");
+        let session = test_session(&root);
+        let fake = Arc::new(FakeGit::default());
+        fake.fail_ls_remote.store(true, Ordering::SeqCst);
+        session.set_git(fake.clone()).unwrap();
+
+        let err = crate::bucket::add(&session, "foo", "https://example.com/owner/foo.git")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                crate::Error::BucketRepoUnreachable(repo, _)
+                    if repo == "https://example.com/owner/foo.git"
+            ),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            fake.clones.lock().unwrap().is_empty(),
+            "a failed precheck must not clone"
+        );
+        assert!(
+            !root.join("buckets").join("foo").exists(),
+            "a failed precheck must not create the bucket directory"
         );
     }
 

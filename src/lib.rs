@@ -87,6 +87,12 @@ fn translate_error(err: &libscoop::Error) -> String {
             repo = repo
         )
         .to_string(),
+        libscoop::Error::BucketRepoUnreachable(repo, output) => hok_i18n::t!(
+            "error.bucket_repo_unreachable",
+            repo = repo,
+            output = output
+        )
+        .to_string(),
         libscoop::Error::PackageNotFound(name) => {
             hok_i18n::t!("error.package_not_found", name = name).to_string()
         }

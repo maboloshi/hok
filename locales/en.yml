@@ -441,6 +441,7 @@ error:
   bucket_invalid_git_url: "%{repo} is not a valid Git URL!"
   bucket_invalid_git_url_hint: "Please see https://git-scm.com/docs/git-clone#_git_urls for valid ones."
   bucket_repo_already_exists: "Bucket %{bucket} already exists for %{repo}"
+  bucket_repo_unreachable: "'%{repo}' doesn't look like a valid git repository\n\nError given:\n%{output}"
   bucket_update_not_fast_forward: "Cannot fast-forward update of bucket '%{ref}': histories diverged or unrelated (remote may have been rewritten)"
   bucket_update_merge_conflict: "Merge conflict while updating bucket '%{ref}'; resolve the conflicts in the bucket directory and retry"
   bucket_update_local_changes: "Local changes would be overwritten by the bucket update: %{files}"

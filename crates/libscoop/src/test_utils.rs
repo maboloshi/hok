@@ -317,16 +317,21 @@ impl Network for FakeNetwork {
 
 /// An in-memory [`Git`] fake for offline tests.
 ///
-/// Records `clone_repo` / `pull` calls instead of touching real repositories.
-/// `pull` is a no-op success unless [`FakeGit::fail_pull`] is set.
+/// Records `clone_repo` / `ls_remote` / `pull` calls instead of touching real
+/// repositories. `ls_remote` and `pull` are no-op successes unless
+/// [`FakeGit::fail_ls_remote`] / [`FakeGit::fail_pull`] is set.
 /// `head_commit_id` / `diff_manifest_changes` are configurable so cache-tracking
 /// tests can script the manifest diff they expect after a pull.
 #[derive(Debug, Default)]
 pub struct FakeGit {
     /// Record of `(remote_url, path)` clone calls.
     pub clones: Mutex<Vec<(String, std::path::PathBuf)>>,
+    /// Record of `remote_url`s checked by `ls_remote`.
+    pub ls_remotes: Mutex<Vec<String>>,
     /// Record of pulled repository paths.
     pub pulls: Mutex<Vec<std::path::PathBuf>>,
+    /// When set, `ls_remote` returns an error.
+    pub fail_ls_remote: AtomicBool,
     /// When set, `pull` returns an error.
     pub fail_pull: AtomicBool,
     /// Value returned by `head_commit_id` (per repo path).
@@ -350,6 +355,14 @@ impl Git for FakeGit {
             .lock()
             .unwrap()
             .push((remote_url.to_owned(), path.to_owned()));
+        Ok(())
+    }
+
+    async fn ls_remote(&self, remote_url: &str, _proxy: Option<&str>) -> Fallible<()> {
+        if self.fail_ls_remote.load(Ordering::SeqCst) {
+            return Err(Error::Custom("fake ls-remote failed".to_string()));
+        }
+        self.ls_remotes.lock().unwrap().push(remote_url.to_owned());
         Ok(())
     }
 

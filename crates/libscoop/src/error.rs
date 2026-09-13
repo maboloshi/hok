@@ -49,6 +49,12 @@ pub enum Error {
     #[error("bucket '{0}' already exists for {1}")]
     BucketRepoAlreadyExists(String, String),
 
+    /// Thrown when `git ls-remote` cannot reach the repository, i.e. upstream's
+    /// add-time precheck (`lib/buckets.ps1:149-154`). Carries
+    /// `(repository url, the git error)`.
+    #[error("'{0}' doesn't look like a valid git repository")]
+    BucketRepoUnreachable(String, String),
+
     /// Bucket not found error
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
@@ -232,6 +238,7 @@ impl Error {
             Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
             Error::BucketInvalidGitUrl(_) => "error.bucket_invalid_git_url",
             Error::BucketRepoAlreadyExists(_, _) => "error.bucket_repo_already_exists",
+            Error::BucketRepoUnreachable(_, _) => "error.bucket_repo_unreachable",
             Error::BucketNotFound(_) => "error.bucket_not_found",
             Error::BucketUpdateNotFastForward(_) => "error.bucket_update_not_fast_forward",
             Error::BucketUpdateMergeConflict(_) => "error.bucket_update_merge_conflict",
@@ -299,6 +306,10 @@ mod tests {
         assert_eq!(
             Error::BucketRepoAlreadyExists("extras".into(), "https://e/x.git".into()).error_key(),
             "error.bucket_repo_already_exists"
+        );
+        assert_eq!(
+            Error::BucketRepoUnreachable("https://e/x.git".into(), "boom".into()).error_key(),
+            "error.bucket_repo_unreachable"
         );
         assert_eq!(
             Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(),
