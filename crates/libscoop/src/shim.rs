@@ -561,23 +561,28 @@ pub fn shim_file(session: &Session, name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Every shim in the local and (when present) global shims directories, in
-/// upstream `list` order: local entries first, then global ones; each scope is
-/// sorted by file name so the rendered table is reproducible. Both `.shim`
-/// metadata files and `.ps1` script shims are collected — upstream globs
-/// `*.shim`/`*.ps1` (`libexec/scoop-shim.ps1:158-166`) — so a name with both
-/// variants yields two entries, exactly as upstream's listing does.
+/// Every shim in the requested scope: `global_only` lists the global shims
+/// directory alone, otherwise local entries come first, then global ones; each
+/// scope is sorted by file name so the rendered table is reproducible. Both
+/// `.shim` metadata files and `.ps1` script shims are collected — upstream
+/// globs `*.shim`/`*.ps1` and skips the local branch entirely under `-g`
+/// (`libexec/scoop-shim.ps1:155-166`) — so a name with both variants yields two
+/// entries, exactly as upstream's listing does.
 ///
 /// # Errors
 ///
 /// I/O errors will be returned if a shims directory exists but is not
 /// readable.
-pub fn list_shim_info(session: &Session) -> Fallible<Vec<ShimInfo>> {
+pub fn list_shim_info(session: &Session, global_only: bool) -> Fallible<Vec<ShimInfo>> {
     let config = session.config();
-    let dirs = [
-        config.root_path().join("shims"),
-        config.global_path().join("shims"),
-    ];
+    let dirs = if global_only {
+        vec![config.global_path().join("shims")]
+    } else {
+        vec![
+            config.root_path().join("shims"),
+            config.global_path().join("shims"),
+        ]
+    };
 
     let mut infos = Vec::new();
     for dir in dirs {
@@ -1113,9 +1118,48 @@ mod tests {
         std::fs::write(shims.join("a.ps1"), "x").unwrap();
         std::fs::write(shims.join("a.cmd"), "x").unwrap();
 
-        let infos = list_shim_info(&session).unwrap();
+        let infos = list_shim_info(&session, false).unwrap();
         let names = infos.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
         assert_eq!(names, ["a", "b"]);
+    }
+
+    /// Without `-g` both scopes are listed; `-g` skips the local directory
+    /// entirely, like upstream (`libexec/scoop-shim.ps1:155-166`).
+    #[test]
+    fn list_shim_info_honors_the_global_scope() {
+        let root = test_utils::tmpdir("shim_info_scope");
+        // Pin the global root inside the test root: the default global path is
+        // a real machine directory that a test must not write to.
+        let escape = |path: &std::path::Path| path.to_string_lossy().replace('\\', "\\\\");
+        let config_path = root.join("hok-global.json");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "global_path": "{}", "cache_path": "{}"}}"#,
+                escape(&root),
+                escape(&root.join("global")),
+                escape(&root.join("cache")),
+            ),
+        )
+        .unwrap();
+        let session = crate::Session::new_with(&config_path).unwrap();
+
+        let local = root.join("shims");
+        let global = root.join("global").join("shims");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(local.join("localone.shim"), "x").unwrap();
+        std::fs::write(global.join("globalone.shim"), "x").unwrap();
+
+        let names = |global_only| {
+            list_shim_info(&session, global_only)
+                .unwrap()
+                .iter()
+                .map(|i| i.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(false), ["localone", "globalone"]);
+        assert_eq!(names(true), ["globalone"]);
     }
 
     /// `shim_file` prefers the `.shim` metadata (where the owner is recorded)

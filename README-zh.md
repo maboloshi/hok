@@ -68,6 +68,7 @@
 - **checkver 全套** —— 7 种版本提取模式（regex / JSONPath / XPath / Script / reverse / replace / GitHub / SourceForge）+ autoupdate 回写
 - **SQLite manifest 缓存** —— `use_sqlite_cache`，兼容 Scoop 格式
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
+- **`shim -g` 位置自由** —— `-g/--global` 可写在子命令前或后（对齐官方 getopt；`hok shim list -g` 与 `hok shim -g list` 等价，只列全局 shim），`hok shim list *` 列出全部 shim。以 `-` 开头的 shim 参数必须放在 `--` 之后，要传给 shim 的 `-g`/`--global` 同样如此。**破坏性变更**：`hok shim add x cmd.exe -g` 现在创建**全局** shim（旧行为是把 `-g` 当作 shim 参数、创建到 local）
 - **native shim** —— 10KB `#![no_std]` 原生 exe shim，嵌入 hok 二进制，零外部依赖
 - **i18n 国际化** —— 全部用户消息迁移到 `rust_i18n`，支持中英文切换
 - **列表表格化** —— `hok list` 表格显示，支持 CJK 对齐、可更新版本提示

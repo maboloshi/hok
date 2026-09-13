@@ -34,10 +34,15 @@ impl Env {
     }
 
     /// Run `hok <args>` against this environment and return the exit code.
+    ///
+    /// `SCOOP_GLOBAL` is redirected inside the test root too, so a query that
+    /// reaches the global scope (e.g. `shim list -g`) never reads the machine's
+    /// real global installation.
     fn code(&self, args: &[&str]) -> i32 {
         let out = Command::new(env!("CARGO_BIN_EXE_hok"))
             .args(args)
             .env("SCOOP", &self.root)
+            .env("SCOOP_GLOBAL", self.root.join("global"))
             .env("USERPROFILE", &self.home)
             .env("HOME", &self.home)
             .env("APPDATA", self.home.join("AppData"))
@@ -135,4 +140,20 @@ fn dedicated_exit_codes() {
     // Scoop bit 8: the manifest could not be found
     // (`scoop-virustotal.ps1:16-17,272-275`).
     assert_eq!(env.code(&["virustotal", "ghost"]), 8);
+}
+
+/// `-g` parses anywhere before `--` (upstream's getopt), `list *` lists
+/// everything rather than failing as an invalid regex, and a missing
+/// `<command_path>` reports upstream's message with exit 1
+/// (`libexec/scoop-shim.ps1:40-48,50-59,142-143`).
+#[test]
+fn shim_flag_positions_and_patterns() {
+    let env = Env::new("shim_flags");
+
+    assert_eq!(env.code(&["shim", "list", "-g"]), 0);
+    assert_eq!(env.code(&["shim", "-g", "list"]), 0);
+    assert_eq!(env.code(&["shim", "list", "*"]), 0);
+    assert_eq!(env.code(&["shim", "list", "*", "-g"]), 0);
+
+    assert_eq!(env.code(&["shim", "add", "onlyname"]), 1);
 }

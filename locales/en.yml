@@ -226,6 +226,7 @@ cmd:
   shim_scope_local: "local"
   shim_scope_global: "global"
   shim_invalid_pattern: "invalid pattern '%{pattern}': %{e}"
+  shim_command_path_required: "<command_path> must be specified for subcommand 'add'"
   shim_no_dir: "No shims directory found."
   shim_header_name: "Name"
   shim_header_source: "Source"
@@ -819,6 +820,10 @@ cli_help:
         hok shim list [<regex_pattern>...]      list all shims or matching shims
         hok shim info <name>                    show a shim's information
 
+      -g/--global may appear anywhere before `--`, so `hok shim -g list` and
+      `hok shim list -g` are the same command listing only global shims.
+      `hok shim list *` lists every shim.
+
       HINT: the first `--`, if any, is treated as the POSIX-style command
       option terminator and is NOT included in the shim arguments, so pass
       arguments starting with `-` after it:
@@ -826,7 +831,7 @@ cli_help:
     args:
       global: Manipulate global shim(s)
       add: Add a custom shim
-      add.long_about: "`hok shim add <name> <target> [args...]` — arguments starting with `-` must follow a `--` (POSIX-style option terminator)."
+      add.long_about: "`hok shim add <name> <target> [args...]` — arguments starting with `-` must follow a `--` (POSIX-style option terminator); `-g`/`--global` itself is hok's option, so to pass it to the shim put it after the `--`."
       add.parts: "`<name> <target> [args...]` — name, then the target command path (or a name resolved through PATH), then any args"
       remove: "Remove shims (CAUTION: may remove shims created by an app manifest)"
       remove.names: Shim name

@@ -13,7 +13,11 @@ use crate::{Result, output};
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Manipulate global shim(s)
-    #[arg(short = 'g', long)]
+    ///
+    /// `global = true` so it parses anywhere before `--`, like upstream's
+    /// getopt (`lib/getopt.ps1:27-58`, `libexec/scoop-shim.ps1:50`):
+    /// `hok shim list -g` and `hok shim -g list` are the same command.
+    #[arg(short = 'g', long, global = true)]
     global: bool,
     #[command(subcommand)]
     command: Option<Command>,
@@ -28,7 +32,12 @@ pub enum Command {
     Add {
         /// `<name> <target> [args...]` — name, then the target command path
         /// (or a command name resolved through `PATH`), then any args
-        #[arg(required = true, num_args = 2.., allow_hyphen_values = true)]
+        ///
+        /// One value per occurrence (not `2..`): a `-g` written between the
+        /// values would otherwise end the pending group one value short and
+        /// fail clap's minimum. The `<name> <target>` requirement is checked
+        /// in the handler instead, with upstream's message.
+        #[arg(required = true, num_args = 1..)]
         parts: Vec<String>,
     },
     /// Remove shims (CAUTION: may remove shims created by an app manifest)
@@ -61,13 +70,16 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
     match args.command.unwrap_or(Command::List { patterns: vec![] }) {
         Command::Add { parts } => {
-            let name = &parts[0];
-            let target = &parts[1];
-            // A leading `--` (POSIX terminator) is not part of the args —
-            // clap may surface it as a value under allow_hyphen_values.
-            let args = parts[2..]
-                .strip_prefix(["--".to_string()].as_slice())
-                .unwrap_or(&parts[2..]);
+            // Upstream requires a target as well as a name
+            // (`libexec/scoop-shim.ps1:93-98`), and says so with its own
+            // message rather than a generic usage error.
+            let [name, target, args @ ..] = parts.as_slice() else {
+                output::err(hok_i18n::t!("cmd.shim_command_path_required"));
+                return Err(crate::ExitCode(1).into());
+            };
+            // clap consumes the POSIX `--` terminator itself (upstream treats
+            // the first `--` the same way, `libexec/scoop-shim.ps1:28-32`), so
+            // everything after the target is a shim argument verbatim.
             match add_custom(session, name, target, args) {
                 Ok(()) => {}
                 // Scoop reports a missing `<command_path>` with its own exit
@@ -103,7 +115,14 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         Command::List { patterns } => {
-            let infos = list_shim_info(session)?;
+            // Upstream drops the literal `*` before matching — `shim list *`
+            // lists everything — and joins the rest into one regex
+            // (`libexec/scoop-shim.ps1:143-155`).
+            let patterns = patterns
+                .into_iter()
+                .filter(|p| p != "*")
+                .collect::<Vec<_>>();
+            let infos = list_shim_info(session, args.global)?;
             if infos.is_empty() {
                 output::warn(hok_i18n::t!("cmd.shim_no_dir"));
                 return Ok(());

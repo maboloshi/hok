@@ -163,6 +163,12 @@ Compared to the original hok, this fork adds:
   (original Scoop bug — Scoop skips post_install on reset)
 - **cleanup** — remove old versions of installed packages
 - **depends / prefix / which / checkup / shim** — new CLI commands
+- **`shim -g` anywhere** — `-g/--global` parses before or after the subcommand like
+  upstream's getopt (`hok shim list -g` == `hok shim -g list`, listing global shims
+  only) and `hok shim list *` lists every shim. Shim arguments starting with `-`
+  must follow a `--`, so `-g`/`--global` meant for the shim goes after it. This is
+  a breaking change: `hok shim add x cmd.exe -g` now creates a *global* shim
+  (previously `-g` was passed to the shim and the shim stayed local)
 - **export / import** — export/import installed package lists as JSON
 - **alias** — list/add/remove Scoop aliases; each alias is a runnable
   `shims\scoop-<name>.ps1` script (`hok <name> [args]` runs it)

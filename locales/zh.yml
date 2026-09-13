@@ -226,6 +226,7 @@ cmd:
   shim_scope_local: "本地"
   shim_scope_global: "全局"
   shim_invalid_pattern: "无效的模式 '%{pattern}': %{e}"
+  shim_command_path_required: "子命令 'add' 必须指定 <command_path>"
   shim_no_dir: "没有找到 shims 目录。"
   shim_header_name: "名称"
   shim_header_source: "来源"
@@ -813,13 +814,17 @@ cli_help:
         hok shim list [<正则模式>...]         列出所有 shims 或匹配的 shims
         hok shim info <名称>                  显示 shim 的信息
 
+      `-g/--global` 可出现在 `--` 之前的任意位置，`hok shim -g list` 与
+      `hok shim list -g` 是同一条命令，都只列出全局 shims。
+      `hok shim list *` 列出全部 shims。
+
       提示: 第一个 `--`（若有）被当作 POSIX 风格选项终止符，不会包含在
       shim 参数中；请把 `-` 开头的参数放在它后面:
         hok shim add myapp D:\\path\\myapp.exe -- --global
     args:
       global: 操作全局 shim(s)
       add: 添加自定义 shim
-      add.long_about: "`hok shim add <名称> <目标> [参数...]` — 以 `-` 开头的参数必须放在 `--`（POSIX 风格选项终止符）之后。"
+      add.long_about: "`hok shim add <名称> <目标> [参数...]` — 以 `-` 开头的参数必须放在 `--`（POSIX 风格选项终止符）之后；`-g`/`--global` 本身是 hok 的选项，要传给 shim 需放在 `--` 之后。"
       add.parts: "`<名称> <目标> [参数...]` — 名称，然后是目标命令路径（或通过 PATH 解析的命令名），再后是任意参数"
       remove: "移除 shims（注意: 可能移除应用清单创建的 shim）"
       remove.names: Shim 名称
