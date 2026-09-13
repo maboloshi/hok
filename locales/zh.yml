@@ -880,6 +880,8 @@ cli_help:
       force: "强制升级：对已达请求版本的包重新安装"
       global: 全局安装（到 $SCOOP_GLOBAL）
       ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      independent: 不自动安装依赖
+      no_cache: "不使用下载缓存"
       skip_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
       package: "要升级的包（默认为全部，被锁定的除外）"

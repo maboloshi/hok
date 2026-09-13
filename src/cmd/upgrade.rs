@@ -30,6 +30,12 @@ pub struct Args {
     /// (Scoop's `-f/--force`)
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = ArgAction::SetTrue)]
+    independent: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = ArgAction::SetTrue)]
+    no_cache: bool,
     /// Install globally (to $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = ArgAction::SetTrue)]
     global: bool,
@@ -46,10 +52,10 @@ impl SyncFlags for Args {
             ignore_failures: self.ignore_failures,
             offline: self.offline,
             skip_hash_check: self.skip_hash_check,
-            independent: false,
+            independent: self.independent,
             no_replace: false,
             no_upgrade: false,
-            no_cache: false,
+            no_cache: self.no_cache,
             download_only: false,
         }
     }
