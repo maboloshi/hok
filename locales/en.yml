@@ -170,6 +170,7 @@ cmd:
   cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
+  config_not_set: "'%{key}' is not set"
   create_url_required: "URL is required."
   create_manifest_saved: "Manifest saved to: %{path}"
   depends_invalid: "Invalid selection."
@@ -616,17 +617,19 @@ cli_help:
             VirusTotal API key used for uploading/scanning files.
 
       Most settings can be changed with 'hok config set <key> <value>' (empty
-      value unsets). private_hosts and last_update are only editable in the
-      file. Run 'hok config list --all' to see current values and effective
-      defaults.
+      value unsets). Use 'hok config <key>' to print one setting and
+      'hok config rm <key>' to remove it. private_hosts and last_update are
+      only editable in the file. Run 'hok config list --all' to see current
+      values and effective defaults.
     args:
+      key: The key of the setting to print
       edit: "Edit the config file [default: system default editor]"
       list: "List all settings in key-value (--all also shows defaults)"
       list.all: Also show the effective default value of every setting
       set: Add a new setting to the config file
       set.key: The key of the config
       set.value: The value of the setting
-      unset: Remove a setting from config file
+      unset: "Remove a setting from config file (alias: rm)"
       unset.key: The key of the setting
   create:
     about: "Create a manifest from a download URL"

@@ -197,6 +197,15 @@ pub fn info(msg: impl AsRef<str>) {
     println!("{}", style::dim(msg.as_ref()));
 }
 
+/// Informational side note on **stderr** (dim).
+///
+/// For a note addressed to the human that must not join the command's stdout:
+/// `hok config list` prints one JSON document there, and a path line before it
+/// would break every consumer that parses that document.
+pub fn note(msg: impl AsRef<str>) {
+    eprintln!("{}", style::dim(msg.as_ref()));
+}
+
 /// Warning message (yellow bold prefix, to stderr).
 pub fn warn(msg: impl AsRef<str>) {
     eprintln!("{} {m}", style::warning_bold("WARN"), m = msg.as_ref());

@@ -580,8 +580,14 @@ impl Config {
     /// [`write`].
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Fallible<()> {
         let is_unset = value.is_empty();
-        match key {
-            "aria2_enabled" | "aria2-enabled" => match is_unset {
+        // Resolve the spelling once: `set`, the read path and the rejection
+        // message all go through the same table, so a new alias cannot drift
+        // away from the field it writes.
+        let Some(canonical) = canonical_key(key) else {
+            return Err(Error::ConfigKeyInvalid(key.to_owned()));
+        };
+        match canonical {
+            "aria2-enabled" => match is_unset {
                 true => self.inner.aria2_enabled = None,
                 false => match value.parse::<bool>() {
                     Ok(value) => self.inner.aria2_enabled = Some(value),
@@ -601,7 +607,7 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "script_engine" | "script-engine" => match is_unset {
+            "script-engine" => match is_unset {
                 true => self.inner.script_engine = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.script_engine = Some(v),
@@ -614,7 +620,7 @@ impl Config {
                     false => Some(value.to_string()),
                 }
             }
-            "ignore_failures" | "ignore-failures" | "ignore_failure" => match is_unset {
+            "ignore-failures" => match is_unset {
                 true => self.inner.ignore_failures = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.ignore_failures = Some(v),
@@ -665,21 +671,21 @@ impl Config {
                 "" | "none" => self.inner.proxy = None,
                 _ => self.inner.proxy = Some(value.to_string()),
             },
-            "no_junction" | "no_junctions" => match is_unset {
+            "no_junction" => match is_unset {
                 true => self.inner.no_junction = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.no_junction = Some(v),
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "no_color" | "no-color" => match is_unset {
+            "no-color" => match is_unset {
                 true => self.inner.no_color = None,
                 false => match value.parse::<bool>() {
                     Ok(v) => self.inner.no_color = Some(v),
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "aria2_split" | "aria2-split" => match is_unset {
+            "aria2-split" => match is_unset {
                 true => self.inner.aria2_split = None,
                 false => match value.parse::<u32>() {
                     Ok(v) => self.inner.aria2_split = Some(v),
@@ -693,15 +699,14 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => match is_unset
-            {
+            "aria2-max-connection-per-server" => match is_unset {
                 true => self.inner.aria2_max_connection_per_server = None,
                 false => match value.parse::<u32>() {
                     Ok(v) => self.inner.aria2_max_connection_per_server = Some(v),
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
-            "aria2_min_split_size" | "aria2-min-split-size" => {
+            "aria2-min-split-size" => {
                 self.inner.aria2_min_split_size = match is_unset {
                     true => None,
                     false => Some(value.to_string()),
@@ -740,7 +745,9 @@ impl Config {
                     PathBuf::from(value)
                 }
             }
-            key => return Err(Error::ConfigKeyInvalid(key.to_owned())),
+            // [`canonical_key`] only yields the arms above; this arm keeps the
+            // compiler happy and a future table entry without a body honest.
+            _ => return Err(Error::ConfigKeyInvalid(key.to_owned())),
         }
 
         Ok(())
@@ -995,6 +1002,71 @@ mod default {
 pub fn list(session: &crate::Session) -> Fallible<String> {
     let config = session.config();
     config.pretty()
+}
+
+/// The canonical (config file) name of a key spelling the CLI accepts.
+///
+/// The single spelling table for settings: [`Config::set`], [`value`] and the
+/// rejection message all resolve through it, so an alias cannot drift away from
+/// the field it writes. The canonical name is the key's `serde` name in
+/// [`ConfigInner`], which is also the name the file holds.
+///
+/// Spellings are matched exactly, like the CLI always has (upstream's
+/// `set_config` lower-cases first; hok's are already lower-case, so the only
+/// difference is a key typed in the wrong case).
+pub(crate) fn canonical_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "aria2_enabled" | "aria2-enabled" => "aria2-enabled",
+        "aria2_split" | "aria2-split" => "aria2-split",
+        "aria2_max_connection_per_server" | "aria2-max-connection-per-server" => {
+            "aria2-max-connection-per-server"
+        }
+        "aria2_min_split_size" | "aria2-min-split-size" => "aria2-min-split-size",
+        "cat_style" => "cat_style",
+        "confirm" => "confirm",
+        "editor" => "editor",
+        "script_engine" | "script-engine" => "script-engine",
+        "ignore_failure" | "ignore_failures" | "ignore-failures" => "ignore-failures",
+        "ignore_running_processes" => "ignore_running_processes",
+        "gh_token" => "gh_token",
+        "last_update" => "last_update",
+        "use_isolated_path" => "use_isolated_path",
+        "default_architecture" => "default_architecture",
+        "use_sqlite_cache" => "use_sqlite_cache",
+        "proxy" => "proxy",
+        "no_junction" | "no_junctions" => "no_junction",
+        "no_color" | "no-color" => "no-color",
+        "jobs" => "jobs",
+        "language" => "language",
+        "virustotal_api_key" => "virustotal_api_key",
+        "root_path" => "root_path",
+        "global_path" => "global_path",
+        "cache_path" => "cache_path",
+        _ => return None,
+    })
+}
+
+/// The value a setting currently holds in the config **file**, as stored — not
+/// the resolved default ([`list_all_rows`] is the place for those, and the
+/// difference matters: `scoop config aria2-split` answers "not set" while the
+/// downloader still uses the built-in 5).
+///
+/// Returns `None` when the key is unset, when it is not a setting hok writes
+/// (upstream's `scoop config <name>` answers the same way for a key it does not
+/// know), and for a path key left at its built-in default — those are not
+/// serialized, exactly as upstream's `get_config` returns `$null`.
+///
+/// # Errors
+///
+/// Returns an error if the config is currently borrowed elsewhere or cannot be
+/// serialized.
+pub fn value(session: &crate::Session, key: &str) -> Fallible<Option<serde_json::Value>> {
+    // A key outside the table is looked up verbatim: `private_hosts` and the
+    // legacy `alias` index are file-only settings that read back but are not
+    // writable through `config set`.
+    let name = canonical_key(key).unwrap_or(key);
+    let document: serde_json::Value = serde_json::from_str(&list(session)?)?;
+    Ok(document.get(name).cloned())
 }
 
 /// One cell of the config listing.
@@ -1412,6 +1484,65 @@ mod tests {
         }
     }
 
+    /// Every spelling `set` accepts reads back through [`crate::config::value`],
+    /// under the spelling used and under the canonical one alike, and an
+    /// unknown key answers `None` (upstream `scoop config <name>`).
+    #[test]
+    fn value_reads_back_every_accepted_spelling() {
+        use serde_json::json;
+        let session = test_session("config_value_read");
+        let cases: Vec<(&str, &str, &str, serde_json::Value)> = vec![
+            ("aria2_enabled", "aria2-enabled", "true", json!(true)),
+            ("aria2-enabled", "aria2-enabled", "false", json!(false)),
+            ("aria2_split", "aria2-split", "7", json!(7)),
+            ("aria2-split", "aria2-split", "8", json!(8)),
+            (
+                "aria2_max_connection_per_server",
+                "aria2-max-connection-per-server",
+                "9",
+                json!(9),
+            ),
+            (
+                "aria2_min_split_size",
+                "aria2-min-split-size",
+                "5M",
+                json!("5M"),
+            ),
+            ("script_engine", "script-engine", "true", json!(true)),
+            ("script-engine", "script-engine", "false", json!(false)),
+            ("ignore_failure", "ignore-failures", "true", json!(true)),
+            ("ignore_failures", "ignore-failures", "false", json!(false)),
+            ("ignore-failures", "ignore-failures", "true", json!(true)),
+            ("no_junctions", "no_junction", "true", json!(true)),
+            ("no_junction", "no_junction", "false", json!(false)),
+            ("no_color", "no-color", "true", json!(true)),
+            ("no-color", "no-color", "false", json!(false)),
+        ];
+        for (spelling, canonical, value, expected) in cases {
+            crate::config::set(&session, spelling, value).unwrap();
+            for lookup in [spelling, canonical] {
+                assert_eq!(
+                    crate::config::value(&session, lookup).unwrap(),
+                    Some(expected.clone()),
+                    "{lookup} after setting {spelling}={value}"
+                );
+            }
+            crate::config::set(&session, spelling, "").unwrap();
+            assert_eq!(
+                crate::config::value(&session, spelling).unwrap(),
+                None,
+                "{spelling} after unset"
+            );
+        }
+
+        // A key outside the table is not a setting: it reads as unset rather
+        // than erroring, like `scoop config <unknown>`.
+        assert_eq!(
+            crate::config::value(&session, "totally_unknown").unwrap(),
+            None
+        );
+    }
+
     /// Invalid values for typed keys are rejected; unknown keys are rejected.
     #[test]
     fn invalid_values_and_keys_rejected() {
@@ -1502,7 +1633,10 @@ mod tests {
         for (key, actual) in [
             ("aria2-enabled", config.aria2_enabled()),
             ("ignore-failures", config.ignore_failures()),
-            ("ignore_running_processes", config.ignore_running_processes()),
+            (
+                "ignore_running_processes",
+                config.ignore_running_processes(),
+            ),
             ("no-color", config.no_color()),
             ("confirm", config.confirm()),
             ("script-engine", config.script_engine()),
