@@ -70,6 +70,30 @@ fn help_screens_and_usage_errors() {
     assert_eq!(env.code(&["cache"]), 0, "bare cache lists");
 }
 
+/// The config views (`config`, `-j`, `-a`, a single setting and `rm`) are all
+/// successful reads/writes, including a setting that is merely unset; a usage
+/// error inside the command exits 1 like every other subcommand.
+#[test]
+fn config_views_and_usage_errors_exit_cleanly() {
+    let env = Env::new("config");
+
+    assert_eq!(env.code(&["config"]), 0, "the file's own settings");
+    assert_eq!(env.code(&["config", "-j"]), 0);
+    assert_eq!(env.code(&["config", "-a"]), 0);
+    assert_eq!(env.code(&["config", "proxy"]), 0, "unset is not a failure");
+    assert_eq!(env.code(&["config", "proxy", "127.0.0.1:1"]), 0);
+    assert_eq!(env.code(&["config", "rm", "proxy"]), 0);
+
+    assert_eq!(env.code(&["config", "rm"]), 1, "missing <KEY>");
+    assert_eq!(env.code(&["config", "-j", "-a"]), 1, "conflicting views");
+    assert_eq!(
+        env.code(&["config", "no_such_setting", "x"]),
+        1,
+        "unknown key"
+    );
+    assert_eq!(env.code(&["config", "aria2_split", "7"]), 1, "no aliases");
+}
+
 /// Query commands against an empty installation.
 #[test]
 fn query_exit_codes_on_an_empty_root() {

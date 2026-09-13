@@ -10,9 +10,28 @@ use crate::{Result, output};
 
 /// Configuration management
 #[derive(Debug, Parser)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct Args {
-    /// Print the value of this setting
+    /// Print the settings as JSON
+    #[arg(
+        short = 'j',
+        long = "json",
+        action = clap::ArgAction::SetTrue,
+        conflicts_with_all = ["all", "key", "value"]
+    )]
+    json: bool,
+    /// List every setting with its effective default
+    #[arg(
+        short = 'a',
+        long = "all",
+        action = clap::ArgAction::SetTrue,
+        conflicts_with_all = ["key", "value"]
+    )]
+    all: bool,
+    /// Print this setting, or write it when a value follows
     key: Option<String>,
+    /// The new value for <KEY>
+    value: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -21,36 +40,34 @@ pub struct Args {
 pub enum Command {
     /// Edit the config file [default: system default editor]
     Edit,
-    /// List all settings in key-value
-    #[clap(alias = "ls")]
-    List {
-        /// Also show the effective default value of every setting
-        #[arg(long)]
-        all: bool,
-    },
-    /// Add a new setting to the config file
+    /// Remove a setting from the config file
     #[clap(arg_required_else_help = true)]
-    Set {
-        /// The key of the config
-        key: String,
-        /// The value of the setting
-        value: String,
-    },
-    /// Remove a setting from config file
-    #[clap(alias = "rm", arg_required_else_help = true)]
-    Unset {
+    Rm {
         /// The key of the setting
         key: String,
     },
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    match (args.command, args.key) {
-        // `hok config <name>`: print that one setting, like `scoop config <name>`.
-        (None, Some(key)) => print_value(session, &key),
-        // Bare `hok config` prints the whole configuration, like `scoop config`.
-        (None, None) => list_config(session, false),
-        (Some(Command::Edit), _) => {
+    let Some(command) = args.command else {
+        return match (args.key.as_deref(), args.value.as_deref()) {
+            // `hok config <name> <value>` sets, like `scoop config <name> <value>`.
+            (Some(key), Some(value)) => {
+                config::set(session, key, value)?;
+                output::info(hok_i18n::t!("cmd.config_set", key = key, value = value));
+                Ok(())
+            }
+            // `hok config <name>` prints that setting.
+            (Some(key), None) => print_value(session, key),
+            // Bare `hok config` is the file's own settings; `-j` the same JSON,
+            // `-a` every setting with its default.
+            (None, _) if args.all => print_table(session),
+            (None, _) if args.json => print_json(session),
+            (None, _) => print_settings(session),
+        };
+    };
+    match command {
+        Command::Edit => {
             let path = &session.config().path;
             // `config::edit` launches `$EDITOR` (if set); fall back to the
             // system default handler otherwise.
@@ -59,15 +76,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             }
             Ok(())
         }
-        (Some(Command::List { all }), _) => list_config(session, all),
-        (Some(Command::Set { key, value }), _) => {
-            config::set(session, key.as_str(), value.as_str())?;
-            output::info(hok_i18n::t!("cmd.config_set", key = key, value = value));
-            Ok(())
-        }
-        (Some(Command::Unset { key }), _) => {
+        Command::Rm { key } => {
             config::set(session, key.as_str(), "")?;
-            output::info(hok_i18n::t!("cmd.config_unset", key = key));
+            output::info(hok_i18n::t!("cmd.config_removed", key = key));
             Ok(())
         }
     }
@@ -82,8 +93,9 @@ fn print_value(session: &Session, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// One stored value as `hok config <name>` prints it: a string verbatim (so it
-/// can be fed straight back to `config set`), everything else as JSON.
+/// One stored value as the CLI prints it: a string verbatim (so it can be fed
+/// straight back as a `config <key> <value>` argument), everything else as
+/// JSON.
 fn render_value(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => text.clone(),
@@ -91,31 +103,73 @@ fn render_value(value: &serde_json::Value) -> String {
     }
 }
 
-/// The whole configuration (`hok config` and `hok config list`).
-fn list_config(session: &Session, all: bool) -> Result<()> {
-    if all {
-        // Column headers are localized here, in the CLI layer (i18n lives
-        // here, not in the lib); alignment accounts for their width.
-        let rows = config::list_all_rows(session)?;
-        let headers = [
-            hok_i18n::t!("cmd.config_col_key"),
-            hok_i18n::t!("cmd.config_col_value"),
-            hok_i18n::t!("cmd.config_col_default"),
-            hok_i18n::t!("cmd.config_col_desc"),
-        ];
-
-        output::header(hok_i18n::t!("cmd.header_config"));
-        for line in layout(&rows, headers) {
-            println!("{line}");
-        }
-    } else {
-        let config_json = config::list(session)?;
-        // The path is a note for the human on stderr, so stdout stays one JSON
-        // document: `hok config list | jq` must not see a stray first line.
-        output::note(session.config().path.display().to_string());
-        println!("{config_json}");
+/// Bare `hok config`: the settings the config file actually holds, one
+/// `key = value` line each — upstream's bare `scoop config` shows exactly the
+/// file (`libexec/scoop-config.ps1:157-158`) rather than every known setting.
+fn print_settings(session: &Session) -> Result<()> {
+    let settings = file_settings(session)?;
+    output::note(session.config().path.display().to_string());
+    for line in settings_lines(&settings) {
+        println!("{line}");
     }
     Ok(())
+}
+
+/// `-j` / `--json`: the same settings as [`print_settings`], as one JSON
+/// document.
+fn print_json(session: &Session) -> Result<()> {
+    // The path is a note for the human on stderr, so stdout stays one JSON
+    // document: `hok config -j | jq` must not see a stray first line.
+    output::note(session.config().path.display().to_string());
+    println!("{}", config::list(session)?);
+    Ok(())
+}
+
+/// `-a` / `--all`: every known setting with its current value, its effective
+/// default and a short description (the hok extension that answers "what can I
+/// set, and to what?").
+fn print_table(session: &Session) -> Result<()> {
+    // Column headers are localized here, in the CLI layer (i18n lives here, not
+    // in the lib); alignment accounts for their width.
+    let rows = config::list_all_rows(session)?;
+    let headers = [
+        hok_i18n::t!("cmd.config_col_key"),
+        hok_i18n::t!("cmd.config_col_value"),
+        hok_i18n::t!("cmd.config_col_default"),
+        hok_i18n::t!("cmd.config_col_desc"),
+    ];
+
+    output::header(hok_i18n::t!("cmd.header_config"));
+    for line in layout(&rows, headers) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// The config file's own JSON object.
+fn file_settings(session: &Session) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let document: serde_json::Value = serde_json::from_str(&config::list(session)?)?;
+    Ok(document.as_object().cloned().unwrap_or_default())
+}
+
+/// One `  key = value` line per setting, the keys aligned.
+fn settings_lines(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let width = settings
+        .keys()
+        .map(|key| visual_width(key))
+        .max()
+        .unwrap_or(0);
+    settings
+        .iter()
+        .map(|(key, value)| {
+            format!(
+                "  {} {} {}",
+                style::emphasis(pad_visual(key, width)),
+                style::dim("="),
+                render_value(value)
+            )
+        })
+        .collect()
 }
 
 /// Render one value cell: the placeholder cells are localized, everything else
@@ -405,12 +459,35 @@ mod tests {
     }
 
     /// `hok config <name>` prints a string verbatim (so it round-trips into
-    /// `config set`) and every other stored value in its JSON form.
+    /// `config <name> <value>`) and every other stored value in its JSON form.
     #[test]
     fn render_value_keeps_strings_verbatim() {
         assert_eq!(render_value(&serde_json::json!("C:\\scoop")), "C:\\scoop");
         assert_eq!(render_value(&serde_json::json!(true)), "true");
         assert_eq!(render_value(&serde_json::json!(5)), "5");
         assert_eq!(render_value(&serde_json::json!(["a", "b"])), r#"["a","b"]"#);
+    }
+
+    /// Bare `config` renders one `key = value` line per stored setting, with
+    /// the keys padded so the value column starts at the same offset.
+    #[test]
+    fn settings_lines_align_the_value_column() {
+        let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"aria2-split":7,"no_junction":true,"proxy":"127.0.0.1:1080"}"#,
+        )
+        .unwrap();
+        let lines: Vec<String> = settings_lines(&settings)
+            .iter()
+            .map(|line| plain(line))
+            .collect();
+
+        assert_eq!(lines[0], "  aria2-split = 7");
+        assert_eq!(lines[1], "  no_junction = true");
+        assert_eq!(lines[2], "  proxy       = 127.0.0.1:1080");
+        let equals: Vec<usize> = lines.iter().map(|l| l.find('=').unwrap()).collect();
+        assert!(
+            equals.windows(2).all(|pair| pair[0] == pair[1]),
+            "value column is not aligned: {lines:#?}"
+        );
     }
 }

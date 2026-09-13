@@ -169,7 +169,7 @@ cmd:
   cleanup_removed_failed: "已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）"
   cleanup_remove_failed: "无法移除 %{name} v%{ver}：%{e}"
   config_set: "配置项 '%{key}' 已设置为 '%{value}'"
-  config_unset: "配置项 '%{key}' 已取消设置"
+  config_removed: "配置项 '%{key}' 已删除"
   config_not_set: "配置项 '%{key}' 未设置"
   create_url_required: "需要提供 URL。"
   create_manifest_saved: "清单已保存到: %{path}"
@@ -428,7 +428,7 @@ error:
   bucket_update_local_changes: "本地更改将被 bucket 更新覆盖：%{files}"
   config_in_use: "无法更改配置，配置正在使用中"
   config_key_invalid: "无效的配置键 '%{key}'"
-  config_key_unsupported: "'%{key}' 是官方 Scoop 的设置项，hok 没有对应实现；用 'hok config list --all' 查看 hok 支持的设置项"
+  config_key_unsupported: "'%{key}' 是官方 Scoop 的设置项，hok 没有对应实现；用 'hok config -a' 查看 hok 支持的设置项"
   config_value_invalid: "无效的配置值 '%{value}'"
   alias_already_exists: "别名 '%{name}' 已存在。"
   alias_not_found: "别名 '%{name}' 不存在。"
@@ -617,20 +617,22 @@ cli_help:
       virustotal_api_key: 字符串，默认无
             用于上传/扫描文件的 VirusTotal API key。
 
-      大多数设置可通过 'hok config set <key> <value>' 修改（空值表示取消
-      设置）。用 'hok config <key>' 打印单个设置项，用 'hok config rm <key>'
-      删除设置项。private_hosts 和 last_update 只能直接编辑配置文件。运行
-      'hok config list --all' 查看当前值与生效默认值。
+      裸 'hok config' 以 '键 = 值' 逐行输出配置文件里实际保存的设置；'-j' 输出
+      同一份内容的 JSON，'-a' 列出全部已知设置及其生效默认值。写入用
+      'hok config <key> <value>'，删除用 'hok config rm <key>'，与官方
+      'scoop config' 形态一致。private_hosts 和 last_update 只能直接编辑
+      配置文件。
+
+      设置名严格按上面列出的写法，没有别名。'hok config edit' 是 hok 扩展
+      （官方把 'edit' 当作键名），'-j' / '-a' 同样是 hok 扩展。
     args:
-      key: 要打印的设置项名称
+      json: 以 JSON 输出设置
+      all: 列出全部设置及其生效默认值
+      key: 打印该设置项；后面跟值时改为写入该项
+      value: <KEY> 的新值
       edit: "编辑配置文件 [默认: 系统默认编辑器]"
-      list: "以键值对形式列出所有设置（--all 同时显示默认值）"
-      list.all: 同时显示每个设置生效的默认值
-      set: 向配置文件添加新设置
-      set.key: 配置项名称
-      set.value: 设置值
-      unset: "从配置文件删除设置（别名: rm）"
-      unset.key: 要删除的配置项名称
+      rm: 从配置文件删除设置
+      rm.key: 要删除的配置项名称
   create:
     about: "从下载 URL 创建清单"
     long_about: "下载文件、计算哈希并生成清单骨架。"

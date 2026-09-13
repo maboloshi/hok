@@ -86,12 +86,19 @@ hok reads its config from `~/.config/hok/config.json` (a Scoop-compatible
 Scoop's own config file; afterwards only hok's file is used.
 
 ```sh
-hok config list           # current config as pretty JSON
-hok config list --all     # every supported key + current value + default
-hok config set <key> <value>
-hok config unset <key>    # remove a key (falls back to its default)
+hok config                # the settings the config file holds (key = value)
+hok config -j             # the same settings as pretty JSON
+hok config -a             # every setting + current value + effective default
+hok config <key>          # print one setting
+hok config <key> <value>  # write one setting
+hok config rm <key>       # remove a key (falls back to its default)
+hok config edit           # open the config file in an editor (hok extension)
 hok config --help         # full settings reference with defaults
 ```
+
+Setting names are used exactly as listed below; there are no aliases. `-j` and
+`-a` are hok extensions (`-a` is the only view of the settings hok does not
+store yet).
 
 ### Settings
 
@@ -120,9 +127,9 @@ hok config --help         # full settings reference with defaults
 | `use_sqlite_cache` | bool | `false` | Use SQLite database for manifest caching (Scoop-compatible schema) |
 | `virustotal_api_key` | string | *(empty)* | VirusTotal API key used for uploading/scanning files |
 
-Most keys are settable via `hok config set`; `last_update` and
+Most keys are settable via `hok config <key> <value>`; `last_update` and
 `private_hosts` are only editable in the config file. Aliases are managed
-with the `hok alias` command. Run `hok config list --all` for the effective
+with the `hok alias` command. Run `hok config -a` for the effective
 defaults on your machine.
 
 ## New Features (since original fork)

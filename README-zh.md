@@ -121,10 +121,10 @@ hok 0.2.0-beta.1 起支持多语言切换：
 
 ```bash
 # 查看当前语言
-hok config LANG
+hok config language
 
 # 切换为英文
-hok config set LANG en
+hok config language en
 ```
 
 目前已内置 `zh`（中文）和 `en`（英文）两种语言，全部用户界面消息均已迁移到 `rust_i18n` 框架。CLI 帮助信息（`--help`/`-h`）也支持多语言，通过 `hok-i18n-derive` proc-macro 自动生成翻译键。
@@ -134,12 +134,18 @@ hok config set LANG en
 hok 的配置文件位于 `~/.config/hok/config.json`（与 Scoop 的 `config.json` 格式兼容）。首次运行时会把受支持的键从 Scoop 配置文件迁移过来，之后只读写 hok 自己的文件。
 
 ```bash
-hok config list           # 当前配置（pretty JSON）
-hok config list --all     # 所有受支持键 + 当前值 + 默认值
-hok config set <key> <value>
-hok config unset <key>    # 删除键（回退到默认值）
+hok config                # 配置文件里实际保存的设置（键 = 值）
+hok config -j             # 同一份内容的 pretty JSON
+hok config -a             # 全部设置 + 当前值 + 生效默认值
+hok config <key>          # 打印单个设置项
+hok config <key> <value>  # 写入单个设置项
+hok config rm <key>       # 删除键（回退到默认值）
+hok config edit           # 用编辑器打开配置文件（hok 扩展）
 hok config --help         # 完整设置参考（含默认值与取值样式）
 ```
+
+设置名严格按下面表格的写法，没有别名。`-j` / `-a` 是 hok 扩展（`-a` 是唯一能看到
+hok 尚未保存的设置的视图）。
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
@@ -165,7 +171,7 @@ hok config --help         # 完整设置参考（含默认值与取值样式）
 | `use_sqlite_cache` | bool | `false` | 使用 SQLite 数据库缓存清单（兼容 Scoop 的 schema） |
 | `virustotal_api_key` | 字符串 | *(空)* | 用于上传/扫描文件的 VirusTotal API key |
 
-大多数键可通过 `hok config set` 修改；`last_update` 与 `private_hosts` 只能直接编辑配置文件。别名（alias）通过 `hok alias` 命令管理。运行 `hok config list --all` 查看你机器上的生效默认值。
+大多数键可通过 `hok config <key> <value>` 修改；`last_update` 与 `private_hosts` 只能直接编辑配置文件。别名（alias）通过 `hok alias` 命令管理。运行 `hok config -a` 查看你机器上的生效默认值。
 
 ### Native Shim 基准测试
 
