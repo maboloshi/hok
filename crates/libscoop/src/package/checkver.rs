@@ -14,9 +14,9 @@
 //!   multiple manifests in sequence while reporting progress per-package.
 //! - **Manifest updating**: When `--update` is set, new versions are
 //!   written directly into the manifest JSON files.
-//! - **Known gaps vs Scoop**: See the `TODO` block below for unimplemented
-//!   features (ThrowError, etc.). UA / Referer / PRIVATE_HOSTS header
-//!   injection is provided by `network::download_page`.
+//! - **Request headers**: UA / Referer / PRIVATE_HOSTS / Authorization are all
+//!   injected by the shared `ScoopRequest` entry point under
+//!   `HeaderProfile::Checkver`; checkver never assembles headers itself.
 
 use crate::internal::url;
 use futures::StreamExt;
@@ -42,22 +42,6 @@ use checkver_hash::download_and_hash_multi;
 
 #[path = "checkver_hash.rs"]
 mod checkver_hash;
-
-// ---------------------------------------------------------------------------
-// TODO(scoop-alignment): Unimplemented Scoop checkver features
-// ---------------------------------------------------------------------------
-// 1. ThrowError (--throw) — When set, errors are thrown as exceptions instead
-//    of just printed to stderr. Currently all errors use output::err().
-//    Scoop ref: bin/checkver.ps1 (param $ThrowError, used at line 412-418)
-//
-// ✅ Resolved gaps (network-layer unification):
-//   - User-Agent — network::download_page() now injects UA from session
-//     (previously build_agent() in download.rs ignored its `_user_agent` param).
-//   - Referer — network::download_page() now sets Referer via strip_filename.
-//   - PRIVATE_HOSTS — network::download_page() now applies extra headers
-//     matched by host regex (used by checkurls).
-//   Scoop refs: bin/checkver.ps1 (lines 117-121, 246, 240-244)
-// ---------------------------------------------------------------------------
 
 /// Options for a checkver run, filled by the CLI layer from its clap options.
 ///
