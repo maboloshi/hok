@@ -3189,10 +3189,7 @@ mod tests {
     /// A bucket dir holding `files` (file name → manifest JSON) plus a session
     /// whose network serves nothing: any request fails offline instead of
     /// reaching out.
-    fn offline_bucket(
-        label: &str,
-        files: &[(&str, &str)],
-    ) -> (std::path::PathBuf, crate::Session) {
+    fn offline_bucket(label: &str, files: &[(&str, &str)]) -> (std::path::PathBuf, crate::Session) {
         use crate::test_utils::{FakeNetwork, test_session, tmpdir};
         use std::sync::Arc;
 
@@ -3298,9 +3295,11 @@ mod tests {
                 r#"{"version":"1.0.0","homepage":"https://example.com","checkver":"https://example.com/v([\\d.]+)"}"#,
             )],
         );
-        let reports =
-            execute_within_budget(options_for(dir.clone(), &["app"], Some("2.0.0"), false), &session)
-                .await;
+        let reports = execute_within_budget(
+            options_for(dir.clone(), &["app"], Some("2.0.0"), false),
+            &session,
+        )
+        .await;
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].new_version.as_deref(), Some("2.0.0"));
@@ -3326,9 +3325,11 @@ mod tests {
                 r#"{"version":"1.0.0","homepage":"https://example.com","checkver":"https://example.com/v([\\d.]+)"}"#,
             )],
         );
-        let reports =
-            execute_within_budget(options_for(dir.clone(), &["app"], Some("2.0.0"), true), &session)
-                .await;
+        let reports = execute_within_budget(
+            options_for(dir.clone(), &["app"], Some("2.0.0"), true),
+            &session,
+        )
+        .await;
 
         assert_eq!(reports.len(), 1);
         assert!(reports[0].updated, "got {:?}", reports[0]);
