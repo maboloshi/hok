@@ -332,6 +332,21 @@ impl FromStr for IsolatedPath {
     }
 }
 
+/// Reject a root path that could not be determined, i.e. an empty one.
+///
+/// Shared by [`Config::require_root_path`] and [`Config::require_global_path`]:
+/// an empty root would resolve every layout directory against the current
+/// directory, so callers that touch the filesystem must fail instead.
+fn require_known_root<'a>(path: &'a Path, what: &str, remedy: &str) -> Fallible<&'a Path> {
+    if path.as_os_str().is_empty() {
+        return Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{what} is unknown: {remedy}"),
+        )));
+    }
+    Ok(path)
+}
+
 impl Config {
     /// Get the `cache` directory of Scoop.
     #[inline]
@@ -349,6 +364,22 @@ impl Config {
         self.root_path.as_path()
     }
 
+    /// Get the root directory of Scoop, or an error when it is unknown.
+    ///
+    /// In a stripped environment (no `$SCOOP` and no home directory) the
+    /// resolved root is empty — see `default::root_path`. Every layout path is
+    /// derived from it (`apps`, `shims`, `modules`, `persist`, `cache`), so an
+    /// empty root would silently turn them into paths relative to the current
+    /// directory. Filesystem-facing entry points must report an error instead
+    /// of operating on the current directory.
+    pub fn require_root_path(&self) -> Fallible<&Path> {
+        require_known_root(
+            self.root_path(),
+            "the Scoop root directory",
+            "set the SCOOP environment variable or a home directory (USERPROFILE/HOME)",
+        )
+    }
+
     /// Get the global root directory of Scoop.
     ///
     /// Globally installed apps are stored here. By default the value is
@@ -356,6 +387,19 @@ impl Config {
     #[inline]
     pub fn global_path(&self) -> &Path {
         self.global_path.as_path()
+    }
+
+    /// Get the global root directory of Scoop, or an error when it is unknown.
+    ///
+    /// `$SCOOP_GLOBAL` set to an empty value resolves the global root to an
+    /// empty path, with the same hazard as an unknown user-level root — see
+    /// [`Config::require_root_path`].
+    pub fn require_global_path(&self) -> Fallible<&Path> {
+        require_known_root(
+            self.global_path(),
+            "the global Scoop root directory",
+            "set the SCOOP_GLOBAL environment variable",
+        )
     }
 
     /// Get the `no_junction` config.
@@ -777,7 +821,14 @@ impl Deref for Config {
 pub(crate) fn init_default() -> Config {
     let config = Config::default();
     // try to write the default config to the default path, error is ignored
-    let _ = write(&config);
+    //
+    // A stripped environment (no `$HOME`/`USERPROFILE`) resolves the default
+    // path to an empty one — see `default::hok_config_path`. There is nowhere
+    // to write then, so the best-effort write is skipped: the session keeps
+    // the in-memory defaults instead of failing (or, formerly, panicking).
+    if !config.path.as_os_str().is_empty() {
+        let _ = write(&config);
+    }
     config
 }
 

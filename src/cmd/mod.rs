@@ -511,13 +511,19 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
                 // subcommand may still name one.
                 if err.kind() == ErrorKind::InvalidSubcommand
                     && let Some((name, rest)) = alias_invocation(&cmd, &normalized)
-                    && let Some(code) = alias::dispatch(&Session::default(), &name, &rest).await?
                 {
-                    return if code == 0 {
-                        Ok(())
-                    } else {
-                        Err(crate::ExitCode(code).into())
-                    };
+                    // Aliases are scripts in the (root-derived) shims
+                    // directory, so they need a known root for the same
+                    // reason as the main dispatch below.
+                    let session = Session::default();
+                    session.require_effective_root_path()?;
+                    if let Some(code) = alias::dispatch(&session, &name, &rest).await? {
+                        return if code == 0 {
+                            Ok(())
+                        } else {
+                            Err(crate::ExitCode(code).into())
+                        };
+                    }
                 }
                 // Everything that is not an alias is a clap parse outcome,
                 // rendered with Scoop's codes instead of clap's own 2 — see
@@ -535,6 +541,11 @@ pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<
     setup_logger(args.verbose.tracing_level_filter())?;
 
     let session = Session::default();
+    // A stripped environment (neither `$SCOOP` nor a home directory) leaves the
+    // root undetermined. Every layout path (`apps`, `shims`, `modules`,
+    // `persist`, the cache) derives from it, so fail fast with a clear error
+    // instead of silently resolving them against the current directory.
+    session.require_effective_root_path()?;
     // Force the confirmation gate for every sync command (`--confirm`).
     session.set_force_confirm(args.confirm);
     // Mount the process-wide Ctrl-C cancellation token so long-running

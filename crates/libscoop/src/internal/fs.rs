@@ -60,7 +60,20 @@ where
     D: Serialize,
 {
     let path = path.as_ref();
-    ensure_dir(path.parent().unwrap())?;
+    // A path with no parent directory (empty, or a bare root) has nowhere to
+    // be written: report it instead of panicking. The config path is empty
+    // when `$HOME`/`USERPROFILE` is unset (see
+    // [`crate::config::default::home_join`]).
+    let parent = path.parent().ok_or_else(|| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot write JSON to '{}': the path has no parent directory",
+                path.display()
+            ),
+        ))
+    })?;
+    ensure_dir(parent)?;
 
     // Use 4 spaces for indentation
     let formatter = PrettyFormatter::with_indent(b"    ");
@@ -112,7 +125,18 @@ pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result
     let lnk = lnk.as_ref();
     let _ = remove_symlink(lnk);
 
-    ensure_dir(lnk.parent().unwrap())?;
+    // Same degenerate-path guard as [`write_json`]: a link path with no
+    // parent directory cannot be created.
+    let parent = lnk.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot create a directory symlink at '{}': the path has no parent directory",
+                lnk.display()
+            ),
+        )
+    })?;
+    ensure_dir(parent)?;
     if std::os::windows::fs::symlink_dir(src, lnk).is_err() {
         junction::create(src, lnk)
     } else {
