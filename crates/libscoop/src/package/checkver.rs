@@ -380,7 +380,15 @@ pub async fn execute(
                     }
                 }
             })
-            .buffer_unordered(pending.len())
+            // The concurrency cap must be at least 1. `buffer_unordered(0)` never
+            // polls its source stream — the `in_progress_queue.len() < max` fill
+            // loop is skipped and the queue is empty — so the stream is never
+            // drained, `is_done()` stays false and the `collect` below parks
+            // forever without registering a waker: a silent, permanent hang.
+            // An empty `pending` (no manifest declares `checkver`, or `--version`
+            // handled every manifest inline) then collects an empty vector and
+            // Phase 3 is a no-op.
+            .buffer_unordered(pending.len().max(1))
             .collect()
             .await;
 
