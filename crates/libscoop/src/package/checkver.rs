@@ -3188,4 +3188,172 @@ mod tests {
         assert!(preamble.contains("$app = 'app''s'"));
         assert!(preamble.contains("$expected_ver = '1.0.0'"));
     }
+
+    // ── completion with an empty `pending` list ───────────────────────────
+    //
+    // Every path that leaves `pending` empty used to park forever in the
+    // `buffer_unordered(pending.len())` of Phase 2 (capacity 0 never polls its
+    // source stream). These tests pin the four reachable triggers: an empty
+    // bucket dir, a dir whose manifests all lack `checkver`, an app pattern
+    // matching nothing, and `--version` (which handles every manifest inline).
+
+    /// Generous on purpose: the assertion is "`execute` returns *at all*", not
+    /// "it is fast". Without the capacity guard these futures never resolve, so
+    /// a failure here is a timeout rather than a hung test suite.
+    const COMPLETION_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A bucket dir holding `files` (file name → manifest JSON) plus a session
+    /// whose network serves nothing: any request fails offline instead of
+    /// reaching out.
+    fn offline_bucket(
+        label: &str,
+        files: &[(&str, &str)],
+    ) -> (std::path::PathBuf, crate::Session) {
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir(label);
+        let session = test_session(&root);
+        session.set_network(Arc::new(FakeNetwork::new())).unwrap();
+
+        let bucket_dir = root.join("bucket");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        for (name, json) in files {
+            std::fs::write(bucket_dir.join(name), json).unwrap();
+        }
+        (bucket_dir, session)
+    }
+
+    /// Run `execute` under `COMPLETION_BUDGET` and return the reports.
+    async fn execute_within_budget(
+        options: CheckverOptions,
+        session: &crate::Session,
+    ) -> Vec<CheckverReport> {
+        let mut reports = Vec::new();
+        tokio::time::timeout(
+            COMPLETION_BUDGET,
+            execute(options, session, |r| reports.push(r.clone())),
+        )
+        .await
+        .expect("checkver must terminate with an empty `pending` list")
+        .unwrap();
+        reports
+    }
+
+    fn options_for(
+        dir: std::path::PathBuf,
+        app: &[&str],
+        version: Option<&str>,
+        update: bool,
+    ) -> CheckverOptions {
+        CheckverOptions {
+            dir,
+            app: app.iter().map(|s| s.to_string()).collect(),
+            update,
+            force_update: false,
+            skip_updated: false,
+            version: version.map(str::to_string),
+            timeout: 10,
+            throw_error: false,
+        }
+    }
+
+    /// A bucket dir with no manifest at all finishes without reporting anything.
+    #[tokio::test]
+    async fn empty_bucket_dir_completes() {
+        let (dir, session) = offline_bucket("cv_empty", &[]);
+        let reports = execute_within_budget(options_for(dir, &["*"], None, false), &session).await;
+        assert!(reports.is_empty(), "got {reports:?}");
+    }
+
+    /// A dir whose manifests declare no `checkver` finishes and reports nothing.
+    #[tokio::test]
+    async fn bucket_without_any_checkver_completes() {
+        let (dir, session) = offline_bucket(
+            "cv_none",
+            &[
+                (
+                    "app.json",
+                    r#"{"version":"1.0.0","homepage":"https://example.com"}"#,
+                ),
+                (
+                    "other.json",
+                    r#"{"version":"2.0.0","homepage":"https://example.com"}"#,
+                ),
+            ],
+        );
+        let reports = execute_within_budget(options_for(dir, &["*"], None, false), &session).await;
+        assert!(reports.is_empty(), "got {reports:?}");
+    }
+
+    /// An app pattern that matches no stem finishes (the walker yields nothing).
+    #[tokio::test]
+    async fn app_glob_matching_nothing_completes() {
+        let (dir, session) = offline_bucket(
+            "cv_nomatch",
+            &[(
+                "app.json",
+                r#"{"version":"1.0.0","homepage":"https://example.com","checkver":"https://example.com/v([\\d.]+)"}"#,
+            )],
+        );
+        let reports =
+            execute_within_budget(options_for(dir, &["does-not-exist"], None, false), &session)
+                .await;
+        assert!(reports.is_empty(), "got {reports:?}");
+    }
+
+    /// `--version` handles every manifest inline, so `pending` is empty and the
+    /// run must still terminate. Version detection is skipped entirely, hence
+    /// no network is touched.
+    #[tokio::test]
+    async fn version_override_completes() {
+        let (dir, session) = offline_bucket(
+            "cv_version",
+            &[(
+                "app.json",
+                r#"{"version":"1.0.0","homepage":"https://example.com","checkver":"https://example.com/v([\\d.]+)"}"#,
+            )],
+        );
+        let reports =
+            execute_within_budget(options_for(dir.clone(), &["app"], Some("2.0.0"), false), &session)
+                .await;
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].new_version.as_deref(), Some("2.0.0"));
+        assert!(!reports[0].updated);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(dir.join("app.json")).unwrap()
+            )
+            .unwrap()["version"],
+            serde_json::json!("1.0.0"),
+            "a plain --version run must not rewrite the manifest"
+        );
+    }
+
+    /// `--version --update` rewrites the manifest inline and then terminates
+    /// (the manifest carries no `autoupdate`, so the rewrite stays offline).
+    #[tokio::test]
+    async fn version_override_with_update_completes() {
+        let (dir, session) = offline_bucket(
+            "cv_version_update",
+            &[(
+                "app.json",
+                r#"{"version":"1.0.0","homepage":"https://example.com","checkver":"https://example.com/v([\\d.]+)"}"#,
+            )],
+        );
+        let reports =
+            execute_within_budget(options_for(dir.clone(), &["app"], Some("2.0.0"), true), &session)
+                .await;
+
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].updated, "got {:?}", reports[0]);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(dir.join("app.json")).unwrap()
+            )
+            .unwrap()["version"],
+            serde_json::json!("2.0.0")
+        );
+    }
 }
