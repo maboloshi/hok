@@ -196,4 +196,31 @@ mod tests {
             "rewritten file should end with CRLF"
         );
     }
+
+    /// A path with no parent directory (an empty path, as produced by
+    /// `config::default::hok_config_path` without a home directory) must be
+    /// rejected with an error instead of panicking.
+    #[test]
+    fn write_json_rejects_path_without_parent() {
+        let v = serde_json::json!({"version": "1.0"});
+
+        let err = write_json(std::path::PathBuf::new(), &v).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("no parent directory"),
+            "unexpected message: {err}"
+        );
+
+        // A bare root has no parent either.
+        let err = write_json("/", &v).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+    }
+
+    /// [`symlink_dir`] shares the degenerate-path guard: an empty link path is
+    /// an error, not a panic.
+    #[test]
+    fn symlink_dir_rejects_path_without_parent() {
+        let err = symlink_dir(".", std::path::PathBuf::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }

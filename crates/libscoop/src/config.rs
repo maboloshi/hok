@@ -1916,4 +1916,57 @@ mod tests {
             );
         }
     }
+
+    /// A config whose path is empty (no home directory to resolve
+    /// `default::hok_config_path`) cannot be persisted: the write reports an
+    /// error instead of panicking. This is the premise of `init_default`'s
+    /// skip-the-write branch.
+    #[test]
+    fn write_refuses_a_config_without_a_path() {
+        let config = Config {
+            path: PathBuf::new(),
+            ..Config::default()
+        };
+        let err = write(&config).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("no parent directory"),
+            "unexpected message: {err}"
+        );
+    }
+
+    /// An unknown Scoop root (no `$SCOOP`, no home directory) is reported
+    /// instead of being returned as an empty path that would resolve every
+    /// layout directory against the current directory.
+    #[test]
+    fn require_root_path_rejects_an_empty_root() {
+        let mut config = Config::default();
+
+        config.inner.root_path = PathBuf::new();
+        let err = config.require_root_path().unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("Scoop root directory is unknown"),
+            "unexpected message: {err}"
+        );
+
+        config.inner.root_path = PathBuf::from(r"C:\scoop");
+        assert_eq!(config.require_root_path().unwrap(), Path::new(r"C:\scoop"));
+
+        // The global root has the same guard (`$SCOOP_GLOBAL=""`).
+        config.inner.global_path = PathBuf::new();
+        let err = config.require_global_path().unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+        assert!(
+            err.to_string()
+                .contains("global Scoop root directory is unknown"),
+            "unexpected message: {err}"
+        );
+
+        config.inner.global_path = PathBuf::from(r"C:\ProgramData\scoop");
+        assert_eq!(
+            config.require_global_path().unwrap(),
+            Path::new(r"C:\ProgramData\scoop")
+        );
+    }
 }
