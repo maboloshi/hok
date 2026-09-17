@@ -49,6 +49,12 @@ pub(crate) async fn download_fragmented(
     if token.is_cancelled() {
         return Err("download cancelled".to_string());
     }
+    // Capacity invariant: both the `remote_size / chunk_count` split below and
+    // the `buffer_unordered(chunk_count)` fan-out further down require at least
+    // one chunk. A zero capacity never polls its source stream and would hang
+    // instead of completing; callers must exclude it (see the
+    // `chunk_count > 1` gate in `download.rs`).
+    debug_assert!(chunk_count >= 1, "chunk_count must be >= 1");
     let chunk_size = remote_size / chunk_count;
     // (part path, start, end) for every range to verify — initially one entry
     // per chunk, extended with fallback ranges for failed chunks.

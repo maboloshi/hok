@@ -564,6 +564,11 @@ impl<'a> PackageSet<'a> {
             let _ = tx.try_send(Event::PackageDownloadInfo { packages });
         }
 
+        // Capacity invariant: `buffer_unordered(0)` never polls its source
+        // stream, so the stream is never drained and the `collect` below parks
+        // forever (a silent hang, not an error). `jobs` was normalized to >= 1
+        // above; this pins that normalization here, where the cap is used.
+        debug_assert!(jobs >= 1, "buffer_unordered capacity must be >= 1");
         let outcomes: Vec<Fallible<PkgDownloadOutcome>> =
             futures::stream::iter(package_caches.values().filter(|c| {
                 if reuse_cache && c.valid == CacheMaybeValid::Full {
