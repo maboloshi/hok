@@ -305,25 +305,6 @@ impl Session {
         }
     }
 
-    /// Get the effective root path, or an error when no root is known.
-    ///
-    /// Every layout directory ([`Session::apps_dir`], [`Session::shims_dir`],
-    /// [`Session::modules_dir`], [`Session::persist_dir`], the cache) derives
-    /// from [`Session::effective_root_path`]. When the effective root resolves
-    /// to an empty path — no `$SCOOP` and no home directory for the user-level
-    /// root, an empty `$SCOOP_GLOBAL` for the global one — those directories
-    /// would silently resolve against the current directory. Filesystem-facing
-    /// entry points must call this and fail instead.
-    pub fn require_effective_root_path(&self) -> Fallible<std::path::PathBuf> {
-        let config = self.config();
-        let path = if self.global.load(Ordering::Relaxed) {
-            config.require_global_path()?
-        } else {
-            config.require_root_path()?
-        };
-        Ok(path.to_path_buf())
-    }
-
     // ─── Layout directories ─────────────────────────────────────────────
     // Scoop splits its layout into two root families (mirrors upstream
     // `core.ps1`): `apps`/`shims`/`modules`/`persist` follow the *effective*

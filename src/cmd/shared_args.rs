@@ -109,19 +109,12 @@ impl SyncArgs {
 /// (e.g. "install", "uninstall", "hold").
 pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crate::Result<()> {
     session.set_global(global);
-    if !global {
-        return Ok(());
-    }
-    if !session.is_admin() {
+    if global && !session.is_admin() {
         return Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.admin_rights_required",
             verb = verb
         )));
     }
-    // The global root is `$SCOOP_GLOBAL` or `C:\ProgramData\scoop`; an empty
-    // `$SCOOP_GLOBAL` would silently resolve the global layout against the
-    // current directory, so report it instead.
-    session.require_effective_root_path()?;
     Ok(())
 }
 

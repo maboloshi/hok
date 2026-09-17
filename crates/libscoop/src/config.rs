@@ -332,21 +332,6 @@ impl FromStr for IsolatedPath {
     }
 }
 
-/// Reject a root path that could not be determined, i.e. an empty one.
-///
-/// Shared by [`Config::require_root_path`] and [`Config::require_global_path`]:
-/// an empty root would resolve every layout directory against the current
-/// directory, so callers that touch the filesystem must fail instead.
-fn require_known_root<'a>(path: &'a Path, what: &str, remedy: &str) -> Fallible<&'a Path> {
-    if path.as_os_str().is_empty() {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{what} is unknown: {remedy}"),
-        )));
-    }
-    Ok(path)
-}
-
 impl Config {
     /// Get the `cache` directory of Scoop.
     #[inline]
@@ -366,18 +351,22 @@ impl Config {
 
     /// Get the root directory of Scoop, or an error when it is unknown.
     ///
-    /// In a stripped environment (no `$SCOOP` and no home directory) the
-    /// resolved root is empty — see `default::root_path`. Every layout path is
+    /// Only a stripped environment (no `$SCOOP` and no home directory) leaves
+    /// the resolved root empty — see `default::root_path`. Every layout path is
     /// derived from it (`apps`, `shims`, `modules`, `persist`, `cache`), so an
     /// empty root would silently turn them into paths relative to the current
     /// directory. Filesystem-facing entry points must report an error instead
     /// of operating on the current directory.
     pub fn require_root_path(&self) -> Fallible<&Path> {
-        require_known_root(
-            self.root_path(),
-            "the Scoop root directory",
-            "set the SCOOP environment variable or a home directory (USERPROFILE/HOME)",
-        )
+        let path = self.root_path();
+        if path.as_os_str().is_empty() {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the Scoop root directory is unknown: set the SCOOP environment variable \
+                 or a home directory (USERPROFILE/HOME)",
+            )));
+        }
+        Ok(path)
     }
 
     /// Get the global root directory of Scoop.
@@ -387,19 +376,6 @@ impl Config {
     #[inline]
     pub fn global_path(&self) -> &Path {
         self.global_path.as_path()
-    }
-
-    /// Get the global root directory of Scoop, or an error when it is unknown.
-    ///
-    /// `$SCOOP_GLOBAL` set to an empty value resolves the global root to an
-    /// empty path, with the same hazard as an unknown user-level root — see
-    /// [`Config::require_root_path`].
-    pub fn require_global_path(&self) -> Fallible<&Path> {
-        require_known_root(
-            self.global_path(),
-            "the global Scoop root directory",
-            "set the SCOOP_GLOBAL environment variable",
-        )
     }
 
     /// Get the `no_junction` config.
@@ -910,6 +886,21 @@ mod default {
 
     use crate::internal::path::{home_dir, normalize_path};
 
+    /// Read an environment variable as a path, treating an empty value as
+    /// unset.
+    ///
+    /// Mirrors upstream's candidate chain
+    /// (`$env:SCOOP, (get_config ROOT_PATH), ..., | Where-Object { $_ } |
+    /// Select-Object -First 1`, `lib/core.ps1:1291-1301`), where an empty
+    /// variable is falsy and falls through to the next candidate — and matches
+    /// the empty-value filtering in `internal::path::{home_dir, config_dir}`.
+    #[inline]
+    fn env_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
     /// Join the given `path` to `$HOME` and return a new [`PathBuf`].
     ///
     /// Falls back to an empty path when `$HOME`/`USERPROFILE` is unset
@@ -942,37 +933,38 @@ mod default {
     }
 
     /// Get the default Scoop root path.
+    ///
+    /// `$SCOOP` wins, then `$HOME/scoop` — an empty `$SCOOP` counts as unset
+    /// (see [`env_path`]).
     #[inline]
     pub(super) fn root_path() -> PathBuf {
-        let path = if let Some(path) = std::env::var_os("SCOOP") {
-            PathBuf::from(path)
-        } else {
-            home_join("scoop")
-        };
+        let path = env_path("SCOOP").unwrap_or_else(|| home_join("scoop"));
 
         normalize_path(path)
     }
 
     /// Get the default Scoop cache path.
+    ///
+    /// `$SCOOP_CACHE` wins, then `<root>/cache` — an empty `$SCOOP_CACHE`
+    /// counts as unset (see [`env_path`]).
     #[inline]
     pub(super) fn cache_path() -> PathBuf {
-        let path = if let Some(path) = std::env::var_os("SCOOP_CACHE") {
-            PathBuf::from(path)
-        } else {
-            root_path().join("cache")
-        };
+        let path = env_path("SCOOP_CACHE").unwrap_or_else(|| root_path().join("cache"));
 
         normalize_path(path)
     }
 
     /// Get the default Scoop global path.
+    ///
+    /// `$SCOOP_GLOBAL` wins, then `$ProgramData/scoop`, then
+    /// `C:/ProgramData/scoop` — an empty `$SCOOP_GLOBAL`/`$ProgramData` counts
+    /// as unset (see [`env_path`]), so this never resolves to an empty path.
     #[inline]
     pub(super) fn global_path() -> PathBuf {
-        let path = if let Some(path) = std::env::var_os("SCOOP_GLOBAL") {
-            return PathBuf::from(path);
+        let path = if let Some(path) = env_path("SCOOP_GLOBAL") {
+            return path;
         } else {
-            std::env::var_os("ProgramData")
-                .map(PathBuf::from)
+            env_path("ProgramData")
                 .map(|p| p.join("scoop"))
                 .unwrap_or(PathBuf::from("C:/ProgramData/scoop"))
         };
@@ -1952,21 +1944,5 @@ mod tests {
 
         config.inner.root_path = PathBuf::from(r"C:\scoop");
         assert_eq!(config.require_root_path().unwrap(), Path::new(r"C:\scoop"));
-
-        // The global root has the same guard (`$SCOOP_GLOBAL=""`).
-        config.inner.global_path = PathBuf::new();
-        let err = config.require_global_path().unwrap_err();
-        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
-        assert!(
-            err.to_string()
-                .contains("global Scoop root directory is unknown"),
-            "unexpected message: {err}"
-        );
-
-        config.inner.global_path = PathBuf::from(r"C:\ProgramData\scoop");
-        assert_eq!(
-            config.require_global_path().unwrap(),
-            Path::new(r"C:\ProgramData\scoop")
-        );
     }
 }
