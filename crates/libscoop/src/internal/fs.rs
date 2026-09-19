@@ -123,7 +123,15 @@ pub fn remove_symlink<P: AsRef<Path>>(lnk: P) -> io::Result<()> {
 pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
     let src = src.as_ref();
     let lnk = lnk.as_ref();
-    let _ = remove_symlink(lnk);
+    // A leftover entry has to go before the link can be created. Removal fails
+    // for a real non-empty directory, which no link can replace anyway: report
+    // that failure rather than letting the link creation below surface the
+    // less informative `ERROR_ALREADY_EXISTS` (os error 183).
+    if let Err(e) = remove_symlink(lnk)
+        && lnk.exists()
+    {
+        return Err(e);
+    }
 
     // Same degenerate-path guard as [`write_json`]: a link path with no
     // parent directory cannot be created.
@@ -222,5 +230,48 @@ mod tests {
     fn symlink_dir_rejects_path_without_parent() {
         let err = symlink_dir(".", std::path::PathBuf::new()).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// A real non-empty directory at the link path cannot be replaced by a
+    /// link. The cleanup failure must be reported as-is instead of being
+    /// swallowed into the misleading `ERROR_ALREADY_EXISTS` the link creation
+    /// would raise (the shape that made a failed persist link read as
+    /// "os error 183").
+    #[test]
+    fn symlink_dir_reports_an_unremovable_existing_directory() {
+        let dir = crate::test_utils::tmpdir("fs_symlink_unremovable");
+        let src = dir.join("src");
+        let lnk = dir.join("lnk");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&lnk).unwrap();
+        std::fs::write(lnk.join("keep"), b"x").unwrap();
+
+        let err = symlink_dir(&src, &lnk).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::DirectoryNotEmpty);
+        assert!(
+            lnk.join("keep").exists(),
+            "the directory must be left alone"
+        );
+    }
+
+    /// A leftover link at the link path is still replaced silently — the
+    /// tightening above must not turn an ordinary re-link into an error.
+    #[test]
+    fn symlink_dir_replaces_an_existing_link() {
+        let dir = crate::test_utils::tmpdir("fs_symlink_relink");
+        let first = dir.join("first");
+        let second = dir.join("second");
+        let lnk = dir.join("lnk");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        symlink_dir(&first, &lnk).unwrap();
+        symlink_dir(&second, &lnk).unwrap();
+
+        assert_eq!(
+            std::fs::canonicalize(&lnk).unwrap(),
+            std::fs::canonicalize(&second).unwrap()
+        );
     }
 }
