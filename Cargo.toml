@@ -14,7 +14,6 @@ members = [
     "crates/hok-shim",
     "crates/hok-i18n",
     "crates/hok-i18n-derive",
-    "crates/innospect",
 ]
 
 # Shared dependency declarations. Members opt in with `{ workspace = true }`
