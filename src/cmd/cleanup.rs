@@ -94,18 +94,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 res.removed.join(" ")
             );
             reported = true;
-        } else if args.verbose > 0 && res.failed == 0 {
+        } else if args.verbose > 0 && res.failures.is_empty() {
             output::done(hok_i18n::t!("cmd.cleanup_already_clean", name = res.name));
             reported = true;
         }
 
-        if res.failed > 0 {
+        if !res.failures.is_empty() {
             output::named(
                 res.name.as_str(),
                 hok_i18n::t!(
                     "cmd.cleanup_removed_failed",
                     count = res.removed.len(),
-                    failed = res.failed
+                    failed = res.failures.len()
                 ),
             );
         }
