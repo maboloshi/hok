@@ -161,7 +161,6 @@ cmd:
   cleanup_try_local: "Try again without the --global (or -g) flag instead."
   cleanup_not_installed_locally: "'%{name}' isn't installed locally, but it may be installed globally."
   cleanup_try_global: "Try again with the --global (or -g) flag instead."
-  cleanup_removed_failed: "%{count} old version(s) removed, %{failed} failed (retry after restart)"
   cleanup_removing: "Removing %{name}:"
   cleanup_row: "%{name}: %{ver}"
   cleanup_already_clean: "%{name} is already clean"
