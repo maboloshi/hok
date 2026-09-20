@@ -64,11 +64,21 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         // back to a full sweep.
         session.set_global(false);
         let names = package::cleanup::installed_app_names(session);
-        results.extend(package::cleanup::cleanup(session, &names, &options)?);
+        results.extend(package::cleanup::cleanup(
+            session,
+            &names,
+            &options,
+            &|_| {},
+        )?);
         if args.global {
             session.set_global(true);
             let names = package::cleanup::installed_app_names(session);
-            results.extend(package::cleanup::cleanup(session, &names, &options)?);
+            results.extend(package::cleanup::cleanup(
+                session,
+                &names,
+                &options,
+                &|_| {},
+            )?);
         }
     } else {
         // Named apps go through upstream's `Confirm-InstallationStatus`
@@ -77,7 +87,12 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         let names = package::cleanup::confirm_installation_status(session, &args.app, args.global);
         named_targets = Some(names.len());
         session.set_global(args.global);
-        results.extend(package::cleanup::cleanup(session, &names, &options)?);
+        results.extend(package::cleanup::cleanup(
+            session,
+            &names,
+            &options,
+            &|_| {},
+        )?);
     }
 
     // Upstream renders the removed versions on the app's line

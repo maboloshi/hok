@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::{Error, Session, cache, error::Fallible, internal, package::install_state};
 
@@ -50,6 +52,38 @@ pub struct CleanupFailure {
     /// wraps it in its localized line.
     pub error: String,
 }
+
+/// Progress notification for one old-version directory, delivered to the
+/// observer passed to [`cleanup`].
+///
+/// One `Started`/`Finished` pair is emitted per planned version directory, from
+/// the worker thread that removes it — which lets a frontend drive a
+/// per-version progress row without owning the parallelism. A directory that is
+/// never started (strict mode aborted the sweep first) emits nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CleanupProgress {
+    /// A worker claimed this version directory.
+    Started {
+        /// The app name.
+        name: String,
+        /// The version being removed.
+        version: String,
+    },
+    /// The removal attempt settled; `error` is `None` when the directory is gone.
+    Finished {
+        /// The app name.
+        name: String,
+        /// The version that was being removed.
+        version: String,
+        /// The removal error, or `None` on success.
+        error: Option<String>,
+    },
+}
+
+/// Observer receiving [`CleanupProgress`] from `cleanup`'s worker threads.
+///
+/// `Sync` rather than `Send`: every worker borrows it, it is never moved.
+pub type CleanupObserver<'a> = dyn Fn(CleanupProgress) + Sync + 'a;
 
 /// The app directory in an explicit scope: upstream `appdir $app $global`
 /// (`lib/core.ps1`), which takes the scope as a parameter rather than reading
@@ -160,6 +194,55 @@ pub fn installed_app_names(session: &Session) -> Vec<String> {
     names
 }
 
+/// One app's cleanup plan: the version directories a sweep will remove.
+struct PlannedApp {
+    /// The app name.
+    name: String,
+    /// Version directories to remove, newest first (reproducible order).
+    old_versions: Vec<String>,
+}
+
+/// Old version directories of one installed app, newest first — every directory
+/// except `current` and the version `current` resolves to.
+fn old_version_dirs(pkg_dir: &Path, current_ver: &str) -> Vec<String> {
+    let mut old_dirs = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(pkg_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let name_str = match fname.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            // Skip "current" symlink and the current version
+            if name_str == "current" || name_str == current_ver {
+                continue;
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                old_dirs.push(name_str.to_owned());
+            }
+        }
+    }
+    // `read_dir` returns an arbitrary order; sorting newest-first makes both
+    // the removal order and the rendered version list reproducible.
+    old_dirs.sort_by(|a, b| super::list::compare_versions_desc(a, b));
+    old_dirs
+}
+
+/// How many threads a cleanup sweep may use.
+///
+/// Removing directories costs ~0.87 ms per file on NTFS and scales close to
+/// linearly with threads (measured 2026-09-20: 4 threads ≈ 4.3× on 30k files),
+/// while the workers share nothing but the outcome slots. The cap stays low on
+/// purpose: more threads show no measured gain, and every extra worker widens
+/// the blast radius of this destructive operation.
+fn worker_count() -> usize {
+    const MAX_WORKERS: usize = 4;
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().min(MAX_WORKERS))
+        .unwrap_or(1)
+        .max(1)
+}
+
 /// Cleanup old versions of packages.
 ///
 /// Removes all version directories except the current one for each named
@@ -170,20 +253,35 @@ pub fn installed_app_names(session: &Session) -> Vec<String> {
 /// does not exist yields [`PackageNotFound`][1] unless `options.ignore_failures`
 /// is set.
 ///
+/// The sweep removes version directories with `worker_count()` threads and
+/// reports each one through `observer` when it is claimed and when it settles.
+/// The returned results keep the planned order regardless of which worker
+/// finished first, so a frontend renders a run reproducibly.
+///
 /// # Errors
 ///
 /// A [`PackageNotFound`][1] error will be returned if a named package does not
-/// exist and `options.ignore_failures` is false.
+/// exist and `options.ignore_failures` is false. A failed removal returns
+/// [`Error::Custom`] under the same condition: the first failure in planned
+/// order is reported and the remaining workers are stopped.
 ///
 /// [1]: crate::Error::PackageNotFound
 pub fn cleanup(
     session: &Session,
     names: &[String],
     options: &CleanupOptions,
+    observer: &CleanupObserver<'_>,
 ) -> Fallible<Vec<CleanupResult>> {
     let ignore_failures = options.ignore_failures;
     let apps_dir = session.apps_dir();
-    let mut results = Vec::new();
+    let no_junction = session.config().no_junction();
+
+    // ── Plan ────────────────────────────────────────────────────────────────
+    // Resolving each app's current version and enumerating its old version dirs
+    // stays on this thread: it is cheap next to the removals, and it keeps the
+    // `current`-version guard (deleting the wrong directory is destructive) and
+    // the per-app cache drop out of the worker pool.
+    let mut plans: Vec<PlannedApp> = Vec::new();
 
     for name in names {
         let pkg_dir = apps_dir.join(name);
@@ -198,9 +296,8 @@ pub fn cleanup(
         // (upstream `Select-CurrentVersion`) — a local `read_link("current")`
         // diverges from it on broken/nightly installs, and deleting the wrong
         // dir here is destructive.
-        let current_version =
-            install_state::resolve_current_version(&pkg_dir, session.config().no_junction())
-                .map(|resolved| resolved.version);
+        let current_version = install_state::resolve_current_version(&pkg_dir, no_junction)
+            .map(|resolved| resolved.version);
 
         let Some(ref current_ver) = current_version else {
             // No install info — skip broken package
@@ -215,67 +312,101 @@ pub fn cleanup(
             cache::remove_outdated(session, name, current_ver)?;
         }
 
-        // Collect old version directories
-        let mut old_dirs = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&pkg_dir) {
-            for entry in entries.flatten() {
-                let fname = entry.file_name();
-                let name_str = match fname.to_str() {
-                    Some(s) => s,
-                    None => continue,
-                };
-                // Skip "current" symlink and the current version
-                if name_str == "current" || name_str == current_ver {
-                    continue;
-                }
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    old_dirs.push(name_str.to_owned());
-                }
-            }
-        }
+        plans.push(PlannedApp {
+            name: name.clone(),
+            old_versions: old_version_dirs(&pkg_dir, current_ver),
+        });
+    }
 
-        // `read_dir` returns an arbitrary order; sorting newest-first makes
-        // both the removal order and the rendered version list reproducible.
-        old_dirs.sort_by(|a, b| super::list::compare_versions_desc(a, b));
+    // ── Remove ──────────────────────────────────────────────────────────────
+    // One work item per (app, old version), claimed from a shared counter by
+    // `worker_count()` threads. Outcomes land in per-item slots, so the result
+    // keeps the planned order no matter which worker finished first.
+    let units: Vec<(&str, &str)> = plans
+        .iter()
+        .flat_map(|plan| {
+            plan.old_versions
+                .iter()
+                .map(move |version| (plan.name.as_str(), version.as_str()))
+        })
+        .collect();
+    let outcomes: Mutex<Vec<Option<String>>> = Mutex::new(vec![None; units.len()]);
+    let next = AtomicUsize::new(0);
+    // Strict mode keeps its stop-at-the-first-failure shape: once a worker
+    // records one, no worker claims further units.
+    let abort = AtomicBool::new(false);
 
-        if old_dirs.is_empty() {
-            // Upstream reports nothing here (its `"$app is already clean"` is
-            // verbose-only) but the caller needs to know the app was visited,
-            // so an empty entry is still recorded.
-            results.push(CleanupResult {
-                name: name.clone(),
-                removed: Vec::new(),
-                failures: Vec::new(),
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count() {
+            scope.spawn(|| {
+                loop {
+                    if abort.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&(name, version)) = units.get(index) else {
+                        break;
+                    };
+                    observer(CleanupProgress::Started {
+                        name: name.to_owned(),
+                        version: version.to_owned(),
+                    });
+                    let error = internal::fs::remove_dir(apps_dir.join(name).join(version))
+                        .err()
+                        .map(|e| e.to_string());
+                    if let Some(error) = &error {
+                        outcomes.lock().unwrap()[index] = Some(error.clone());
+                        if !ignore_failures {
+                            abort.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    observer(CleanupProgress::Finished {
+                        name: name.to_owned(),
+                        version: version.to_owned(),
+                        error,
+                    });
+                }
             });
-            continue;
         }
+    });
 
+    let outcomes = outcomes.into_inner().unwrap();
+
+    // Strict mode reports the first failure in planned order; the removals that
+    // ran before it are already done, exactly as the serial version behaved.
+    if !ignore_failures && let Some(index) = outcomes.iter().position(Option::is_some) {
+        let (name, version) = units[index];
+        let error = outcomes[index].clone().unwrap_or_default();
+        return Err(Error::Custom(
+            hok_i18n::t!(
+                "cmd.cleanup_remove_failed",
+                name = name,
+                ver = version,
+                e = error
+            )
+            .to_string(),
+        ));
+    }
+
+    // ── Assemble ────────────────────────────────────────────────────────────
+    // `removed` and `failures` keep the planned (newest-first) version order.
+    let mut results = Vec::with_capacity(plans.len());
+    let mut index = 0;
+    for plan in plans {
         let mut removed = Vec::new();
         let mut failures = Vec::new();
-        for ver in &old_dirs {
-            let ver_dir = pkg_dir.join(ver);
-            if let Err(e) = internal::fs::remove_dir(&ver_dir) {
-                if ignore_failures {
-                    // The library never prints: the failure travels back in the
-                    // result so the frontend can render one actionable line per
-                    // version.
-                    failures.push(CleanupFailure {
-                        version: ver.clone(),
-                        error: e.to_string(),
-                    });
-                } else {
-                    return Err(Error::Custom(
-                        hok_i18n::t!("cmd.cleanup_remove_failed", name = name, ver = ver, e = e)
-                            .to_string(),
-                    ));
-                }
-            } else {
-                removed.push(ver.clone());
+        for version in plan.old_versions {
+            match &outcomes[index] {
+                Some(error) => failures.push(CleanupFailure {
+                    version: version.clone(),
+                    error: error.clone(),
+                }),
+                None => removed.push(version),
             }
+            index += 1;
         }
-
         results.push(CleanupResult {
-            name: name.clone(),
+            name: plan.name,
             removed,
             failures,
         });
@@ -332,7 +463,7 @@ mod tests {
         let (session, root) = setup("old_versions");
         install_versions(&root.0, "app", &["1.0.0", "0.9.0", "0.8.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
         assert_eq!(
             results,
@@ -367,6 +498,7 @@ mod tests {
                 ignore_failures: false,
                 cache: true,
             },
+            &|_| {},
         )
         .unwrap();
 
@@ -449,7 +581,7 @@ mod tests {
         let (session, root) = setup("only_current");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
         assert_eq!(results.len(), 1, "the app was visited");
         assert_eq!(results[0].name, "app");
@@ -468,7 +600,7 @@ mod tests {
 
         let names = installed_app_names(&session);
         assert_eq!(names, ["app1", "app2"], "scoop excluded, order stable");
-        let results = cleanup(&session, &names, &opts(false)).unwrap();
+        let results = cleanup(&session, &names, &opts(false), &|_| {}).unwrap();
 
         let mut cleaned = results
             .iter()
@@ -485,7 +617,7 @@ mod tests {
         let (session, root) = setup("no_targets");
         install_versions(&root.0, "app", &["2.0.0", "1.0.0"], "2.0.0");
 
-        let results = cleanup(&session, &[], &opts(false)).unwrap();
+        let results = cleanup(&session, &[], &opts(false), &|_| {}).unwrap();
 
         assert!(results.is_empty());
         assert!(
@@ -498,7 +630,7 @@ mod tests {
     fn cleanup_missing_package_errors_without_ignore() {
         let (session, _root) = setup("missing");
 
-        let err = cleanup(&session, &["nope".to_owned()], &opts(false)).unwrap_err();
+        let err = cleanup(&session, &["nope".to_owned()], &opts(false), &|_| {}).unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "nope"));
     }
@@ -512,6 +644,7 @@ mod tests {
             &session,
             &["nope".to_owned(), "app".to_owned()],
             &opts(true),
+            &|_| {},
         )
         .unwrap();
 
@@ -526,7 +659,7 @@ mod tests {
         // apps/app exists but has no `current` symlink
         std::fs::create_dir_all(root.0.join("apps/app/1.0.0")).unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
         assert!(results.is_empty(), "broken package skipped");
     }
@@ -592,7 +725,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false)).unwrap();
+        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "app");
@@ -602,5 +735,134 @@ mod tests {
         assert!(!pkg_dir.join("1.0.0").exists(), "old version removed");
         assert!(!pkg_dir.join("_1.0.0.old").exists(), "old dir removed");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A sweep reports every planned version through the observer and keeps the
+    /// results in the requested order — parallel workers must not leak their
+    /// completion order into what the frontend renders.
+    #[test]
+    fn cleanup_reports_every_version_and_keeps_input_order() {
+        let (session, root) = setup("parallel_order");
+        let names: Vec<String> = ["zeta", "alpha", "mid", "beta"]
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        for name in &names {
+            install_versions(&root.0, name, &["2.0.0", "1.5.0", "1.0.0"], "2.0.0");
+        }
+
+        let events = std::sync::Mutex::new(Vec::new());
+        let results = cleanup(&session, &names, &opts(true), &|event| {
+            events.lock().unwrap().push(event);
+        })
+        .unwrap();
+
+        assert_eq!(
+            results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["zeta", "alpha", "mid", "beta"],
+            "results follow the requested order, not completion order"
+        );
+        for result in &results {
+            assert_eq!(result.removed, ["1.5.0", "1.0.0"], "newest first");
+            assert!(result.failures.is_empty());
+        }
+
+        let events = events.into_inner().unwrap();
+        assert_eq!(
+            events.len(),
+            16,
+            "one Started + one Finished for each of the 8 planned versions"
+        );
+        let mut started: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                CleanupProgress::Started { version, .. } => Some(version.as_str()),
+                CleanupProgress::Finished { .. } => None,
+            })
+            .collect();
+        let finished: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                CleanupProgress::Finished {
+                    version,
+                    error: None,
+                    ..
+                } => Some(version.as_str()),
+                _ => None,
+            })
+            .collect();
+        started.sort();
+        assert_eq!(
+            started,
+            [
+                "1.0.0", "1.0.0", "1.0.0", "1.0.0", "1.5.0", "1.5.0", "1.5.0", "1.5.0"
+            ]
+        );
+        assert_eq!(finished.len(), 8, "every started version settled clean");
+    }
+
+    /// A version directory that cannot be removed is reported with its version
+    /// and the OS error, while the rest of the batch still completes.
+    ///
+    /// The lock is real: the handle is opened without `FILE_SHARE_DELETE`, the
+    /// state any process that merely reads a file is in.
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_reports_a_locked_version_and_removes_the_rest() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (session, root) = setup("locked_version");
+        install_versions(&root.0, "app", &["2.0.0", "1.5.0", "1.0.0"], "2.0.0");
+        let locked = root.0.join("apps/app/1.0.0/locked.dll");
+        std::fs::write(&locked, b"x").unwrap();
+        // FILE_SHARE_READ only — without FILE_SHARE_DELETE the directory cannot go.
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1)
+            .open(&locked)
+            .unwrap();
+
+        let results = cleanup(&session, &["app".to_owned()], &opts(true), &|_| {}).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].removed,
+            ["1.5.0"],
+            "removable version still went"
+        );
+        assert_eq!(results[0].failures.len(), 1);
+        assert_eq!(results[0].failures[0].version, "1.0.0");
+        assert!(
+            results[0].failures[0].error.contains("os error"),
+            "the OS error travels back in the result: {:?}",
+            results[0].failures[0].error
+        );
+        assert!(root.0.join("apps/app/2.0.0").exists(), "current kept");
+        assert!(locked.exists(), "the locked file survived");
+    }
+
+    /// Strict mode (no `ignore_failures`) surfaces the removal failure as the
+    /// command error instead of a result entry.
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_strict_mode_reports_the_failing_version() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let (session, root) = setup("strict_locked");
+        install_versions(&root.0, "app", &["2.0.0", "1.0.0"], "2.0.0");
+        let locked = root.0.join("apps/app/1.0.0/locked.dll");
+        std::fs::write(&locked, b"x").unwrap();
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1)
+            .open(&locked)
+            .unwrap();
+
+        let err = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap_err();
+
+        assert!(
+            matches!(err, Error::Custom(ref msg) if msg.contains("1.0.0")),
+            "strict mode reports the failing version: {err:?}"
+        );
     }
 }
