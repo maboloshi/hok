@@ -227,7 +227,8 @@ This fork maintains a strong focus on dependency hygiene. Notable improvements o
 - **Removed heavy dependencies**: `chrono → time` (via a `jiff` intermediate step), `curl-static → ureq → reqwest` (the async refactor), `futures` runtime, `sysinfo`, `once_cell`, `remove_dir_all`
 - **Eliminated duplicate crate versions**: `unarc-rs` replaced (removed `sevenz-rust2 v0.20` + `zip v8` duplicates), `thiserror v1+v2` unified, `md-5/sha1/sha2 v0.10+v0.11` unified
 - **Code deduplication**: Macroized repetitive accessor patterns (×16), extracted shared helpers (×5), consolidated 4 benchmark files into 1
-- **Zero external C build dependencies for decompression**: All archive formats (7z, zip, tar, gz, bz2, xz, zst) handled by pure Rust crates; RAR via `unrar` (C++ unrar library); LZH/ISO via 7z.exe fallback
+- **RAR is pure Rust**: `.rar` extraction uses the `rars` crate (RAR 1.3/1.4, 1.5–4.x and 5+, including volume sets and the RARVM filters), so the C++ UnRAR library is no longer a runtime dependency. The old `unrar` binding survives as a **dev-dependency** only: it derives the committed golden baseline (`crates/libscoop/tests/fixtures/rar/expected-trees.txt`) that the parity test compares the production path against. One format still needs C: `.zst` goes through the `zstd` crate (the pure-Rust `ruzstd` decoder is 1.4–3.5× slower, so it is not used). 7z, zip, tar, gz, bz2 and xz are pure Rust; LZH/ISO fall back to 7z.exe.
+- **Two SQLite shapes**: the manifest cache compiles the bundled amalgamation by default; `scripts/build-hok.ps1 -Mode winsqlite3` links Windows' own `winsqlite3.dll` instead (about 1 MB smaller, x64/arm64 only — on x86 the SDK's import library exports `__stdcall`-decorated names that `rusqlite`'s cdecl bindings cannot resolve). The shape is a build-time opt-in read by `libsqlite3-sys`, so a plain `cargo build` is unchanged.
 - **`unsafe_code = deny` guardrail**: `unsafe` is denied crate-wide across the safe crates; the only exceptions are the `no_std` Win32 shim (`hok-shim`) and the small FFI modules (`libscoop::internal::os`, `libscoop::permission`). Every `unsafe` is audited and classified in the (working-tree) `.dsh/docs/unsafe-audit.md`.
 - **criterion guardrail benchmarks**: `cargo bench` runs micro-benchmarks over the key pure functions (`compare_versions`, glob, hashing, manifest parsing, URL helpers) to catch refactor regressions.
 
@@ -247,7 +248,7 @@ evolution), and these are the design points behind it:
   traits with in-memory fakes, so the download / checkver / bucket / extract
   pipeline is unit-testable offline without touching real network or disk.
 - **Truly async operations** — the CLI runs on a tokio runtime; the `Network`
-  trait is async over **`reqwest`** (rustls), so checkver fans out with
+  trait is async over **`reqwest`** (native-tls → schannel on Windows), so checkver fans out with
   `buffer_unordered`, fragmented downloads run their parts in parallel, and
   bucket updates use `tokio::spawn`. Local fast operations (`list`, `search`,
   `status`, `which`, `config`, `cat`) stay synchronous.

@@ -24,7 +24,7 @@
 | `once_cell` | std（LazyLock/OnceCell） | Rust 1.70+ 已标准化，无需第三方 |
 | scoop_hash selfcontained | rustcrypto 后端（后合并进 libscoop `internal::hash`） | 手写 MD5/SHA1/SHA256/SHA512 ~4700 行是维护债务；独立 crate 仅本项目使用，0.2.0 起不再单独发布 |
 | `remove_dir_all` | `std::fs::remove_dir_all`（Rust 1.74+） | 原生支持 Windows 长路径，无需第三方 |
-| `unarc-rs` | `unrar` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
+| `unarc-rs` | `rars` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
 | `thiserror` 1 + 2 并存 | 统一升级到 v2 | 消除依赖树中同一 crate 两个 major 版本的冗余 |
 | `md-5`/`sha1`/`sha2` 0.10 + 0.11 并存 | 统一升级到 v0.11 | 同上，消除 RustCrypto digest 双版本 |
 
@@ -45,19 +45,34 @@
 
 | 分类 | Crate | 说明 |
 |------|-------|------|
-| **压缩 — 纯 Rust** | `sevenz-rust2`, `zip`, `tar`, `flate2`, `bzip2`, `lzma-rs`, `zstd` | 各对应一种归档/压缩格式 |
-| **压缩 — C++ 后端** | `unrar` | RARLab 官方库，RAR 无纯 Rust 替代 |
+| **压缩 — 纯 Rust** | `sevenz-rust2`, `zip`, `tar`, `flate2`, `bzip2`, `lzma-rust2`, `rars` | 各对应一种归档/压缩格式；`rars` 覆盖 RAR 1.3/1.4、1.5–4.x、5+（含分卷与 RARVM filter） |
+| **压缩 — C 后端** | `zstd` | zstd C 库绑定，仅用于 `.zst` 解压；纯 Rust 的 `ruzstd` 解码慢 1.4–3.5 倍，暂不采用 |
 | **压缩 — 外部进程** | 7z.exe（运行时降级） | 兜底 LZH / ISO 等罕见格式 |
 | **Windows 专用** | `junction`, `winreg`, `innospect`, `shortcuts-rs` | Win32 API 的 Rust 封装 |
-| **网络（异步）** | `reqwest` (rustls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；GitHub / VirusTotal API 也统一走 reqwest |
-| **Git** | `git2` | libgit2 C 绑定（试过 `gix`，依赖树更大） |
-| **SQLite 缓存** | `rusqlite` (bundled) | 兼容 Scoop，无纯 Rust SQLite 替代 |
+| **网络（异步）** | `reqwest` (native-tls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；Windows 上走 schannel（系统证书与代理）；GitHub / VirusTotal API 也统一走 reqwest |
+| **Git** | `git2` | libgit2 C 绑定；边际依赖只有 `git2`/`libgit2-sys`/`libssh2-sys`/`libz-sys` 四个，`gix` 未被采用 |
+| **SQLite 缓存** | `rusqlite` (bundled) | 默认编译 bundled SQLite 以兼容 Scoop schema；另有可选的 `winsqlite3` 形状（见下），无成熟纯 Rust SQLite 替代 |
 | **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |
 | **CLI 框架** | `clap`, `clap_complete`, `clap-verbosity-flag` | — |
 | **终端渲染** | `crossterm`, `indicatif` | 终端颜色 + 进度条 |
-| **其他** | `anyhow`, `thiserror`, `regex`, `time`, `dirs`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
+| **其他** | `anyhow`, `thiserror`, `regex`, `time`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
 
 **已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`, `jiff`
+
+> `rars`（纯 Rust）已取代 `unrar`（RARLab C++ 库）成为 `.rar` 的生产解压路径；`unrar` 只作为 **dev-dependency** 保留，用于生成/再生 `crates/libscoop/tests/fixtures/rar/expected-trees.txt` 这份 golden 基线（该库在同一进程内被反复调用会偶发崩溃，所以测试比对 golden 文件而不是实时调用它）。覆盖范围、已知差异与"未覆盖"清单见 `crates/libscoop/tests/fixtures/rar/README.md`。
+
+### 构建形状（SQLite）
+
+默认 `cargo build` 就是 **bundled** 形状（编译 SQLite 合并源，x86/x64/arm64 通吃）。需要更小的发布产物时用 **winsqlite3** 形状（改链 Windows 自带的 `winsqlite3.dll`，约小 1 MB）：
+
+```powershell
+pwsh scripts/build-hok.ps1                            # 默认 = bundled（显式，无惊喜）
+pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify   # 链接 winsqlite3.dll，并断言产物形状
+```
+
+- `-Mode winsqlite3` 从 Windows SDK 取出 `winsqlite3.h/.lib`，staging 到仓库内 gitignored 的 `.winsqlite3/`，并**只在该进程内**设置 `LIBSQLITE3_SYS_USE_PKG_CONFIG` / `SQLITE3_LIB_DIR` / `SQLITE3_INCLUDE_DIR`（不写用户环境变量、不写 `.cargo/config.toml`），因此之后的 `cargo build` 仍是 bundled；
+- **x86 不支持** winsqlite3：SDK 的 import lib 在 x86 上导出 `__stdcall` 修饰名（`_sqlite3_column_name@8`），与 rusqlite 的 cdecl 声明不匹配；i686 保持 bundled；
+- `crates/libscoop/build.rs` 对两种静默失败直接报错并给出修复命令：只设了 `SQLITE3_LIB_DIR` 却忘设 `LIBSQLITE3_SYS_USE_PKG_CONFIG`（否则会静默改编 C），以及 x86 + linked 模式。
 
 **重复版本已消除：** `sevenz-rust2`、`zip`、`thiserror`、`md-5`/`sha1`/`sha2` 在依赖树中各只保留一个版本。
 
@@ -195,7 +210,7 @@ hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig
 - **Edition 2024 全量升级** —— workspace 全部 crate 迁移到 2024 edition；`unsafe extern` 在每一处 FFI 边界显式标注，`unsafe` 在安全 crate 全量 deny，仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块豁免（审计清单见 `.dsh/docs/unsafe-audit.md`）。
 - **分层单向依赖** —— CLI（hok）→ 门面（libscoop）→ 领域服务 → 核心 `package/` 逻辑 → `internal/` 工具。领域类型（`Package` / `Manifest` / `Version` / `Config`）**纯化**：零 I/O、零 async、零框架依赖，可确定性单测。
 - **基础设施 trait 化** —— `Network` / `Git` / `Archive` 抽成 trait + 内存 fake，下载 / checkver / bucket / 解压整条流水线可离线单测，不依赖真实网络与磁盘。
-- **真异步网络** —— CLI 跑在 tokio runtime 上；`Network` trait 基于 **`reqwest`（rustls）** async 化，checkver 用 `buffer_unordered` 并发、分片下载并行、bucket 更新用 `tokio::spawn`；本地快操作（`list` / `search` / `status` / `which` / `config` / `cat`）保持同步。
+- **真异步网络** —— CLI 跑在 tokio runtime 上；`Network` trait 基于 **`reqwest`（native-tls，Windows 走 schannel）** async 化，checkver 用 `buffer_unordered` 并发、分片下载并行、bucket 更新用 `tokio::spawn`；本地快操作（`list` / `search` / `status` / `which` / `config` / `cat`）保持同步。
 - **护栏** —— `unsafe_code = deny`、criterion 纯函数微基准、可复现的 hok-vs-Scoop 行为/性能基准（`scripts/benchmark_vs_scoop.ps1`）。
 
 ### 设计原则
