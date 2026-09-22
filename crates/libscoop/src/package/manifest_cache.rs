@@ -1213,4 +1213,54 @@ mod tests {
             "a listing must be served from the cache, not re-read from disk"
         );
     }
+
+    /// WAL is what lets a reader and a writer share the cache: the reader keeps
+    /// the snapshot it started on while a refresh commits, instead of the
+    /// writer blocking (or failing with `SQLITE_BUSY`) until the read ends.
+    /// With the default `delete` journal the concurrent write below cannot
+    /// commit while that snapshot is open, so this also pins the mode down.
+    #[test]
+    fn wal_lets_a_reader_snapshot_survive_a_concurrent_write() {
+        let root = tmpdir("cache_wal");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal", "the cache must run in WAL mode");
+
+        // An open read transaction pins the pre-write snapshot...
+        let db_path = session.config().root_path().join("scoop.db");
+        let reader = Connection::open(&db_path).unwrap();
+        let tx = reader.unchecked_transaction().unwrap();
+        let before: i64 = tx
+            .query_row("SELECT COUNT(*) FROM app", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // ...while a refresh committed through another connection succeeds.
+        write_bucket_manifest(&root, "main", "bar", r#"{"version": "1.0"}"#);
+        let changes = UpdateChanges {
+            upsert: vec![("main".to_owned(), manifest_path(&root, "main", "bar"))],
+            delete: vec![],
+            full_scan: vec![],
+            synced: vec![],
+        };
+        apply_incremental(&conn, &changes).unwrap();
+        assert_eq!(row_count(&conn, "bar", "main").len(), 1);
+
+        // The reader keeps its own snapshot rather than seeing the new row.
+        let during: i64 = tx
+            .query_row("SELECT COUNT(*) FROM app", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(during, 1, "an open reader must keep its snapshot");
+        tx.finish().unwrap();
+
+        let after: i64 = reader
+            .query_row("SELECT COUNT(*) FROM app", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, 2, "a new snapshot sees the committed row");
+    }
 }
