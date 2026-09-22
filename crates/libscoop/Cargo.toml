@@ -63,7 +63,6 @@ lzma-rust2 = { workspace = true, features = ["xz"] }
 # RAR 7), follows volume sets, and applies the RARVM filters in pure Rust, so no
 # C++ toolchain is needed to build this crate.
 rars = "0.9.4"
-unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
 bzip2 = { workspace = true }
 
