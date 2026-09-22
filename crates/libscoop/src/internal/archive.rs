@@ -2275,3 +2275,395 @@ mod tests {
         println!("hok builtin extract git pkg: {:?}", t.elapsed());
     }
 }
+
+/// `.rar` extraction parity.
+///
+/// The baseline is a committed golden file, `tests/fixtures/rar/expected-trees.txt`,
+/// recording for every fixture the relative path set, which entries are
+/// directories, and the SHA-256 of every extracted file. It was derived from
+/// the `unrar` crate — the C++ decoder this module used to depend on, kept as a
+/// dev-dependency — so it encodes the behaviour of the backend being replaced.
+///
+/// Why a golden file rather than calling `unrar` live on every run:
+///
+/// * `unrar` is not safe to call repeatedly in one process. Measured: driving it
+///   over all ten fixtures aborts the process inside a core unsafe-precondition
+///   check (`ptr::copy_nonoverlapping requires that both pointer arguments are
+///   aligned and non-null`) in roughly 1 run in 20, while any single fixture
+///   survives 40 consecutive extractions. The failure is cumulative and is a
+///   process-level memory-safety abort, so it cannot be caught or retried.
+/// * A golden file also makes the baseline reviewable: it appears in the diff as
+///   the exact trees the new backend has to reproduce.
+///
+/// The live comparison against `unrar` is still available, and is how the golden
+/// file is produced: see `rar_regenerate_golden_baseline` below.
+///
+/// hok's own semantics (`extract_dir` stripping, traversal refusal) are pinned
+/// by their own checks against hand-written expectations, so a shared
+/// misunderstanding cannot hide on both sides of the comparison.
+///
+/// Fixture provenance, licence and the exact `Rar.exe` invocations that
+/// produced each archive are documented in `tests/fixtures/rar/README.md`.
+#[cfg(test)]
+mod rar_fixtures {
+    use super::*;
+    use crate::test_utils::tmpdir;
+    use sha2::{Digest, Sha256};
+
+    /// One filesystem node in an extracted tree.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Node {
+        Dir,
+        File(Vec<u8>),
+    }
+
+    /// An extracted tree: relative paths (always `/`-separated) to nodes.
+    type Tree = std::collections::BTreeMap<String, Node>;
+
+    fn rar_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rar")
+            .join(rel)
+    }
+
+    /// Snapshot a directory tree so two extractions compare exactly: relative
+    /// path set, file vs directory, and the bytes of every file.
+    fn snapshot(root: &Path) -> Tree {
+        fn walk(base: &Path, dir: &Path, out: &mut Tree) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(base)
+                    .expect("walked path is below root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if path.is_dir() {
+                    out.insert(rel, Node::Dir);
+                    walk(base, &path, out);
+                } else {
+                    out.insert(
+                        rel,
+                        Node::File(std::fs::read(&path).expect("read extracted")),
+                    );
+                }
+            }
+        }
+        let mut out = Tree::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    /// Run the production RAR path and snapshot what it wrote.
+    fn hok_extract(archive: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<Tree> {
+        crate::internal::fs::ensure_dir(dest)?;
+        extract_rar(archive, dest, filter, &None)?;
+        Ok(snapshot(dest))
+    }
+
+    /// Fixtures the reference decoder reads, used for decoder parity.
+    const PARITY_FIXTURES: &[&str] = &[
+        // RAR5 (v6), produced by WinRAR 7.23 from content `gen-fixtures.ps1`
+        // generates. `rar5-x86filter.rar` is made with `-mcx+`, and the
+        // generator refuses to leave it in place unless `-mcx+` really does
+        // produce a smaller archive than `-mcx-` for that payload, so the
+        // fixture provably carries an x86-filtered stream.
+        "rar5-normal.rar",
+        "rar5-solid.rar",
+        "rar5-store.rar",
+        "rar5-x86filter.rar",
+        "rar5-vol.part1.rar",
+        // RAR4 (RAR 1.5-4.x), written by `examples/gen_rar_fixtures.rs`.
+        // WinRAR 7.23 cannot create RAR4 at all (`-ma4` is an unknown option),
+        // so these come from the rars writer instead.
+        "rar4-normal.rar",
+        "rar4-solid.rar",
+        "rar4-store.rar",
+        "rar4-largepayloads.rar",
+        "rar4-vol.rar",
+    ];
+
+    // ─── Golden baseline ────────────────────────────────────────────────────
+
+    fn golden_path() -> PathBuf {
+        rar_fixture("expected-trees.txt")
+    }
+
+    /// Render one tree in the golden file's format. Files carry the SHA-256 of
+    /// their bytes, so the file stays small and diff-friendly.
+    fn render_tree(name: &str, tree: &Tree) -> String {
+        let mut out = format!("[{name}]\n");
+        for (rel, node) in tree {
+            match node {
+                Node::Dir => out.push_str(&format!("D {rel}\n")),
+                Node::File(bytes) => {
+                    out.push_str(&format!("F {rel} {}\n", hex_digest(bytes)));
+                }
+            }
+        }
+        out
+    }
+
+    /// Lowercase hex of a file's SHA-256. `sha2`'s digest type does not
+    /// implement `LowerHex`, so the encoding is explicit.
+    fn hex_digest(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let digest = Sha256::digest(bytes);
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// The same shape as a real tree, but with each file's bytes replaced by the
+    /// hex SHA-256 of those bytes, so it compares against a golden section with
+    /// a single `assert_eq!`.
+    fn hashed(tree: &Tree) -> Tree {
+        tree.iter()
+            .map(|(rel, node)| {
+                let node = match node {
+                    Node::Dir => Node::Dir,
+                    Node::File(bytes) => Node::File(hex_digest(bytes).into_bytes()),
+                };
+                (rel.clone(), node)
+            })
+            .collect()
+    }
+
+    /// Parse the golden file into fixture name -> hashed tree.
+    ///
+    /// The section under construction is tracked by name. It must not be found
+    /// with `BTreeMap::last_entry`, which yields the greatest *key* rather than
+    /// the most recent insert, and would silently attribute a section's lines to
+    /// whichever section happens to sort last.
+    fn parse_golden(text: &str) -> std::collections::BTreeMap<String, Tree> {
+        let mut out: std::collections::BTreeMap<String, Tree> = std::collections::BTreeMap::new();
+        let mut section = String::new();
+        for line in text.lines() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_string();
+                out.entry(section.clone()).or_default();
+                continue;
+            }
+            let current = out
+                .get_mut(&section)
+                .expect("golden entry appears before any section header");
+            match line.split_once(' ') {
+                Some(("D", rel)) => {
+                    current.insert(rel.to_string(), Node::Dir);
+                }
+                Some(("F", rest)) => {
+                    let (rel, hash) = rest.rsplit_once(' ').expect("F line carries a hash");
+                    current.insert(rel.to_string(), Node::File(hash.as_bytes().to_vec()));
+                }
+                _ => panic!("unrecognised golden line: {line:?}"),
+            }
+        }
+        out
+    }
+
+    // ─── Checks ─────────────────────────────────────────────────────────────
+
+    /// Serialises the checks in this module.
+    ///
+    /// Until the backend swap, the production path *is* the `unrar` decoder,
+    /// and `unrar` cannot be driven from several threads in one process.
+    /// Measured: with libtest's default parallelism this suite aborts
+    /// (`STATUS_ACCESS_VIOLATION`, or a core unsafe-precondition failure inside
+    /// `ptr::copy_nonoverlapping`) in roughly 2 runs out of 15. The abort is a
+    /// process-level memory-safety failure, so it cannot be caught or retried —
+    /// only avoided. The lock is cheap and stays after the swap, where it simply
+    /// keeps five fast checks from overlapping.
+    static RAR_SUITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serialise_rar_suite() -> std::sync::MutexGuard<'static, ()> {
+        RAR_SUITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Decoder parity: the production path must reproduce the golden baseline
+    /// exactly — same relative paths, same file/directory split, same bytes.
+    #[test]
+    fn rar_extraction_matches_the_golden_baseline() {
+        let _serial = serialise_rar_suite();
+        let golden = parse_golden(
+            &std::fs::read_to_string(golden_path())
+                .expect("read tests/fixtures/rar/expected-trees.txt"),
+        );
+        for name in PARITY_FIXTURES {
+            let archive = rar_fixture(name);
+            assert!(archive.is_file(), "missing fixture: {}", archive.display());
+            let actual = hok_extract(&archive, &tmpdir("rar_golden"), None)
+                .unwrap_or_else(|e| panic!("{name}: extraction failed: {e}"));
+            let want = golden
+                .get(*name)
+                .unwrap_or_else(|| panic!("golden file has no section [{name}]"));
+            assert_eq!(
+                want,
+                &hashed(&actual),
+                "fixture {name} differs from the golden baseline"
+            );
+        }
+    }
+
+    /// `extract_dir` semantics: only members under the prefix are written, and
+    /// the prefix is stripped.
+    ///
+    /// Byte correctness of the unfiltered tree is the golden check's job, so
+    /// this check derives its expected bytes from the production path's own
+    /// unfiltered run and asserts only the filtering policy.
+    #[test]
+    fn rar_extract_dir_filters_and_strips_the_prefix() {
+        let _serial = serialise_rar_suite();
+        let archive = rar_fixture("rar5-normal.rar");
+        let full = hok_extract(&archive, &tmpdir("rar_filter_ref"), None).expect("unfiltered");
+
+        let got = hok_extract(&archive, &tmpdir("rar_filter"), Some(&["sub"])).expect("filtered");
+
+        let mut want = Tree::new();
+        // `sub/deep/` -> `deep/`, `sub/nested.txt` -> `nested.txt`.
+        want.insert("deep".into(), Node::Dir);
+        want.insert("deep/leaf.bin".into(), full["sub/deep/leaf.bin"].clone());
+        want.insert("nested.txt".into(), full["sub/nested.txt"].clone());
+        assert_eq!(want, got, "extract_dir=[sub]");
+    }
+
+    /// A traversal fixture must never cause a write outside the destination.
+    ///
+    /// This is the security invariant, and it holds whichever way the backend
+    /// reaches it. The two backends reach it differently, which is why the
+    /// invariant — not a specific error variant — is what is pinned here:
+    ///
+    /// * the `unrar` backend sanitised `..` to `_` inside the C++ decoder
+    ///   (`..\evil.txt` arrived as `.._evil.txt`), so `extract_rar`'s own
+    ///   `ParentDir` guard never fired and the payload landed *inside* `dest`
+    ///   under a rewritten name;
+    /// * a backend that does not sanitise reaches the guard for real, which is
+    ///   what `rar_path_traversal_is_refused` pins.
+    #[test]
+    fn rar_traversal_never_writes_outside_the_destination() {
+        let _serial = serialise_rar_suite();
+        let archive = rar_fixture("traversal-rar5.rar");
+        let root = tmpdir("rar_traversal");
+        let dest = root.join("dest");
+        // `dest.join("..\\evil.txt")` resolves to `root.join("evil.txt")`, so
+        // that is exactly where an unguarded join would escape to.
+        let escape_target = root.join("evil.txt");
+
+        // Either outcome is acceptable here; the invariant is asserted below.
+        let _ = extract_rar(&archive, &dest, None, &None);
+
+        assert!(
+            !escape_target.exists(),
+            "extraction escaped the destination: {} was created",
+            escape_target.display()
+        );
+    }
+
+    /// A truncated archive must fail cleanly, never panic.
+    #[test]
+    fn rar_truncated_archive_errors_without_panicking() {
+        let _serial = serialise_rar_suite();
+        let archive = rar_fixture("rar5-truncated.rar");
+        let err = extract_rar(&archive, &tmpdir("rar_truncated"), None, &None)
+            .expect_err("truncated archive must not extract");
+        assert!(
+            matches!(err, Error::ExtractionFailed(_)),
+            "expected ExtractionFailed, got {err:?}"
+        );
+    }
+
+    /// An encrypted archive without a password must fail cleanly. hok's RAR path
+    /// has no password plumbing, so this is the reachable behaviour for both the
+    /// old and the new backend; the check pins that it stays an `Err` rather
+    /// than a silent partial extraction.
+    #[test]
+    fn rar_encrypted_archive_errors_without_a_password() {
+        let _serial = serialise_rar_suite();
+        let archive = rar_fixture("rar5-encrypted.rar");
+        let err = extract_rar(&archive, &tmpdir("rar_encrypted"), None, &None)
+            .expect_err("encrypted archive must not extract without a password");
+        assert!(
+            matches!(err, Error::ExtractionFailed(_)),
+            "expected ExtractionFailed, got {err:?}"
+        );
+    }
+
+    // ─── Golden regeneration (manual) ───────────────────────────────────────
+
+    /// The oracle, driving the `unrar` reference decoder directly.
+    ///
+    /// Kept out of the always-run suite because of `unrar`'s cumulative
+    /// undefined behaviour (see the module note). Used only by
+    /// `rar_regenerate_golden_baseline`.
+    fn unrar_reference(archive: &Path, dest: &Path) -> Tree {
+        use unrar::Archive;
+        crate::internal::fs::ensure_dir(dest).expect("create dest");
+        let mut current = Archive::new(archive)
+            .open_for_processing()
+            .unwrap_or_else(|e| panic!("open {}: {}", archive.display(), e));
+        loop {
+            let Some(entry) = current
+                .read_header()
+                .unwrap_or_else(|e| panic!("read header {}: {}", archive.display(), e))
+            else {
+                break;
+            };
+            let target = dest.join(entry.entry().filename.as_path());
+            if entry.entry().is_directory() {
+                crate::internal::fs::ensure_dir(&target).expect("create directory");
+                current = entry.skip().expect("skip directory entry");
+            } else {
+                if let Some(parent) = target.parent() {
+                    crate::internal::fs::ensure_dir(parent).expect("create parent");
+                }
+                let (data, rest) = entry.read().expect("read entry");
+                std::fs::write(&target, &data).expect("write extracted file");
+                current = rest;
+            }
+        }
+        snapshot(dest)
+    }
+
+    /// Re-derive `expected-trees.txt` from the `unrar` reference decoder.
+    ///
+    /// ```text
+    /// cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored --exact
+    /// ```
+    ///
+    /// Then review the resulting diff: every changed line is a claim about what
+    /// the new backend must produce. If the run aborts, re-run it — `unrar` is
+    /// unreliable when driven repeatedly in one process.
+    #[test]
+    #[ignore = "regenerates the golden baseline from the unrar reference; run manually"]
+    fn rar_regenerate_golden_baseline() {
+        let mut out = String::from(
+            "# Expected extraction trees for the RAR fixtures in this directory.\n\
+             #\n\
+             # Baseline decoder: the `unrar` 0.5 crate (bundled UnRAR C++), i.e. the\n\
+             # backend hok used before the `rars` swap. A `D` line is a directory, an\n\
+             # `F` line is a file followed by the SHA-256 of its extracted bytes.\n\
+             #\n\
+             # Regenerate with:\n\
+             #   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored --exact\n\
+             #\n\
+             # Every line here is a claim the new backend has to reproduce exactly;\n\
+             # review the diff before accepting a regeneration.\n\n",
+        );
+        for name in PARITY_FIXTURES {
+            let tree = unrar_reference(&rar_fixture(name), &tmpdir("rar_golden_regen"));
+            out.push_str(&render_tree(name, &tree));
+            out.push('\n');
+        }
+        std::fs::write(golden_path(), out).expect("write golden file");
+        eprintln!("wrote {}", golden_path().display());
+    }
+}

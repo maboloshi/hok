@@ -17,6 +17,7 @@
 *.psd1      text eol=lf
 *.psm1      text eol=lf
 *.py        text eol=lf
+*.cjs       text eol=lf
 
 # Build / CI
 *.bat       text eol=crlf
@@ -25,3 +26,6 @@
 # Binary / generated
 *.zip       binary
 *.exe       binary
+*.rar       binary
+*.r00       binary
+*.r01       binary

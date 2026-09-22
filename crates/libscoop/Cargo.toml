@@ -105,6 +105,16 @@ broken_intra_doc_links = "deny"
 # Guardrail benchmarks for the key pure functions (phase 5). Dev-only — never
 # affects release builds. `cargo bench` runs them.
 criterion = "0.8"
+# Reference RAR decoder behind the committed `.rar` extraction baseline. It
+# produced `tests/fixtures/rar/expected-trees.txt`, which
+# `rar_extraction_matches_the_golden_baseline` compares the production path
+# against, and it re-derives that file in `rar_regenerate_golden_baseline`.
+# Dev-only: never linked into a release build.
+unrar = "0.5"
+# Writes the RAR 1.5-4.x fixtures, which WinRAR 7.23 can no longer produce
+# (`-ma4` is an unknown option). Dev-only: used by
+# `examples/gen_rar_fixtures.rs`, never by the library itself.
+rars = "0.9.4"
 
 [[bench]]
 name = "pure_functions"
