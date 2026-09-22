@@ -108,12 +108,10 @@ broken_intra_doc_links = "deny"
 # Guardrail benchmarks for the key pure functions (phase 5). Dev-only — never
 # affects release builds. `cargo bench` runs them.
 criterion = "0.8"
-# Reference RAR decoder behind the committed `.rar` extraction baseline. It
-# produced `tests/fixtures/rar/expected-trees.txt`, which
-# `rar_extraction_matches_the_golden_baseline` compares the production path
-# against, and it re-derives that file in `rar_regenerate_golden_baseline`.
-# Dev-only: never linked into a release build.
-unrar = "0.5"
+# No RAR dependency here, not even a dev one: `tests/fixtures/rar/expected-trees.txt`
+# is committed, and the ignored `rar_regenerate_golden_baseline` re-derives it by
+# shelling out to WinRAR's `Rar.exe` (override the path with `HOK_RAR_EXE`). See
+# `tests/fixtures/rar/README.md`. Nothing in this crate needs a C++ toolchain.
 
 [[bench]]
 name = "pure_functions"

@@ -2394,23 +2394,22 @@ mod tests {
 ///
 /// The baseline is a committed golden file, `tests/fixtures/rar/expected-trees.txt`,
 /// recording for every fixture the relative path set, which entries are
-/// directories, and the SHA-256 of every extracted file. It was derived from
-/// the `unrar` crate — the C++ decoder this module used to depend on, kept as a
-/// dev-dependency — so it encodes the behaviour of the backend being replaced.
+/// directories, and the SHA-256 of every extracted file. It encodes the
+/// behaviour of the `unrar` C++ decoder that `rars` replaced, so it is the
+/// contract the extraction path has to keep.
 ///
-/// Why a golden file rather than calling `unrar` live on every run:
+/// It is regenerated from WinRAR's `Rar.exe` rather than from a Rust crate: the
+/// reference decoder must share no code with the one under test. It is a
+/// committed file rather than a live comparison on every run because the
+/// original `unrar` crate was not safe to call repeatedly in one process —
+/// measured, it aborted inside a core unsafe-precondition check
+/// (`ptr::copy_nonoverlapping requires that both pointer arguments are aligned
+/// and non-null`) in roughly 1 run in 20, while any single fixture survived 40
+/// consecutive extractions, and such a process-level abort cannot be caught or
+/// retried. Freezing the reference output also makes it reviewable: it appears
+/// in the diff as the exact trees the extraction path must reproduce.
 ///
-/// * `unrar` is not safe to call repeatedly in one process. Measured: driving it
-///   over all ten fixtures aborts the process inside a core unsafe-precondition
-///   check (`ptr::copy_nonoverlapping requires that both pointer arguments are
-///   aligned and non-null`) in roughly 1 run in 20, while any single fixture
-///   survives 40 consecutive extractions. The failure is cumulative and is a
-///   process-level memory-safety abort, so it cannot be caught or retried.
-/// * A golden file also makes the baseline reviewable: it appears in the diff as
-///   the exact trees the new backend has to reproduce.
-///
-/// The live comparison against `unrar` is still available, and is how the golden
-/// file is produced: see `rar_regenerate_golden_baseline` below.
+/// See `rar_regenerate_golden_baseline` below for how to regenerate it.
 ///
 /// hok's own semantics (`extract_dir` stripping, traversal refusal) are pinned
 /// by their own checks against hand-written expectations, so a shared
@@ -2585,14 +2584,13 @@ mod rar_fixtures {
 
     // ─── Checks ─────────────────────────────────────────────────────────────
 
-    /// No lock is needed here any more. While the production path was the
-    /// `unrar` decoder these checks had to be serialised — `unrar` cannot be
-    /// driven from several threads in one process, and with libtest's default
+    /// No lock is needed here. While the production path was the `unrar`
+    /// decoder these checks had to be serialised — `unrar` could not be driven
+    /// from several threads in one process, and with libtest's default
     /// parallelism the suite aborted (`STATUS_ACCESS_VIOLATION`, or a core
     /// unsafe-precondition failure in `ptr::copy_nonoverlapping`) in roughly 2
-    /// runs out of 15. The extraction path is now pure Rust and the checks run
-    /// in parallel; `unrar` is only reached by the ignored
-    /// `rar_regenerate_golden_baseline`, which is a single test.
+    /// runs out of 15. The extraction path is pure Rust now, this module holds
+    /// no C++ dependency at all, and the checks run in parallel.
     ///
     /// Decoder parity: the production path must reproduce the golden baseline
     /// exactly — same relative paths, same file/directory split, same bytes.
@@ -2732,67 +2730,90 @@ mod rar_fixtures {
 
     // ─── Golden regeneration (manual) ───────────────────────────────────────
 
-    /// The oracle, driving the `unrar` reference decoder directly.
+    /// The reference RAR extractor used to regenerate the baseline.
     ///
-    /// Kept out of the always-run suite because of `unrar`'s cumulative
-    /// undefined behaviour (see the module note). Used only by
-    /// `rar_regenerate_golden_baseline`.
-    fn unrar_reference(archive: &Path, dest: &Path) -> Tree {
-        use unrar::Archive;
+    /// WinRAR's console `Rar.exe`, not a Rust crate: the baseline has to come
+    /// from a decoder that shares no code with the one under test. Override
+    /// with `HOK_RAR_EXE` — any `Rar.exe` or `UnRAR.exe` that can read the
+    /// fixtures will do.
+    fn rar_exe() -> PathBuf {
+        std::env::var_os("HOK_RAR_EXE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"D:\App\Scoop\apps\winrar\current\Rar.exe"))
+    }
+
+    /// The oracle: extract `archive` with `Rar.exe` into `dest`, then snapshot
+    /// the result.
+    ///
+    /// Only reached by `rar_regenerate_golden_baseline`, which is `#[ignore]`d,
+    /// so neither CI nor a plain `cargo test` needs WinRAR installed.
+    fn rar_reference(archive: &Path, dest: &Path) -> Tree {
+        let exe = rar_exe();
+        assert!(
+            exe.is_file(),
+            "reference extractor not found at {}.\n\
+             Install WinRAR (https://www.winrar.com/download/) or point HOK_RAR_EXE at any\n\
+             `Rar.exe`/`UnRAR.exe` that can read the fixtures, then re-run.",
+            exe.display()
+        );
         crate::internal::fs::ensure_dir(dest).expect("create dest");
-        let mut current = Archive::new(archive)
-            .open_for_processing()
-            .unwrap_or_else(|e| panic!("open {}: {}", archive.display(), e));
-        loop {
-            let Some(entry) = current
-                .read_header()
-                .unwrap_or_else(|e| panic!("read header {}: {}", archive.display(), e))
-            else {
-                break;
-            };
-            let target = dest.join(entry.entry().filename.as_path());
-            if entry.entry().is_directory() {
-                crate::internal::fs::ensure_dir(&target).expect("create directory");
-                current = entry.skip().expect("skip directory entry");
-            } else {
-                if let Some(parent) = target.parent() {
-                    crate::internal::fs::ensure_dir(parent).expect("create parent");
-                }
-                let (data, rest) = entry.read().expect("read entry");
-                std::fs::write(&target, &data).expect("write extracted file");
-                current = rest;
-            }
-        }
+
+        // `x` keeps the stored directory structure, `-o+` overwrites, `-y`
+        // answers every prompt. The destination needs a trailing separator to
+        // be read as a directory rather than as another member filter.
+        let target = format!("{}{}", dest.display(), std::path::MAIN_SEPARATOR);
+        let output = Command::new(&exe)
+            .arg("x")
+            .arg("-o+")
+            .arg("-y")
+            .arg(archive)
+            .arg(&target)
+            .output()
+            .unwrap_or_else(|e| panic!("running {}: {}", exe.display(), e));
+
+        // 0 is success, 1 is "finished with a warning" — both extract.
+        let code = output.status.code();
+        assert!(
+            matches!(code, Some(0) | Some(1)),
+            "{} failed on {} (exit {:?})\nstdout:\n{}\nstderr:\n{}",
+            exe.display(),
+            archive.display(),
+            code,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         snapshot(dest)
     }
 
-    /// Re-derive `expected-trees.txt` from the `unrar` reference decoder.
+    /// Re-derive `expected-trees.txt` from WinRAR's `Rar.exe`.
     ///
     /// ```text
-    /// cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored --exact
+    /// cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored
     /// ```
     ///
-    /// Then review the resulting diff: every changed line is a claim about what
-    /// the new backend must produce. If the run aborts, re-run it — `unrar` is
-    /// unreliable when driven repeatedly in one process.
+    /// `HOK_RAR_EXE` overrides the extractor path. Then review the resulting
+    /// diff: every changed line is a claim about what the extraction path must
+    /// produce.
     #[test]
-    #[ignore = "regenerates the golden baseline from the unrar reference; run manually"]
+    #[ignore = "regenerates the golden baseline with WinRAR's Rar.exe; run manually"]
     fn rar_regenerate_golden_baseline() {
         let mut out = String::from(
             "# Expected extraction trees for the RAR fixtures in this directory.\n\
              #\n\
-             # Baseline decoder: the `unrar` 0.5 crate (bundled UnRAR C++), i.e. the\n\
-             # backend hok used before the `rars` swap. A `D` line is a directory, an\n\
-             # `F` line is a file followed by the SHA-256 of its extracted bytes.\n\
+             # Baseline decoder: WinRAR's `Rar.exe` (7.23 when this file was last\n\
+             # regenerated). The trees were originally produced by the `unrar` 0.5 crate,\n\
+             # i.e. a UnRAR 6.x generation; regenerating them with WinRAR 7.23 reproduced\n\
+             # them byte for byte. A `D` line is a directory, an `F` line is a file\n\
+             # followed by the SHA-256 of its extracted bytes.\n\
              #\n\
              # Regenerate with:\n\
-             #   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored --exact\n\
+             #   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored\n\
              #\n\
-             # Every line here is a claim the new backend has to reproduce exactly;\n\
+             # Every line here is a claim the extraction path has to reproduce exactly;\n\
              # review the diff before accepting a regeneration.\n\n",
         );
         for name in PARITY_FIXTURES {
-            let tree = unrar_reference(&rar_fixture(name), &tmpdir("rar_golden_regen"));
+            let tree = rar_reference(&rar_fixture(name), &tmpdir("rar_golden_regen"));
             out.push_str(&render_tree(name, &tree));
             out.push('\n');
         }

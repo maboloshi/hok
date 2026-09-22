@@ -7,9 +7,16 @@ licence. See **Provenance** below.
 
 `expected-trees.txt` is the **baseline**: for each archive, the relative path
 set, which entries are directories, and the SHA-256 of every extracted file. It
-was derived from the `unrar` 0.5 crate (bundled UnRAR C++), the decoder the
-extraction path used before the `rars` swap, so it encodes the behaviour being
-replaced. `rar_extraction_matches_the_golden_baseline` compares against it.
+encodes the behaviour of the C++ decoder the extraction path used before the
+`rars` swap, so it is the contract the current path has to keep.
+`rar_extraction_matches_the_golden_baseline` compares against it.
+
+**Baseline tool history.** The trees were originally produced by the `unrar` 0.5
+crate (a UnRAR 6.x generation). That crate is no longer a dependency of this
+workspace — not even a dev one — so the baseline is now regenerated with
+**WinRAR 7.23's `Rar.exe`** instead. Regenerating with it reproduced the
+committed trees **byte for byte**, so the two decoder generations agree on this
+corpus. See **Regenerating** below.
 
 ## Provenance
 
@@ -117,15 +124,15 @@ reading is wrong:
   code page and yields bytes that are not a legal Windows filename), so a
   non-ASCII RAR4 member cannot serve as a parity baseline.
 
-### Known behavioural difference between the backends
+### How the former backend differed on traversal
 
-`unrar` sanitises `..` to `_` inside the C++ decoder, so `extract_rar`'s own
-`ParentDir` guard never fires for it and `..\evil.txt` lands *inside* the
-destination as `.._evil.txt`. A backend that does not sanitise reaches the guard
-for real. Both satisfy the invariant that nothing is written outside the
-destination, which is what `rar_traversal_never_writes_outside_the_destination`
-pins; the `unrar` half is preserved here because it is easy to mistake for a
-working guard.
+The C++ backend this path used to have sanitised `..` to `_` inside `unrar`, so
+`extract_rar`'s own `ParentDir` guard never fired for it and `..\evil.txt` landed
+*inside* the destination as `.._evil.txt`. The current backend does not sanitise,
+so it reaches the guard for real. Both satisfy the invariant that nothing is
+written outside the destination, which is what
+`rar_traversal_never_writes_outside_the_destination` pins; the old behaviour is
+recorded here because it is easy to mistake that guard for one that worked.
 
 ## Regenerating
 
@@ -145,27 +152,39 @@ node crates/libscoop/tests/fixtures/rar/make-traversal-fixture.cjs `
 # 3. RAR4 archives (needs no WinRAR)
 cargo run -p libscoop --example gen_rar_fixtures
 
-# 4. baseline trees, from the unrar reference decoder
+# 4. baseline trees, extracted with WinRAR's Rar.exe
+#    HOK_RAR_EXE overrides the extractor path; the default is
+#    D:\App\Scoop\apps\winrar\current\Rar.exe
+$env:HOK_RAR_EXE = 'D:\App\Scoop\apps\winrar\current\Rar.exe'
 cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored
 ```
 
-Step 4 prints nothing when it works. If it aborts, re-run it: `unrar` is
-unreliable when driven repeatedly inside one process (see below), which is a
-property of the decoder being replaced.
+Step 4 is `#[ignore]`d, so neither CI nor a plain `cargo test` needs WinRAR. It
+prints the path it wrote. If the extractor is missing it fails loudly with the
+path it looked for and a pointer to where to get WinRAR — it never skips
+silently, because a skipped regeneration would look like a pass.
+
+After running it, **diff the result**: `expected-trees.txt` is the contract the
+extraction path is held to, so any changed line needs reading before it is
+accepted. A regeneration that changes nothing but the header comment is the
+expected outcome for a tool-only change.
 
 ## Why the baseline is a file
 
-`unrar` is not safe to call repeatedly in one process. Measured on this suite,
-driving it over all ten parity fixtures aborts inside a core
-unsafe-precondition check (`ptr::copy_nonoverlapping requires that both pointer
-arguments are aligned and non-null`) or with `STATUS_ACCESS_VIOLATION` in
-roughly 1 run in 20; any single fixture survives 40 consecutive extractions, and
-serialising the tests does not remove it. It is a process-level memory-safety
-abort, so it cannot be caught or retried.
+The decoder that produced it — the `unrar` crate — was not safe to call
+repeatedly in one process. Measured on this suite, driving it over all ten
+parity fixtures aborted inside a core unsafe-precondition check
+(`ptr::copy_nonoverlapping requires that both pointer arguments are aligned and
+non-null`) or with `STATUS_ACCESS_VIOLATION` in roughly 1 run in 20; any single
+fixture survived 40 consecutive extractions, and serialising the tests did not
+remove it. It is a process-level memory-safety abort, so it cannot be caught or
+retried.
 
-Freezing the reference decoder's output into a committed golden file therefore
-serves two purposes: the always-run suite never drives `unrar` at all, and the
-baseline it compares against is reviewable in the diff.
+Freezing the reference output into a committed golden file therefore serves
+three purposes: the always-run suite never drives a foreign decoder at all, the
+baseline it compares against is reviewable in the diff, and — now that
+regeneration goes through `Rar.exe` — **no C++ toolchain and no third-party Rust
+RAR crate is needed to build or test this workspace**.
 
 `expected-trees.txt` contains extracted file contents only as SHA-256 digests.
 No third-party archive, executable or document is redistributed here other than

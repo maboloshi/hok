@@ -1,13 +1,15 @@
 # Expected extraction trees for the RAR fixtures in this directory.
 #
-# Baseline decoder: the `unrar` 0.5 crate (bundled UnRAR C++), i.e. the
-# backend hok used before the `rars` swap. A `D` line is a directory, an
-# `F` line is a file followed by the SHA-256 of its extracted bytes.
+# Baseline decoder: WinRAR's `Rar.exe` (7.23 when this file was last
+# regenerated). The trees were originally produced by the `unrar` 0.5 crate,
+# i.e. a UnRAR 6.x generation; regenerating them with WinRAR 7.23 reproduced
+# them byte for byte. A `D` line is a directory, an `F` line is a file
+# followed by the SHA-256 of its extracted bytes.
 #
 # Regenerate with:
-#   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored --exact
+#   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored
 #
-# Every line here is a claim the new backend has to reproduce exactly;
+# Every line here is a claim the extraction path has to reproduce exactly;
 # review the diff before accepting a regeneration.
 
 [rar5-normal.rar]
