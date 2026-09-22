@@ -3,8 +3,118 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    assert_sqlite_link_mode();
     embed_hok_shim();
     embed_known_buckets();
+}
+
+/// Reject the two ways the "link Windows' own `winsqlite3.dll` instead of
+/// compiling the bundled amalgamation" setup goes wrong. Both are silent or
+/// opaque without this check:
+///
+/// * `libsqlite3-sys` tests `LIBSQLITE3_SYS_USE_PKG_CONFIG` *before* the
+///   `bundled` feature, so `SQLITE3_LIB_DIR` on its own is ignored and the C
+///   amalgamation is compiled as usual — the build succeeds, just not the one
+///   that was asked for.
+/// * On x86 the `winsqlite3.lib` import library exports `__stdcall`-decorated
+///   names (`winsqlite3.h` defines `SQLITE_APICALL` as `__stdcall` for
+///   `NTDDI_VERSION >= NTDDI_WIN10_RS1`) while `rusqlite`/`libsqlite3-sys`
+///   declare the same functions as cdecl `extern "C"`, so the link fails.
+///
+/// Both messages name the variables and print the commands to run instead.
+fn assert_sqlite_link_mode() {
+    for var in [
+        "LIBSQLITE3_SYS_USE_PKG_CONFIG",
+        "SQLITE3_LIB_DIR",
+        "SQLITE3_INCLUDE_DIR",
+    ] {
+        println!("cargo:rerun-if-env-changed={var}");
+    }
+
+    // Mirror libsqlite3-sys' own test: any value but "0" (including empty)
+    // selects the linked path.
+    let linked = env::var_os("LIBSQLITE3_SYS_USE_PKG_CONFIG").is_some_and(|v| v != "0");
+    let lib_dir = env::var_os("SQLITE3_LIB_DIR");
+    let include_dir = env::var_os("SQLITE3_INCLUDE_DIR");
+
+    // The workspace root, without `..`: `CARGO_MANIFEST_DIR` is
+    // `<root>/crates/libscoop`.
+    let stage_dir = env::var("CARGO_MANIFEST_DIR")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .and_then(|dir| dir.parent().and_then(|p| p.parent()).map(Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".winsqlite3");
+
+    if !linked && (lib_dir.is_some() || include_dir.is_some()) {
+        let set = if lib_dir.is_some() {
+            "SQLITE3_LIB_DIR"
+        } else {
+            "SQLITE3_INCLUDE_DIR"
+        };
+        panic!(
+            "\n\
+             {set} is set, but LIBSQLITE3_SYS_USE_PKG_CONFIG is not — the setting would be \
+             ignored.\n\
+             \n\
+             libsqlite3-sys only takes its \"link the system SQLite\" path when \
+             LIBSQLITE3_SYS_USE_PKG_CONFIG is\n\
+             non-zero. hok enables the `bundled` feature, and libsqlite3-sys checks that flag \
+             first, so this\n\
+             build would silently compile the bundled C amalgamation instead: it succeeds, but \
+             it is not the\n\
+             winsqlite3.dll build you asked for.\n\
+             \n\
+             Set all three variables and rebuild (winsqlite3 is x64/arm64 only). The\n\
+             build script stages the SDK's winsqlite3 and sets them for its own process:\n\
+             \n\
+             \x20   pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify\n\
+             \n\
+             Or do it by hand:\n\
+             \n\
+             \x20   $env:LIBSQLITE3_SYS_USE_PKG_CONFIG = '1'\n\
+             \x20   $env:SQLITE3_LIB_DIR     = '{}'\n\
+             \x20   $env:SQLITE3_INCLUDE_DIR = '{}'\n\
+             \x20   cargo build -p hok --release\n\
+             \n\
+             Or drop the variable to get the default bundled build:\n\
+             \n\
+             \x20   Remove-Item Env:SQLITE3_LIB_DIR\n",
+            stage_dir.display(),
+            stage_dir.display(),
+        );
+    }
+
+    let x86_windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86");
+
+    if linked && x86_windows {
+        panic!(
+            "\n\
+             Building for an x86 Windows target with LIBSQLITE3_SYS_USE_PKG_CONFIG set.\n\
+             \n\
+             winsqlite3.dll exports its API with __stdcall on x86 (winsqlite3.h defines \
+             SQLITE_APICALL as\n\
+             __stdcall when NTDDI_VERSION >= NTDDI_WIN10_RS1), so winsqlite3.lib carries \
+             decorated names such\n\
+             as _sqlite3_column_name@8. rusqlite and libsqlite3-sys declare those functions as \
+             cdecl\n\
+             `extern \"C\"`, so the link cannot resolve them and fails with:\n\
+             \n\
+             \x20   LNK2019: unresolved external symbol _sqlite3_column_name\n\
+             \n\
+             winsqlite3 cannot be used for i686/i586. Build the default bundled amalgamation \
+             for that target:\n\
+             \n\
+             \x20   pwsh scripts/build-hok.ps1 -Target i686-pc-windows-msvc\n\
+             \n\
+             Or drop the variables and build by hand:\n\
+             \n\
+             \x20   Remove-Item Env:LIBSQLITE3_SYS_USE_PKG_CONFIG, Env:SQLITE3_LIB_DIR, \
+             Env:SQLITE3_INCLUDE_DIR\n\
+             \x20   cargo build --target i686-pc-windows-msvc --release\n"
+        );
+    }
 }
 
 /// Generate `OUT_DIR/known_buckets.rs` from `assets/buckets.json` on every

@@ -40,5 +40,8 @@ Cargo.lock.txt
 # Local investigation lab (fixture manifests, served files, scratch scripts)
 .s10lab/
 
+# Windows SDK winsqlite3 staging, produced by scripts/stage-winsqlite3.ps1
+/.winsqlite3
+
 # Git worktrees (per-session branches, e.g. .worktrees/s1-s13)
 /.worktrees
