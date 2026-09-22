@@ -640,10 +640,25 @@ mod tests {
         let mut cfg = clone.config().unwrap();
         cfg.set_str("user.name", "hok tester").unwrap();
         cfg.set_str("user.email", "tester@example.com").unwrap();
-        // Isolate the test from the user's global `core.autocrlf`: the temp
-        // repo has no .gitattributes, so a global autocrlf=true would make
-        // libgit2 check out LF files as CRLF and break content assertions.
+        // Pin `core.autocrlf` so the assertions do not depend on the machine's
+        // Git configuration. Git for Windows installs it as a *system* setting
+        // (`<git>/etc/gitconfig`), which a repo-local value does not override,
+        // and a repo-local value here is not enough on its own — see the
+        // re-checkout below.
         cfg.set_bool("core.autocrlf", false).unwrap();
+        drop(cfg);
+
+        // The clone's initial checkout ran *before* the pin above, so it used
+        // whatever `core.autocrlf` the machine provides. With that set to true
+        // the worktree copy of `a.txt` is CRLF while its blob is LF, and once
+        // the pin takes effect `ensure_updateable` compares the two and
+        // correctly reports a local modification — which `pull` then refuses,
+        // as `git pull` would. Nothing is wrong with the worktree; it was just
+        // materialised under a filter setting that no longer applies, so
+        // re-materialise it under the pinned one.
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.force();
+        clone.checkout_head(Some(&mut checkout)).unwrap();
 
         (origin_dir, origin, clone_dir, clone)
     }
