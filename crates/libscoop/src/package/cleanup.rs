@@ -26,8 +26,7 @@ pub struct CleanupOptions {
 /// Carries the removed version strings (not just a count) so the CLI can
 /// render upstream's per-app `Removing <app>: <version> ...` line
 /// (`scoop-cleanup.ps1:43-46`). An entry with an empty `removed` and no
-/// `failures` is an app that was already clean (upstream's verbose
-/// `"<app> is already clean"`).
+/// `failures` is an app that was already clean.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CleanupResult {
     /// The app name.
@@ -577,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_no_old_versions_reports_an_already_clean_app() {
+    fn cleanup_no_old_versions_yields_an_empty_result() {
         let (session, root) = setup("only_current");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 

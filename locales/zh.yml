@@ -163,7 +163,6 @@ cmd:
   cleanup_try_global: "请加上 --global（或 -g）参数重试。"
   cleanup_removing: "正在移除 %{name}："
   cleanup_row: "%{name}：%{ver}"
-  cleanup_already_clean: "%{name} 已清理干净"
   cleanup_failed_summary: "%{count} 个应用的旧版本未能移除：%{apps}（请关闭占用这些文件的程序后重试；相关目录可能已被部分删除）"
   cleanup_remove_failed: "无法移除 %{name} v%{ver}：%{e}"
   config_set: "配置项 '%{key}' 已设置为 '%{value}'"
@@ -585,11 +584,11 @@ cli_help:
   cleanup:
     about: 通过删除旧版本清理应用
     args:
-      app: 指定要清理的应用名称（留空表示全部）
-      all: 清理所有应用
+      app: 指定要清理的应用名称
+      all: 清理所有应用（相当于 '*'）
       global: 清理全局安装的应用
       cache: 同时删除下载缓存
-      verbose: 同时报告已清理干净的应用
+      list: 列出已安装的版本（不执行清理）
   completions:
     args:
       shell: Shell 类型

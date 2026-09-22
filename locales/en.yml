@@ -163,7 +163,6 @@ cmd:
   cleanup_try_global: "Try again with the --global (or -g) flag instead."
   cleanup_removing: "Removing %{name}:"
   cleanup_row: "%{name}: %{ver}"
-  cleanup_already_clean: "%{name} is already clean"
   cleanup_failed_summary: "%{count} app(s) still have old versions: %{apps} (close the program using those files and retry; those directories may be partially deleted)"
   cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
   config_set: "Config '%{key}' has been set to '%{value}'"
@@ -585,11 +584,11 @@ cli_help:
   cleanup:
     about: Cleanup apps by removing old versions
     args:
-      app: Given named app(s) to be cleaned up (all apps if empty)
+      app: Given named app(s) to be cleaned up
       all: Cleanup all apps (alternative to '*')
       global: Cleanup a globally installed app
       cache: Remove download cache simultaneously
-      verbose: Also report apps that are already clean
+      list: List the installed versions instead of cleaning them
   completions:
     args:
       shell: The shell type

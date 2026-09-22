@@ -97,6 +97,12 @@ fn help_screens_and_usage_errors() {
     // (`scoop-cleanup.ps1:24`), while a bare `scoop cache` lists
     // (`scoop-cache.ps1:61-71`).
     assert_eq!(env.code(&["cleanup"]), 1, "missing <app>");
+    // `-l/--list` is the read-only counterpart: a bare `cleanup -l` is every
+    // app in scope, a missing app is reported without failing, and the
+    // destructive `-k` cannot be combined with it.
+    assert_eq!(env.code(&["cleanup", "-l"]), 0, "bare `cleanup -l` lists");
+    assert_eq!(env.code(&["cleanup", "-l", "ghost"]), 0, "ghost reported");
+    assert_eq!(env.code(&["cleanup", "-l", "-k"]), 1, "-l rejects -k");
     assert_eq!(env.code(&["cache", "rm"]), 1, "missing <app(s)>");
     assert_eq!(env.code(&["cache"]), 0, "bare cache lists");
 }
