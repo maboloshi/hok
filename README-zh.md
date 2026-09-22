@@ -59,7 +59,7 @@
 
 **已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`, `jiff`
 
-> `rars`（纯 Rust）已取代 `unrar`（RARLab C++ 库）成为 `.rar` 的生产解压路径；`unrar` 只作为 **dev-dependency** 保留，用于生成/再生 `crates/libscoop/tests/fixtures/rar/expected-trees.txt` 这份 golden 基线（该库在同一进程内被反复调用会偶发崩溃，所以测试比对 golden 文件而不是实时调用它）。覆盖范围、已知差异与"未覆盖"清单见 `crates/libscoop/tests/fixtures/rar/README.md`。
+> `rars`（纯 Rust）已取代 `unrar`（RARLab C++ 库）成为 `.rar` 的解压后端；仓库里**已没有任何 RAR 相关依赖**（连 dev-dependency 都没有），`cargo test` 不再为 RAR 编译任何 C++。测试比对的是提交进来的 golden 基线 `crates/libscoop/tests/fixtures/rar/expected-trees.txt`——它历史上由 `unrar` 0.5（UnRAR 6.x 世代）产生，现在由 WinRAR 的 `Rar.exe` 再生（路径走 `HOK_RAR_EXE`），两者在该语料上**逐字节一致**。覆盖范围、已知差异与"未覆盖"清单见 `crates/libscoop/tests/fixtures/rar/README.md`。
 
 ### 构建形状（SQLite）
 
