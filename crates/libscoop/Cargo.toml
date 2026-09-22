@@ -59,6 +59,10 @@ tar = { version = "0.4", default-features = false }
 # is not pulled in by any of them.
 flate2 = { workspace = true }
 lzma-rust2 = { workspace = true, features = ["xz"] }
+# RAR (`.rar`) extraction. Reads RAR 1.3/1.4, RAR 1.5-4.x and RAR 5+ (including
+# RAR 7), follows volume sets, and applies the RARVM filters in pure Rust, so no
+# C++ toolchain is needed to build this crate.
+rars = "0.9.4"
 unrar = "0.5"
 zstd = { version = "0.13", default-features = false }
 bzip2 = { workspace = true }
@@ -111,10 +115,6 @@ criterion = "0.8"
 # against, and it re-derives that file in `rar_regenerate_golden_baseline`.
 # Dev-only: never linked into a release build.
 unrar = "0.5"
-# Writes the RAR 1.5-4.x fixtures, which WinRAR 7.23 can no longer produce
-# (`-ma4` is an unknown option). Dev-only: used by
-# `examples/gen_rar_fixtures.rs`, never by the library itself.
-rars = "0.9.4"
 
 [[bench]]
 name = "pure_functions"

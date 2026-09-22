@@ -831,7 +831,120 @@ fn extract_tar(
     Ok(())
 }
 
-// ─── RAR extraction via unrar crate ─────────────────────────────────
+// ─── RAR extraction via the pure-Rust rars crate ─────────────────────
+
+/// Every file of the volume set `src` belongs to, in archive order.
+///
+/// Only the names are derived here — a candidate is added only when it exists —
+/// so the caller can read each one and let a genuine read error surface.
+///
+/// Three shapes are recognised, matching what encoders emit:
+///
+/// * `X.partN.rar` — the new naming. A later volume is walked back to the
+///   first, so being handed `X.part3.rar` still yields the whole set.
+/// * `X.rar` — the old naming, with `X.r00`, `X.r01`, … following it.
+/// * `X.rNN` — a later old-named volume; the set is rebuilt from `X.rar`.
+///
+/// Anything else is a single-file archive.
+fn rar_volume_paths(src: &Path) -> Vec<PathBuf> {
+    let single = || vec![src.to_path_buf()];
+    let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return single();
+    };
+    let lower = name.to_ascii_lowercase();
+
+    // Bound every walk: a corrupt or hostile directory must not spin.
+    const MAX_VOLUMES: u64 = 10_000;
+
+    // `X.partN.rar`
+    if let Some(at) = lower.rfind(".part") {
+        let digits = &name[at + 5..];
+        let index = digits
+            .strip_suffix(".rar")
+            .filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+        if let Some(index) = index {
+            let stem = &name[..at];
+            let width = index.len();
+            let mut first: u64 = index.parse().unwrap_or(1);
+            while first > 1 {
+                let previous = first - 1;
+                let candidate = src.with_file_name(format!("{stem}.part{previous:0width$}.rar"));
+                if !candidate.is_file() {
+                    break;
+                }
+                first = previous;
+            }
+            let mut out = Vec::new();
+            let mut n = first;
+            while out.len() < MAX_VOLUMES as usize {
+                let candidate = src.with_file_name(format!("{stem}.part{n:0width$}.rar"));
+                if !candidate.is_file() {
+                    break;
+                }
+                out.push(candidate);
+                n += 1;
+            }
+            return if out.is_empty() { single() } else { out };
+        }
+    }
+
+    // `X.rar` / `X.rNN`
+    let stem = name
+        .strip_suffix(".rar")
+        .or_else(|| name.strip_suffix(".RAR"))
+        .map(str::to_string)
+        .or_else(|| {
+            let (stem, extension) = name.rsplit_once('.')?;
+            let is_old_volume = extension.len() == 3
+                && extension[..1].eq_ignore_ascii_case("r")
+                && extension[1..].chars().all(|c| c.is_ascii_digit());
+            is_old_volume.then(|| stem.to_string())
+        });
+    let Some(stem) = stem else {
+        return single();
+    };
+
+    let mut out = Vec::new();
+    // Start from the first volume when it is present, even if the caller handed
+    // us a later one.
+    let first_volume = src.with_file_name(format!("{stem}.rar"));
+    if first_volume.is_file() {
+        out.push(first_volume);
+    }
+    let mut index = 0u64;
+    while out.len() < MAX_VOLUMES as usize {
+        let candidate = src.with_file_name(format!("{stem}.r{index:02}"));
+        if !candidate.is_file() {
+            break;
+        }
+        out.push(candidate);
+        index += 1;
+    }
+    if out.is_empty() { single() } else { out }
+}
+
+/// Read `src` and every volume that belongs to it.
+fn open_rar_volumes(src: &Path) -> Fallible<Vec<rars::Archive>> {
+    let mut volumes = Vec::new();
+    for path in rar_volume_paths(src) {
+        match rars::ArchiveReader::read_path(&path) {
+            Ok(archive) => volumes.push(archive),
+            // The first volume failing is the archive failing. A later volume
+            // failing means the set is incomplete: stop there and let
+            // extraction report the missing continuation.
+            Err(e) if volumes.is_empty() => {
+                return Err(Error::ExtractionFailed(format!("cannot open rar: {}", e)));
+            }
+            Err(_) => break,
+        }
+    }
+    if volumes.is_empty() {
+        return Err(Error::ExtractionFailed(
+            "cannot open rar: no volumes".into(),
+        ));
+    }
+    Ok(volumes)
+}
 
 fn extract_rar(
     src: &Path,
@@ -839,32 +952,18 @@ fn extract_rar(
     filter: Option<&[&str]>,
     emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
-    use unrar::Archive;
+    use std::io::Write;
 
-    let mut archive = Archive::new(src)
-        .open_for_processing()
-        .map_err(|e| Error::ExtractionFailed(format!("cannot open rar: {}", e)))?;
-    let mut file_idx = 0usize;
+    let volumes = open_rar_volumes(src)?;
+    let members = rars::volume_members(&volumes)
+        .map_err(|e| Error::ExtractionFailed(format!("rar read entries: {}", e)))?;
 
-    loop {
-        let entry = match archive.read_header() {
-            Ok(Some(e)) => e,
-            Ok(None) => break,
-            Err(e) => return Err(Error::ExtractionFailed(format!("rar read header: {}", e))),
-        };
-
-        let name = entry.entry().filename.to_string_lossy().to_string();
-        if let Some(f) = filter
-            && !f.iter().any(|d| name.starts_with(d))
-        {
-            archive = entry
-                .skip()
-                .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
-            continue;
-        }
-        emit_extract_progress(emitter, file_idx, None);
-        file_idx += 1;
-
+    // Refuse a traversal archive before writing anything. The previous backend
+    // sanitised `..` to `_` inside its C++ decoder, so this guard never fired
+    // for it; this decoder reports the stored name, so the guard is live now
+    // and rejecting up front leaves no half-written destination behind.
+    for member in &members {
+        let name = member.meta.name_lossy();
         let target = strip_dir(&name, filter).unwrap_or(name);
         if Path::new(&target)
             .components()
@@ -872,24 +971,39 @@ fn extract_rar(
         {
             return Err(Error::PathTraversalDetected(format!("rar: {}", target)));
         }
+    }
+
+    let mut file_idx = 0usize;
+    rars::extract_volumes_to(&volumes, None, |meta| {
+        // The writer is only asked for once the entry is decoded, so an entry
+        // excluded by `extract_dir` is drained into a sink rather than written.
+        let sink = || Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+
+        let name = meta.name_lossy();
+        if let Some(f) = filter
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            return sink();
+        }
+        emit_extract_progress(emitter, file_idx, None);
+        file_idx += 1;
+
+        let target = strip_dir(&name, filter).unwrap_or(name);
         let target_path = dest.join(&target);
 
-        if entry.entry().is_directory() {
-            crate::internal::fs::ensure_dir(&target_path)?;
-            archive = entry
-                .skip()
-                .map_err(|e| Error::ExtractionFailed(format!("rar skip dir: {}", e)))?;
-        } else {
-            if let Some(parent) = target_path.parent() {
-                crate::internal::fs::ensure_dir(parent)?;
-            }
-            let (data, rest) = entry
-                .read()
-                .map_err(|e| Error::ExtractionFailed(format!("rar read: {}", e)))?;
-            std::fs::write(&target_path, &data)?;
-            archive = rest;
+        if meta.is_directory {
+            crate::internal::fs::ensure_dir(&target_path).map_err(rars::Error::from)?;
+            return sink();
         }
-    }
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent).map_err(rars::Error::from)?;
+        }
+        let file = std::fs::File::create(&target_path)
+            .map_err(|e| rars::Error::from(std::io::Error::other(e.to_string())))?;
+        Ok(Box::new(file) as Box<dyn Write>)
+    })
+    .map_err(|e| Error::ExtractionFailed(format!("rar extract: {}", e)))?;
+
     Ok(())
 }
 
@@ -2471,29 +2585,19 @@ mod rar_fixtures {
 
     // ─── Checks ─────────────────────────────────────────────────────────────
 
-    /// Serialises the checks in this module.
+    /// No lock is needed here any more. While the production path was the
+    /// `unrar` decoder these checks had to be serialised — `unrar` cannot be
+    /// driven from several threads in one process, and with libtest's default
+    /// parallelism the suite aborted (`STATUS_ACCESS_VIOLATION`, or a core
+    /// unsafe-precondition failure in `ptr::copy_nonoverlapping`) in roughly 2
+    /// runs out of 15. The extraction path is now pure Rust and the checks run
+    /// in parallel; `unrar` is only reached by the ignored
+    /// `rar_regenerate_golden_baseline`, which is a single test.
     ///
-    /// Until the backend swap, the production path *is* the `unrar` decoder,
-    /// and `unrar` cannot be driven from several threads in one process.
-    /// Measured: with libtest's default parallelism this suite aborts
-    /// (`STATUS_ACCESS_VIOLATION`, or a core unsafe-precondition failure inside
-    /// `ptr::copy_nonoverlapping`) in roughly 2 runs out of 15. The abort is a
-    /// process-level memory-safety failure, so it cannot be caught or retried —
-    /// only avoided. The lock is cheap and stays after the swap, where it simply
-    /// keeps five fast checks from overlapping.
-    static RAR_SUITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn serialise_rar_suite() -> std::sync::MutexGuard<'static, ()> {
-        RAR_SUITE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     /// Decoder parity: the production path must reproduce the golden baseline
     /// exactly — same relative paths, same file/directory split, same bytes.
     #[test]
     fn rar_extraction_matches_the_golden_baseline() {
-        let _serial = serialise_rar_suite();
         let golden = parse_golden(
             &std::fs::read_to_string(golden_path())
                 .expect("read tests/fixtures/rar/expected-trees.txt"),
@@ -2522,7 +2626,6 @@ mod rar_fixtures {
     /// unfiltered run and asserts only the filtering policy.
     #[test]
     fn rar_extract_dir_filters_and_strips_the_prefix() {
-        let _serial = serialise_rar_suite();
         let archive = rar_fixture("rar5-normal.rar");
         let full = hok_extract(&archive, &tmpdir("rar_filter_ref"), None).expect("unfiltered");
 
@@ -2550,7 +2653,6 @@ mod rar_fixtures {
     ///   what `rar_path_traversal_is_refused` pins.
     #[test]
     fn rar_traversal_never_writes_outside_the_destination() {
-        let _serial = serialise_rar_suite();
         let archive = rar_fixture("traversal-rar5.rar");
         let root = tmpdir("rar_traversal");
         let dest = root.join("dest");
@@ -2568,10 +2670,42 @@ mod rar_fixtures {
         );
     }
 
+    /// A member whose name escapes the extraction root must be refused.
+    ///
+    /// The rars decoder reports the stored name, so `extract_rar`'s guard is
+    /// live: the archive is rejected up front and nothing is written, not even
+    /// the entries preceding the offending one. Under the previous backend this
+    /// assertion could not hold at all — `unrar` sanitised `..` to `_` inside its
+    /// C++ decoder, so the guard never saw a `ParentDir` component.
+    #[test]
+    fn rar_path_traversal_is_refused() {
+        let archive = rar_fixture("traversal-rar5.rar");
+        let root = tmpdir("rar_traversal_refused");
+        let dest = root.join("dest");
+
+        let err = extract_rar(&archive, &dest, None, &None)
+            .expect_err("a member escaping the destination must be refused");
+        assert!(
+            matches!(err, Error::PathTraversalDetected(_)),
+            "expected PathTraversalDetected, got {err:?}"
+        );
+        assert!(
+            !root.join("evil.txt").exists(),
+            "the refused archive still wrote outside the destination"
+        );
+        let wrote_entries = dest
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+        assert!(
+            !wrote_entries,
+            "the refused archive wrote entries before being rejected"
+        );
+    }
+
     /// A truncated archive must fail cleanly, never panic.
     #[test]
     fn rar_truncated_archive_errors_without_panicking() {
-        let _serial = serialise_rar_suite();
         let archive = rar_fixture("rar5-truncated.rar");
         let err = extract_rar(&archive, &tmpdir("rar_truncated"), None, &None)
             .expect_err("truncated archive must not extract");
@@ -2587,7 +2721,6 @@ mod rar_fixtures {
     /// than a silent partial extraction.
     #[test]
     fn rar_encrypted_archive_errors_without_a_password() {
-        let _serial = serialise_rar_suite();
         let archive = rar_fixture("rar5-encrypted.rar");
         let err = extract_rar(&archive, &tmpdir("rar_encrypted"), None, &None)
             .expect_err("encrypted archive must not extract without a password");
