@@ -86,8 +86,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Sizes of target/release/hok.exe as measured in this repository (Windows SDK
-# 10.0.26100, Rust 1.98, x86_64-pc-windows-msvc). Only used to put the
-# -Verify output in context; a drift here is not an error.
+# 10.0.26100, Rust 1.98, x86_64-pc-windows-msvc).
+#
+# Informational only — never asserted. They go stale as soon as a dependency
+# changes, so -Verify checks the imported DLLs and nothing else; treat a
+# non-zero difference below as "the numbers moved", not as a failure.
 $ReferenceSizeBytes = @{
     bundled    = 8124928
     winsqlite3 = 7088640
@@ -412,15 +415,17 @@ if ($Verify) {
     $usesSqlite3 = $dlls -contains 'sqlite3.dll'
 
     $size = (Get-Item -LiteralPath $exePath).Length
-    $reference = $ReferenceSizeBytes[$Mode]
-    $other = if ($Mode -eq 'bundled') { 'winsqlite3' } else { 'bundled' }
+    $referenceBundled = [math]::Round($ReferenceSizeBytes['bundled'] / 1MB, 2)
+    $referenceWinsqlite3 = [math]::Round($ReferenceSizeBytes['winsqlite3'] / 1MB, 2)
 
     Write-Host ''
     Write-Host 'Verification:'
     Write-Host "  binary          : $exePath"
     Write-Host "  size            : $size bytes ($([math]::Round($size / 1MB, 2)) MiB)"
-    Write-Host "  reference $($Mode.PadRight(10)): $reference bytes ($([math]::Round($reference / 1MB, 2)) MiB), delta $($size - $reference)"
-    Write-Host "  reference $($other.PadRight(10)): $($ReferenceSizeBytes[$other]) bytes ($([math]::Round($ReferenceSizeBytes[$other] / 1MB, 2)) MiB)"
+    Write-Host '  reference sizes (informational; never asserted — only the DLL imports'
+    Write-Host '  below decide pass/fail, so a difference here is not a failure):'
+    Write-Host "    bundled    : $($ReferenceSizeBytes['bundled']) bytes ($referenceBundled MiB)"
+    Write-Host "    winsqlite3 : $($ReferenceSizeBytes['winsqlite3']) bytes ($referenceWinsqlite3 MiB)"
     Write-Host "  winsqlite3.dll  : $(if ($usesWinsqlite3) { 'imported' } else { 'not imported' })"
     Write-Host "  sqlite3.dll     : $(if ($usesSqlite3) { 'imported (unexpected)' } else { 'not imported' })"
     Write-Host ''
