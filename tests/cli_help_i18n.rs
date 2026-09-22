@@ -147,9 +147,13 @@ fn cli_help_is_fully_localized() {
 
         // 2. Every option/positional description in the Chinese short help is
         //    translated (ASCII-only descriptions are the unpatched fallback).
+        //    The `[ARG]...` form is a positional clap renders with square
+        //    brackets, so it must be checked too — skipping it is how
+        //    `cache [APP]...` kept its English doc comment while every other
+        //    description was patched.
         for line in zh_short.lines() {
             let trimmed = line.trim_start();
-            if !(trimmed.starts_with('-') || trimmed.starts_with('<')) {
+            if !(trimmed.starts_with('-') || trimmed.starts_with('<') || trimmed.starts_with('[')) {
                 continue;
             }
             if line.len() - trimmed.len() < 2 {

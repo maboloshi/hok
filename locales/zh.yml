@@ -527,11 +527,12 @@ cli_help:
   cache:
     about: 包缓存管理
     args:
+      app: 要列出缓存的包名称（默认为全部）
       list: 列出下载缓存
-      list.query: 列出匹配该查询的缓存
+      list.app: 列出指定包的缓存
       remove: 删除下载缓存
       remove.all: 删除所有缓存
-      remove.query: 删除匹配该查询的缓存
+      remove.app: 删除指定包的缓存
   cat:
     args:
       package: 要检查的包名称

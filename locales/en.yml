@@ -527,11 +527,12 @@ cli_help:
   cache:
     about: Package cache management
     args:
+      app: "App name(s) whose caches are listed (default: all)"
       list: List download caches
-      list.query: List caches matching the query
+      list.app: List caches of the given app(s)
       remove: Remove download caches
       remove.all: Remove all caches
-      remove.query: Remove caches matching the query
+      remove.app: Remove caches of the given app(s)
   cat:
     args:
       package: Name of the package to be inspected
