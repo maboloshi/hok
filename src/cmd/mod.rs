@@ -142,6 +142,73 @@ pub(crate) fn status_info_word(
     }
 }
 
+/// The note a version row carries in the installed-version tables.
+///
+/// Shared by `list --versions` and `cleanup --list` so the two tables cannot
+/// drift on what a version directory means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VersionNote {
+    /// No note: the current version, or a further row of an app whose current
+    /// version cannot be resolved.
+    None,
+    /// A retained (non-current) version.
+    Old,
+    /// No version resolves as current, so the block says so instead of calling
+    /// a possibly-live version "old".
+    CurrentUnknown,
+}
+
+impl VersionNote {
+    /// The localized note text; empty for [`VersionNote::None`].
+    pub(crate) fn text(self) -> String {
+        match self {
+            VersionNote::None => String::new(),
+            VersionNote::Old => hok_i18n::t!("cmd.list_version_old").to_string(),
+            VersionNote::CurrentUnknown => {
+                hok_i18n::t!("cmd.cleanup_list_current_unknown").to_string()
+            }
+        }
+    }
+}
+
+/// Which note the `index`-th row of one app's version block carries.
+///
+/// `has_current` is false when the shared resolver named no current version —
+/// a broken install, e.g. an app dir whose `current\manifest.json` and
+/// `install.json` are both gone. Then **nothing** in the block may be called an
+/// old version: the first row says the current version is unknown and the rest
+/// stay unlabelled. Labelling them `Old` would claim the live version dir is a
+/// leftover, which is exactly what a read-only listing must not assert.
+pub(crate) fn version_note(index: usize, is_current: bool, has_current: bool) -> VersionNote {
+    match (is_current, has_current, index) {
+        (true, _, _) => VersionNote::None,
+        (false, true, _) => VersionNote::Old,
+        (false, false, 0) => VersionNote::CurrentUnknown,
+        (false, false, _) => VersionNote::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VersionNote;
+    use super::version_note;
+
+    /// A broken install (no resolvable current version) must not label its
+    /// versions old: the block says the current version is unknown instead,
+    /// while a healthy app keeps the `旧版本` notes.
+    #[test]
+    fn version_notes_distinguish_unknown_current_from_old_versions() {
+        // Healthy app: the current row is unlabelled, the rest are old.
+        assert_eq!(version_note(0, true, true), VersionNote::None);
+        assert_eq!(version_note(1, false, true), VersionNote::Old);
+
+        // Broken app: the first row reports the unknown current version and
+        // the remaining rows stay unlabelled — none of them is known-old.
+        assert_eq!(version_note(0, false, false), VersionNote::CurrentUnknown);
+        assert_eq!(version_note(1, false, false), VersionNote::None);
+    }
+}
+
 #[derive(Parser, I18nHelp)]
 #[command(
     name = crate_name!(),

@@ -16,7 +16,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{QueryOption, Session, package};
 
-use crate::cmd::{InfoContext, status_info_word};
+use crate::cmd::{InfoContext, status_info_word, version_note};
 use crate::format::{pad_visual, visual_width};
 use crate::output::style;
 use crate::{Result, output};
@@ -141,19 +141,31 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 
         if args.versions {
             let versions = package::list::list_installed_versions(session, pkg.name())?;
+            // Whether the shared resolver named any version as current. A
+            // broken install resolves none, and then no retained row may be
+            // called an old version — `cleanup --list` renders the same block
+            // through this very helper.
+            let has_current = versions.iter().any(|v| v.is_current);
             let retained = versions
                 .iter()
-                .filter(|v| !v.is_current && v.version != pkg.version());
+                .filter(|v| !v.is_current && v.version != pkg.version())
+                .collect::<Vec<_>>();
 
             if versions.is_empty() {
                 rows.push(continuation("-", hok_i18n::t!("cmd.list_no_versions")));
             }
 
-            for ver in retained {
-                stats.retained += 1;
+            for (index, ver) in retained.into_iter().enumerate() {
+                // Only a version of an app whose current version resolves is a
+                // retained *old* version. A broken install's dirs stay out of
+                // that count and carry the unknown note instead — they are not
+                // cleanable leftovers either (`cleanup` skips such an app).
+                if has_current {
+                    stats.retained += 1;
+                }
                 rows.push(continuation(
                     &ver.version,
-                    hok_i18n::t!("cmd.list_version_old"),
+                    version_note(index, ver.is_current, has_current).text(),
                 ));
             }
         }
