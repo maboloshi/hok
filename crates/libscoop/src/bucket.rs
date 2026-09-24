@@ -591,8 +591,10 @@ pub fn list_known() -> Vec<(&'static str, &'static str)> {
 /// [`UpdateChanges::full_scan`] is non-empty.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateChanges {
-    /// `(bucket, current manifest path)` for added / modified / renamed
-    /// manifests — these should be (re)inserted into the cache.
+    /// `(bucket, current manifest path)` for added and modified manifests —
+    /// these should be (re)inserted into the cache. Renames are not detected
+    /// (see `diff_manifest_changes`), so a rename arrives as the old path in
+    /// `delete` plus the new path here.
     pub upsert: Vec<(String, std::path::PathBuf)>,
     /// `(bucket, manifest name)` for deleted manifests — these rows should be
     /// removed from the cache.

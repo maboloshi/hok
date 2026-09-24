@@ -422,8 +422,14 @@ pub struct ManifestDiffEntry {
 ///
 /// This backs the incremental SQLite manifest cache: after a bucket pull we
 /// only re-parse the manifests that actually changed instead of re-reading
-/// every manifest in the bucket. Added/modified/renamed files are reported with
+/// every manifest in the bucket. Added and modified files are reported with
 /// their new path; deleted files carry `deleted: true` (their content is gone).
+///
+/// Rename detection is not configured: the diff is built without options
+/// (`diff_tree_to_tree(.., .., None)`) and is never run through
+/// `find_similar`, so a renamed manifest is reported as the old path with
+/// `deleted: true` **and** the new path with `deleted: false` — never as a
+/// single rename entry naming the new path.
 pub fn diff_manifest_changes<P: AsRef<Path>>(
     path: P,
     from_commit: &str,
