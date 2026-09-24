@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn main() {
     assert_sqlite_link_mode();
@@ -162,6 +162,12 @@ fn embed_hok_shim() {
         .and_then(|p| p.parent())
         .expect("workspace root");
 
+    // The shim may live in a Cargo target directory outside the workspace
+    // (`CARGO_TARGET_DIR`, `--target-dir`, `[build] target-dir`), so probe
+    // every candidate instead of assuming `<workspace>/target`.
+    let target_dirs = candidate_target_dirs(&out_dir, workspace_dir);
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
+
     // Two shim variants, selected at shim-creation time by the target's PE
     // subsystem:
     // - hok-shim (console)     — console targets; the shell waits for the
@@ -183,18 +189,21 @@ fn embed_hok_shim() {
             stem.to_string()
         };
 
-        // Prefer release binary, fall back to debug
-        let debug_path = workspace_dir.join("target/debug").join(&shim_name);
-        let release_path = workspace_dir.join("target/release").join(&shim_name);
+        // Prefer the release binary, fall back to debug. Every profile is
+        // probed across every candidate target directory before moving to the
+        // next profile, so "release wins over debug" stays global rather than
+        // becoming per-directory.
+        let mut candidates = Vec::new();
+        for profile in ["release", "debug"] {
+            for dir in &target_dirs {
+                candidates.push(dir.join(profile).join(&shim_name));
+            }
+        }
 
-        let shim_src = if release_path.exists() {
-            release_path.clone()
-        } else if debug_path.exists() {
-            debug_path.clone()
-        } else {
+        let Some(shim_src) = candidates.iter().find(|p| p.exists()).cloned() else {
             panic!(
                 "hok-shim binary not found at {}\n  Run `cargo build -p hok-shim` first.",
-                release_path.display()
+                candidates[0].display()
             );
         };
 
@@ -207,13 +216,46 @@ fn embed_hok_shim() {
             shim_dest.display()
         ));
 
-        // Re-embed whenever either candidate changes (the picked one this
-        // run may differ on the next).
-        println!("cargo:rerun-if-changed={}", debug_path.display());
-        println!("cargo:rerun-if-changed={}", release_path.display());
+        // Re-embed whenever any candidate changes (the picked one this run may
+        // differ on the next).
+        for candidate in &candidates {
+            println!("cargo:rerun-if-changed={}", candidate.display());
+        }
     }
     println!("cargo:rerun-if-changed=build.rs");
 
     let embedded_file = Path::new(&out_dir).join("embedded_shim.rs");
     fs::write(&embedded_file, embedded).expect("write embedded_shim.rs");
+}
+
+/// Every Cargo target directory that may hold a shim binary for this build,
+/// most authoritative first.
+///
+/// `CARGO_TARGET_DIR` reaches a build script only when the user exported it
+/// (Cargo does not re-export `--target-dir` or `[build] target-dir`), so the
+/// directory is also derived from `OUT_DIR`, which always reflects the target
+/// directory Cargo actually used. The workspace `target/` stays as the last
+/// resort so an in-tree build keeps working even if `OUT_DIR` is unrecognised.
+fn candidate_target_dirs(out_dir: &str, workspace_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(dir) = env::var_os("CARGO_TARGET_DIR").filter(|dir| !dir.is_empty()) {
+        dirs.push(PathBuf::from(dir));
+    }
+    if let Some(dir) = target_dir_from_out_dir(out_dir) {
+        dirs.push(dir);
+    }
+    dirs.push(workspace_dir.join("target"));
+    dirs.dedup();
+    dirs
+}
+
+/// Walk up from `OUT_DIR` (`<target>/<profile>/build/<crate>-<hash>/out`) to
+/// the first ancestor holding a `release` or `debug` directory; that ancestor
+/// is Cargo's target directory. Walking instead of counting levels also covers
+/// the extra `<triple>` level of a `--target <triple>` build.
+fn target_dir_from_out_dir(out_dir: &str) -> Option<PathBuf> {
+    Path::new(out_dir)
+        .ancestors()
+        .find(|dir| dir.join("release").is_dir() || dir.join("debug").is_dir())
+        .map(Path::to_path_buf)
 }
