@@ -770,7 +770,17 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
                                         let (upsert, delete) = classify_diff(&repo, entries);
                                         BucketUpdateOutcome::Diff { upsert, delete }
                                     }
-                                    Err(_) => BucketUpdateOutcome::Full,
+                                    Err(e) => {
+                                        // Falling back is safe (the whole
+                                        // bucket is re-scanned), but a silent
+                                        // `Full` on every update leaves no clue
+                                        // why the incremental path is unused.
+                                        tracing::warn!(
+                                            "cannot diff bucket `{name}` against {from}: {e}; \
+                                             re-scanning the whole bucket"
+                                        );
+                                        BucketUpdateOutcome::Full
+                                    }
                                 },
                                 None => BucketUpdateOutcome::Full,
                             }
