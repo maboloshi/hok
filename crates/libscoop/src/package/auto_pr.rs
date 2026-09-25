@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Fallible};
 
 use crate::Session;
+use crate::internal::git;
 use crate::internal::github;
 use crate::internal::url;
 use crate::package::checkver::CheckverReport;
@@ -489,6 +490,9 @@ fn detect_changes(before: &HashMap<PathBuf, Vec<u8>>) -> Vec<PathBuf> {
 // Repository / path helpers
 // ---------------------------------------------------------------------------
 
+/// Message used for every "no repository information" failure.
+const NO_REPO_MESSAGE: &str = "Cannot determine repository. Set GITHUB_REPOSITORY env var.";
+
 /// Resolve the repository NWO (`owner/name`) from the `GITHUB_REPOSITORY`
 /// environment variable (set by GitHub Actions) or from the git remote URL.
 fn resolve_repo_nwo() -> Fallible<String> {
@@ -498,20 +502,14 @@ fn resolve_repo_nwo() -> Fallible<String> {
         return Ok(repo);
     }
 
-    let output = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .map_err(|_| {
-            Error::Custom("Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string())
-        })?;
-
-    if !output.status.success() {
-        return Err(Error::Custom(
-            "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
-        ));
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // libgit2 reads the `origin` URL, searching parent directories from the
+    // current directory exactly like `git remote get-url origin` — no `git`
+    // binary is spawned (see the module docs).
+    let cwd = std::env::current_dir().map_err(|_| Error::Custom(NO_REPO_MESSAGE.to_string()))?;
+    let url = git::remote_url_containing(&cwd, "origin")
+        .ok()
+        .flatten()
+        .ok_or_else(|| Error::Custom(NO_REPO_MESSAGE.to_string()))?;
 
     if let Some((owner, repo)) = url::github_owner_repo(&url) {
         Ok(format!("{owner}/{repo}"))

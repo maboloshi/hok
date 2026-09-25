@@ -279,12 +279,33 @@ fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commi
     }
 }
 
+/// Get the URL of `remote` in the repository rooted exactly at `repo_path`.
 pub fn remote_url_of<S>(repo_path: &Path, remote: S) -> Fallible<Option<String>>
 where
     S: AsRef<str>,
 {
     let repo = Repository::open(repo_path)?;
-    let remote = repo.find_remote(remote.as_ref())?;
+    remote_url_from(&repo, remote.as_ref())
+}
+
+/// Get the URL of `remote` in the repository that *contains* `path`,
+/// searching parent directories the way the `git` CLI does.
+///
+/// Unlike [`remote_url_of`], `path` does not have to be the repository root:
+/// this mirrors `git remote get-url <remote>` run with `path` as the working
+/// directory. Prefer [`remote_url_of`] when the path is known to be a
+/// repository root, so an unrelated enclosing repository is never picked up.
+pub fn remote_url_containing<S>(path: &Path, remote: S) -> Fallible<Option<String>>
+where
+    S: AsRef<str>,
+{
+    let repo = Repository::discover(path)?;
+    remote_url_from(&repo, remote.as_ref())
+}
+
+/// Shared tail of the two `remote_url_*` lookups above.
+fn remote_url_from(repo: &Repository, remote: &str) -> Fallible<Option<String>> {
+    let remote = repo.find_remote(remote)?;
     Ok(remote.url().map(|s| s.to_owned()))
 }
 
@@ -1075,5 +1096,28 @@ mod tests {
         assert!(ls_remote(origin.to_str().unwrap(), None).is_ok());
 
         cleanup(&origin);
+    }
+
+    /// `remote_url_containing` resolves the remote from a nested directory the
+    /// way `git remote get-url origin` does, while `remote_url_of` — the
+    /// bucket-facing lookup — only accepts the repository root, so an
+    /// unrelated enclosing repository is never picked up.
+    #[test]
+    fn remote_url_containing_searches_parent_directories() {
+        let root = temp_dir("remote-url-nested");
+        let repo = Repository::init(&root).unwrap();
+        let nested = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&nested).unwrap();
+        repo.remote("origin", "https://github.com/ScoopInstaller/Extras.git")
+            .unwrap();
+
+        assert_eq!(
+            remote_url_containing(&nested, "origin").unwrap().as_deref(),
+            Some("https://github.com/ScoopInstaller/Extras.git")
+        );
+        assert!(remote_url_of(&root, "origin").unwrap().is_some());
+        assert!(remote_url_of(&nested, "origin").is_err());
+
+        cleanup(&root);
     }
 }
