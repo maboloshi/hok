@@ -388,12 +388,13 @@ impl DownloadBar {
                 // 只取 '/' 之后的部分作为包名，若无 '/' 则保留原字符串
                 let pkg_name = id.split_once('/').map(|(_, name)| name).unwrap_or(id);
                 let name = style::accent(pkg_name);
-                if d < t {
-                    return format!("{} {p}%", name, p = (*d * 100) / (*t).max(1));
-                }
                 match self.verify.get(*id) {
-                    Some(VerifyState::Passed) => format!("{} {}", name, style::success("✓")),
+                    // A failure wins over the percentage: a dead download never
+                    // reaches its byte total, so the byte-based branch below
+                    // would freeze it on a stale percentage instead of ✗.
                     Some(VerifyState::Failed) => format!("{} {}", name, style::danger("✗")),
+                    _ if d < t => format!("{} {p}%", name, p = (*d * 100) / (*t).max(1)),
+                    Some(VerifyState::Passed) => format!("{} {}", name, style::success("✓")),
                     // Bytes are in; the hash result has not arrived yet.
                     _ => format!("{} {}", name, style::dim(hok_i18n::t!("detail.verifying"))),
                 }
@@ -494,6 +495,19 @@ mod tests {
             .insert("main/git".to_owned(), VerifyState::Failed);
         let line = bar.line();
         assert!(line.contains('✗'), "failed package marked: {line}");
+    }
+
+    /// A package that died mid-download keeps a percentage below its total —
+    /// the mark has to win, or the line would show a stale percentage instead
+    /// of ✗.
+    #[test]
+    fn line_marks_a_download_that_died_below_its_total() {
+        let mut bar = prepared_bar();
+        bar.verify
+            .insert("main/7zip".to_owned(), VerifyState::Failed);
+        let line = bar.line();
+        assert!(line.contains('✗'), "failed download marked: {line}");
+        assert!(!line.contains("45%"), "no stale percentage: {line}");
     }
 
     /// Without inline verification the line keeps its original shape: no

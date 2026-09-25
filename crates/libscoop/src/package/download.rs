@@ -631,6 +631,9 @@ async fn download_one_package<'a>(
                     .output()
                     .error(hok_i18n::t!(error_key, name = ident.clone(), error = e));
                 verify_state.failed = Some(ident.clone());
+                // Tell the line too, or the package would sit at its last
+                // percentage until the row closes.
+                plan.report(session, cache.package, VerifyState::Failed);
             } else {
                 return Err(e);
             }
@@ -655,6 +658,9 @@ async fn download_one_package<'a>(
                 error = err
             ));
             verify_state.failed = Some(ident.clone());
+            // Same as a finalization failure: a dead download never reaches its
+            // byte total, so the line has to be told it failed.
+            plan.report(session, cache.package, VerifyState::Failed);
         } else {
             return Err(err);
         }
