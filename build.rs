@@ -1,6 +1,6 @@
 fn main() {
-    use time::macros::format_description;
     use time::OffsetDateTime;
+    use time::macros::format_description;
 
     let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
     let date = now
@@ -9,6 +9,22 @@ fn main() {
         ))
         .expect("static format description cannot fail");
     println!("cargo:rustc-env=BUILD_DATE={}", date);
+
+    // Windows gives the process's main thread the 1 MiB stack reserved in the
+    // PE header (`SizeOfStackReserve`), and that reservation cannot be changed
+    // at run time. A debug build of the CLI already peaks well above it: the
+    // clap command tree, the nested async command chain and the serde manifest
+    // parse reached ~1.2 MiB for a plain local manifest, so
+    // `hok download <manifest>` died with STATUS_STACK_OVERFLOW (0xC00000FD)
+    // before it opened a single connection. Reserve a real stack instead; the
+    // reservation is virtual memory, committed only as the stack grows.
+    //
+    // MSVC only: `/STACK:` is a link.exe / lld-link flag (the workspace builds
+    // for `*-pc-windows-msvc`), and older GNU-ld-style linkers would read it as
+    // an input file.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg=/STACK:8388608");
+    }
 
     // Command registration: scan src/cmd/ for command module files
     generate_cmd_mods().expect("failed to generate cmd_mods.rs");
