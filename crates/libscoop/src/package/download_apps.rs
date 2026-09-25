@@ -182,6 +182,233 @@ mod tests {
         cache_files_in(config.cache_path())
     }
 
+    /// Capture every `Output::Error` the session emits.
+    fn capture_errors(session: &Session) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = {
+            let seen = seen.clone();
+            std::sync::Arc::new(move |out: crate::output::Output| {
+                if let crate::output::Output::Error(msg) = out {
+                    seen.lock().unwrap().push(msg);
+                }
+            })
+        };
+        session.set_output(sink).unwrap();
+        seen
+    }
+
+    /// A download that fails under IgnoreFailures is reported as failed on the
+    /// line — its bytes never reach the total, so a percentage would freeze.
+    #[tokio::test]
+    async fn test_download_apps_reports_a_failed_download() {
+        use crate::package::download::VerifyState;
+
+        // Every GET answers 500, so sizing succeeds and the transfer fails.
+        let data = b"failed-download".to_vec();
+        let mut server = spawn_range_server(data, u32::MAX, 500, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_failed_download");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "deadapp", "1.0", &url, &"0".repeat(64));
+        let manifest = manifest.to_string_lossy().into_owned();
+
+        let mut rx = session
+            .event_bus()
+            .receiver()
+            .expect("event bus must be free");
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[&manifest], &opts).await.unwrap();
+        server.shutdown();
+
+        let mut states = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let Event::PackageVerifyProgress(ctx) = ev {
+                states.push((ctx.ident, ctx.state));
+            }
+        }
+        assert!(
+            states
+                .iter()
+                .any(|(ident, state)| ident.ends_with("/deadapp") && *state == VerifyState::Failed),
+            "the failed download must be marked failed: {states:?}"
+        );
+    }
+
+    /// Number of captured messages that report a hash mismatch for `name`.
+    fn mismatch_reports(seen: &std::sync::Arc<std::sync::Mutex<Vec<String>>>, name: &str) -> usize {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.contains("Hash mismatch for package") && m.contains(name))
+            .count()
+    }
+
+    /// A corrupt file of a *dispatched* package is hashed exactly once (inline)
+    /// and reported once, not once inline plus once in the tail pass.
+    #[tokio::test]
+    async fn test_download_apps_hashes_a_downloaded_file_once() {
+        let data = b"hashed-once".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_hashed_once");
+        let session = crate::test_utils::test_session(&root);
+        let seen = capture_errors(&session);
+        let url = format!("http://{}/app.bin", server.addr);
+        let m = write_manifest(&root, "hashedonce", "1.0", &url, &"0".repeat(64));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[m.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
+        server.shutdown();
+
+        assert_eq!(
+            mismatch_reports(&seen, "hashedonce"),
+            1,
+            "one report only: {:?}",
+            seen.lock().unwrap()
+        );
+        assert!(cache_files(&session).is_empty());
+    }
+
+    /// A fully cached package never reaches a download task, so its corrupt file
+    /// is reported exactly once — by the tail pass.
+    #[tokio::test]
+    async fn test_download_apps_hashes_a_cache_hit_once() {
+        let data = b"cache-hit-once".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_cache_hit_once");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let m = write_manifest(&root, "cachehit", "1.0", &url, &sha256_hex(&data));
+        let m = m.to_string_lossy().into_owned();
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[&m], &opts).await.unwrap();
+        let files = cache_files(&session);
+        std::fs::write(&files[0], vec![b'X'; data.len()]).unwrap();
+
+        let seen = capture_errors(&session);
+        download_apps(&session, &[&m], &opts).await.unwrap();
+        server.shutdown();
+
+        assert_eq!(
+            mismatch_reports(&seen, "cachehit"),
+            1,
+            "one report only: {:?}",
+            seen.lock().unwrap()
+        );
+        assert!(cache_files(&session).is_empty());
+    }
+
+    /// The hard-failure path (install's default): a hash mismatch aborts the
+    /// operation and still removes the corrupt file.
+    #[tokio::test]
+    async fn test_download_and_verify_hard_failure_aborts() {
+        use crate::package::Package;
+        use crate::package::download::{PackageSet, download_and_verify};
+        use crate::package::manifest::Manifest;
+
+        let data = b"hard-failure".to_vec();
+        let mut server = spawn_range_server(data, 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_and_verify_hard_failure");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = Manifest::from_json(
+            "hardapp",
+            &format!(
+                r#"{{"version": "1.0", "url": "{}", "hash": "{}"}}"#,
+                url,
+                "0".repeat(64)
+            ),
+        )
+        .unwrap();
+        let pkg = Package::from("hardapp", "test", manifest);
+        let packages = [&pkg];
+
+        let mut set = PackageSet::new(&session, &packages, false).unwrap();
+        set.calculate_download_size().await.unwrap();
+        let result = download_and_verify(&mut set, false, false, false).await;
+        server.shutdown();
+
+        assert!(result.is_err(), "hard failure must abort: {result:?}");
+        assert!(
+            cache_files(&session).is_empty(),
+            "corrupt file removed even on the hard path"
+        );
+    }
+
+    /// A partially cached package hashes its per-file cache hit (inline, in the
+    /// skip branch) as well as the file it downloads, keeps going after the
+    /// failure and reports once.
+    #[tokio::test]
+    async fn test_download_apps_verifies_a_partially_cached_package() {
+        let data = b"partial-cache".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_partial_cache");
+        let session = crate::test_utils::test_session(&root);
+        let (a, b) = (
+            format!("http://{}/a.bin", server.addr),
+            format!("http://{}/b.bin", server.addr),
+        );
+        let json = format!(
+            r#"{{"version": "1.0", "url": ["{a}", "{b}"], "hash": ["{}", "{}"]}}"#,
+            sha256_hex(&data),
+            sha256_hex(&data)
+        );
+        let path = root.join("partapp.json");
+        std::fs::write(&path, json).unwrap();
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        // First run: both files land, so the next run is a partial cache.
+        download_apps(&session, &[path.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
+        let files = cache_files(&session);
+        assert_eq!(files.len(), 2, "two cache files: {files:?}");
+
+        // Corrupt one entry and drop the other: the package is then partial, so
+        // it is dispatched with one per-file cache hit. The cache names are
+        // derived from the URL, so the two files are told apart by position.
+        std::fs::write(&files[0], vec![b'X'; data.len()]).unwrap();
+        std::fs::remove_file(&files[1]).unwrap();
+
+        let seen = capture_errors(&session);
+        download_apps(&session, &[path.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
+        server.shutdown();
+
+        assert_eq!(
+            mismatch_reports(&seen, "partapp"),
+            1,
+            "the corrupt per-file cache hit is reported once: {:?}",
+            seen.lock().unwrap()
+        );
+        let left = cache_files(&session);
+        assert_eq!(
+            left.len(),
+            1,
+            "only the re-downloaded file is left: {left:?}"
+        );
+        assert_eq!(
+            std::fs::read(&left[0]).unwrap(),
+            data,
+            "the re-downloaded file is intact"
+        );
+    }
+
     /// Files directly inside `dir`, sorted by name.
     fn cache_files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut files: Vec<_> = std::fs::read_dir(dir)
