@@ -77,10 +77,19 @@ pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> =
 pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| BUCKET_PRIORITY_ORDER.to_vec());
 
-/// regex to match valid Scoop cache filename:
-/// "app#version#filenamified_url"
+/// regex to match a valid Scoop cache filename: "app#version#filenamified_url"
+///
+/// `name` and `version` are `[^#]+` on purpose. Upstream reaches these files
+/// through a glob and never constrains their characters
+/// (`Remove-Item "$cachedir\$app#*" -Exclude "$app#$current_version#*"`,
+/// `scoop-cleanup.ps1:33`), while bucket versions routinely carry `+`, `_` or
+/// `@` (`1.9.11_2007`, `1.4.3-canary.1+29d9638da`, `dingtalk@7.0.10.1026`).
+/// A narrower character class made exactly those files unrepresentable, so
+/// `cache` (list), `cleanup -k` and `cache rm <app>` silently ignored them —
+/// only the `cache rm *` branch, which walks the directory itself, could see
+/// them.
 pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"(?P<name>[0-9a-zA-Z._-]+)#(?P<version>[0-9a-zA-Z.-]+)#(?P<url>.*)";
+    let pattern = r"^(?P<name>[^#]+)#(?P<version>[^#]+)#(?P<url>.*)$";
     RegexBuilder::new(pattern).build().unwrap()
 });
 

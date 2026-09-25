@@ -358,6 +358,34 @@ mod tests {
         assert!(!is_wildcard(&["zip".to_owned()]));
     }
 
+    /// A cache name carries whatever the bucket's `version` says — `_`, `+` and
+    /// `@` included (`1.9.11_2007`, `1.4.3-canary.1+29d9638da`,
+    /// `dingtalk@7.0.10.1026`) — while a name that is not a cache entry stays
+    /// rejected.
+    #[test]
+    fn cache_names_carry_any_version_spelling() {
+        for name in [
+            "authpass#1.9.11_2007#a.exe",
+            "7zip#21.03+zs#b.7z",
+            "dingtalk@7.0.10.1026#7.0.10.1026#c.exe",
+            "rstudio#2026.10.0+155-daily#d.zip",
+            // The URL segment is free-form: upstream sanitizes it into `#`s.
+            "zip#1.0#https##example.com#e.zip",
+        ] {
+            assert!(
+                CacheFile::from(PathBuf::from(name)).is_ok(),
+                "must parse: {name}"
+            );
+        }
+
+        for name in ["readme.txt", "app#1.0", "app.txt"] {
+            assert!(
+                CacheFile::from(PathBuf::from(name)).is_err(),
+                "must be rejected: {name}"
+            );
+        }
+    }
+
     /// Cache operations against a temporary session: `remove_outdated` keeps
     /// the current version and drops the rest, `remove` is anchored to the
     /// selected app and takes the aria2 sidecar with it, and
