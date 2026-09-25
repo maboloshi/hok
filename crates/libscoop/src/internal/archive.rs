@@ -432,6 +432,60 @@ fn extract_7z_entries_mt(
     if let Some(e) = errors.lock().unwrap().first() {
         return Err(Error::ExtractionFailed(format!("7z extract error: {}", e)));
     }
+
+    // ── Stream-less entries ──────────────────────────────────────────────
+    // Empty files and *every* directory entry carry no stream, so they belong
+    // to no block and the per-block decoders above — which only walk block
+    // payloads — never visit them. `ArchiveReader::for_each_entries` appends
+    // an explicit pass for them (sevenz-rust2 `reader.rs`, "decode empty
+    // files"); this hand-rolled block-parallel path bypasses it, which is why
+    // empty files were silently dropped and empty directories never created.
+    // Materialize them here, after the workers joined, so the extracted tree
+    // matches what `7z.exe` produces.
+    let filter_ref: Option<Vec<&str>> = filter
+        .as_ref()
+        .as_ref()
+        .map(|f| f.iter().map(|s| s.as_str()).collect());
+    for entry in archive.files.iter() {
+        if entry.has_stream() {
+            continue;
+        }
+        let name = entry.name();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(f) = filter_ref.as_deref()
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            continue;
+        }
+        let target = strip_dir(name, filter_ref.as_deref()).unwrap_or_else(|| name.to_string());
+        let target = target.trim_end_matches(['/', '\\']);
+        if target.is_empty() {
+            continue;
+        }
+        if Path::new(target)
+            .components()
+            .any(|c| c == Component::ParentDir)
+        {
+            return Err(Error::PathTraversalDetected(format!("7z: {}", target)));
+        }
+        let target_path = dest.join(target);
+        if entry.is_directory() {
+            // Explicit directory entries include *empty* directories, which
+            // 7z.exe creates; nothing else in this path would bring them back.
+            crate::internal::fs::ensure_dir(&target_path)?;
+        } else {
+            let n = file_idx.fetch_add(1, Ordering::Relaxed);
+            emit_extract_progress(&emitter, n, Some(total));
+            if let Some(parent) = target_path.parent() {
+                crate::internal::fs::ensure_dir(parent)?;
+            }
+            std::fs::write(&target_path, []).map_err(|e| {
+                Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1691,6 +1745,58 @@ mod tests {
                 .map(|m| m.len() > 0)
                 .unwrap_or(false)
         );
+    }
+
+    /// Path to a committed 7z fixture (see `tests/fixtures/7z/README.md`).
+    fn sevenz_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/7z")
+            .join(rel)
+    }
+
+    /// Stream-less 7z entries must be materialized: empty files and *every*
+    /// directory entry (empty ones included) belong to no block, so the
+    /// block-parallel decoder never visits them. Regression guard for the bug
+    /// that silently dropped files like `npm\.npmrc` / `py.typed` / empty
+    /// `__init__.py` from real archives (reproduced against the `nodejs`
+    /// package's `node-v26.9.0-win-x64.7z`).
+    #[test]
+    fn test_extract_7z_empty_entries() {
+        let src = sevenz_fixture("empty-entries.7z");
+        let dest = crate::test_utils::tmpdir("7z_empty_entries");
+        extract_pseudo_7z(&src, &dest, None, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("plain.txt")).unwrap(),
+            "hello"
+        );
+        for empty in ["empty.txt", "sub/empty2.txt"] {
+            let path = dest.join(empty);
+            assert!(path.is_file(), "empty file dropped: {empty}");
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        }
+        for dir in ["emptydir", "sub", "sub/emptydir2"] {
+            assert!(dest.join(dir).is_dir(), "directory missing: {dir}");
+        }
+    }
+
+    /// The stream-less pass must honour `extract_dir` like the block pass
+    /// does: only the filtered subtree lands, with its prefix stripped.
+    #[test]
+    fn test_extract_7z_empty_entries_with_extract_dir() {
+        let src = sevenz_fixture("empty-entries.7z");
+        let dest = crate::test_utils::tmpdir("7z_empty_entries_filtered");
+        extract_pseudo_7z(&src, &dest, Some(&["sub"]), &None).unwrap();
+
+        let empty = dest.join("empty2.txt");
+        assert!(empty.is_file(), "filtered empty file dropped");
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+        assert!(
+            dest.join("emptydir2").is_dir(),
+            "filtered empty dir missing"
+        );
+        assert!(!dest.join("plain.txt").exists(), "filter leaked plain.txt");
+        assert!(!dest.join("empty.txt").exists(), "filter leaked empty.txt");
     }
 
     #[test]
