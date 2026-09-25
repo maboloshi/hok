@@ -10,7 +10,7 @@ use crate::constant::REGEX_CACHE_FILE;
 use crate::error::{Error, Fallible};
 
 /// Scoop cache file representation
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheFile {
     path: PathBuf,
     /// Length in bytes at enumeration time. Cached because the file is often
@@ -244,16 +244,55 @@ pub fn remove(session: &crate::Session, apps: &[String]) -> Fallible<Vec<CacheFi
 /// aria2 sidecar is deliberately left alone — upstream's `cleanup` removes it
 /// only through `cache rm`.
 ///
+/// Returns the removed entries, in [`list`] order, so the caller can report
+/// what `-k` freed: upstream prints nothing here, which made a run that only
+/// dropped cache look like a no-op.
+///
 /// # Errors
 ///
 /// I/O errors will be returned if the cache directory is not readable.
-pub fn remove_outdated(session: &crate::Session, app: &str, keep_version: &str) -> Fallible<()> {
+pub fn remove_outdated(
+    session: &crate::Session,
+    app: &str,
+    keep_version: &str,
+) -> Fallible<Vec<CacheFile>> {
+    remove_app_cache(session, app, Some(keep_version))
+}
+
+/// Remove *every* cached download of one app, whatever version it belongs to.
+///
+/// This is upstream's `Remove-Item "$cachedir\$app#*" -Exclude
+/// "$app#$current_version#*"` reached with no current version to exclude: the
+/// exclude pattern degenerates to `"$app##*"`, matches nothing, and the app's
+/// whole cache goes (`scoop-cleanup.ps1:32-33`). `cleanup -k` uses it for an
+/// app whose current version cannot be resolved, so a broken install does not
+/// pin its downloads forever.
+///
+/// Like [`remove_outdated`], the aria2 sidecar is left alone.
+///
+/// # Errors
+///
+/// I/O errors will be returned if the cache directory is not readable.
+pub fn remove_all_for_app(session: &crate::Session, app: &str) -> Fallible<Vec<CacheFile>> {
+    remove_app_cache(session, app, None)
+}
+
+/// Shared body of [`remove_outdated`] / [`remove_all_for_app`]: remove `app`'s
+/// cache files, skipping the versions in `keep` (`None` keeps nothing).
+fn remove_app_cache(
+    session: &crate::Session,
+    app: &str,
+    keep: Option<&str>,
+) -> Fallible<Vec<CacheFile>> {
+    let mut removed = Vec::new();
     for f in list(session, &[app.to_owned()])? {
-        if f.version() != keep_version {
-            remove_entry(session, f.path());
+        if keep == Some(f.version()) {
+            continue;
         }
+        remove_entry(session, f.path());
+        removed.push(f);
     }
-    Ok(())
+    Ok(removed)
 }
 
 /// Remove leftover partial downloads (`*.download`).
@@ -407,8 +446,13 @@ mod tests {
             std::fs::write(cache_dir.join(name), b"x").unwrap();
         }
 
-        // `cleanup -k`: keep zip 2.0, drop zip 1.0, leave everything else.
-        remove_outdated(&session, "zip", "2.0").unwrap();
+        // `cleanup -k`: keep zip 2.0, drop zip 1.0, leave everything else —
+        // and report what went, so the CLI can turn `-k` into a visible line.
+        let removed = remove_outdated(&session, "zip", "2.0").unwrap();
+        assert_eq!(
+            removed.iter().map(CacheFile::file_name).collect::<Vec<_>>(),
+            ["zip#1.0#a.zip"]
+        );
         assert!(!cache_dir.join("zip#1.0#a.zip").exists());
         assert!(cache_dir.join("zip#2.0#b.zip").exists());
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
@@ -430,6 +474,51 @@ mod tests {
         remove_incomplete(&session).unwrap();
         assert!(!cache_dir.join("partial.download").exists());
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
+    }
+
+    /// `cleanup -k` and `cache rm <app>` must reach an odd-version name as well:
+    /// they used to miss exactly these files, which only `cache rm *` (the
+    /// branch that walks the directory itself) could ever delete.
+    #[test]
+    fn odd_version_names_are_removable_by_app() {
+        let root = crate::test_utils::tmpdir("cache_odd_versions");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = root.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        for name in [
+            "authpass#1.9.11_2007#a.exe",
+            "authpass#1.9.11_2007+next#b.exe",
+            "authpass#1.10#c.exe",
+            "authpass.txt",
+        ] {
+            std::fs::write(cache_dir.join(name), b"x").unwrap();
+        }
+
+        // `cleanup -k`: the current version survives, every spelling of the old
+        // one goes, in `list` order.
+        let removed = remove_outdated(&session, "authpass", "1.10").unwrap();
+        assert_eq!(
+            removed.iter().map(CacheFile::file_name).collect::<Vec<_>>(),
+            [
+                "authpass#1.9.11_2007#a.exe",
+                "authpass#1.9.11_2007+next#b.exe"
+            ]
+        );
+        assert!(cache_dir.join("authpass#1.10#c.exe").exists());
+        assert!(cache_dir.join("authpass.txt").exists(), "sidecar untouched");
+
+        // A broken install has no version to keep, so `-k` drops all of them.
+        let removed = remove_all_for_app(&session, "authpass").unwrap();
+        assert_eq!(
+            removed.iter().map(CacheFile::file_name).collect::<Vec<_>>(),
+            ["authpass#1.10#c.exe"]
+        );
+        assert!(!cache_dir.join("authpass#1.10#c.exe").exists());
+        assert!(
+            cache_dir.join("authpass.txt").exists(),
+            "sidecar untouched: only `cache rm` takes it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The wildcard `cache rm *` clears the whole cache directory (including

@@ -10,7 +10,7 @@ use libscoop::{Session, cache, package};
 use crate::cmd::shared_args::ensure_global;
 use crate::cmd::version_note;
 use crate::cui::RowUI;
-use crate::format::{pad_visual, visual_width};
+use crate::format::{humansize, pad_visual, visual_width};
 use crate::output::style;
 use crate::{Result, output};
 
@@ -339,6 +339,10 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let observer = |event: CleanupProgress| progress.lock().unwrap().render(&event);
 
     let mut results = Vec::new();
+    // The cache entries `-k` dropped, across both scopes: upstream prints
+    // nothing about them, which made a `-k` sweep that only removed cache look
+    // like it had done nothing at all.
+    let mut cache_removed = Vec::new();
     // `Some(0)` means every named app was reported missing/broken: the global
     // "nothing to clean" line would then contradict the per-app errors.
     let mut named_targets = None;
@@ -351,15 +355,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             // back to a full sweep.
             session.set_global(false);
             let names = package::cleanup::installed_app_names(session);
-            results.extend(package::cleanup::cleanup(
-                session, &names, &options, &observer,
-            )?);
+            let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
+            results.extend(outcome.apps);
+            cache_removed.extend(outcome.cache_removed);
             if args.global {
                 session.set_global(true);
                 let names = package::cleanup::installed_app_names(session);
-                results.extend(package::cleanup::cleanup(
-                    session, &names, &options, &observer,
-                )?);
+                let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
+                results.extend(outcome.apps);
+                cache_removed.extend(outcome.cache_removed);
             }
         } else {
             // Named apps go through upstream's `Confirm-InstallationStatus`
@@ -369,9 +373,9 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
                 package::cleanup::confirm_installation_status(session, &args.app, args.global);
             named_targets = Some(names.len());
             session.set_global(args.global);
-            results.extend(package::cleanup::cleanup(
-                session, &names, &options, &observer,
-            )?);
+            let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
+            results.extend(outcome.apps);
+            cache_removed.extend(outcome.cache_removed);
         }
         Ok(())
     })();
@@ -413,6 +417,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     }
 
     if args.cache {
+        // One line for what `-k` freed. Upstream is silent here, so the only
+        // visible effect of a sweep that removed no version dirs was the
+        // absence of output — indistinguishable from a command that did
+        // nothing. Printed even when nothing went, so silence always means "no
+        // `-k`".
+        let total_size: u64 = cache_removed.iter().map(cache::CacheFile::size).sum();
+        output::info(hok_i18n::t!(
+            "cmd.cleanup_cache_removed",
+            count = cache_removed.len(),
+            size = humansize(total_size, true)
+        ));
+
         // Upstream clears leftover partial downloads once, after the sweep
         // (`scoop-cleanup.ps1:79-81`).
         cache::remove_incomplete(session)?;

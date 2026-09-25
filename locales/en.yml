@@ -167,6 +167,7 @@ cmd:
   cleanup_list_current_unknown: "current version unknown"
   cleanup_failed_summary: "%{count} app(s) still have old versions: %{apps} (close the program using those files and retry; those directories may be partially deleted)"
   cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
+  cleanup_cache_removed: "Outdated download cache removed: %{count} files, %{size}"
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_removed: "Config '%{key}' has been removed"
   config_not_set: "'%{key}' is not set"

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::cache::CacheFile;
 use crate::{Error, Session, cache, error::Fallible, internal, package::install_state};
 
 /// Behaviour knobs for [`cleanup`].
@@ -50,6 +51,22 @@ pub struct CleanupFailure {
     /// The removal error as reported by the OS, untranslated; the frontend
     /// wraps it in its localized line.
     pub error: String,
+}
+
+/// Everything one [`cleanup`] sweep did.
+///
+/// The per-app results stay in [`CleanupResult`] (they are what the per-version
+/// rows render); the cache entries the sweep removed live here because they are
+/// a property of the batch: `-k` can drop an app's cache without producing a
+/// result (a broken install, see [`cleanup`]), and upstream prints nothing
+/// about them, so the frontend renders one summary line for all of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CleanupOutcome {
+    /// One entry per app visited, in the order it was requested.
+    pub apps: Vec<CleanupResult>,
+    /// Cache entries removed, in the order [`cache::list`] presents them per
+    /// app and the apps in request order.
+    pub cache_removed: Vec<CacheFile>,
 }
 
 /// Progress notification for one old-version directory, delivered to the
@@ -246,11 +263,11 @@ fn worker_count() -> usize {
 ///
 /// Removes all version directories except the current one for each named
 /// package, and returns one [`CleanupResult`] per app it processed (including
-/// apps that were already clean). `names` is always an explicit target list
-/// (upstream's `$apps`): an empty list cleans nothing, so callers sweeping
-/// every app must enumerate it through [`installed_app_names`]. A name that
-/// does not exist yields [`PackageNotFound`][1] unless `options.ignore_failures`
-/// is set.
+/// apps that were already clean), together with the cache entries `-k` dropped.
+/// `names` is always an explicit target list (upstream's `$apps`): an empty
+/// list cleans nothing, so callers sweeping every app must enumerate it through
+/// [`installed_app_names`]. A name that does not exist yields
+/// [`PackageNotFound`][1] unless `options.ignore_failures` is set.
 ///
 /// The sweep removes version directories with `worker_count()` threads and
 /// reports each one through `observer` when it is claimed and when it settles.
@@ -270,10 +287,11 @@ pub fn cleanup(
     names: &[String],
     options: &CleanupOptions,
     observer: &CleanupObserver<'_>,
-) -> Fallible<Vec<CleanupResult>> {
+) -> Fallible<CleanupOutcome> {
     let ignore_failures = options.ignore_failures;
     let apps_dir = session.apps_dir();
     let no_junction = session.config().no_junction();
+    let mut cache_removed: Vec<CacheFile> = Vec::new();
 
     // ── Plan ────────────────────────────────────────────────────────────────
     // Resolving each app's current version and enumerating its old version dirs
@@ -299,7 +317,14 @@ pub fn cleanup(
             .map(|resolved| resolved.version);
 
         let Some(ref current_ver) = current_version else {
-            // No install info — skip broken package
+            // No install info — skip broken package. Its cache still goes:
+            // upstream's exclude pattern needs a version to name, so with none
+            // it matches nothing and the app's whole cache is dropped
+            // (`scoop-cleanup.ps1:32-33`). Leaving it behind would pin the
+            // downloads of an install the user is about to repair by hand.
+            if options.cache {
+                cache_removed.extend(cache::remove_all_for_app(session, name)?);
+            }
             continue;
         };
 
@@ -308,7 +333,7 @@ pub fn cleanup(
         // no old versions. The current version is excluded so a reinstall does
         // not re-download it.
         if options.cache {
-            cache::remove_outdated(session, name, current_ver)?;
+            cache_removed.extend(cache::remove_outdated(session, name, current_ver)?);
         }
 
         plans.push(PlannedApp {
@@ -411,7 +436,10 @@ pub fn cleanup(
         });
     }
 
-    Ok(results)
+    Ok(CleanupOutcome {
+        apps: results,
+        cache_removed,
+    })
 }
 
 #[cfg(test)]
@@ -462,10 +490,10 @@ mod tests {
         let (session, root) = setup("old_versions");
         install_versions(&root.0, "app", &["1.0.0", "0.9.0", "0.8.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
         assert_eq!(
-            results,
+            outcome.apps,
             vec![CleanupResult {
                 name: "app".to_owned(),
                 removed: vec!["0.9.0".to_owned(), "0.8.0".to_owned()],
@@ -478,8 +506,9 @@ mod tests {
     }
 
     /// `cleanup -k` drops the app's outdated cached downloads but keeps the
-    /// current version's (upstream excludes `$app#$current_version#*`) and
-    /// leaves other apps' cache alone.
+    /// current version's (upstream excludes `$app#$current_version#*`), leaves
+    /// other apps' cache alone, and reports what it dropped — upstream is silent
+    /// here, so the returned list is the only way `-k` becomes visible.
     #[test]
     fn cleanup_with_cache_keeps_current_version_download() {
         let (session, root) = setup("keep_current_cache");
@@ -490,7 +519,7 @@ mod tests {
             std::fs::write(cache.join(name), b"x").unwrap();
         }
 
-        let results = cleanup(
+        let outcome = cleanup(
             &session,
             &["app".to_owned()],
             &CleanupOptions {
@@ -501,10 +530,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "app");
-        assert_eq!(results[0].removed, ["1.0.0"]);
-        assert!(results[0].failures.is_empty());
+        assert_eq!(outcome.apps.len(), 1);
+        assert_eq!(outcome.apps[0].name, "app");
+        assert_eq!(outcome.apps[0].removed, ["1.0.0"]);
+        assert!(outcome.apps[0].failures.is_empty());
+        assert_eq!(
+            outcome
+                .cache_removed
+                .iter()
+                .map(CacheFile::file_name)
+                .collect::<Vec<_>>(),
+            ["app#1.0.0#a.zip"],
+            "the dropped cache entry travels back for the summary line"
+        );
         assert!(
             !cache.join("app#1.0.0#a.zip").exists(),
             "outdated cache dropped"
@@ -580,12 +618,12 @@ mod tests {
         let (session, root) = setup("only_current");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
-        assert_eq!(results.len(), 1, "the app was visited");
-        assert_eq!(results[0].name, "app");
-        assert!(results[0].removed.is_empty(), "nothing to clean");
-        assert!(results[0].failures.is_empty());
+        assert_eq!(outcome.apps.len(), 1, "the app was visited");
+        assert_eq!(outcome.apps[0].name, "app");
+        assert!(outcome.apps[0].removed.is_empty(), "nothing to clean");
+        assert!(outcome.apps[0].failures.is_empty());
     }
 
     /// The sweep-all form enumerates every installed app and cleans each —
@@ -599,9 +637,10 @@ mod tests {
 
         let names = installed_app_names(&session);
         assert_eq!(names, ["app1", "app2"], "scoop excluded, order stable");
-        let results = cleanup(&session, &names, &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &names, &opts(false), &|_| {}).unwrap();
 
-        let mut cleaned = results
+        let mut cleaned = outcome
+            .apps
             .iter()
             .map(|r| (r.name.as_str(), r.removed.len(), r.failures.len()))
             .collect::<Vec<_>>();
@@ -616,9 +655,9 @@ mod tests {
         let (session, root) = setup("no_targets");
         install_versions(&root.0, "app", &["2.0.0", "1.0.0"], "2.0.0");
 
-        let results = cleanup(&session, &[], &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &[], &opts(false), &|_| {}).unwrap();
 
-        assert!(results.is_empty());
+        assert!(outcome.apps.is_empty());
         assert!(
             root.0.join("apps/app/1.0.0").exists(),
             "an empty list cleaned an app"
@@ -639,7 +678,7 @@ mod tests {
         let (session, root) = setup("missing_ignored");
         install_versions(&root.0, "app", &["1.0.0"], "1.0.0");
 
-        let results = cleanup(
+        let outcome = cleanup(
             &session,
             &["nope".to_owned(), "app".to_owned()],
             &opts(true),
@@ -647,20 +686,57 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(results.len(), 1, "missing skipped, the present app visited");
-        assert_eq!(results[0].name, "app");
-        assert!(results[0].removed.is_empty(), "nothing to clean");
+        assert_eq!(
+            outcome.apps.len(),
+            1,
+            "missing skipped, the present app visited"
+        );
+        assert_eq!(outcome.apps[0].name, "app");
+        assert!(outcome.apps[0].removed.is_empty(), "nothing to clean");
     }
 
+    /// A broken install (no resolvable current version) keeps its version dirs
+    /// — hok deliberately skips an app it cannot judge — but `-k` still drops
+    /// its cache: with no current version to exclude upstream's pattern
+    /// degenerates to `"$app##*"`, matches nothing, and the whole app cache goes
+    /// (`scoop-cleanup.ps1:32-33`).
     #[test]
-    fn cleanup_broken_package_without_current_is_skipped() {
+    fn cleanup_broken_package_keeps_versions_but_drops_its_cache() {
         let (session, root) = setup("broken");
         // apps/app exists but has no `current` symlink
         std::fs::create_dir_all(root.0.join("apps/app/1.0.0")).unwrap();
+        let cache = root.0.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        for name in ["app#1.0.0#a.zip", "other#1.0#c.zip"] {
+            std::fs::write(cache.join(name), b"x").unwrap();
+        }
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(
+            &session,
+            &["app".to_owned()],
+            &CleanupOptions {
+                ignore_failures: false,
+                cache: true,
+            },
+            &|_| {},
+        )
+        .unwrap();
 
-        assert!(results.is_empty(), "broken package skipped");
+        assert!(outcome.apps.is_empty(), "broken package skipped");
+        assert_eq!(
+            outcome
+                .cache_removed
+                .iter()
+                .map(CacheFile::file_name)
+                .collect::<Vec<_>>(),
+            ["app#1.0.0#a.zip"],
+            "a broken install must not pin its download cache"
+        );
+        assert!(!cache.join("app#1.0.0#a.zip").exists());
+        assert!(
+            cache.join("other#1.0#c.zip").exists(),
+            "other apps' cache untouched"
+        );
     }
 
     fn session_with_no_junction(root: &std::path::Path) -> Session {
@@ -724,12 +800,12 @@ mod tests {
         )
         .unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "app");
-        assert_eq!(results[0].removed.len(), 2);
-        assert!(results[0].failures.is_empty());
+        assert_eq!(outcome.apps.len(), 1);
+        assert_eq!(outcome.apps[0].name, "app");
+        assert_eq!(outcome.apps[0].removed.len(), 2);
+        assert!(outcome.apps[0].failures.is_empty());
         assert!(pkg_dir.join("2.0.0").exists(), "newest version kept");
         assert!(!pkg_dir.join("1.0.0").exists(), "old version removed");
         assert!(!pkg_dir.join("_1.0.0.old").exists(), "old dir removed");
@@ -751,17 +827,21 @@ mod tests {
         }
 
         let events = std::sync::Mutex::new(Vec::new());
-        let results = cleanup(&session, &names, &opts(true), &|event| {
+        let outcome = cleanup(&session, &names, &opts(true), &|event| {
             events.lock().unwrap().push(event);
         })
         .unwrap();
 
         assert_eq!(
-            results.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            outcome
+                .apps
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
             ["zeta", "alpha", "mid", "beta"],
             "results follow the requested order, not completion order"
         );
-        for result in &results {
+        for result in &outcome.apps {
             assert_eq!(result.removed, ["1.5.0", "1.0.0"], "newest first");
             assert!(result.failures.is_empty());
         }
@@ -821,20 +901,20 @@ mod tests {
             .open(&locked)
             .unwrap();
 
-        let results = cleanup(&session, &["app".to_owned()], &opts(true), &|_| {}).unwrap();
+        let outcome = cleanup(&session, &["app".to_owned()], &opts(true), &|_| {}).unwrap();
 
-        assert_eq!(results.len(), 1);
+        assert_eq!(outcome.apps.len(), 1);
         assert_eq!(
-            results[0].removed,
+            outcome.apps[0].removed,
             ["1.5.0"],
             "removable version still went"
         );
-        assert_eq!(results[0].failures.len(), 1);
-        assert_eq!(results[0].failures[0].version, "1.0.0");
+        assert_eq!(outcome.apps[0].failures.len(), 1);
+        assert_eq!(outcome.apps[0].failures[0].version, "1.0.0");
         assert!(
-            results[0].failures[0].error.contains("os error"),
+            outcome.apps[0].failures[0].error.contains("os error"),
             "the OS error travels back in the result: {:?}",
-            results[0].failures[0].error
+            outcome.apps[0].failures[0].error
         );
         assert!(root.0.join("apps/app/2.0.0").exists(), "current kept");
         assert!(locked.exists(), "the locked file survived");
