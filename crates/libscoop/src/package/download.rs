@@ -588,7 +588,21 @@ async fn download_one_package<'a>(
                             &tmp,
                             &mut on_progress,
                         ) => {
-                            res.map_err(|e| crate::error::Error::Custom(e.to_string()))?;
+                            // A timeout carries its deadline so the frontend can
+                            // render "timed out after Ns": reqwest's own text
+                            // ("error sending request for url (...)") hides it
+                            // in the `source()` chain.
+                            res.map_err(|e| match e {
+                                internal::network::DownloadError::Timeout { secs } => {
+                                    crate::error::Error::DownloadTimedOut {
+                                        url: url_str.clone(),
+                                        timeout_secs: secs,
+                                    }
+                                }
+                                internal::network::DownloadError::Other(reason) => {
+                                    crate::error::Error::Custom(reason)
+                                }
+                            })?;
                             // A resumed download must reach the full size — a
                             // short 206 would leave a corrupt part that must
                             // not be promoted to cache.

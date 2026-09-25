@@ -407,6 +407,46 @@ impl std::fmt::Display for RangeError {
     }
 }
 
+/// Error from a single-stream download.
+///
+/// The timeout is a variant rather than text folded into the message:
+/// `reqwest`'s `Display` only renders `error sending request for url (...)`
+/// and keeps the reason (`operation timed out`) in its `source()` chain, so a
+/// caller that only sees the formatted string cannot tell a timeout from a
+/// connection failure. Classifying here lets the caller show a localized
+/// "timed out after Ns" instead of the opaque request error.
+#[derive(Debug, Clone)]
+pub enum DownloadError {
+    /// The configured request deadline (`RequestOptions::timeout_secs`)
+    /// elapsed, either before the response head or mid-body.
+    Timeout {
+        /// The deadline that elapsed, in seconds.
+        secs: u64,
+    },
+    /// Any other transport/HTTP/read/write failure, already formatted.
+    Other(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::Timeout { secs } => write!(f, "timed out after {secs}s"),
+            DownloadError::Other(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+/// Classify a `reqwest` error from a streaming download: timeouts become
+/// [`DownloadError::Timeout`] (the deadline is not visible in the message),
+/// every other failure keeps `prefix` and the error's own text.
+fn classify_download_error(e: &reqwest::Error, prefix: &str, timeout_secs: u64) -> DownloadError {
+    if e.is_timeout() {
+        DownloadError::Timeout { secs: timeout_secs }
+    } else {
+        DownloadError::Other(format!("{prefix}: {e}"))
+    }
+}
+
 /// An async download-progress callback: invoked with cumulative bytes
 /// written, returning a boxed future the caller awaits. Boxed (rather than
 /// `AsyncFnMut`, which is not dyn-compatible) so the [`Network`] trait can
@@ -443,13 +483,16 @@ pub trait Network: Send + Sync {
     /// Download a URL to `dest` in a streaming loop, reporting cumulative
     /// bytes written through `on_progress` (an async callback so callers can
     /// `send().await` on the event bus for backpressure — no dropped events).
+    ///
+    /// A failure is classified (timeout vs everything else) so the caller can
+    /// render the timeout with its deadline; see [`DownloadError`].
     async fn download_stream(
         &self,
         url: &str,
         opts: &RequestOptions,
         dest: &Path,
         on_progress: &mut ProgressCallback<'_>,
-    ) -> Result<(), String>;
+    ) -> Result<(), DownloadError>;
 }
 
 /// Default network implementation wrapping the free functions above.
@@ -524,8 +567,8 @@ impl Network for RealNetwork {
         opts: &RequestOptions,
         dest: &Path,
         on_progress: &mut ProgressCallback<'_>,
-    ) -> Result<(), String> {
-        let client = build_client(opts)?;
+    ) -> Result<(), DownloadError> {
+        let client = build_client(opts).map_err(DownloadError::Other)?;
         let mut req = apply_headers(client.get(url), opts);
         // Resume from `range_start` (byte 0 = fresh). The Range infra mirrors
         // the fragmented `range_get` path.
@@ -536,8 +579,10 @@ impl Network for RealNetwork {
         let resp = req
             .send()
             .await
-            .map_err(|e| format!("download failed: {e}"))?;
-        let resp = resp.error_for_status().map_err(|e| e.to_string())?;
+            .map_err(|e| classify_download_error(&e, "download failed", opts.timeout_secs))?;
+        let resp = resp
+            .error_for_status()
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
 
         // Resume only when the server honored the Range request (206). If it
         // ignored it and returned the whole body (200), rewrite from byte 0 —
@@ -552,16 +597,19 @@ impl Network for RealNetwork {
                 .truncate(true)
                 .open(dest)
         }
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| DownloadError::Other(e.to_string()))?;
 
         let mut stream = resp.bytes_stream();
         // Absolute progress: start from the resumed offset so the caller's
         // progress bar reflects the real total, not just the transferred tail.
         let mut dlnow = if resume { opts.range_start } else { 0 };
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("read failed: {e}"))?;
+            // A stalled transfer trips the same client deadline as a failed
+            // handshake, so it is classified with the same helper.
+            let chunk =
+                chunk.map_err(|e| classify_download_error(&e, "read failed", opts.timeout_secs))?;
             file.write_all(&chunk)
-                .map_err(|e| format!("write failed: {e}"))?;
+                .map_err(|e| DownloadError::Other(format!("write failed: {e}")))?;
             dlnow += chunk.len() as u64;
             on_progress(dlnow).await;
         }
@@ -610,6 +658,54 @@ mod tests {
             .await
             .expect("HTTPS request must succeed with the configured TLS backend");
         assert!(body.len() > 16, "unexpected body length: {}", body.len());
+    }
+
+    /// A loopback server that accepts the connection but never sends a byte
+    /// must be classified as [`DownloadError::Timeout`]. `reqwest`'s `Display`
+    /// only renders "error sending request for url (...)" and keeps the reason
+    /// (`operation timed out`) in its `source()` chain, so without the
+    /// classification the caller cannot tell a timeout from a connection
+    /// failure — this pins the classification the reported symptom was about.
+    #[tokio::test]
+    async fn download_stream_classifies_a_silent_server_as_a_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // Hold the connection open without answering until the client's
+            // deadline has elapsed (dropping it earlier would look like a
+            // closed connection, not a timeout).
+            std::thread::sleep(Duration::from_secs(3));
+            drop(stream);
+        });
+
+        let opts = RequestOptions {
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let dest = std::env::temp_dir().join(format!(
+            "hok_download_stream_timeout_{}.bin",
+            std::process::id()
+        ));
+        let mut on_progress =
+            |_done: u64| -> Pin<Box<dyn Future<Output = ()> + Send>> { Box::pin(async {}) };
+
+        let err = RealNetwork
+            .download_stream(
+                &format!("http://{addr}/app.bin"),
+                &opts,
+                &dest,
+                &mut on_progress,
+            )
+            .await
+            .expect_err("the silent server must make the request time out");
+        assert!(
+            matches!(err, DownloadError::Timeout { secs: 1 }),
+            "expected a typed timeout, got {err:?}"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        server.join().unwrap();
     }
 
     #[test]

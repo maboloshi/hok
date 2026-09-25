@@ -137,6 +137,20 @@ pub enum Error {
     #[error("{0}")]
     HashMismatch(HashMismatchContext),
 
+    /// A single-stream download exceeded its request deadline.
+    ///
+    /// Distinct from [`Error::Custom`] because the timeout has to be rendered
+    /// with its budget: `reqwest`'s request error says nothing about a timeout,
+    /// so the frontend can only tell the user `timed out after N seconds` from
+    /// this variant (`error.download_timeout`).
+    #[error("download '{url}' timed out after {timeout_secs}s")]
+    DownloadTimedOut {
+        /// The URL whose transfer did not finish in time.
+        url: String,
+        /// The request deadline that elapsed, in seconds.
+        timeout_secs: u64,
+    },
+
     /// Invalid cache file error
     #[error("error")]
     InvalidCacheFile { path: PathBuf },
@@ -257,6 +271,7 @@ impl Error {
             Error::InfraAlreadySet => "error.infra_already_set",
             Error::CancellationTokenAlreadySet => "error.cancellation_token_already_set",
             Error::HashMismatch(_) => "error.hash_mismatch",
+            Error::DownloadTimedOut { .. } => "error.download_timeout",
             Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
             Error::InvalidAnswer => "error.invalid_answer",
             Error::PackageNotFound(_) => "error.package_not_found",
@@ -397,6 +412,14 @@ mod tests {
             "error.custom"
         );
         assert_eq!(Error::InvalidAnswer.error_key(), "error.invalid_answer");
+        assert_eq!(
+            Error::DownloadTimedOut {
+                url: "https://e/x".into(),
+                timeout_secs: 120,
+            }
+            .error_key(),
+            "error.download_timeout"
+        );
         assert_eq!(
             Error::UserAgentAlreadySet.error_key(),
             "error.user_agent_already_set"

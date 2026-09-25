@@ -462,6 +462,7 @@ error:
   infra_already_set: "基础设施实现已设置"
   cancellation_token_already_set: "取消令牌已设置"
   hash_mismatch: "哈希不匹配"
+  download_timeout: "下载 '%{url}' 超时（%{secs} 秒）"
   invalid_cache_file: "无效的缓存文件"
   invalid_answer: "无效的回答"
   package_not_found: "找不到名为 '%{name}' 的软件包"

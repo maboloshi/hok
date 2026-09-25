@@ -107,7 +107,7 @@ pub fn mark_installed(
 use crate::error::{Error, Fallible};
 use crate::internal::git::{Git, ManifestDiffEntry};
 use crate::internal::network::{
-    HeadResult, Network, ProgressCallback, RangeError, RangeResponse, RequestOptions,
+    DownloadError, HeadResult, Network, ProgressCallback, RangeError, RangeResponse, RequestOptions,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -280,10 +280,10 @@ impl Network for FakeNetwork {
         opts: &RequestOptions,
         dest: &Path,
         on_progress: &mut ProgressCallback<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<(), DownloadError> {
         let body = self
             .body(url)
-            .ok_or_else(|| format!("no canned body for {url}"))?;
+            .ok_or_else(|| DownloadError::Other(format!("no canned body for {url}")))?;
         let resume = opts.range_start as usize;
         self.ranges.lock().unwrap().push(if resume > 0 {
             format!("bytes={resume}-")
@@ -304,9 +304,10 @@ impl Network for FakeNetwork {
             .create(true)
             .append(true)
             .open(dest)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
         use std::io::Write as _;
-        file.write_all(slice).map_err(|e| e.to_string())?;
+        file.write_all(slice)
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
         let total = dest.metadata().map(|m| m.len()).unwrap_or(0);
         on_progress(total).await;
         Ok(())

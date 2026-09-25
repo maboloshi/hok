@@ -114,6 +114,9 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::ExtractionFailed(reason) => {
             hok_i18n::t!("error.extraction_failed", reason = reason).to_string()
         }
+        libscoop::Error::DownloadTimedOut { url, timeout_secs } => {
+            hok_i18n::t!("error.download_timeout", url = url, secs = timeout_secs).to_string()
+        }
         _ => err.to_string(),
     }
 }
@@ -168,5 +171,29 @@ pub async fn create_app() -> i32 {
             report(&err);
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The timeout must reach the user with its budget: the raw `reqwest`
+    /// request error never mentions a timeout, so `translate_error` is what
+    /// turns the typed variant into the localized "timed out" line.
+    ///
+    /// The assertions hold in either locale (the URL and the seconds are
+    /// interpolated in both templates, and this process's locale is shared with
+    /// `i18n`'s tests, which select `en`/`zh` concurrently); the en/zh key
+    /// parity itself is covered by the `locales/{en,zh}.yml` consistency test.
+    #[test]
+    fn translate_error_renders_a_download_timeout_with_its_budget() {
+        let err = libscoop::Error::DownloadTimedOut {
+            url: "http://127.0.0.1:1/app.bin".to_owned(),
+            timeout_secs: 120,
+        };
+        let text = translate_error(&err);
+        assert!(text.contains("http://127.0.0.1:1/app.bin"), "{text}");
+        assert!(text.contains("120"), "{text}");
     }
 }
