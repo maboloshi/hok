@@ -37,7 +37,7 @@ detail:
   installing_psmodule: "installing psmodule: %{ctx}"
   psmodule_installed: "psmodule installed"
   removing_psmodule: "removing psmodule: %{ctx}"
-  loading_cache: "Loading %{filename} from cache."
+  loading_cache: "Loading %{name} %{version} from cache."
   verifying: "verifying"
   unlinking: "Unlinking %{path}"
   linking: "Linking %{from} => %{to}"

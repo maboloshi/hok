@@ -906,9 +906,16 @@ impl<'a> PackageSet<'a> {
             futures::stream::iter(package_caches.values().filter(|c| {
                 if reuse_cache && c.valid == CacheMaybeValid::Full {
                     if let Some(tx) = &emitter {
-                        for filename in c.inner.keys() {
-                            let _ = tx.try_send(Event::PackageCacheHit(filename.clone()));
-                        }
+                        // One event per package (not per cached file): the
+                        // frontend renders the readable identity, so a
+                        // multi-file package would otherwise repeat the same
+                        // line once per file.
+                        let package = c.package;
+                        let _ = tx.try_send(Event::PackageCacheHit {
+                            ident: package.ident(),
+                            name: package.name().to_owned(),
+                            version: package.version().to_owned(),
+                        });
                     }
                     false
                 } else {

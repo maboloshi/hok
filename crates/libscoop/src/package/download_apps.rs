@@ -309,6 +309,62 @@ mod tests {
         assert!(cache_files(&session).is_empty());
     }
 
+    /// A fully cached package is announced once per package, with its readable
+    /// identity — not once per cached file, and not the cache file name
+    /// (`<name>#<version>#<sha7><ext>`), which the frontend cannot interpret.
+    #[tokio::test]
+    async fn test_download_apps_reports_a_cache_hit_once_per_package() {
+        let data = b"cache-hit-identity".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_cache_hit_identity");
+        let session = crate::test_utils::test_session(&root);
+        let (a, b) = (
+            format!("http://{}/a.bin", server.addr),
+            format!("http://{}/b.bin", server.addr),
+        );
+        // Two files: the per-file emission this replaced would have announced
+        // the same package twice.
+        let json = format!(
+            r#"{{"version": "2.5", "url": ["{a}", "{b}"], "hash": ["{}", "{}"]}}"#,
+            sha256_hex(&data),
+            sha256_hex(&data)
+        );
+        let path = root.join("identityapp.json");
+        std::fs::write(&path, json).unwrap();
+        let query = path.to_str().unwrap();
+
+        // The receiver must be taken before the first run: the bounded channel
+        // fills up unattended and `try_send` then drops events silently.
+        let mut rx = session
+            .event_bus()
+            .receiver()
+            .expect("event bus must be free");
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[query], &opts).await.unwrap();
+        while rx.try_recv().is_ok() {}
+
+        download_apps(&session, &[query], &opts).await.unwrap();
+        server.shutdown();
+
+        let hits: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|ev| match ev {
+                Event::PackageCacheHit {
+                    ident,
+                    name,
+                    version,
+                } => Some((ident, name, version)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hits.len(), 1, "one event per cached package: {hits:?}");
+        assert_eq!(hits[0].1, "identityapp");
+        assert_eq!(hits[0].2, "2.5");
+        assert!(hits[0].0.ends_with("/identityapp"), "{:?}", hits[0]);
+    }
+
     /// The hard-failure path (install's default): a hash mismatch aborts the
     /// operation and still removes the corrupt file.
     #[tokio::test]

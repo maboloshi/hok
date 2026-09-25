@@ -245,8 +245,12 @@ impl EventHandler for ScoopHandler {
             }
 
             // --- Cache hit ---
-            Event::PackageCacheHit(filename) => {
-                output::status(hok_i18n::t!("detail.loading_cache", filename = filename));
+            Event::PackageCacheHit { name, version, .. } => {
+                output::status(hok_i18n::t!(
+                    "detail.loading_cache",
+                    name = name,
+                    version = version
+                ));
             }
 
             // --- Symlink operations ---

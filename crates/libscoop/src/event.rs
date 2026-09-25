@@ -370,8 +370,21 @@ pub enum Event {
     /// PowerShell script emitted a line on its error stream (or stderr).
     ScriptStderr(String),
 
-    /// A download was satisfied from local cache.
-    PackageCacheHit(String),
+    /// A package's download was satisfied from the local cache.
+    ///
+    /// Carries the package's readable identity, not the cache file name
+    /// (`<name>#<version>#<sha7><ext>`): the file name is an implementation
+    /// detail of the cache layout that the frontend must not decode. Emitted
+    /// once per fully cached package — a package with several files would
+    /// otherwise print the same line once per file.
+    PackageCacheHit {
+        /// The package identity, `bucket/name`.
+        ident: String,
+        /// The package name, e.g. `nodejs`.
+        name: String,
+        /// The package version, e.g. `22.9.0`.
+        version: String,
+    },
 
     /// A symlink/junction was removed.
     PackageSymlinkRemove(String),

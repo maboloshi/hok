@@ -157,11 +157,16 @@ pub fn run_event_loop(
                 // Cache hit while the aggregate bar is live: route it through the
                 // bar so indicatif draws it above the progress row instead of a
                 // plain println that would share (and corrupt) the bar line.
-                Event::PackageCacheHit(ref filename) => {
+                Event::PackageCacheHit {
+                    ref name,
+                    ref version,
+                    ..
+                } => {
                     if dlprogress.is_active() {
                         dlprogress.note(output::status_line(hok_i18n::t!(
                             "detail.loading_cache",
-                            filename = filename
+                            name = name,
+                            version = version
                         )));
                         continue;
                     }
