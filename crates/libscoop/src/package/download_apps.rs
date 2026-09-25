@@ -179,7 +179,11 @@ mod tests {
     /// Files in the session cache dir, sorted by name.
     fn cache_files(session: &Session) -> Vec<std::path::PathBuf> {
         let config = session.config();
-        let dir = config.cache_path();
+        cache_files_in(config.cache_path())
+    }
+
+    /// Files directly inside `dir`, sorted by name.
+    fn cache_files_in(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .map(|rd| {
                 rd.filter_map(|e| e.ok())
@@ -190,6 +194,23 @@ mod tests {
             .unwrap_or_default();
         files.sort();
         files
+    }
+
+    /// The *finalized* cache file for `prefix` among `files`, if present.
+    ///
+    /// A `.download` temp file does not count: it exists from the first byte
+    /// and is only renamed once the file itself is complete.
+    fn finalized_cache_file<'a>(
+        files: &'a [std::path::PathBuf],
+        prefix: &str,
+    ) -> Option<&'a std::path::PathBuf> {
+        files.iter().find(|path| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            name.starts_with(prefix) && !name.ends_with(".download")
+        })
     }
     #[tokio::test]
     async fn test_download_apps_local_manifest() {
@@ -219,6 +240,146 @@ mod tests {
                 .starts_with("testapp#1.0#")
         );
         assert_eq!(std::fs::read(&files[0]).unwrap(), data);
+    }
+
+    /// A package whose download finishes must be finalized (moved to its
+    /// cache name) immediately, not once every sibling in the batch finished:
+    /// upstream moves each file as soon as its own transfer completes
+    /// (`lib/download.ps1:58-59`).
+    #[tokio::test]
+    async fn test_download_apps_finalizes_completed_package_immediately() {
+        let fast_data = b"download-apps-fast".to_vec();
+        let slow_data = b"download-apps-slow".to_vec();
+        let mut fast = spawn_range_server(fast_data.clone(), 0, 0, false, false, None);
+        // The slow server withholds its body long enough that the fast
+        // package must become observable in the cache while it is in flight.
+        let mut slow = spawn_range_server_delayed(
+            slow_data.clone(),
+            0,
+            0,
+            false,
+            false,
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let root = crate::test_utils::tmpdir("download_apps_finalize_each");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = session.config().cache_path().to_path_buf();
+
+        let fast_manifest = write_manifest(
+            &root,
+            "fastapp",
+            "1.0",
+            &format!("http://{}/app.bin", fast.addr),
+            &sha256_hex(&fast_data),
+        );
+        let slow_manifest = write_manifest(
+            &root,
+            "slowapp",
+            "1.0",
+            &format!("http://{}/app.bin", slow.addr),
+            &sha256_hex(&slow_data),
+        );
+        let queries = [
+            fast_manifest.to_string_lossy().into_owned(),
+            slow_manifest.to_string_lossy().into_owned(),
+        ];
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        let refs: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
+        // Not `tokio::spawn`: `Package` is not `Send` (it holds a `OnceCell`),
+        // so the batch future is polled in place and dropped to cancel it.
+        let mut download = std::pin::pin!(download_apps(&session, &refs, &opts));
+
+        // The fast package must be finalized while the slow one has not
+        // received a single body byte yet (both download concurrently, `jobs`
+        // defaults to 4). Only the *finalized* file counts — the `.download`
+        // temp file exists from the first byte either way.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut files = cache_files_in(&cache_dir);
+        let mut finished_early = false;
+        while finalized_cache_file(&files, "fastapp#").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fast package was never finalized: {:?}",
+                files
+            );
+            tokio::select! {
+                biased;
+                _ = &mut download => {
+                    // The whole batch finished; the fast package was only
+                    // finalized together with (or after) the slow one.
+                    finished_early = true;
+                    break;
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
+                    files = cache_files_in(&cache_dir);
+                }
+            }
+        }
+        assert!(
+            !finished_early,
+            "the fast package was not finalized before the batch finished"
+        );
+        assert!(
+            finalized_cache_file(&files, "slowapp#").is_none(),
+            "the slow package must still be downloading: {:?}",
+            files
+        );
+        let fast_file = finalized_cache_file(&files, "fastapp#").unwrap();
+        assert_eq!(std::fs::read(fast_file).unwrap(), fast_data);
+
+        // The batch is left unpolled from here: it is cancelled when the
+        // pinned future drops at the end of the test, so the slow download
+        // never completes (its server withholds the body for 30 s).
+        fast.shutdown();
+        slow.shutdown();
+    }
+
+    /// Fragmented (range-parallel) downloads must reassemble each file into
+    /// its cache name as soon as that file's own chunks are complete, leaving
+    /// no `.parts` directory behind.
+    #[tokio::test]
+    async fn test_download_apps_reassembles_fragmented_file() {
+        let data: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_fragments");
+        let session = crate::test_utils::test_session(&root);
+        // Force the fragmented path for this small file.
+        crate::config::set(&session, "aria2-min-split-size", "1k").unwrap();
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "fragapp", "1.0", &url, &sha256_hex(&data));
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+            .await
+            .unwrap();
+        server.shutdown();
+
+        let files = cache_files(&session);
+        assert_eq!(files.len(), 1, "cache files: {:?}", files);
+        let final_file = finalized_cache_file(&files, "fragapp#")
+            .unwrap_or_else(|| panic!("file was not reassembled: {:?}", files));
+        assert_eq!(std::fs::read(final_file).unwrap(), data);
+        // The parts were consumed, not left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(session.config().cache_path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".parts"))
+            .collect();
+        assert!(leftovers.is_empty(), "leftover parts: {:?}", leftovers);
+        assert!(
+            server.ranges.lock().unwrap().len() > 1,
+            "the file must have been fetched in parallel chunks: {:?}",
+            server.ranges.lock().unwrap()
+        );
     }
 
     #[tokio::test]

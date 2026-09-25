@@ -401,6 +401,33 @@ pub(crate) mod test_server {
         truncate_first: bool,
         fail_range: Option<(usize, usize, u32)>,
     ) -> RangeServer {
+        spawn_range_server_delayed(
+            data,
+            fail_first,
+            fail_status,
+            ignore_range,
+            truncate_first,
+            fail_range,
+            Duration::ZERO,
+        )
+    }
+
+    /// [`spawn_range_server`] that keeps every GET response `delay` before
+    /// answering (HEAD size probes still answer immediately), so a test can
+    /// observe another package's cache state while this one is in flight.
+    ///
+    /// The wait stays responsive to [`RangeServer::shutdown`] (a plain sleep
+    /// would hold the join).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_range_server_delayed(
+        data: Vec<u8>,
+        fail_first: u32,
+        fail_status: u16,
+        ignore_range: bool,
+        truncate_first: bool,
+        fail_range: Option<(usize, usize, u32)>,
+        delay: Duration,
+    ) -> RangeServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -450,6 +477,15 @@ pub(crate) mod test_server {
                         let n = count_h.fetch_add(1, Ordering::SeqCst) + 1;
                         let range = extract_range(&head);
                         ranges_h.lock().unwrap().push(range.clone());
+
+                        // Withhold the body when a delay was requested (see
+                        // `spawn_range_server_delayed`), stopping early on
+                        // shutdown so the server thread can still be joined.
+                        let deadline = std::time::Instant::now() + delay;
+                        while std::time::Instant::now() < deadline && !stop_h.load(Ordering::SeqCst)
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
 
                         if n <= fail_first {
                             responses_h.lock().unwrap().push(fail_status);

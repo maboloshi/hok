@@ -98,24 +98,70 @@ impl PackageCache<'_> {
     }
 }
 
-/// Result of one package's concurrent download.
-struct PkgDownloadOutcome {
-    /// Pending simple-download renames `(tmp, path, ident)`.
-    filepaths: Vec<(PathBuf, PathBuf, String)>,
-    /// Fragmented files to reassemble: `final_path -> (part_paths, ident)`.
-    chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)>,
-    /// The package ident when it failed (only under IgnoreFailures).
-    failed_ident: Option<String>,
+/// The final step that turns a file whose bytes have all landed into its
+/// cache entry.
+///
+/// Applied by [`download_one_package`] as soon as that *file* is complete —
+/// not after the whole batch — so a package that finishes early is already
+/// usable while sibling packages are still downloading (upstream moves every
+/// file to its cache name right after its own transfer, `lib/download.ps1:58-59`).
+enum FileFinalize {
+    /// Promote a fully downloaded temp file to its cache name.
+    Rename { tmp: PathBuf, path: PathBuf },
+    /// Reassemble a fragmented file's parts into its cache name.
+    Reassemble { path: PathBuf, parts: Vec<PathBuf> },
+}
+
+impl FileFinalize {
+    /// The upstream-equivalent failure message key for this step.
+    fn error_key(&self) -> &'static str {
+        match self {
+            FileFinalize::Rename { .. } => "cmd.failed_move_download",
+            FileFinalize::Reassemble { .. } => "cmd.failed_reassemble",
+        }
+    }
+
+    /// Perform the step.
+    fn apply(self) -> Fallible<()> {
+        match self {
+            FileFinalize::Rename { tmp, path } => Ok(std::fs::rename(tmp, path)?),
+            FileFinalize::Reassemble { path, parts } => reassemble_fragments(&path, &parts),
+        }
+    }
+}
+
+/// Reassemble a fragmented download's part files into `final_path` and drop
+/// the `.parts` directory.
+fn reassemble_fragments(final_path: &Path, part_paths: &[PathBuf]) -> Fallible<()> {
+    let _ = std::fs::remove_file(final_path);
+    let mut dest = File::create(final_path)?;
+    for part in part_paths {
+        let mut src = File::open(part)?;
+        std::io::copy(&mut src, &mut dest)?;
+        drop(src);
+        let _ = std::fs::remove_file(part);
+    }
+    if let Some(parent) = final_path.parent() {
+        let part_dir = parent.join(format!(
+            "{}.parts",
+            final_path.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_dir(&part_dir);
+    }
+    Ok(())
 }
 
 /// Download the files of a single package. Runs on a concurrent task so
 /// multiple packages download in parallel (cross-package concurrency).
 ///
-/// The body mirrors the per-package branch of the former sequential loop in
-/// [`PackageSet::download`]: fragmented or single-stream download per file,
-/// reporting progress, honouring reuse-cache and the cancellation token.
+/// Per file: fragmented or single-stream download, then finalization into the
+/// cache name (rename / reassemble) as soon as that file's bytes have landed,
+/// reporting progress and honouring reuse-cache and the cancellation token.
 /// Each package writes only its own cache files, so concurrent tasks never
 /// collide.
+///
+/// Returns the package ident when the package failed under IgnoreFailures.
+///
 #[allow(clippy::too_many_arguments)]
 async fn download_one_package<'a>(
     session: &'a Session,
@@ -127,10 +173,7 @@ async fn download_one_package<'a>(
     fragmentation_enabled: bool,
     chunk_count: u64,
     min_split_size: u64,
-) -> Fallible<PkgDownloadOutcome> {
-    let mut filepaths: Vec<(PathBuf, PathBuf, String)> = vec![];
-    let mut chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)> = HashMap::new();
-
+) -> Fallible<Option<String>> {
     let cookie = cache.package.cookie().unwrap_or_default();
     let ident = cache.package.ident();
     let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
@@ -147,6 +190,9 @@ async fn download_one_package<'a>(
     // A failure on any file marks the whole package as failed so the rest of
     // the transaction can still be committed (IgnoreFailures).
     let mut pkg_error: Option<crate::Error> = None;
+    // The package ident, recorded when a per-file finalization failed under
+    // IgnoreFailures (the download of the remaining files continues).
+    let mut failed_ident: Option<String> = None;
     let emitter = session.emitter();
 
     // Total bytes the package must fetch (all files that are not already
@@ -188,7 +234,7 @@ async fn download_one_package<'a>(
             ..request.options(120)
         };
 
-        let result: Fallible<()> = async {
+        let result: Fallible<Option<FileFinalize>> = async {
             if use_fragments {
                 let path = cache_root.join(filename);
                 let part_dir = cache_root.join(format!("{}.parts", filename));
@@ -247,7 +293,10 @@ async fn download_one_package<'a>(
                 .map_err(crate::error::Error::Custom)?;
 
                 pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
-                chunk_file_map.insert(path, (part_paths, ident.clone()));
+                Ok(Some(FileFinalize::Reassemble {
+                    path,
+                    parts: part_paths,
+                }))
             } else {
                 // Single download (with resume for known-size files).
                 let path = cache_root.join(filename);
@@ -268,7 +317,7 @@ async fn download_one_package<'a>(
                 // A `.download` already at the full size needs no network
                 // transfer — promote it straight to the cache.
                 if known_total && existing_len == dlinfo.remote_size {
-                    filepaths.push((tmp, path, ident.clone()));
+                    Ok(Some(FileFinalize::Rename { tmp, path }))
                 } else {
                     // Fresh start: drop any stale partial.
                     if resume_from == 0 {
@@ -363,16 +412,36 @@ async fn download_one_package<'a>(
                     }
 
                     pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
-                    filepaths.push((tmp, path, ident.clone()));
+                    Ok(Some(FileFinalize::Rename { tmp, path }))
                 }
             }
-            Ok(())
         }
         .await;
 
-        if let Err(e) = result {
-            pkg_error = Some(e);
-            break;
+        let finalize = match result {
+            Ok(finalize) => finalize,
+            Err(e) => {
+                pkg_error = Some(e);
+                break;
+            }
+        };
+
+        // Finalize this file now that its own bytes have all landed, so an
+        // early package is complete while its siblings still download.
+        if let Some(finalize) = finalize {
+            let error_key = finalize.error_key();
+            if let Err(e) = finalize.apply() {
+                if ignore_failures {
+                    session.output().error(hok_i18n::t!(
+                        error_key,
+                        name = ident.clone(),
+                        error = e
+                    ));
+                    failed_ident = Some(ident.clone());
+                } else {
+                    return Err(e);
+                }
+            }
         }
     }
 
@@ -380,23 +449,15 @@ async fn download_one_package<'a>(
         if ignore_failures {
             session.output().error(hok_i18n::t!(
                 "cmd.failed_download",
-                name = ident,
+                name = ident.clone(),
                 error = err
             ));
-            return Ok(PkgDownloadOutcome {
-                filepaths,
-                chunk_file_map,
-                failed_ident: Some(ident),
-            });
+            return Ok(Some(ident));
         }
         return Err(err);
     }
 
-    Ok(PkgDownloadOutcome {
-        filepaths,
-        chunk_file_map,
-        failed_ident: None,
-    })
+    Ok(failed_ident)
 }
 
 impl<'a> PackageSet<'a> {
@@ -528,18 +589,17 @@ impl<'a> PackageSet<'a> {
         // Read caches immutably: the download phase never mutates them.
         let package_caches = self.caches.get().unwrap();
 
-        let mut chunk_file_map: HashMap<PathBuf, (Vec<PathBuf>, String)> = HashMap::new();
-        let mut filepaths: Vec<(PathBuf, PathBuf, String)> = vec![];
         let mut failed: Vec<String> = vec![];
 
         internal::fs::ensure_dir(&cache_root)?;
 
         // Concurrent cross-package download: each package's files are fetched
-        // on its own task, bounded by `jobs`. Every package writes only its
-        // own cache files (names embed `name#version#`), so concurrent tasks
-        // never collide. Fully-cached packages are skipped (their cache-hit
-        // events are still emitted) and packages whose download fails are
-        // reported per-package, matching the sequential semantics.
+        // on its own task, bounded by `jobs`, and each file is finalized to its
+        // cache name as soon as its own bytes have landed. Every package writes
+        // only its own cache files (names embed `name#version#`), so concurrent
+        // tasks never collide. Fully-cached packages are skipped (their
+        // cache-hit events are still emitted) and packages whose download fails
+        // are reported per-package, matching the sequential semantics.
         let jobs = jobs.max(1);
 
         // Tell the frontend which packages are about to be downloaded and their
@@ -569,7 +629,7 @@ impl<'a> PackageSet<'a> {
         // forever (a silent hang, not an error). `jobs` was normalized to >= 1
         // above; this pins that normalization here, where the cap is used.
         debug_assert!(jobs >= 1, "buffer_unordered capacity must be >= 1");
-        let outcomes: Vec<Fallible<PkgDownloadOutcome>> =
+        let outcomes: Vec<Fallible<Option<String>>> =
             futures::stream::iter(package_caches.values().filter(|c| {
                 if reuse_cache && c.valid == CacheMaybeValid::Full {
                     if let Some(tx) = &emitter {
@@ -599,62 +659,13 @@ impl<'a> PackageSet<'a> {
             .collect()
             .await;
 
-        // Merge the per-package outcomes into the shared accumulators.
+        // Merge the per-package outcomes: everything already finalized to its
+        // cache name inside its own task; only IgnoreFailures' failed idents
+        // are left to collect. A hard (non-ignore) failure aborts here — the
+        // packages that finished earlier keep their finalized cache files.
         for outcome in outcomes {
-            let outcome = outcome?; // a hard (non-ignore) failure aborts
-            filepaths.extend(outcome.filepaths);
-            chunk_file_map.extend(outcome.chunk_file_map);
-            if let Some(ident) = outcome.failed_ident {
+            if let Some(ident) = outcome? {
                 failed.push(ident);
-            }
-        }
-        // Reassemble fragmented files
-        for (final_path, (part_paths, ident)) in chunk_file_map.iter() {
-            let reassembled = (|| -> Fallible<()> {
-                let _ = std::fs::remove_file(final_path);
-                let mut dest = File::create(final_path)?;
-                for part in part_paths {
-                    let mut src = File::open(part)?;
-                    std::io::copy(&mut src, &mut dest)?;
-                    drop(src);
-                    let _ = std::fs::remove_file(part);
-                }
-                if let Some(parent) = final_path.parent() {
-                    let part_dir = parent.join(format!(
-                        "{}.parts",
-                        final_path.file_name().unwrap().to_string_lossy()
-                    ));
-                    let _ = std::fs::remove_dir(&part_dir);
-                }
-                Ok(())
-            })();
-            if let Err(e) = reassembled {
-                if self.ignore_failures {
-                    self.session.output().error(hok_i18n::t!(
-                        "cmd.failed_reassemble",
-                        name = ident,
-                        error = e
-                    ));
-                    failed.push(ident.clone());
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-
-        // Rename simple downloads
-        for (tmp, path, ident) in filepaths.iter() {
-            if let Err(e) = std::fs::rename(tmp, path) {
-                if self.ignore_failures {
-                    self.session.output().error(hok_i18n::t!(
-                        "cmd.failed_move_download",
-                        name = ident,
-                        error = e
-                    ));
-                    failed.push(ident.clone());
-                } else {
-                    return Err(e.into());
-                }
             }
         }
 
