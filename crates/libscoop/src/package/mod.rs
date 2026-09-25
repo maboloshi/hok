@@ -589,6 +589,22 @@ impl HashMismatchContext {
     pub fn actual(&self) -> &str {
         self.actual.as_str()
     }
+
+    /// The user-facing, localized form of this mismatch.
+    ///
+    /// [`Display`][fmt::Display] stays the stable English block for library
+    /// consumers and logs; every user-visible path renders this instead —
+    /// `translate_error` for the propagated `Error::HashMismatch`, and the
+    /// `cmd.failed_verify` messages that embed the error text.
+    pub fn localized(&self) -> String {
+        hok_i18n::t!(
+            "error.hash_mismatch_detail",
+            name = self.name(),
+            url = self.url(),
+            expected = self.expected(),
+            actual = self.actual()
+        )
+    }
 }
 
 /// The cache file name of one download URL: `<name>#<version>#<hash><ext>`.

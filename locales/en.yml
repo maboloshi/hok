@@ -462,6 +462,7 @@ error:
   infra_already_set: "Infra implementation already set"
   cancellation_token_already_set: "Cancellation token already set"
   hash_mismatch: "Hash mismatch"
+  hash_mismatch_detail: "Hash mismatch for package '%{name}':\n     Url: %{url}\nExpected: %{expected}\n  Actual: %{actual}"
   download_timeout: "download '%{url}' timed out after %{secs}s"
   invalid_cache_file: "Invalid cache file"
   invalid_answer: "invalid answer"

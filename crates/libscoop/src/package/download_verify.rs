@@ -84,6 +84,19 @@ pub(crate) fn verify_one_file(
 
 // ─── Download verification & standalone download API ───────────────────────
 
+/// User-facing text for a failed verification.
+///
+/// A hash mismatch carries structured context, so it is rendered through the
+/// localized template (`error.hash_mismatch_detail`); any other failure — a
+/// hash-algorithm or file-open error — keeps its own text. Both the inline and
+/// the batched tail path call this, so the two report identically.
+pub(crate) fn verify_error_message(e: &Error) -> String {
+    match e {
+        Error::HashMismatch(ctx) => ctx.localized(),
+        other => other.to_string(),
+    }
+}
+
 /// Verify downloaded files against the manifest hashes (upstream
 /// `check_hash` in lib/download.ps1).
 ///
@@ -157,7 +170,7 @@ pub(crate) fn verify_downloads(
                 session.output().error(hok_i18n::t!(
                     "cmd.failed_verify",
                     name = pkg.name(),
-                    error = e
+                    error = verify_error_message(&e)
                 ));
             } else {
                 return Err(e);

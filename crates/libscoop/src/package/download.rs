@@ -306,7 +306,7 @@ fn verify_inline_file(
             state.errors.push(hok_i18n::t!(
                 "cmd.failed_verify",
                 name = package.name(),
-                error = e
+                error = super::download_verify::verify_error_message(&e)
             ));
             state.failed = Some(package.ident());
         }

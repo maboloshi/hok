@@ -117,6 +117,10 @@ fn translate_error(err: &libscoop::Error) -> String {
         libscoop::Error::DownloadTimedOut { url, timeout_secs } => {
             hok_i18n::t!("error.download_timeout", url = url, secs = timeout_secs).to_string()
         }
+        // The mismatch's Display is the stable English block (library-facing);
+        // the localized block lives with the context, so every user-visible
+        // path (here and `cmd.failed_verify`) renders the same translation.
+        libscoop::Error::HashMismatch(ctx) => ctx.localized(),
         _ => err.to_string(),
     }
 }
@@ -195,5 +199,23 @@ mod tests {
         let text = translate_error(&err);
         assert!(text.contains("http://127.0.0.1:1/app.bin"), "{text}");
         assert!(text.contains("120"), "{text}");
+    }
+
+    /// A hash mismatch must not fall through to the context's English
+    /// `Display`: `translate_error` renders the localized block, and the four
+    /// fields have to survive the template substitution (a renamed placeholder
+    /// would silently render an empty value).
+    #[test]
+    fn translate_error_renders_a_localized_hash_mismatch() {
+        let err = libscoop::Error::HashMismatch(libscoop::package::HashMismatchContext::new(
+            "7zip".to_owned(),
+            "https://example.com/7zip.7z".to_owned(),
+            "abc123".to_owned(),
+            "def456".to_owned(),
+        ));
+        let text = translate_error(&err);
+        for field in ["7zip", "https://example.com/7zip.7z", "abc123", "def456"] {
+            assert!(text.contains(field), "{field} missing from: {text}");
+        }
     }
 }
