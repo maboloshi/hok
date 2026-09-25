@@ -339,6 +339,166 @@ mod tests {
         slow.shutdown();
     }
 
+    /// Inline verification: a corrupt file is removed as soon as its own
+    /// package's check runs — while the sibling package's download is still in
+    /// flight. The batched pass could only ever have removed it after every
+    /// download finished, which the delayed sibling server rules out.
+    #[tokio::test]
+    async fn test_download_apps_verifies_while_sibling_downloads() {
+        use crate::package::download::VerifyState;
+
+        let fast_data = b"inline-verify-fast".to_vec();
+        let slow_data = b"inline-verify-slow".to_vec();
+        let mut fast = spawn_range_server(fast_data.clone(), 0, 0, false, false, None);
+        let mut slow = spawn_range_server_delayed(
+            slow_data.clone(),
+            0,
+            0,
+            false,
+            false,
+            None,
+            std::time::Duration::from_secs(30),
+        );
+        let root = crate::test_utils::tmpdir("download_apps_inline_verify");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = session.config().cache_path().to_path_buf();
+
+        // Wrong hash on purpose: the inline check must fail and remove it.
+        let bad = write_manifest(
+            &root,
+            "badfast",
+            "1.0",
+            &format!("http://{}/app.bin", fast.addr),
+            &"0".repeat(64),
+        );
+        let good = write_manifest(
+            &root,
+            "slowapp",
+            "1.0",
+            &format!("http://{}/app.bin", slow.addr),
+            &sha256_hex(&slow_data),
+        );
+        let queries = [
+            bad.to_string_lossy().into_owned(),
+            good.to_string_lossy().into_owned(),
+        ];
+
+        let mut rx = session
+            .event_bus()
+            .receiver()
+            .expect("event bus must be free");
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        let refs: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
+        let mut download = std::pin::pin!(download_apps(&session, &refs, &opts));
+
+        // Wait for the failure event itself: it has to arrive before the
+        // sibling's download ends, otherwise verification only ran in a batch.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            tokio::select! {
+                biased;
+                ev = rx.recv() => match ev {
+                    Some(Event::PackageVerifyProgress(ctx))
+                        if ctx.ident.ends_with("/badfast")
+                            && ctx.state == VerifyState::Failed =>
+                    {
+                        // The file is removed before the event is emitted.
+                        let files = cache_files_in(&cache_dir);
+                        assert!(
+                            finalized_cache_file(&files, "badfast#").is_none(),
+                            "the corrupt file must be gone mid-flight: {files:?}"
+                        );
+                        assert!(
+                            finalized_cache_file(&files, "slowapp#").is_none(),
+                            "the sibling package must still be downloading: {files:?}"
+                        );
+                        break;
+                    }
+                    Some(_) => {}
+                    None => panic!("event bus closed before the verify event"),
+                },
+                _ = &mut download => {
+                    panic!("the batch finished before inline verification")
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    panic!("no inline verification event arrived")
+                }
+            }
+        }
+
+        // The batch is left unpolled from here and cancelled when the pinned
+        // future drops at the end of the test — the slow server never answers.
+        fast.shutdown();
+        slow.shutdown();
+    }
+
+    /// A fully cached package never reaches a download task, so the batched
+    /// tail pass must still catch a corrupt cache file on a cache hit.
+    #[tokio::test]
+    async fn test_download_apps_verifies_cache_hit_on_the_tail_pass() {
+        let data = b"cache-hit-verify".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_cache_hit_verify");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        let manifest = write_manifest(&root, "hitapp", "1.0", &url, &sha256_hex(&data));
+        let manifest_str = manifest.to_string_lossy().into_owned();
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        // Download it once...
+        download_apps(&session, &[&manifest_str], &opts)
+            .await
+            .unwrap();
+        let files = cache_files(&session);
+        assert_eq!(files.len(), 1, "cache files: {files:?}");
+
+        // ...then corrupt it in place with the same length, so the next run
+        // still sees a complete (and therefore cached) file.
+        std::fs::write(&files[0], vec![b'X'; data.len()]).unwrap();
+        download_apps(&session, &[&manifest_str], &opts)
+            .await
+            .unwrap();
+        server.shutdown();
+
+        assert!(
+            cache_files(&session).is_empty(),
+            "a corrupt cache file must be removed on a cache hit"
+        );
+    }
+
+    /// Nightly packages are never hashed (upstream skips them entirely), so a
+    /// wrong manifest hash must not cost a nightly download its file.
+    #[tokio::test]
+    async fn test_download_apps_skips_hash_check_for_nightly() {
+        let data = b"nightly-verify-skip".to_vec();
+        let mut server = spawn_range_server(data.clone(), 0, 0, false, false, None);
+        let root = crate::test_utils::tmpdir("download_apps_nightly_skip");
+        let session = crate::test_utils::test_session(&root);
+        let url = format!("http://{}/app.bin", server.addr);
+        // Wrong hash on purpose — nightly is never verified anyway.
+        let manifest = write_manifest(&root, "nightapp", "nightly", &url, &"0".repeat(64));
+        let manifest_str = manifest.to_string_lossy().into_owned();
+
+        let opts = DownloadOptions {
+            force: false,
+            check_hash: true,
+        };
+        download_apps(&session, &[&manifest_str], &opts)
+            .await
+            .unwrap();
+        server.shutdown();
+
+        let files = cache_files(&session);
+        assert_eq!(files.len(), 1, "nightly file kept: {files:?}");
+        assert_eq!(std::fs::read(&files[0]).unwrap(), data);
+    }
+
     /// Fragmented (range-parallel) downloads must reassemble each file into
     /// its cache name as soon as that file's own chunks are complete, leaving
     /// no `.parts` directory behind.

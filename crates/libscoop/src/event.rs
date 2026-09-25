@@ -40,7 +40,10 @@ use tokio::sync::mpsc;
 use crate::{
     bucket::BucketUpdateProgressContext,
     constant::EVENT_BUS_CAPACITY,
-    package::{download::PackageDownloadProgressContext, sync::Transaction},
+    package::{
+        download::{PackageDownloadProgressContext, PackageVerifyProgressContext},
+        sync::Transaction,
+    },
 };
 
 /// Event bus for event transmission.
@@ -213,10 +216,20 @@ pub enum Event {
     PackageDownloadInfo {
         /// (ident, total_bytes_to_download) for each package being fetched.
         packages: Vec<(String, u64)>,
+        /// How many of their files will be hashed inline — the `校验 n/m`
+        /// denominator of that same line. 0 when hash checking is skipped.
+        verify_files: u32,
     },
 
     /// Package download has finished.
     PackageDownloadDone,
+
+    /// Inline verification advanced for one package.
+    ///
+    /// Emitted while the download bar is live (each file is hashed as soon as
+    /// it lands), so the frontend can fold the verification state into the
+    /// single download line instead of printing a status line of its own.
+    PackageVerifyProgress(PackageVerifyProgressContext),
 
     /// Package extraction has started.
     PackageExtractStart(String),

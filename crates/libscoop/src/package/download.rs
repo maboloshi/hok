@@ -17,7 +17,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -28,7 +28,7 @@ use futures::StreamExt;
 use crate::network::{HeaderProfile, ScoopRequest};
 use crate::{Event, Session, error::Fallible, internal};
 
-use super::Package;
+use super::{HashString, Package};
 
 pub use super::download_apps::{DownloadOptions, download_apps};
 use super::download_fragmented::download_fragmented;
@@ -52,6 +52,8 @@ pub struct PackageSet<'a> {
     reuse_cache: bool,
     /// Skip packages whose download fails instead of aborting the operation.
     ignore_failures: bool,
+    /// Skip the inline hash check (`-s`/`skip_hash_check`).
+    skip_hash_check: bool,
 }
 
 struct FileDownloadInfo<'a> {
@@ -151,16 +153,192 @@ fn reassemble_fragments(final_path: &Path, part_paths: &[PathBuf]) -> Fallible<(
     Ok(())
 }
 
+// ─── Inline verification ────────────────────────────────────────────────────
+
+/// State of one package's inline verification, as seen by the frontend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifyState {
+    /// Its files are being hashed right now (nothing failed so far).
+    Checking,
+    /// Every hashable file of the package matched its manifest hash.
+    Passed,
+    /// A file failed verification (the corrupt cache file was removed).
+    Failed,
+}
+
+/// Progress context for the inline verification of one package.
+#[derive(Clone, Debug)]
+pub struct PackageVerifyProgressContext {
+    /// `bucket/name` whose verification state changed.
+    pub ident: String,
+    /// The package's new state.
+    pub state: VerifyState,
+    /// Files hashed so far across the batch (passed + failed).
+    pub done: u32,
+    /// Total files this batch hashes inline (0 when verification is off).
+    pub total: u32,
+}
+
+/// What a package task must do with the files it puts in the cache.
+///
+/// Shared by every concurrent package task: `total` is the batch-wide file
+/// count the single download line shows as `校验 n/m`, and `done` is the
+/// batch-wide counter those tasks advance together.
+struct VerifyPlan {
+    /// `false` when the caller skipped hash checks (`-s`/`skip_hash_check`).
+    enabled: bool,
+    /// Batch-wide number of files that will be hashed inline.
+    total: u32,
+    /// Files hashed so far across the batch.
+    done: Arc<AtomicU32>,
+}
+
+impl VerifyPlan {
+    /// Report a package's state to the frontend (no-op without an event bus).
+    fn report(&self, session: &Session, package: &Package, state: VerifyState) {
+        let Some(tx) = session.emitter() else {
+            return;
+        };
+        let _ = tx.try_send(Event::PackageVerifyProgress(PackageVerifyProgressContext {
+            ident: package.ident(),
+            state,
+            done: self.done.load(Ordering::Relaxed),
+            total: self.total,
+        }));
+    }
+}
+
+/// Mutable state of one package's inline verification.
+#[derive(Default)]
+struct PkgVerifyState {
+    /// The ident once any file failed (IgnoreFailures) — the download failure
+    /// path writes the same field, so a package is reported at most once.
+    failed: Option<String>,
+    /// `cmd.failed_verify` messages, deferred until the download bar closes
+    /// (printing them while it is live would corrupt its row).
+    errors: Vec<String>,
+    /// Files of this package hashed so far.
+    done: usize,
+    /// Files of this package that will be hashed (`0` for nightly packages).
+    verifiable: usize,
+}
+
+/// One package's contribution to the batch outcome.
+struct PkgOutcome {
+    /// The ident when the package failed under IgnoreFailures.
+    failed_ident: Option<String>,
+    /// `cmd.failed_verify` messages collected inline, to be printed only once
+    /// the download bar has closed.
+    verify_errors: Vec<String>,
+}
+
+/// Result of [`PackageSet::download`].
+#[derive(Debug, Default)]
+pub struct DownloadOutcome {
+    /// Idents (`bucket/name`) whose download or inline verification failed.
+    /// Only populated when IgnoreFailures is enabled.
+    pub failed: Vec<String>,
+    /// Idents whose files were verified while downloading — the batched tail
+    /// verification must not hash them a second time.
+    pub verified: Vec<String>,
+    /// Deferred `cmd.failed_verify` messages, printed after the bar closes.
+    pub verify_errors: Vec<String>,
+}
+
+/// Number of files of `pkg` that will actually be hashed.
+///
+/// Skips the empty hashes upstream also skips (a warning is raised per file)
+/// and nightly packages, which upstream never verifies.
+fn verifiable_files(pkg: &Package) -> usize {
+    if pkg.version() == "nightly" {
+        return 0;
+    }
+    pkg.download_hashes()
+        .iter()
+        .filter(|h| !matches!(h, HashString::Empty))
+        .count()
+}
+
+/// Hash one of a package's cache files and fold the result into the batch and
+/// package counters, emitting [`Event::PackageVerifyProgress`].
+///
+/// Under IgnoreFailures a mismatch is recorded (message + failed ident) and the
+/// caller keeps going with the package's remaining files, mirroring upstream's
+/// `continue` after a failed hash check; otherwise the mismatch propagates as a
+/// hard error. Nightly packages, empty hashes and a disabled check are handled
+/// by [`super::download_verify::verify_one_file`] / the guards here.
+#[allow(clippy::too_many_arguments)]
+fn verify_inline_file(
+    session: &Session,
+    package: &Package,
+    filename: &str,
+    path: &Path,
+    plan: &VerifyPlan,
+    state: &mut PkgVerifyState,
+    ignore_failures: bool,
+) -> Fallible<()> {
+    if !plan.enabled {
+        return Ok(());
+    }
+    // Upstream never hashes a nightly package — neither does the tail pass —
+    // so no warning either.
+    if package.version() == "nightly" {
+        return Ok(());
+    }
+    let files = package.download_filenames();
+    let hashes = package.download_hashes();
+    // Align by manifest order: `cache.inner` is a HashMap, so the file's index
+    // (for the `(i/n)` label) and hash must come from the manifest lists.
+    let Some(idx) = files.iter().position(|f| f == filename) else {
+        return Ok(());
+    };
+    let Some(hash) = hashes.get(idx).copied() else {
+        return Ok(());
+    };
+    let urls = package.download_urls();
+    let url = urls.get(idx).copied().unwrap_or_default();
+    let label = format!("{} ({}/{})", package.name(), idx + 1, files.len());
+
+    match super::download_verify::verify_one_file(session, path, hash, package.name(), url, &label)
+    {
+        Ok(()) => {}
+        Err(e) if ignore_failures => {
+            state.errors.push(hok_i18n::t!(
+                "cmd.failed_verify",
+                name = package.name(),
+                error = e
+            ));
+            state.failed = Some(package.ident());
+        }
+        Err(e) => return Err(e),
+    }
+
+    state.done += 1;
+    plan.done.fetch_add(1, Ordering::Relaxed);
+    let pkg_state = if state.failed.is_some() {
+        VerifyState::Failed
+    } else if state.done >= state.verifiable {
+        VerifyState::Passed
+    } else {
+        VerifyState::Checking
+    };
+    plan.report(session, package, pkg_state);
+    Ok(())
+}
+
 /// Download the files of a single package. Runs on a concurrent task so
 /// multiple packages download in parallel (cross-package concurrency).
 ///
 /// Per file: fragmented or single-stream download, then finalization into the
 /// cache name (rename / reassemble) as soon as that file's bytes have landed,
-/// reporting progress and honouring reuse-cache and the cancellation token.
-/// Each package writes only its own cache files, so concurrent tasks never
+/// then an inline hash check — upstream verifies every file right after its own
+/// transfer (`lib/download.ps1:19-45`, `libexec/scoop-download.ps1:105-135`).
+/// Progress, reuse-cache and the cancellation token are honoured throughout;
+/// each package writes only its own cache files, so concurrent tasks never
 /// collide.
 ///
-/// Returns the package ident when the package failed under IgnoreFailures.
+/// Returns the package's failure ident (IgnoreFailures) together with the
+/// verification messages that must wait for the bar to close.
 ///
 #[allow(clippy::too_many_arguments)]
 async fn download_one_package<'a>(
@@ -173,7 +351,8 @@ async fn download_one_package<'a>(
     fragmentation_enabled: bool,
     chunk_count: u64,
     min_split_size: u64,
-) -> Fallible<Option<String>> {
+    plan: &VerifyPlan,
+) -> Fallible<PkgOutcome> {
     let cookie = cache.package.cookie().unwrap_or_default();
     let ident = cache.package.ident();
     let cookie_map: Option<HashMap<String, String>> = if cookie.is_empty() {
@@ -190,9 +369,12 @@ async fn download_one_package<'a>(
     // A failure on any file marks the whole package as failed so the rest of
     // the transaction can still be committed (IgnoreFailures).
     let mut pkg_error: Option<crate::Error> = None;
-    // The package ident, recorded when a per-file finalization failed under
-    // IgnoreFailures (the download of the remaining files continues).
-    let mut failed_ident: Option<String> = None;
+    // Inline verification bookkeeping: failed ident, deferred error messages
+    // and the counters that feed `校验 n/m` on the single download line.
+    let mut verify_state = PkgVerifyState {
+        verifiable: verifiable_files(cache.package),
+        ..Default::default()
+    };
     let emitter = session.emitter();
 
     // Total bytes the package must fetch (all files that are not already
@@ -212,6 +394,18 @@ async fn download_one_package<'a>(
 
     for (filename, dlinfo) in cache.inner.iter() {
         if reuse_cache && dlinfo.local_size > 0 && dlinfo.local_size == dlinfo.remote_size {
+            // A partially cached package still hashes the file that was already
+            // in the cache: every file of a dispatched package is verified
+            // inline, so the batched tail pass can skip the package entirely.
+            verify_inline_file(
+                session,
+                cache.package,
+                filename,
+                &cache_root.join(filename),
+                plan,
+                &mut verify_state,
+                ignore_failures,
+            )?;
             continue;
         }
 
@@ -234,7 +428,7 @@ async fn download_one_package<'a>(
             ..request.options(120)
         };
 
-        let result: Fallible<Option<FileFinalize>> = async {
+        let result: Fallible<FileFinalize> = async {
             if use_fragments {
                 let path = cache_root.join(filename);
                 let part_dir = cache_root.join(format!("{}.parts", filename));
@@ -293,10 +487,10 @@ async fn download_one_package<'a>(
                 .map_err(crate::error::Error::Custom)?;
 
                 pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
-                Ok(Some(FileFinalize::Reassemble {
+                Ok(FileFinalize::Reassemble {
                     path,
                     parts: part_paths,
-                }))
+                })
             } else {
                 // Single download (with resume for known-size files).
                 let path = cache_root.join(filename);
@@ -317,7 +511,7 @@ async fn download_one_package<'a>(
                 // A `.download` already at the full size needs no network
                 // transfer — promote it straight to the cache.
                 if known_total && existing_len == dlinfo.remote_size {
-                    Ok(Some(FileFinalize::Rename { tmp, path }))
+                    Ok(FileFinalize::Rename { tmp, path })
                 } else {
                     // Fresh start: drop any stale partial.
                     if resume_from == 0 {
@@ -412,7 +606,7 @@ async fn download_one_package<'a>(
                     }
 
                     pkg_done.fetch_add(dlinfo.remote_size, Ordering::Relaxed);
-                    Ok(Some(FileFinalize::Rename { tmp, path }))
+                    Ok(FileFinalize::Rename { tmp, path })
                 }
             }
         }
@@ -426,22 +620,30 @@ async fn download_one_package<'a>(
             }
         };
 
-        // Finalize this file now that its own bytes have all landed, so an
-        // early package is complete while its siblings still download.
-        if let Some(finalize) = finalize {
-            let error_key = finalize.error_key();
-            if let Err(e) = finalize.apply() {
-                if ignore_failures {
-                    session.output().error(hok_i18n::t!(
-                        error_key,
-                        name = ident.clone(),
-                        error = e
-                    ));
-                    failed_ident = Some(ident.clone());
-                } else {
-                    return Err(e);
-                }
+        // Finalize this file now that its own bytes have all landed, then hash
+        // it — an early package is both complete and verified while its
+        // siblings still download (upstream verifies per file too,
+        // `libexec/scoop-download.ps1:105-135`).
+        let error_key = finalize.error_key();
+        if let Err(e) = finalize.apply() {
+            if ignore_failures {
+                session
+                    .output()
+                    .error(hok_i18n::t!(error_key, name = ident.clone(), error = e));
+                verify_state.failed = Some(ident.clone());
+            } else {
+                return Err(e);
             }
+        } else {
+            verify_inline_file(
+                session,
+                cache.package,
+                filename,
+                &cache_root.join(filename),
+                plan,
+                &mut verify_state,
+                ignore_failures,
+            )?;
         }
     }
 
@@ -452,12 +654,23 @@ async fn download_one_package<'a>(
                 name = ident.clone(),
                 error = err
             ));
-            return Ok(Some(ident));
+            verify_state.failed = Some(ident.clone());
+        } else {
+            return Err(err);
         }
-        return Err(err);
     }
 
-    Ok(failed_ident)
+    // A package with nothing to hash (nightly, or every hash empty) never goes
+    // through `verify_inline_file`, so report its terminal state here —
+    // otherwise the line would keep it as "verifying" until the row closes.
+    if plan.enabled && verify_state.verifiable == 0 && verify_state.failed.is_none() {
+        plan.report(session, cache.package, VerifyState::Passed);
+    }
+
+    Ok(PkgOutcome {
+        failed_ident: verify_state.failed,
+        verify_errors: verify_state.errors,
+    })
 }
 
 impl<'a> PackageSet<'a> {
@@ -472,6 +685,7 @@ impl<'a> PackageSet<'a> {
             caches: OnceCell::new(),
             reuse_cache,
             ignore_failures: false,
+            skip_hash_check: false,
         })
     }
 
@@ -485,6 +699,14 @@ impl<'a> PackageSet<'a> {
     /// [1]: PackageSet::download
     pub fn set_ignore_failures(&mut self, ignore: bool) {
         self.ignore_failures = ignore;
+    }
+
+    /// Skip the inline hash check (`-s/--skip-hash-check`).
+    ///
+    /// Without it every file is verified as it lands; with it neither the
+    /// download phase nor the batched tail pass hashes anything.
+    pub fn set_skip_hash_check(&mut self, skip: bool) {
+        self.skip_hash_check = skip;
     }
 
     fn load_cache(&self) {
@@ -547,16 +769,17 @@ impl<'a> PackageSet<'a> {
 
     // ─── Download ─────────────────────────────────────────────────────────────
 
-    /// Download packages.
+    /// Download packages, verifying each file as soon as it lands.
     ///
     /// # Returns
     ///
-    /// The identifiers (`bucket/name`) of the packages whose download failed
-    /// and were skipped. Unless [`set_ignore_failures`][1] was enabled, the
-    /// first failure aborts with an error, so the list is empty on success.
+    /// A [`DownloadOutcome`]: the idents of the packages that failed (only
+    /// populated with [`set_ignore_failures`][1]; without it the first failure
+    /// aborts), the idents already verified inline, and the verification
+    /// messages that must wait for the frontend's download bar to close.
     ///
     /// [1]: PackageSet::set_ignore_failures
-    pub async fn download(&mut self) -> Fallible<Vec<String>> {
+    pub async fn download(&mut self) -> Fallible<DownloadOutcome> {
         if self.caches.get().is_none() {
             self.load_cache();
         }
@@ -583,32 +806,47 @@ impl<'a> PackageSet<'a> {
         let session = self.session;
         let reuse_cache = self.reuse_cache;
         let ignore_failures = self.ignore_failures;
+        let skip_hash_check = self.skip_hash_check;
         let net = self.session.network();
         let emitter = self.session.emitter();
 
         // Read caches immutably: the download phase never mutates them.
         let package_caches = self.caches.get().unwrap();
 
-        let mut failed: Vec<String> = vec![];
-
         internal::fs::ensure_dir(&cache_root)?;
 
         // Concurrent cross-package download: each package's files are fetched
         // on its own task, bounded by `jobs`, and each file is finalized to its
-        // cache name as soon as its own bytes have landed. Every package writes
-        // only its own cache files (names embed `name#version#`), so concurrent
-        // tasks never collide. Fully-cached packages are skipped (their
-        // cache-hit events are still emitted) and packages whose download fails
-        // are reported per-package, matching the sequential semantics.
+        // cache name as soon as its own bytes have landed — then hashed. Every
+        // package writes only its own cache files (names embed `name#version#`),
+        // so concurrent tasks never collide. Fully-cached packages are skipped
+        // (their cache-hit events are still emitted) and left to the batched
+        // tail verification; packages whose download fails are reported
+        // per-package, matching the sequential semantics.
         let jobs = jobs.max(1);
 
         // Tell the frontend which packages are about to be downloaded and their
         // total bytes, so it can render one aggregate progress bar (count and
         // grand total) before the per-package progress events start arriving.
+        // The same event carries how many of their files will be hashed inline:
+        // that denominator drives the line's `校验 n/m` counter.
+        let dispatched: Vec<&PackageCache<'_>> = package_caches
+            .values()
+            .filter(|c| !(reuse_cache && c.valid == CacheMaybeValid::Full))
+            .collect();
+        let verify_total: u32 = if skip_hash_check {
+            0
+        } else {
+            dispatched
+                .iter()
+                .map(|c| verifiable_files(c.package) as u32)
+                .sum()
+        };
+        let verified: Vec<String> = dispatched.iter().map(|c| c.package.ident()).collect();
+
         if let Some(tx) = &emitter {
-            let packages: Vec<(String, u64)> = package_caches
-                .values()
-                .filter(|c| !(reuse_cache && c.valid == CacheMaybeValid::Full))
+            let packages: Vec<(String, u64)> = dispatched
+                .iter()
                 .map(|c| {
                     let total: u64 = c
                         .inner
@@ -621,15 +859,30 @@ impl<'a> PackageSet<'a> {
                     (c.package.ident(), total)
                 })
                 .collect();
-            let _ = tx.try_send(Event::PackageDownloadInfo { packages });
+            let _ = tx.try_send(Event::PackageDownloadInfo {
+                packages,
+                verify_files: verify_total,
+            });
+            // The integrity block belongs to this phase: on a terminal the
+            // event loop folds it into the download line, off a terminal it
+            // still prints the status lines it always printed.
+            if verify_total > 0 {
+                let _ = tx.try_send(Event::PackageIntegrityCheckStart);
+            }
         }
+
+        let plan = VerifyPlan {
+            enabled: !skip_hash_check,
+            total: verify_total,
+            done: Arc::new(AtomicU32::new(0)),
+        };
 
         // Capacity invariant: `buffer_unordered(0)` never polls its source
         // stream, so the stream is never drained and the `collect` below parks
         // forever (a silent hang, not an error). `jobs` was normalized to >= 1
         // above; this pins that normalization here, where the cap is used.
         debug_assert!(jobs >= 1, "buffer_unordered capacity must be >= 1");
-        let outcomes: Vec<Fallible<Option<String>>> =
+        let outcomes: Vec<Fallible<PkgOutcome>> =
             futures::stream::iter(package_caches.values().filter(|c| {
                 if reuse_cache && c.valid == CacheMaybeValid::Full {
                     if let Some(tx) = &emitter {
@@ -653,23 +906,41 @@ impl<'a> PackageSet<'a> {
                     fragmentation_enabled,
                     chunk_count,
                     min_split_size,
+                    &plan,
                 )
             })
             .buffer_unordered(jobs)
             .collect()
             .await;
 
-        // Merge the per-package outcomes: everything already finalized to its
-        // cache name inside its own task; only IgnoreFailures' failed idents
-        // are left to collect. A hard (non-ignore) failure aborts here — the
-        // packages that finished earlier keep their finalized cache files.
-        for outcome in outcomes {
-            if let Some(ident) = outcome? {
-                failed.push(ident);
-            }
+        // Every task has finished (even the one that failed), so close the
+        // inline integrity block before the merge can abort on a hard error.
+        if verify_total > 0
+            && let Some(tx) = &emitter
+        {
+            let _ = tx.try_send(Event::PackageIntegrityCheckDone);
         }
 
-        Ok(failed)
+        // Merge the per-package outcomes: everything is already finalized to
+        // its cache name inside its own task, so only the failure idents and
+        // the deferred verification messages are left to collect. A hard
+        // (non-ignore) failure aborts here — the packages that finished
+        // earlier keep their finalized cache files.
+        let mut failed: Vec<String> = vec![];
+        let mut verify_errors: Vec<String> = vec![];
+        for outcome in outcomes {
+            let outcome = outcome?;
+            if let Some(ident) = outcome.failed_ident {
+                failed.push(ident);
+            }
+            verify_errors.extend(outcome.verify_errors);
+        }
+
+        Ok(DownloadOutcome {
+            failed,
+            verified,
+            verify_errors,
+        })
     }
 
     // ─── Calculate download size ──────────────────────────────────────────────

@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::io::Read;
+use std::path::Path;
 
 use tracing::info;
 
@@ -14,11 +15,81 @@ use crate::{Error, Event, Session, error::Fallible, internal};
 
 use super::Package;
 use super::download::PackageSet;
+use super::manifest::HashString;
+
+// ─── Single-file verification ───────────────────────────────────────────────
+
+/// Hash one cache file against its manifest hash — the single verification
+/// entry point, shared by the inline path (each file as it lands) and the
+/// batched tail pass (cache-only batches).
+///
+/// An empty hash warns and counts as skipped (upstream `check_hash` in
+/// `lib/download.ps1` warns and continues instead of failing hard); a mismatch
+/// removes the corrupt cache file (`lib/download.ps1:122-125`) and errors. The
+/// per-file progress event is emitted from here so both paths announce the
+/// same item at the same point — while the download bar owns the terminal the
+/// event loop folds these into the line instead of printing them.
+///
+/// `progress` is the `"<name> (i/n)"` label both paths use.
+pub(crate) fn verify_one_file(
+    session: &Session,
+    path: &Path,
+    hash: &HashString,
+    pkg_name: &str,
+    url: &str,
+    progress: &str,
+) -> Fallible<()> {
+    if matches!(hash, HashString::Empty) {
+        session
+            .output()
+            .warn(hok_i18n::t!("cmd.no_hash_skip", name = pkg_name));
+        return Ok(());
+    }
+
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageIntegrityCheckProgress(progress.to_owned()));
+    }
+
+    let mut hasher = internal::hash::ChecksumBuilder::new()
+        .algo(hash.algorithm())?
+        .build();
+
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0; 1024 * 64];
+    loop {
+        let len = file.read(&mut buf)?;
+        if len == 0 {
+            break;
+        }
+        hasher.consume(&buf[..len]);
+    }
+
+    let actual = hasher.finalize();
+    let expected = hash.value();
+    if actual != expected {
+        // Upstream removes the corrupt cache file on a hash mismatch
+        // (lib/download.ps1:122-125) so the next attempt re-downloads instead
+        // of failing forever.
+        let _ = std::fs::remove_file(path);
+        let ctx = super::HashMismatchContext::new(
+            pkg_name.to_owned(),
+            url.to_owned(),
+            expected.to_owned(),
+            actual,
+        );
+        return Err(Error::HashMismatch(ctx));
+    }
+    Ok(())
+}
 
 // ─── Download verification & standalone download API ───────────────────────
 
 /// Verify downloaded files against the manifest hashes (upstream
 /// `check_hash` in lib/download.ps1).
+///
+/// Only the packages that were *not* verified inline belong here (see
+/// [`super::download::DownloadOutcome::verified`]); with an empty list
+/// nothing is announced at all.
 ///
 /// Nightly packages skip verification; a missing or empty hash in the
 /// manifest warns and continues; a mismatch removes the corrupt cache
@@ -37,6 +108,11 @@ pub(crate) fn verify_downloads(
     if skip_hash_check {
         return Ok(failed);
     }
+    // Nothing to verify (the caller already hashed everything inline): an
+    // empty block would only print a bare "checking hash" pair of lines.
+    if packages.is_empty() {
+        return Ok(failed);
+    }
 
     if let Some(tx) = session.emitter() {
         let _ = tx.try_send(Event::PackageIntegrityCheckStart);
@@ -44,8 +120,6 @@ pub(crate) fn verify_downloads(
 
     let config = session.config();
     let cache_root = config.cache_path();
-
-    let mut buf = [0; 1024 * 64];
 
     for &pkg in packages.iter() {
         if pkg.version() == "nightly" {
@@ -64,53 +138,15 @@ pub(crate) fn verify_downloads(
 
         let files = pkg.download_filenames();
         let hashes = pkg.download_hashes();
+        let urls = pkg.download_urls();
         let files_cnt = files.len();
 
         let result = (|| -> Fallible<()> {
             for (idx, (filename, hash)) in files.into_iter().zip(hashes).enumerate() {
                 let path = cache_root.join(filename);
-
-                // No hash in the manifest (missing or `""`): upstream
-                // `check_hash` (lib/download.ps1) warns and continues
-                // without verification instead of failing hard.
-                if matches!(hash, crate::package::manifest::HashString::Empty) {
-                    session
-                        .output()
-                        .warn(hok_i18n::t!("cmd.no_hash_skip", name = pkg.name()));
-                    continue;
-                }
-
-                let mut hasher = internal::hash::ChecksumBuilder::new()
-                    .algo(hash.algorithm())?
-                    .build();
-
-                if let Some(tx) = session.emitter() {
-                    let progress = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
-                    let _ = tx.try_send(Event::PackageIntegrityCheckProgress(progress));
-                }
-
-                let mut file = std::fs::File::open(&path)?;
-                loop {
-                    let len = file.read(&mut buf)?;
-                    if len == 0 {
-                        break;
-                    }
-                    hasher.consume(&buf[..len]);
-                }
-
-                let actual = hasher.finalize();
-                let expected = hash.value();
-                if actual != expected {
-                    // Upstream removes the corrupt cache file on a hash
-                    // mismatch (lib/download.ps1:122-125) so the next
-                    // attempt re-downloads instead of failing forever.
-                    let _ = std::fs::remove_file(&path);
-                    let name = pkg.name().to_owned();
-                    let url = pkg.download_urls()[idx].to_owned();
-                    let ctx =
-                        super::HashMismatchContext::new(name, url, expected.to_owned(), actual);
-                    return Err(Error::HashMismatch(ctx));
-                }
+                let url = urls.get(idx).copied().unwrap_or_default();
+                let label = format!("{} ({}/{})", pkg.name(), idx + 1, files_cnt);
+                verify_one_file(session, &path, hash, pkg.name(), url, &label)?;
             }
             Ok(())
         })();
@@ -144,6 +180,10 @@ pub(crate) fn verify_downloads(
 /// emitting the download events around it. With `offline` no request is made
 /// and only the cache is verified.
 ///
+/// Files are hashed inline while downloading, so the tail pass only covers the
+/// packages that never reached a download task (fully cached / offline); the
+/// inline path's messages are printed here, once the download line is gone.
+///
 /// The caller must have run [`PackageSet::calculate_download_size`] on the
 /// set first: the HEAD requests it makes fill in `remote_size`, which both
 /// fragmented download (splitting) and the progress bar's total depend on.
@@ -155,6 +195,9 @@ pub(crate) async fn download_and_verify(
 ) -> Fallible<HashSet<String>> {
     let session = set.session;
     let mut failed = HashSet::new();
+    // Packages whose files were hashed while downloading — hashing them again
+    // in the tail pass would double every read.
+    let mut verified: HashSet<String> = HashSet::new();
 
     if !offline {
         if let Some(tx) = session.emitter() {
@@ -162,10 +205,20 @@ pub(crate) async fn download_and_verify(
         }
 
         set.set_ignore_failures(ignore_failures);
-        failed = set.download().await?.into_iter().collect();
+        set.set_skip_hash_check(skip_hash_check);
+        let outcome = set.download().await?;
 
         if let Some(tx) = session.emitter() {
             let _ = tx.try_send(Event::PackageDownloadDone);
+        }
+
+        failed = outcome.failed.into_iter().collect();
+        verified = outcome.verified.into_iter().collect();
+        // The verification messages were deferred to here: the download line
+        // owns the terminal until `PackageDownloadDone` above reaches the
+        // event loop, and a raw line printed earlier would corrupt it.
+        for msg in outcome.verify_errors {
+            session.output().error(msg);
         }
     }
 
@@ -174,6 +227,7 @@ pub(crate) async fn download_and_verify(
         .iter()
         .copied()
         .filter(|p| !failed.contains(&p.ident()))
+        .filter(|p| !verified.contains(&p.ident()))
         .collect();
 
     failed.extend(verify_downloads(

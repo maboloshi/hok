@@ -20,6 +20,7 @@
 
 use crate::output::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use libscoop::package::download::{PackageVerifyProgressContext, VerifyState};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -206,7 +207,14 @@ impl BucketRows {
 ///
 /// Used by the download stage to show one self-updating line like:
 ///
-///   downloading 2/3   3.60 GB ████████░░░░░░░░ 61%  ▸ git 70% · ffmpeg 45%
+///   downloading 1/3 · verifying 1/5  3.60 GB ████████░░░░░░░░ 61%  ▸ git ✓ · ffmpeg 45%
+///
+/// Verification runs *inside* the download phase (each file is hashed as it
+/// lands), so the line carries its state instead of letting status lines fight
+/// for the terminal. The `· verifying n/m` segment only appears when the batch
+/// hashes files inline, and a package leaves the line only after it passes or
+/// fails — with verification off it leaves when it finishes downloading, which
+/// is the original behaviour.
 ///
 /// The line is registered as a row in a `MultiProgress` and recomposed on every
 /// progress event, so the layout is fully controlled while indicatif owns the
@@ -214,8 +222,8 @@ impl BucketRows {
 /// hits, notes) go through [`note`](DownloadBar::note), which draws them
 /// *above* the bar via `MultiProgress::println` instead of colliding with it.
 ///
-/// Call [`begin`], then [`update`] on each progress event, then [`finish`] to
-/// move off the line.
+/// Call [`begin`], then [`update`] / [`update_verify`] on the progress events,
+/// then [`finish`] to move off the line.
 pub struct DownloadBar {
     /// The owning multi-progress; the bar is its only row and notes stack above.
     mp: MultiProgress,
@@ -225,6 +233,12 @@ pub struct DownloadBar {
     pkgs: Vec<(String, u64)>,
     /// ident -> bytes downloaded so far.
     done: HashMap<String, u64>,
+    /// Files this batch will hash inline (0 = the `· verifying` segment is off).
+    verify_total: u32,
+    /// Files hashed so far across the batch.
+    verify_done: u32,
+    /// ident -> verification state, from its first verify event on.
+    verify: HashMap<String, VerifyState>,
 }
 
 impl DownloadBar {
@@ -234,6 +248,9 @@ impl DownloadBar {
             bar: None,
             pkgs: Vec::new(),
             done: HashMap::new(),
+            verify_total: 0,
+            verify_done: 0,
+            verify: HashMap::new(),
         }
     }
 
@@ -250,14 +267,18 @@ impl DownloadBar {
         self.bar.is_some()
     }
 
-    /// Start drawing the download row for `packages` (`(ident, total_bytes)`).
+    /// Start drawing the download row for `packages` (`(ident, total_bytes)`),
+    /// showing `verify_files` as the `· verifying 0/n` denominator.
     ///
     /// A no-op (no row is created) when `packages` is empty or stdout is not a
     /// terminal — indicatif renders nothing off a TTY anyway, so skipping avoids
     /// an inert row.
-    pub fn begin(&mut self, packages: &[(String, u64)]) {
+    pub fn begin(&mut self, packages: &[(String, u64)], verify_files: u32) {
         self.pkgs.clear();
         self.done.clear();
+        self.verify.clear();
+        self.verify_total = verify_files;
+        self.verify_done = 0;
         if packages.is_empty() || !std::io::stdout().is_terminal() {
             self.bar = None;
             return;
@@ -284,6 +305,20 @@ impl DownloadBar {
         self.render();
     }
 
+    /// Fold one inline-verification event into the line: the batch counter and
+    /// the package's state (checking / passed / failed).
+    pub fn update_verify(&mut self, ctx: &PackageVerifyProgressContext) {
+        if !self.is_active() {
+            return;
+        }
+        // The backend computes both, so its numbers win: they stay consistent
+        // with what the hashing tasks actually counted.
+        self.verify_done = ctx.done;
+        self.verify_total = ctx.total;
+        self.verify.insert(ctx.ident.clone(), ctx.state);
+        self.render();
+    }
+
     /// Draw a one-off status line *above* the active bar.
     ///
     /// Uses `MultiProgress::println`, which indicatif places above all its rows,
@@ -302,51 +337,84 @@ impl DownloadBar {
         }
         self.pkgs.clear();
         self.done.clear();
+        self.verify.clear();
+        self.verify_done = 0;
+        self.verify_total = 0;
     }
 
     /// Recompute and push the composed line into the indicatif row.
     fn render(&self) {
-        let Some(bar) = &self.bar else { return };
+        if let Some(bar) = &self.bar {
+            bar.set_message(self.line());
+        }
+    }
+
+    /// The composed line, independent of the terminal so it can be tested:
+    /// `  downloading 1/2 · verifying 3/4 15 MB ████░░ 45% ▸ git ✓ · node 45%`.
+    fn line(&self) -> String {
         let grand: u64 = self.pkgs.iter().map(|(_, t)| t).sum();
         let done_sum: u64 = self.done.values().sum();
         let total = self.pkgs.len();
 
-        // Running (not finished) packages, sorted by percent descending.
-        let mut running: Vec<(&str, u64, u64)> = self
-            .pkgs
-            .iter()
-            .filter_map(|(id, t)| {
-                let d = self.done.get(id.as_str()).copied().unwrap_or(0);
-                if d >= *t {
-                    None
-                } else {
-                    Some((id.as_str(), d, *t))
-                }
-            })
-            .collect();
-        running.sort_by(|a, b| {
+        // The `n/m` pair counts packages still downloading; the tail lists
+        // every package that has not finished hashing. With verification off
+        // the tail keeps the original behaviour: a package leaves the line as
+        // soon as its bytes are in.
+        let mut downloading = 0usize;
+        let mut visible: Vec<(&str, u64, u64)> = Vec::new();
+        for (id, t) in &self.pkgs {
+            let d = self.done.get(id.as_str()).copied().unwrap_or(0);
+            if d < *t {
+                downloading += 1;
+            } else if self.verify_total == 0 {
+                continue;
+            }
+            visible.push((id.as_str(), d, *t));
+        }
+        visible.sort_by(|a, b| {
             let pa = a.1 as f64 / a.2.max(1) as f64;
             let pb = b.1 as f64 / b.2.max(1) as f64;
             pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let running_count = running.len();
 
-        // Overall percent.
+        // Overall percent (byte-based: it belongs to the download phase).
         let pct = (done_sum * 100).checked_div(grand).unwrap_or(0);
 
-        // In-progress package list: `git 78% · node 44%`.
-        let list = running
+        // Package states: percentage while the bytes are still arriving, then
+        // the verification result — `git ✓ · node ✗ · ffmpeg 45%`.
+        let list = visible
             .iter()
             .map(|(id, d, t)| {
-                let p = (*d * 100) / (*t).max(1);
                 // 只取 '/' 之后的部分作为包名，若无 '/' 则保留原字符串
                 let pkg_name = id.split_once('/').map(|(_, name)| name).unwrap_or(id);
-                format!("{} {p}%", style::accent(pkg_name))
+                let name = style::accent(pkg_name);
+                if d < t {
+                    return format!("{} {p}%", name, p = (*d * 100) / (*t).max(1));
+                }
+                match self.verify.get(*id) {
+                    Some(VerifyState::Passed) => format!("{} {}", name, style::success("✓")),
+                    Some(VerifyState::Failed) => format!("{} {}", name, style::danger("✗")),
+                    // Bytes are in; the hash result has not arrived yet.
+                    _ => format!("{} {}", name, style::dim(hok_i18n::t!("detail.verifying"))),
+                }
             })
             .collect::<Vec<_>>()
             .join(" \u{00b7} ");
 
         let label = hok_i18n::t!("cmd.downloading").to_string();
+        // `· verifying 1/5` — only while this batch hashes files inline.
+        let verify_segment = if self.verify_total > 0 {
+            format!(
+                " \u{00b7} {}",
+                hok_i18n::t!(
+                    "cmd.verifying_count",
+                    done = self.verify_done,
+                    total = self.verify_total
+                )
+            )
+        } else {
+            String::new()
+        };
 
         // Bar: accent-filled blocks + dim remaining.
         const BAR_W: u64 = 16;
@@ -364,18 +432,82 @@ impl DownloadBar {
         } else {
             format!(" \u{25b8} {list}")
         };
-        // Compact single line: label count/total · total bytes · bar · pct · list,
-        // separated by single spaces (no width padding) so it stays tight.
-        let line = format!(
-            "  {label} {running_count}/{total} {total_bytes} {bar_txt} {pct}%{tail}",
+        // Compact single line: label count/total · verifying segment · total
+        // bytes · bar · pct · list, separated by single spaces (no width
+        // padding) so it stays tight.
+        format!(
+            "  {label} {downloading}/{total}{verify_segment} {total_bytes} {bar_txt} {pct}%{tail}",
             label = label,
-            running_count = running_count,
+            downloading = downloading,
             total = total,
+            verify_segment = verify_segment,
             total_bytes = total_bytes,
             bar_txt = bar_txt,
             pct = pct,
             tail = tail,
-        );
-        bar.set_message(line);
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bar in a known state: `git` fully downloaded and verified, `7zip`
+    /// still downloading, with `verify_total` files in the batch.
+    fn prepared_bar() -> DownloadBar {
+        let mut bar = DownloadBar::new();
+        bar.pkgs = vec![("main/git".to_owned(), 100), ("main/7zip".to_owned(), 100)];
+        bar.done.insert("main/git".to_owned(), 100);
+        bar.done.insert("main/7zip".to_owned(), 45);
+        bar.verify_total = 4;
+        bar.verify_done = 3;
+        bar.verify
+            .insert("main/git".to_owned(), VerifyState::Passed);
+        bar
+    }
+
+    /// The one-line shape: downloading count, verifying counter, the finished
+    /// package's mark and the downloading package's percentage. The words are
+    /// localized, so only the structural markers are asserted.
+    #[test]
+    fn line_folds_verification_into_the_download_line() {
+        let line = prepared_bar().line();
+        assert!(line.contains("1/2"), "downloading count: {line}");
+        assert!(line.contains("3/4"), "verifying counter: {line}");
+        assert!(line.contains('✓'), "passed package marked: {line}");
+        assert!(line.contains("45%"), "downloading package keeps %: {line}");
+    }
+
+    /// A package whose bytes are in but whose result has not arrived yet is
+    /// shown as being verified, not silently dropped.
+    #[test]
+    fn line_keeps_a_package_until_it_is_verified() {
+        let mut bar = prepared_bar();
+        bar.verify
+            .insert("main/git".to_owned(), VerifyState::Checking);
+        let line = bar.line();
+        assert!(line.contains("git"), "still listed: {line}");
+        assert!(!line.contains('✓'), "no result yet: {line}");
+
+        bar.verify
+            .insert("main/git".to_owned(), VerifyState::Failed);
+        let line = bar.line();
+        assert!(line.contains('✗'), "failed package marked: {line}");
+    }
+
+    /// Without inline verification the line keeps its original shape: no
+    /// `· verifying` segment, and a finished package leaves the line.
+    #[test]
+    fn line_without_verification_matches_the_original_shape() {
+        let mut bar = prepared_bar();
+        bar.verify_total = 0;
+        bar.verify_done = 0;
+        bar.verify.clear();
+        let line = bar.line();
+        assert!(!line.contains("/4"), "no verifying segment: {line}");
+        // `git` finished downloading and has no state to display.
+        assert!(!line.contains("git"), "finished package left: {line}");
+        assert!(line.contains("7zip"), "downloading package stays: {line}");
     }
 }

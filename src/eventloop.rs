@@ -112,8 +112,13 @@ pub fn run_event_loop(
                 }
 
                 // Download starting: begin the indicatif single-line progress.
-                Event::PackageDownloadInfo { packages } => {
-                    dlprogress.begin(&packages);
+                // The bar now also owns the inline verification display, so it
+                // is told how many files this batch will hash.
+                Event::PackageDownloadInfo {
+                    packages,
+                    verify_files,
+                } => {
+                    dlprogress.begin(&packages, verify_files);
                     continue;
                 }
 
@@ -122,6 +127,25 @@ pub fn run_event_loop(
                 Event::PackageDownloadProgress(ref ctx) => {
                     dlprogress.update(&ctx.ident, ctx.pkg_done);
                     continue;
+                }
+
+                // Inline verification advanced — folded into the same line
+                // (`· verifying n/m` + the ✓/✗ tail), which is why it must not
+                // be handed to the handler while the bar is live.
+                Event::PackageVerifyProgress(ref ctx) => {
+                    dlprogress.update_verify(ctx);
+                    continue;
+                }
+
+                // Integrity announcements go to whoever owns the terminal:
+                // swallowed while the download line carries the state itself,
+                // printed by the handler otherwise (batched tail pass, off-TTY).
+                Event::PackageIntegrityCheckStart
+                | Event::PackageIntegrityCheckProgress(_)
+                | Event::PackageIntegrityCheckDone => {
+                    if dlprogress.is_active() {
+                        continue;
+                    }
                 }
 
                 // Download finished: move off the progress line.
