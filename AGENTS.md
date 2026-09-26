@@ -131,7 +131,8 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   - `.agents/**` and this file are tracked, so every worktree has its own copy — edit and commit them
     normally. The **only** exception is the aggregate hotspot files
     (`active/plan/pending-tasks.md`, `active/audit/command-deviation-audit-2026-09.md`,
-    `skills/scoop-gap-audit.md`), which are edited in the main tree only;
+    `active/audit/scoop-gap-status.md`), which are edited in the main tree only;
+    `skills/scoop-gap-audit.md` is methodology only since 2026-09-26 — nothing appends to it;
   - **never `git add -A` / `git add .`** (stage by topic, file by file) and **never `git clean -fd`**.
 
 ### Delivery and release

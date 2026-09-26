@@ -44,7 +44,7 @@
 
 1. **每个 worktree 都有一份**：本目录已跟踪 ⇒ 正常改、正常提交，rebase 冲突按普通文档解。
    **例外**：汇总型热点文件（`docs/active/plan/pending-tasks.md`、
-   `docs/active/audit/command-deviation-audit-2026-09.md`、`skills/scoop-gap-audit.md`）**只在主树改**，
+   `docs/active/audit/command-deviation-audit-2026-09.md`、`docs/active/audit/scoop-gap-status.md`）**只在主树改**，
    否则并行会话的收尾四件套会互相冲撞。
 2. **禁 `git add -A` / `git add .`**：提交必须按主题显式列文件；**禁 `git clean -fd`**。细则见「提交约定」。
 3. **加载时机**：DSH 在文件工具触碰本目录下文件时，把「本目录 → 项目根」链路上的 `AGENTS.md`
@@ -72,7 +72,8 @@
 4. **worktree 里改了本目录，必须随该主题提交落地**，不能留在 worktree 内——删掉 worktree 就丢了
    （未跟踪时代不存在这个风险）。
 5. **汇总型热点文件仍只在主树改**：`docs/active/plan/pending-tasks.md`、
-   `docs/active/audit/command-deviation-audit-2026-09.md`、`skills/scoop-gap-audit.md`。
+   `docs/active/audit/command-deviation-audit-2026-09.md`、`docs/active/audit/scoop-gap-status.md`。
+   （`skills/scoop-gap-audit.md` 2026-09-26 起只是方法论，不再每会话回填。）
 6. **不进的**：`.agents/tmp/`、本机 `*.local.md`（已 ignore）、**机器生成的分析 dump**
    （`*_report.txt` / `*_drywall.txt` / `*_duplicates.txt`，见根 `.gitignore`——即便它们被 `reports/README.md`
    登记也不入库；索引 ≠ 版本控制）、一次性探针脚本（用完即删；提交前用 `git status --short` 复核，
@@ -81,11 +82,18 @@
 ## 脚本
 
 - 可复用脚本放 `scripts/`；一次性的分析/探针脚本用完即删，**不要**留在本目录。
-- 目前有 `devlog-index.mjs`（生成 `docs/devlog/README.md`，支持 `--check` 门禁模式）：
+- 目前有：
+  - `devlog-index.mjs` —— 生成 `docs/devlog/README.md`（`--check` 为门禁模式）；
+  - `doc-links.mjs` —— 文档相对链接完整性检查（`.agents/**` + `docs/**` + 根 `*.md`，断链则 exit 1）；
+  - `docs-index-check.mjs` —— 索引覆盖率检查（R6：`docs/` 下的文件是否都已登记，缺口则 exit 1）。
+
+  收尾建议一次跑齐：
 
   ```powershell
-  node .agents/scripts/devlog-index.mjs            # 重新生成
-  node .agents/scripts/devlog-index.mjs --check    # CI/收尾校验，索引过期则 exit 1
+  node .agents/scripts/devlog-index.mjs            # 重新生成 devlog 索引
+  node .agents/scripts/devlog-index.mjs --check    # 索引过期则 exit 1
+  node .agents/scripts/doc-links.mjs               # 断链则 exit 1
+  node .agents/scripts/docs-index-check.mjs        # 索引有缺口则 exit 1
   ```
 
 ## 已知环境坑

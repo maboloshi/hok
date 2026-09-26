@@ -23,7 +23,7 @@ metadata:
 
 ## 2. Prompt 契约（每条子代理 prompt 必须含）
 1. **自包含**：子代理看不到父会话（除非 `subagent_fork`），范围/决策门/验收/提交拆分必须写全。
-2. **硬性禁令清单**：不写**汇总型热点文件**（`pending-tasks.md`、`reports/command-deviation-fix-plan-2026-09.md`、`command-deviation-audit-2026-09.md`、`scoop-gap-audit.md`——`.agents/**` 其余部分自 2026-09-26 已入库、可正常改）；不碰别的会话 worktree；**不合主线**（只报"可合并 tip"）；**不派生下一级子代理**（保持血统扁平、可控）。
+2. **硬性禁令清单**：不写**汇总型热点文件**（`pending-tasks.md`、`command-deviation-audit-2026-09.md`、`scoop-gap-status.md`——`.agents/**` 其余部分自 2026-09-26 已入库、可正常改）；不碰别的会话 worktree；**不合主线**（只报"可合并 tip"）；**不派生下一级子代理**（保持血统扁平、可控）。
 3. **已知环境坑**：至少含 `hok-worktree-parallel` 的沙箱四条（`rebase --continue` 不通 / `-F` 写提交信息 / 禁 `reset --hard` / `-VerifiedRef` 语义）。
 4. **主线快照 + 复查点**：告诉它"开工时主线 tip = X，若你的活跨多块，**每个块边界重看一次主线**是否有重叠工作落地"。
    实例：S9 三块做完时，D4 已落地并把 S9-1 的一半做掉了 ⇒ 只能重放调和。

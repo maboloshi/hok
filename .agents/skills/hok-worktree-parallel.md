@@ -14,7 +14,7 @@ metadata:
 - 本仓已设 `git config worktree-merge.mainbranch main`（脚本用它解析主线，无需每次传 `-MainBranch`）；
   合并/改主线后必须重设：`git config worktree-merge.mainbranch main`。
 - **已入库文档（2026-09-26 起）**：`.agents/**`、`AGENTS.md`、`CLAUDE.md`、`docs/` 每个 worktree 都有独立副本，正常改、正常提交。
-- **汇总型热点文件（例外，仍只在主树改）**：`.agents/docs/active/plan/pending-tasks.md`、`.agents/docs/active/audit/command-deviation-audit-2026-09.md`、`.agents/skills/scoop-gap-audit.md`——收尾四件套都会写它们，并行会话必撞，故**子代理禁止写，回填由父会话做**。
+- **汇总型热点文件（例外，仍只在主树改）**：`.agents/docs/active/plan/pending-tasks.md`、`.agents/docs/active/audit/command-deviation-audit-2026-09.md`、`.agents/docs/active/audit/scoop-gap-status.md`——收尾都会写它们，并行会话必撞，故**子代理禁止写，回填由父会话做**。
 - 仍未跟踪的本机物：`reasonix.toml`（父目录）、`.agents/tmp/`。
 - worktree 放 `.worktrees/<会话>-<slug>`；忽略规则已于 2026-09-13 提交（`140d04a`）。各 worktree 用自己的 `target/`。
 
