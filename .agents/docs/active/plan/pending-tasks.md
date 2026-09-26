@@ -288,9 +288,10 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 - 待办：`checkver.rs:47-60` 的陈旧 TODO 块清理（**归 S1**，避免与 S1 抢同一文件）；
 - §7 的归档与索引：`task-help-i18n.md`、`prompts/clap-arg-parsing-corruption-prompt.md` 及 4 份已落地 prompt → `.agents/docs/reports/`（或 `legacy/`），并更新 `reports/README.md` 索引；
 - ✅ §7 的未跟踪杂项决断（2026-09-26）：`scripts/analyze_*.py` **已删除**；根 `AGENTS.md`、`CLAUDE.md` 与 `.agents/**` **已入库**（详见 §7 表格该行）。
-- 待办（2026-09-26 新增，规则架构）：闸门锚点审计的 3 项未落地——复述收敛（8 处）、
-  根 `AGENTS.md` 的命令计数措辞、主线名措辞。清单与证据见 [`.agents/docs/active/audit/rule-gate-anchors-2026-09.md`](../audit/rule-gate-anchors-2026-09.md) §3；
-  同轮已处置的（脚本区清理、全局技能根边界）见该文件 §6。
+- ✅ 已落地（2026-09-26，规则架构）：闸门锚点审计的 3 项——复述收敛（7 组）、根 `AGENTS.md` 的命令计数措辞
+  （改指 `src/cmd/mod.rs` 的 `Command` 枚举）、主线名措辞（不再写死 `main`）。逐组本体与"去重门槛归属"的取舍见
+  [`.agents/docs/active/audit/rule-gate-anchors-2026-09.md`](../audit/rule-gate-anchors-2026-09.md) §3；
+  同轮早先处置的（脚本区清理、全局技能根边界）见该文件 §6。
 
 > **证据纪律**：每条会话交回的是**可复跑的命令 + 前后对照**，不是结论；允许用证据反驳本表（本表的 H2 曾被初判为"疑似已修"，实测推翻了它——**先重跑再下结论**）。
 

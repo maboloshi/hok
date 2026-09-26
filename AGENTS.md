@@ -52,7 +52,8 @@ user guide in `README.md`; this section highlights only what those don't cover.
 - **Commands:** `cargo build` / `cargo test` (workspace auto-includes members); `cargo build/test -p libscoop`;
   `cargo check`.
 - **Architecture:** `src/cmd/` per-cmd handlers; `build.rs` scans dir → auto-generates `__cmd_reg__.rs`
-  (add a cmd = drop a `.rs` with `execute()`; the count lives in `src/cmd/`). `src/eventloop.rs` async loop; `src/output.rs`
+  (add a cmd = drop a `.rs` with `execute()` *and* add a variant to the `Command` enum in `src/cmd/mod.rs` —
+  that enum, not the directory listing, is the command count). `src/eventloop.rs` async loop; `src/output.rs`
   style; `src/cui.rs` prompts; `src/scoop_handler.rs`; `src/i18n.rs` two-pass lang detect.
   `crates/libscoop/` install flow/extract/shim/persist/manifest/download/resolve/sync; `crates/libscoop/src/internal/`
   submodules (the module list lives in the directory — not enumerated here; it has drifted twice). `hok-shim` shared core in `crates/hok-shim/src/lib.rs` (`no_std`, fixed buffers; Scoop Shim format) + bins
