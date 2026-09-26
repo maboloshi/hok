@@ -10,6 +10,10 @@ metadata:
 本文件只保留「开工扫哪里、收尾改哪些文件」，判定细节一律以规则本体为准，不在此重复——
 **双轴归属表（生命周期 × 文档类型）只在规则本体 R1，本文件不复刻**；要找某类文档放哪，读 R1。
 
+**射程**：本技能管 `.agents/docs/**`，外加过期技能 → `.agents/archive/skills/`。仓库根的 `AGENTS.md`、
+`ARCHITECTURE.md`、`README*.md`、`CHANGELOG.md` **不参与归档与改名**；面向人的参考资料在仓库根 `docs/`
+（索引 `docs/README.md`，英文优先），那是 R6/R9 的事，不由本技能"归档"。
+
 ## 开工
 
 ```powershell

@@ -58,6 +58,9 @@ Updated: 2026-09-26
      改走「通用门槛留在全局」——本体 = 全局 `proactive-review` §7；`hok-code-organization` 只留 P2-6 判例数字
      与「解决什么真实问题」，`hok-proactive-review` 只留指针，根 Before implementing 只点名两者（不写参数）。
    - **`hok-report-archive` 复刻 R1 双轴表** → 删表，只留「开工扫哪里、收尾改哪些索引」+ 一句指向 R1。
+     原表 12 行逐行核对后，唯一**不是** R1 复述的一行（仓库根 `AGENTS.md` / `ARCHITECTURE.md` / `README*.md` /
+     `CHANGELOG.md` 不参与归档改名；根 `docs/` 的归属）改写成「射程」一段保留（后续 `docs(agents)` 小提交补回）。
+    教训：**删复述表前先逐行核对"这行在别处是否还有本体"**——边界行（本技能不碰什么）常混在复述行里。
    - **语言约定表**（根 `> Language convention` 与 `.agents/AGENTS.md` 语言约定）→ 本体 = `.agents/AGENTS.md`；
      根只留一句指向。
    - **技能 `description` 复述规则**（`hok-worktree-parallel`、`scoop-gap-audit`）
