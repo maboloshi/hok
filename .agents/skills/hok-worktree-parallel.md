@@ -1,7 +1,7 @@
 ---
 name: hok-worktree-parallel
 title: hok 并行 worktree 专属细则
-description: 在 hok 里开 worktree 并行干活、或做主线 ff-only 落地时读：新 worktree 必须先 build hok-shim、主线名从 git config worktree-merge.mainbranch 读、沙箱里 rebase/cherry-pick 的可行替代、收尾四件套。（通用纪律与脚本见全局 worktree-parallel。）
+description: 在 hok 里开 worktree 并行干活、做主线 ff-only 落地、或做会话收尾回填时读：本仓专属的 worktree 细则、沙箱坑与收尾四件套（通用纪律与脚本见全局 worktree-parallel）。
 metadata:
   type: project
 ---
@@ -16,7 +16,8 @@ metadata:
   **这是机器本地配置、不入库**——本机当前值是开发线 `refactor/edition-2024`；改主线/换分支后必须重设：
   `git config worktree-merge.mainbranch <branch>`。
 - **已入库文档**：`.agents/**`、`AGENTS.md`、`CLAUDE.md`、`docs/` 每个 worktree 都有独立副本，正常改、正常提交。
-- **汇总型热点文件（例外，仍只在主树改）**：`.agents/docs/active/plan/pending-tasks.md`、`.agents/docs/active/audit/command-deviation-audit-2026-09.md`、`.agents/docs/active/audit/scoop-gap-status.md`——收尾都会写它们，并行会话必撞，故**子代理禁止写，回填由父会话做**。
+- **汇总型热点文件（例外，仍只在主树改）**：清单与理由见 [`.agents/AGENTS.md`](../AGENTS.md) → 硬约束 1；
+  本域特有的一条：**子代理禁止写，回填由父会话做**（它们收尾都会写，并行会话必撞）。
 - 仍未跟踪的本机物：`reasonix.toml`（父目录）、`.agents/tmp/`。
 - worktree 放 `.worktrees/<会话>-<slug>`；忽略规则在根 `.gitignore`（`/.worktrees`，提交 `140d04a`）。各 worktree 用自己的 `target/`。
 
@@ -50,4 +51,4 @@ pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree 
 ## 收尾四件套（固定动作）
 ① 活动计划 [`.agents/docs/active/plan/pending-tasks.md`](../docs/active/plan/pending-tasks.md) 自己那行（原 `command-deviation-fix-plan-2026-09.md` §6 已归档进 `reports/`，剩余项 S11 余项 / H4 / R6 均已转入 pending-tasks）；② `.agents/docs/active/audit/command-deviation-audit-2026-09.md` 对应条/状态行（对标项则改 [`scoop-gap-status.md`](../docs/active/audit/scoop-gap-status.md)）；③ **写一条 devlog**（触发、格式与落哪条提交见 [`docs/AGENTS.md` R7](../docs/AGENTS.md)），再跑 `node .agents/scripts/devlog-index.mjs`（索引自动生成，禁手改）——**不再往技能里追加落地记录**（判据见 [`skills/AGENTS.md`](AGENTS.md)）。报告归档见 [[hok-report-archive]]。
 
-> 四件套里的 ③（往 `scoop-gap-audit.md` 追加条目）已废：技能只装可复用知识，记录归 devlog。
+> 曾被算作四件套之一的「往 `scoop-gap-audit.md` 追加条目」已废：技能只装可复用知识，记录归 devlog。

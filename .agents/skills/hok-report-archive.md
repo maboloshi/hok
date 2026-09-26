@@ -7,24 +7,8 @@ metadata:
 ---
 
 **规则本体 = `.agents/docs/AGENTS.md`（R1–R9，由 DSH 在触碰该目录时自动加载）。**
-本文件只保留「开工扫哪里、收尾改哪些文件」，判定细节一律以规则本体为准，不在此重复。
-
-## 目录速查（双轴重构后）
-
-| 类别 | 位置 |
-|---|---|
-| 活：规格（会被修订） | `.agents/docs/active/spec/` |
-| 活：计划（会被执行掉） | `.agents/docs/active/plan/`（`pending-tasks.md` / `private-bucket-plan-2026-09.md`） |
-| 死：整目录归档的计划+提示词 | `.agents/docs/reports/refactor/` |
-| 活：审计基线（随修复更新） | `.agents/docs/active/audit/` |
-| 活：调研（结论已定，只读） | `.agents/docs/research/` |
-| 活：日志 | `.agents/docs/devlog/YYYY-MM-DD-<english-slug>.md` + 生成的 `README.md` |
-| 活：唯一入口索引 | `.agents/docs/README.md` |
-| 死：失效报告（冻结） | `.agents/docs/reports/`（含 `prompts/` 会话输入） |
-| 死：失效提案/补丁 | `.agents/docs/legacy/` |
-| 过期技能 | `.agents/archive/skills/`（**必须在技能发现根之外**） |
-| 项目文档 | 仓库根 `AGENTS.md` / `ARCHITECTURE.md` / `README*.md` / `CHANGELOG.md` —— 永不动 |
-| 面向人的参考资料 | 仓库根 `docs/`（**入库**，英文优先，索引 `docs/README.md`） |
+本文件只保留「开工扫哪里、收尾改哪些文件」，判定细节一律以规则本体为准，不在此重复——
+**双轴归属表（生命周期 × 文档类型）只在规则本体 R1，本文件不复刻**；要找某类文档放哪，读 R1。
 
 ## 开工
 

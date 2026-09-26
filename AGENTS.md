@@ -5,9 +5,9 @@ two independent Rust reimplementations (hok, hyperscoop), and shim test utilitie
 Each project is its own git repo (no root git); `reasonix.toml` at repo root defines
 the agent workspace/sandbox. **Current working directory = `hok/`.**
 
-> **Language convention** — repo-root docs (this file, `ARCHITECTURE.md`,
-> `README.md`, `CHANGELOG.md`) are **English**; a Chinese counterpart is a separate file
-> (`README-zh.md` is the only one today). The agent workspace (`.agents/**`) is **Chinese**.
+> **Language convention** — repo-root docs (this file, `ARCHITECTURE.md`, `README.md`,
+> `CHANGELOG.md`) are **English**; the agent workspace (`.agents/**`) is **Chinese**. The per-location
+> rule (`<name>-zh.md` counterparts, translations) lives in [`.agents/AGENTS.md`](.agents/AGENTS.md) → 语言约定.
 
 ```
 Scoop/                  Original Scoop (PowerShell) package manager — v0.5.3
@@ -117,9 +117,10 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 - **Deterministic wrap-up** (fmt / clippy / tests) — global `rust-deterministic-gate`; repo specifics
   `.agents/skills/hok-rust-gate-practice` (edition 2024, file-scoped `rustfmt`, never a whole-workspace
   `cargo fmt` while the tree already has diffs).
-- **Before landing** (fill-in and records) — every session that lands something leaves exactly one devlog
-  entry, and the plan/audit row it closes is back-filled in the same pass; the entry ships as its own
-  wrap-up commit. Trigger, format and commit placement:
+- **Before landing** (fill-in and records) — every session that lands something runs the wrap-up back-fill
+  ([`.agents/skills/hok-worktree-parallel`](.agents/skills/hok-worktree-parallel.md) → 收尾四件套) and
+  leaves exactly one devlog entry, which ships as its own wrap-up commit. Trigger, format and commit
+  placement:
   [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R7; the document checks must exit 0
   (`node .agents/scripts/devlog-index.mjs --check`, `doc-links.mjs`, `docs-index-check.mjs`);
   report archiving follows [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R1–R9
@@ -141,16 +142,16 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   `.agents/skills/hok-worktree-parallel` (script path, self-test, wrap-up quartet). The load-bearing
   rules are:
   - one conversation = one worktree = one topic, based on the main line's **current** tip;
-  - the main line **`main`** advances by linear `--ff-only` only — **merge commits are forbidden**;
-    whoever lands later rebases and preserves both sides' semantics. The main line is read from
-    `git config worktree-merge.mainbranch`;
+  - the main line advances by linear `--ff-only` only — **merge commits are forbidden**; whoever lands
+    later rebases and preserves both sides' semantics. Its **name** is machine-local git config, not the
+    literal `main` (name, current value and how to reset: `.agents/skills/hok-worktree-parallel` →
+    本仓事实);
   - each worktree builds into its own `target/`; verification trusts only a binary **you** built and
     copied out yourself — and a fresh worktree must run `cargo build -p hok-shim` first, or
     `crates/libscoop/build.rs:204` panics with "hok-shim binary not found";
   - `.agents/**` and this file are tracked, so every worktree has its own copy — edit and commit them
-    normally. The **only** exception is the aggregate hotspot files
-    (`active/plan/pending-tasks.md`, `active/audit/command-deviation-audit-2026-09.md`,
-    `active/audit/scoop-gap-status.md`), which are edited in the main tree only;
+    normally. The **only** exception is the aggregate hotspot files, which are edited in the main tree
+    only (list and reason: [`.agents/AGENTS.md`](.agents/AGENTS.md) → 硬约束 1);
     `skills/scoop-gap-audit.md` is methodology only since 2026-09-26 — nothing appends to it;
   - **never `git add -A` / `git add .`** (stage by topic, file by file) and **never `git clean -fd`**.
 

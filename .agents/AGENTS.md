@@ -59,9 +59,9 @@ DSH 只保证**常驻**文件在需要时已被注入：仓库根 `AGENTS.md` �
 ## 硬约束
 
 1. **每个 worktree 都有一份**：本目录已跟踪 ⇒ 正常改、正常提交，rebase 冲突按普通文档解。
-   **例外**：汇总型热点文件（`docs/active/plan/pending-tasks.md`、
-   `docs/active/audit/command-deviation-audit-2026-09.md`、`docs/active/audit/scoop-gap-status.md`）**只在主树改**，
-   否则并行会话的收尾四件套会互相冲撞。
+   **例外（这份清单是本体，别处只留指针）**：汇总型热点文件 `docs/active/plan/pending-tasks.md`、
+   `docs/active/audit/command-deviation-audit-2026-09.md`、`docs/active/audit/scoop-gap-status.md`
+   **只在主树改**，否则并行会话的收尾回填会互相冲撞。
 2. **禁 `git add -A` / `git add .`**：提交必须按主题显式列文件；**禁 `git clean -fd`**。细则见「提交约定」。
 3. **加载时机**：DSH 在文件工具触碰本目录下文件时，把「本目录 → 项目根」链路上的 `AGENTS.md`
    注入模型（证据：`@deepseek-ai/dsh-agent-instructions/lib/index.js:515-521,578,1066`）。
@@ -79,8 +79,9 @@ DSH 只保证**常驻**文件在需要时已被注入：仓库根 `AGENTS.md` �
 
 1. **首次入库单独一条**：`chore(agents): bring the .agents workspace under version control`。
    整个目录一次进库（文件数不写死——它刚被证明会变），混进任何主题提交都会把该主题的 diff 淹掉。
-2. **此后：同主题同提交**。收尾四件套里 **计划 / 审计 / 技能** 的回填与代码改动**放同一个提交**——
-   它们是一次会话的闭环，拆开会让文档引用尚未落地的代码。**日志条目例外：自成一条收尾提交**
+2. **此后：同主题同提交**。收尾回填（**计划 / 审计 / 技能**，清单见
+   [`skills/hok-worktree-parallel.md`](skills/hok-worktree-parallel.md) → 「收尾四件套」）与代码改动
+   **放同一个提交**——它们是一次会话的闭环，拆开会让文档引用尚未落地的代码。**日志条目例外：自成一条收尾提交**
    （`docs(agents): log …`），因为条目第 3 行要引用本次主题的代码提交 sha，与代码同提交无法自引
    （触发与格式见 [`docs/AGENTS.md`](docs/AGENTS.md) R7）。纯文档/技能改动同样用 `docs(agents): …` 起头。
 3. **显式列文件**：禁 `git add -A` / `git add .`；允许按主题显式列到文件集，例如
@@ -88,8 +89,7 @@ DSH 只保证**常驻**文件在需要时已被注入：仓库根 `AGENTS.md` �
    （首次入库那一条例外：允许 `git add .agents` —— 整目录就是该提交的唯一主题。）
 4. **worktree 里改了本目录，必须随该主题提交落地**，不能留在 worktree 内——删掉 worktree 就丢了
    （未跟踪时代不存在这个风险）。
-5. **汇总型热点文件仍只在主树改**：`docs/active/plan/pending-tasks.md`、
-   `docs/active/audit/command-deviation-audit-2026-09.md`、`docs/active/audit/scoop-gap-status.md`。
+5. **汇总型热点文件仍只在主树改**（**清单与理由见「硬约束」1**，别处只留指针）。
    （`skills/scoop-gap-audit.md` 2026-09-26 起只是方法论，不再每会话回填。）
 6. **不进的**：`.agents/tmp/`、本机 `*.local.md`（已 ignore）、**机器生成的分析 dump**
    （`*_report.txt` / `*_drywall.txt` / `*_duplicates.txt`，见根 `.gitignore`——即便它们被 `reports/README.md`

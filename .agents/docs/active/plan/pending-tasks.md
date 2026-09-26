@@ -5,7 +5,8 @@
 > **权威性**：本文件是**索引**；每条的主题细节、决策记录、验收仍以「来源」列指的文件为准。
 > 任何一项做完后，**同时**回填本表与该来源；**技能只装可复用知识，落地记录进 devlog**（判据见
 > `skills/AGENTS.md`，触发与格式见 [`docs/AGENTS.md` R7](../../AGENTS.md)）。
-> **基线**：主线分支名取自 `git config worktree-merge.mainbranch`（**机器本地配置、不入库**，本机当前 = `refactor/edition-2024`）；
+> **基线**：主线分支名取自**机器本地** git 配置（键名、本机当前值与重设办法见
+> [`hok-worktree-parallel`](../../../skills/hok-worktree-parallel.md) → 本仓事实）；
 > `main` 是最终目标线，本开发线的成果**尚未并入**（合并 / push / 版本号是独立主题）。
 > **派活时以实测 tip 为准**：`git rev-parse --short $(git config worktree-merge.mainbranch)`；下表里的数字都是当时的快照。
 > **开工纪律**：先 `investigate-first`（出报告 + 选项 + 等确认），再 `worktree-parallel`
