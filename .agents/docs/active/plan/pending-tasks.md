@@ -3,9 +3,10 @@
 > **这是什么**：把散落在 `reports/command-deviation-fix-plan-2026-09.md` §8、`.agents/skills/*`、
 > `.agents/docs/reports/*`、代码内 TODO 里的**未完成项**汇到一张表。
 > **权威性**：本文件是**索引**；每条的主题细节、决策记录、验收仍以「来源」列指的文件为准。
-> 任何一项做完后，**同时**回填本表与该来源（含技能记忆）。
-> **基线**：主线 `main`（2026-09 由 `refactor/edition-2024` 并入）；**派活时以 `git log -1 --format=%h` 实测 tip 为准**——
-> 下表数值是 2026-09-25 的快照（`4bf1397`，零 merge commit）。
+> 任何一项做完后，**同时**回填本表与该来源；**技能只装可复用知识，落地记录进 devlog**（判据见 `skills/AGENTS.md`）。
+> **基线**：主线分支名取自 `git config worktree-merge.mainbranch`（**机器本地配置、不入库**，本机当前 = `refactor/edition-2024`）；
+> `main` 是最终目标线，本开发线的成果**尚未并入**（合并 / push / 版本号是独立主题）。
+> **派活时以实测 tip 为准**：`git rev-parse --short $(git config worktree-merge.mainbranch)`；下表里的数字都是当时的快照。
 > **开工纪律**：先 `investigate-first`（出报告 + 选项 + 等确认），再 `worktree-parallel`
 > （一会话一 worktree、`--ff-only` 线性落地）→ `hok-rust-gate-practice` → `proactive-review`。
 
@@ -109,12 +110,12 @@
 ## 8. 开工计划（分波 + 每会话卡片）
 
 > 依据 `.agents/skills/hok-agent-orchestration`（重叠矩阵 → 并发封顶 2–3 → prompt 契约 → 父会话收口）
-> 与 `.agents/skills/hok-worktree-parallel`（一会话一 worktree、`--ff-only` 线性落地、未跟踪文档只在主树改）。
+> 与 `.agents/skills/hok-worktree-parallel`（一会话一 worktree、`--ff-only` 线性落地、共享文档只在主树改）。
 
 ### 8.1 父会话开工前检查（每次派活前 5 分钟）
 
-1. `git log -1 --format=%h` = 主线 `main` 当前 tip（**派活时以实际 tip 为准并写进 prompt**）；
-2. `git status --short` 主树是否干净（未跟踪的 `.agents/**`、`AGENTS.md` 属正常）；有 ` M` 跟踪文件改动要先 stash 记录；
+1. `git rev-parse --short $(git config worktree-merge.mainbranch)` = 主线当前 tip（**派活时以实际 tip 为准并写进 prompt**）；
+2. `git status --short` 主树是否干净（`.agents/**` 与 `AGENTS.md` 已入库；未跟踪项只应是 `.agents/tmp/` 与本机 `*.local.md`）；有 ` M` 跟踪文件改动要先 stash 记录；
 3. `git worktree list` 只应有主树 + 本轮要开的；
 4. 合并脚本在位：`~/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1`（自测 `test-worktree-merge.ps1` 须在仓库根跑）；
 5. 本机环境坑提醒（写进每条 prompt）：**出站 HTTPS 不可用**（真实源冒烟不可行，只能本地夹具/回环）、`gh` 可用、沙箱 Schannel 不可用。
@@ -275,9 +276,9 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 2. worktree 是否**挂在分支上**（`git rev-parse --abbrev-ref HEAD` ≠ `HEAD`）；
 3. `git merge-base --is-ancestor <mainline> <branch>` = true；
 4. 主树未提交的跟踪文件改动是否会被本次 ff 覆盖（有则先 `git stash push -m "<会话>-merge-leftovers" -- <files>`，ff 后 `pop`）；
-5. ff 后 **`git ls-files .dsh` 必须 = 0**（脚本失败会误暂存未跟踪文档，发现即 `git reset`）；
+5. ff 后 **`git diff --cached --name-only` 必须为空**（收口脚本失败会把无关文档误暂存进索引，发现即 `git reset`）；
 6. 落地后在新树上重跑门禁（树与受测树逐字节相同时可省）；
-7. 回填：**本表**对应行 + fix plan §6/§8 + `.agents/skills/scoop-gap-audit.md`（未跟踪文档只在主树改）。
+7. 回填：**本表**对应行 + 审计报告对应条 + 一条 devlog（**技能里不再追加落地记录**；汇总型热点文件只在主树改）。
 
 ### 8.6 随手项（父会话主树直接做，不需 worktree）
 
@@ -298,7 +299,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 - **决策门在子代理自己的会话里回答**（GUI 会话头的血脉目录进入）；**父会话必须保持存活**，否则子代理输入框变只读。
 - **收口口径**：子代理报"可合并 tip" → 父会话
   `pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree <wt> -VerifiedRef <在重放后的树上实测过的 ref>`；
-  前提：worktree **非 detached HEAD**、`git ls-files .dsh` 落地后 = 0（脚本失败会误暂存未跟踪文档，见 `hok-worktree-parallel`）。
+  前提：worktree **非 detached HEAD**、落地后 `git diff --cached --name-only` 为空（脚本失败会把无关文档误暂存进索引，见 `hok-worktree-parallel`）。
 - **已完成**的父会话随手项：`scoop-gap-audit` 的「`mode: github` 缺 digest null 回落」已更正为已解决。
 - **暂缓**：§8.6 的归档类改动（`task-help-i18n.md`、已落地 prompts）按 `hok-report-archive` 在**会话收官时**统一做——脚本化的归档会牵动 `reports/optimization-audit-2026-09.md` 等处的路径引用，不宜在两条子代理在飞时改。
 
@@ -316,9 +317,9 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 ### 共同前置（新会话必读）
 
-- **主线 tip = `43795484`**（Wave 1 的 S1/S2 已落地，§8.4 那两张卡片是历史记录，别当待办）。
+- **主线 tip 自己取**：`git rev-parse --short $(git config worktree-merge.mainbranch)`（§8.4/§8.7 与下表里的数字都是快照、属历史记录，别当待办）。
 - 先读本文件 §1/§2（选条目）与这些 skill：`investigate-first`、`hok-worktree-parallel`、`hok-agent-orchestration`、`hok-rust-gate-practice`、`git-commit-practice`、`proactive-review`、`no-patchwork-fixes`、`token-efficient-processing`。
-- **worktree 纪律**：`.worktrees/<会话>-<slug>`，base = 主线**当前** tip；`--ff-only` 线性落地、禁 merge commit；**汇总型热点文件**（本文件、`reports/command-deviation-fix-plan-2026-09.md`、`command-deviation-audit-2026-09.md`、`scoop-gap-audit.md`）**只在主树改**，子代理禁止写（`.agents/**` 其余部分已入库）；不合主线、不碰别会话 worktree、不派生下级子代理。
+- **worktree 纪律**：`.worktrees/<会话>-<slug>`，base = 主线**当前** tip；`--ff-only` 线性落地、禁 merge commit；**汇总型热点文件**（本文件、`active/audit/command-deviation-audit-2026-09.md`、`active/audit/scoop-gap-status.md`）**只在主树改**，子代理禁止写（`.agents/**` 其余部分已入库；`skills/scoop-gap-audit.md` 自 2026-09-26 起只是方法论，不再回填）；不合主线、不碰别会话 worktree、不派生下级子代理。
 - **门禁基线（Wave 1 落地后）**：`cargo test --workspace` = **libscoop lib 752 passed / 0 failed**。⚠️ 该数字依赖沙箱为 `danger-full-access`；若退回 `workspace-write`，`permission::grant_users_write_inherit_{sets_dacl,is_idempotent}` 会因 ACL `error 5` 失败——**那是环境噪声，不是回归**。
 - **门禁命令**：`cargo clippy --workspace --all-targets -- -D warnings`（2026-09-19 起 vendored `innospect` 已退役 ⇒ **不再需要** `--exclude innospect` / `--no-deps`；`--no-deps` 仍可留着提速）；rustfmt **只对改动文件** `rustfmt --edition 2024 --config skip_children=true --check`（**别整包 `cargo fmt`**）。
 - **环境坑**：新 worktree 的 `target/` 是空的，`libscoop/build.rs` 要求 `target/{debug,release}/hok-shim.exe` ⇒ **先 `cargo build -p hok-shim`**；`git rebase --continue` 在本沙箱走不通（用 `cherry-pick -n` + `commit -C`）；提交信息**一律** `git commit -F <文件>`；**有未提交改动时绝不 `reset --hard`**；**出站 HTTPS 在 `workspace-write` 沙箱下不可用**（schannel 报 `SEC_E_NO_CREDENTIALS`；同一条 curl 在 `danger-full-access` 下返回 200，Node 自带 CA 不受影响）⇒ 真实源冒烟要么本地夹具/回环，要么放宽沙箱；**拉新的 crate 版本必须先放宽沙箱跑一次 `cargo fetch`**，缓存落盘后普通构建回到沙箱内即可。
@@ -389,6 +390,9 @@ P2 token 注入 / P3 README），配合 .agents/docs/active/plan/pending-tasks.m
 ```
 
 ### W4 收尾杂项（小会话，也可在主树直接做）
+
+> ⚠️ 本卡片写于 2026-09-13：③ 依赖的 `hindsight_ingest_document` 已无法证实存在（仓库内只剩文档自引用），
+> ④ 的未跟踪杂项已在 §7 / §8.6 决断——**这两项都别再执行**，其余照卡片。
 
 ```
 按 .agents/docs/active/plan/pending-tasks.md 的 §7 与 §8.6 做收尾：
