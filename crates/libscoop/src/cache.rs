@@ -94,20 +94,28 @@ fn matches_apps(file: &CacheFile, apps: &[String]) -> bool {
 /// Remove one cache entry (file or directory), tolerating an entry that is
 /// already gone and reporting any other failure through the session output
 /// channel so a single locked file never aborts the batch.
-fn remove_entry(session: &crate::Session, path: &Path) {
+///
+/// Returns whether this call removed it: `false` when it had already vanished
+/// (a concurrent download finishing, say) or could not be removed, so a caller
+/// that reports a summary ([`remove_incomplete`]) counts only the bytes it
+/// actually freed. Every other caller ignores the result.
+fn remove_entry(session: &crate::Session, path: &Path) -> bool {
     let result = if path.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     };
-    if let Err(e) = result
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        session.output().error(hok_i18n::t!(
-            "cmd.failed_remove_cache",
-            path = path.display(),
-            error = e
-        ));
+    match result {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            session.output().error(hok_i18n::t!(
+                "cmd.failed_remove_cache",
+                path = path.display(),
+                error = e
+            ));
+            false
+        }
     }
 }
 
@@ -295,26 +303,83 @@ fn remove_app_cache(
     Ok(removed)
 }
 
-/// Remove leftover partial downloads (`*.download`).
+/// What [`remove_incomplete`] swept away: partial downloads that no finished
+/// cache entry owns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IncompleteSweep {
+    /// `*.download` files and `<cache name>.parts` directories removed.
+    pub entries: usize,
+    /// Bytes they held, measured before the removal.
+    pub bytes: u64,
+}
+
+/// Remove leftover partial downloads: `*.download` files and the `.parts`
+/// directories a fragmented download leaves behind.
 ///
-/// Upstream runs this once after `cleanup -k` has swept every app
-/// (`scoop-cleanup.ps1:79-81`).
+/// Upstream runs the `*.download` half once after `cleanup -k` has swept every
+/// app (`scoop-cleanup.ps1:79-81`). The `.parts` half is hok's, and it is the
+/// half that accumulates: an interrupted fragmented download leaves
+/// `<cache name>.parts` holding chunks and nothing else — no cache entry exists
+/// yet — so neither [`remove_outdated`] (files only, installed apps only) nor
+/// upstream's `Remove-Item` (non-recursive) can reach it.
+///
+/// A `.parts` directory belongs to a *running* download only until its writer
+/// releases it: the recursive removal then fails against that writer's file
+/// lock and is reported through the session output channel, exactly like any
+/// other locked entry, so a concurrent download is not silently gutted.
+///
+/// Returns what it swept, so the frontend can report it. Byte sizes are summed
+/// recursively — a directory's own `metadata().len()` is 0.
 ///
 /// # Errors
 ///
 /// I/O errors will be returned if the cache directory is not readable.
-pub fn remove_incomplete(session: &crate::Session) -> Fallible<()> {
+pub fn remove_incomplete(session: &crate::Session) -> Fallible<IncompleteSweep> {
     let cache_dir = session.config().cache_path().to_path_buf();
     let Ok(entries) = cache_dir.read_dir() else {
-        return Ok(());
+        return Ok(IncompleteSweep::default());
     };
+    let mut sweep = IncompleteSweep::default();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "download") {
-            remove_entry(session, &path);
+        let is_download = path.extension().is_some_and(|ext| ext == "download");
+        let is_parts = entry.file_type().is_ok_and(|t| t.is_dir()) && is_parts_dir(&path);
+        if !(is_download || is_parts) {
+            continue;
+        }
+        let bytes = path_len(&path);
+        if remove_entry(session, &path) {
+            sweep.entries += 1;
+            sweep.bytes += bytes;
         }
     }
-    Ok(())
+    Ok(sweep)
+}
+
+/// Whether `path` is a fragmented download's parts directory: a directory whose
+/// name is a cache name plus the `.parts` suffix `download.rs` builds it with.
+///
+/// The cache-name test is the same one every other cache path uses, so an
+/// unrelated directory that merely ends in `.parts` is left alone.
+fn is_parts_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".parts") && REGEX_CACHE_FILE.is_match(name))
+}
+
+/// Total bytes under `path` — the file itself, or everything below a directory —
+/// and `0` when it cannot be measured.
+fn path_len(path: &Path) -> u64 {
+    let Ok(meta) = path.metadata() else {
+        return 0;
+    };
+    if meta.is_file() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries.flatten().map(|entry| path_len(&entry.path())).sum()
 }
 
 #[cfg(test)]
@@ -428,7 +493,8 @@ mod tests {
     /// Cache operations against a temporary session: `remove_outdated` keeps
     /// the current version and drops the rest, `remove` is anchored to the
     /// selected app and takes the aria2 sidecar with it, and
-    /// `remove_incomplete` clears `*.download` leftovers.
+    /// `remove_incomplete` clears the `*.download` leftovers (its `.parts` half
+    /// has its own test below).
     #[test]
     fn session_operations_keep_current_version_and_sidecars_in_sync() {
         let root = crate::test_utils::tmpdir("cache_ops");
@@ -471,9 +537,53 @@ mod tests {
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
         assert!(cache_dir.join("7zip.txt").exists());
 
-        remove_incomplete(&session).unwrap();
+        let sweep = remove_incomplete(&session).unwrap();
+        assert_eq!(
+            sweep,
+            IncompleteSweep {
+                entries: 1,
+                bytes: 1
+            }
+        );
         assert!(!cache_dir.join("partial.download").exists());
         assert!(cache_dir.join("7zip#26.0#c.7z").exists());
+    }
+
+    /// `remove_incomplete` also sweeps the `.parts` directory an interrupted
+    /// fragmented download leaves behind — chunks only, with no cache entry for
+    /// anything else to find — while a directory that merely ends in `.parts`
+    /// and the finished cache files stay untouched.
+    #[test]
+    fn remove_incomplete_sweeps_part_dirs() {
+        let root = crate::test_utils::tmpdir("cache_incomplete_parts");
+        let session = crate::test_utils::test_session(&root);
+        let cache_dir = root.join("cache");
+        let parts = cache_dir.join("authpass#1.9.11_2007#aaaaaaa.exe.parts");
+        std::fs::create_dir_all(&parts).unwrap();
+        std::fs::write(parts.join("part.0"), vec![0u8; 10]).unwrap();
+        std::fs::write(parts.join("part.1"), vec![0u8; 5]).unwrap();
+        std::fs::write(cache_dir.join("partial.download"), vec![0u8; 3]).unwrap();
+        std::fs::write(cache_dir.join("authpass#1.10#ccccccc.exe"), b"x").unwrap();
+        // A directory that is not cache-shaped is the user's, not ours.
+        let theirs = cache_dir.join("notes.parts");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("keep.txt"), b"x").unwrap();
+
+        let sweep = remove_incomplete(&session).unwrap();
+
+        assert_eq!(
+            sweep,
+            IncompleteSweep {
+                entries: 2,
+                bytes: 18
+            },
+            "part dir (10 + 5) + the .download leftover (3)"
+        );
+        assert!(!parts.exists(), "the parts directory is gone");
+        assert!(!cache_dir.join("partial.download").exists());
+        assert!(cache_dir.join("authpass#1.10#ccccccc.exe").exists());
+        assert!(theirs.join("keep.txt").exists(), "not a cache name: kept");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// `cleanup -k` and `cache rm <app>` must reach an odd-version name as well:

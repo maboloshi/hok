@@ -430,8 +430,18 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         ));
 
         // Upstream clears leftover partial downloads once, after the sweep
-        // (`scoop-cleanup.ps1:79-81`).
-        cache::remove_incomplete(session)?;
+        // (`scoop-cleanup.ps1:79-81`) — plus the `.parts` directories an
+        // interrupted fragmented download leaves behind, which no cache entry
+        // owns. Reported on their own line: they are not "outdated entries", and
+        // a sweep that only removed them would otherwise look like a no-op.
+        let sweep = cache::remove_incomplete(session)?;
+        if sweep.entries > 0 {
+            output::info(hok_i18n::t!(
+                "cmd.cleanup_incomplete_removed",
+                count = sweep.entries,
+                size = humansize(sweep.bytes, true)
+            ));
+        }
     }
 
     Ok(())
