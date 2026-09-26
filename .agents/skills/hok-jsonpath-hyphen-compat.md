@@ -1,17 +1,17 @@
 ---
 name: hok-jsonpath-hyphen-compat
 title: jsonpath 特殊字符字段兼容（normalize_jsonpath 修复）
-description: jsonpath 带连字符字段名兼容：normalize_jsonpath 修复（extract_version + hash 提取两处）。
+description: 改 checkver/hash 的 jsonpath 提取，或遇到 $.dist-tags.latest 这类带连字符字段名解析失败时读：normalize_jsonpath 的保守重写规则、两处应用点与库选型结论。
 metadata:
   type: project
 ---
 
-jsonpath 提取的兼容性坑与修复（2026-08-09）：
+jsonpath 提取的兼容性坑与修复：
 
 **现象**：官方 Scoop checkver 能解析 `"jsonpath": "$.dist-tags.latest"`，hok 报"无法提取版本号"。
 
-**根因**：jsonpath-rust 1.0.4 用 pest 解析，未加引号的字段名只允许 `[A-Za-z0-9_]`，`-` 等特殊字符直接 `PestError`。且 RFC 9535 标准本身也不允许未加引号的 `-`（`member-name-shorthand` 只含 name-first/ALPHA/_/DIGIT），标准写法是 `$['dist-tags'].latest`。官方 Scoop（PowerShell）JSONPath 语义宽松，接受 `$.dist-tags.latest`，所以 hok 要对齐 Scoop 必须做兼容。
+**根因**：jsonpath-rust（Cargo.lock 当前 1.0.8）用 pest 解析，未加引号的字段名只允许 `[A-Za-z0-9_]`，`-` 等特殊字符直接 `PestError`。且 RFC 9535 标准本身也不允许未加引号的 `-`（`member-name-shorthand` 只含 name-first/ALPHA/_/DIGIT），标准写法是 `$['dist-tags'].latest`。官方 Scoop（PowerShell）JSONPath 语义宽松，接受 `$.dist-tags.latest`，所以 hok 要对齐 Scoop 必须做兼容。
 
-**修复**：`crates/libscoop/src/internal/string.rs` 的 `normalize_jsonpath`——只重写简单点路径 `$.a-b.c` → `$['a-b'].c`；含 `[`/`*`/`?`/`..`/`'`/`\` 或空段的表达式原样返回（保守）。**应用两处用户可写 jsonpath 查询**：`package/checkver.rs` extract_version + `package/checkver_hash.rs` extract_hash_from_page（用户最终决策：两处都加）。GitHub digest 处（`$..assets[?...].digest`）是程序自构造，无需转换。实测 reasonix-hermes 1.12.0→1.12.1 通过；libscoop checkver 测试 22 个全过。
+**修复**：`crates/libscoop/src/internal/string.rs` 的 `normalize_jsonpath`——只重写简单点路径 `$.a-b.c` → `$['a-b'].c`；含 `[`/`*`/`?`/`..`/`'`/`\` 或空段的表达式原样返回（保守）。**应用两处用户可写 jsonpath 查询**：`package/checkver.rs:779`（`json_path`，由 `extract_version` 调用）与 `package/checkver_hash.rs:333`（`json_path_first`）。GitHub digest 处（`$..assets[?...].digest`）是程序自构造，虽然同样经过 normalize，但含 `[` 会原样返回，等于 no-op。
 
-**库选型结论**（2026-08 research）：serde_json_path 0.7.2（严格 RFC 9535、CTS、活跃、下载量大）同样拒绝 `$.dist-tags.latest`——换库不解决 `-` 问题，仍要 normalize；spath 0.3.1（serde_json_path fork、宽松）太年轻（57 stars/总下载 3.6k）不建议。jsonpath-rust 生态最大（14M/90天）、仍活跃（1.0.8 @2026-08）。当前方案 = jsonpath-rust + normalize_jsonpath，零新依赖。
+**库选型结论**（一次性调研结论，下载量/star 之类数据会漂，需要时另查）：serde_json_path（严格 RFC 9535）同样拒绝 `$.dist-tags.latest`——换库不解决 `-` 问题，仍要 normalize；spath（serde_json_path 的宽松 fork）生态太年轻，不建议。jsonpath-rust 生态最大且仍在维护。当前方案 = jsonpath-rust + normalize_jsonpath，零新依赖。

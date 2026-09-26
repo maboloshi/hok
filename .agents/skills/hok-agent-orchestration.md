@@ -48,7 +48,7 @@ metadata:
 | **量化影响面再决定做不做** | 用真实数据（本机 4 bucket / 21797 manifest）把"审计说偏离"变成"1160/3849 受影响"，顺带挖出 P0 |
 | **独立复现是强信号** | `hok checkver` 挂起被两条会话各自独立发现 ⇒ 值得立项 |
 | **先重跑再下结论** | `manifest_cache::serving_a_stale_cache_warns_once` 曾是**进程级 once latch + 并行测试**造成的 flaky（重跑即过）；2026-09-26 `9af599a` 已连语义一起修掉（闩锁搬进 `Session`）。遇到 once 标志 + 并行测试先按此排查，别当回归 |
-| **推翻旧文档 = 固化更正** | 本轮更正 3 条（checkhashes 缓存、`mode: github`、`hashExtraction.mode`"8 枚举完全一致"），都用 `hindsight_ingest_document` 存成 "Correction: …" |
+| **推翻旧文档 = 固化更正** | 更正旧结论（checkhashes 缓存、`mode: github`、`hashExtraction.mode`"8 枚举完全一致"）时必须**写回权威文档/状态表 + 一条 devlog**，只在对话里说一句等于没更正 |
 
 ## 6. 收口：落地检查单（父会话每次 ff 前 30 秒）
 1. 分支引用是否指向子代理**报的** tip？（`git rev-parse <branch>`）——子代理手工重放后常把 tip 留在 **detached HEAD** 上、分支引用还停在旧位置。

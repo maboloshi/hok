@@ -1,7 +1,7 @@
 ---
 name: hok-report-archive
 title: 报告归档规范（规则本体在 .agents/docs/AGENTS.md）
-description: hok 文档归档的开工/收尾动作：规则本体见 .agents/docs/AGENTS.md（生命周期×类型双轴、命名、头块、R4 判定、R5 冻结动作、R6 索引、R7 日志分片）；本技能只记扫哪些目录、收尾改哪些文件。
+description: 会话收尾归档 .agents/docs/ 的报告、判断文档该进 active/ 还是 reports/、或把过期技能移进 archive/ 时读：开工扫哪些目录、收尾要改哪些索引文件（规则本体是 .agents/docs/AGENTS.md 的 R1–R9）。
 metadata:
   type: project
 ---
@@ -9,7 +9,7 @@ metadata:
 **规则本体 = `.agents/docs/AGENTS.md`（R1–R9，由 DSH 在触碰该目录时自动加载）。**
 本文件只保留「开工扫哪里、收尾改哪些文件」，判定细节一律以规则本体为准，不在此重复。
 
-## 目录速查（2026-09-26 双轴重构后，原 `.dsh/docs/`）
+## 目录速查（双轴重构后）
 
 | 类别 | 位置 |
 |---|---|
@@ -40,10 +40,10 @@ Get-ChildItem .agents/docs -Recurse -File -Include *.md,*.txt
 3. 活文档有变动 → 更新 `.agents/docs/README.md`（**R6：同一改动内**）。
 4. 新增日志条目 → 新建 `.agents/docs/devlog/YYYY-MM-DD-<english-slug>.md`，再跑 `node .agents/scripts/devlog-index.mjs`（**R7**）。
 5. 过期技能 → `.agents/archive/skills/`。
-6. **随会话提交**：`.agents/**` 已入库（2026-09-26 起）；只忽略 `.agents/tmp/` 与本机 `*.local.md`。
+6. **随会话提交**：`.agents/**` 已入库；只忽略 `.agents/tmp/` 与本机 `*.local.md`。
 
 ## 两条容易踩的
 
 - `active/` ↔ `reports/` 是**双向**的：旧索引里写着「当前有效」的条目说明当时判错了，应提回 `active/`。
-- **已入库文件不得引用 `.agents/**` 当权威**（**R9**）：`README.md` / `README-zh.md` / `CHANGELOG.md` /
-  仓库根 `docs/**` 里写「详见 `.agents/docs/xxx.md`」对克隆者是死链；要么移入 `docs/`，要么改写为不带路径的叙述。
+- **引用 `.agents/docs/**` 是合法的**（**R9**）：必须用**仓库相对路径**；但面向**仓库外**读者、
+  需长期维护的文档仍放仓库根 `docs/`，不要把 `.agents/` 当成对外权威来引用。

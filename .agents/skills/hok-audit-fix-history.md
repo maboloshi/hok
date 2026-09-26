@@ -12,8 +12,9 @@ metadata:
 
 ## 事件闭环（最容易挂死的地方）
 
-- **任何流程结束/错误都必须发对应的 Done 事件**（`PackageSyncDone` / `DownloadDone` …），否则 CLI
-  `handle.join()` 永久挂死；**空包与提前返回路径同样要发**（空包死锁就是这么来的）。
+- **任何流程结束/错误都必须发对应的 Done 事件**（`PackageSyncDone` / `DownloadDone` …）：事件循环靠它们
+  `break`（`src/eventloop.rs:238,241`），不发则 CLI 主 `await` 永不返回（早期实现是 `handle.join()`）；
+  **空包与提前返回路径同样要发**（空包死锁就是这么来的）。
 - confirm 被拒 ⇒ 返回 `UserAborted`（exit 0，不打 `ok_all`）；**sync 的错误路径也要发结束事件**。
 
 ## 语义改动

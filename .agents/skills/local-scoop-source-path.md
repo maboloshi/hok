@@ -1,7 +1,7 @@
 ---
 name: local-scoop-source-path
 title: 本地 Scoop 源码位置
-description: 本地官方 Scoop 源码路径,参照行为时直接读取
+description: 需要对照官方 Scoop 行为时读：官方源码的本地副本在 hok 仓库的兄弟目录 ../Scoop/，直接读 lib/ 与 libexec/，不必联网。
 metadata:
   type: reference
 ---

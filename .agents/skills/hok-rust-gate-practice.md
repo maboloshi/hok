@@ -1,7 +1,7 @@
 ---
 name: hok-rust-gate-practice
 title: hok Rust 改动收尾实操卡（edition=2024 仓库专属）
-description: hok 专属 Rust 收尾差异（补充全局 rust-deterministic-gate）：edition 2024 独立 rustfmt、含 mod 声明的文件勿传、既有 fmt diff 时禁整包 cargo fmt。
+description: 在 hok 里跑 rustfmt/clippy 收尾时读（通用闭环见全局 rust-deterministic-gate）：edition 2024 独立 rustfmt、含 mod 声明的文件会递归格式化子模块、既有 fmt diff 时禁整包 cargo fmt、clippy 可整包跑。
 metadata:
   type: project
 ---
@@ -20,12 +20,12 @@ metadata:
   改动文件，只 fmt 本次文件。
 - **`rustfmt` 会递归子模块**：传入任何含 `mod xxx;` 声明的文件（`internal/mod.rs`、`package/checkver.rs`…）
   都会连带格式化其子模块文件——本仓 `internal/github.rs`、`internal/network.rs`、`package/checkver_hash.rs`
-  带既有 fmt 偏差，2026-09-12 两次被连带改写后 `git checkout` 回退。**不要传含 mod 声明的文件**；
+  带既有 fmt 偏差，曾两次被连带改写后 `git checkout` 回退。**不要传含 mod 声明的文件**；
   非要传就加 `--config skip_children=true`（已实测有效，`--skip-children` 不是 CLI 参数）。
 - 其余节奏（先写完整逻辑 → 收尾整轮一次 → 原始日志不回传 LLM、只回传
   OK/改 N 文件/残余 N 诊断）与全局 skill 一致。
 
-## 门禁命令（2026-09-19 起）
+## 门禁命令
 - 整包可直接跑：`cargo clippy --workspace --all-targets -- -D warnings`（`--no-deps` 可选，仅提速）。
 - **历史**：2026-09-19 之前 vendored `crates/innospect` 的既有 lint 会挡住整包 `-D warnings`，
   那时必须 `--exclude innospect --no-deps`。该 fork 已退役（改用 registry `innospect 0.1.4`，
