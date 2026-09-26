@@ -98,11 +98,18 @@ DSH 只保证**常驻**文件在需要时已被注入：仓库根 `AGENTS.md` �
 
 ## 脚本
 
-- 可复用脚本放 `scripts/`；一次性的分析/探针脚本用完即删，**不要**留在本目录。
-- 目前有：
+- 可复用脚本放 `scripts/`；一次性的分析/探针脚本用完即删（实验室是 `.agents/tmp/`，跟踪的副本只留给
+  "还要再跑一次"的），禁止散落在 `docs/` 或项目根。
+- **门禁脚本**（收尾一次跑齐）：
   - `devlog-index.mjs` —— 生成 `docs/devlog/README.md`（`--check` 为门禁模式）；
   - `doc-links.mjs` —— 文档相对链接完整性检查（`.agents/**` + `docs/**` + 根 `*.md`，断链则 exit 1）；
   - `docs-index-check.mjs` —— 索引覆盖率检查（R6：`docs/` 下的文件是否都已登记，缺口则 exit 1）。
+- **可复跑的调查工具**（被活文档引为复跑入口，故保留）：
+  - `cleanup-bench/` —— `cleanup` 删除性能与 TTY 实测 harness（`bench.rs`/`bench2.rs`/`probe3.rs` +
+    ConPTY 宿主 `conpty-capture.rs` + 真 TTY 录制样本；入口见 `docs/research/cleanup-delete-perf.md`
+    与 `docs/active/spec/cleanup-parallel-spec.md` 的「捕获工具链」）；
+  - `help-audit.js` —— 枚举全部帮助面并报告失败：`node .agents/scripts/help-audit.js <hok.exe>`；
+  - `dump-help.js` —— 逐面 dump 供改动前后逐字节比对：`node .agents/scripts/dump-help.js <hok.exe> <out-dir>`。
 
   收尾建议一次跑齐：
 

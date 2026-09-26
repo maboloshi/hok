@@ -50,6 +50,18 @@ metadata:
 - 跨仓库/外部事实：`<topic>.md`（如 `local-scoop-source-path.md`）
 - 不用日期、不用版本号。
 
+## 与全局技能根的分工
+
+跨仓库的通用纪律（`investigate-first` / `proactive-review` / `rust-deterministic-gate` /
+`worktree-parallel` / `git-commit-practice` / `file-editing` / `chinese-interaction` / …）住**机器本地**
+技能根（本机 `~/.dsh/skills`）；本目录只装 hok 专属知识。两者**不得同名**：同名技能在多个技能根里并存
+会触发 rank 覆盖（本项目实测：`.dsh/skills` rank 100 压过本目录 rank 200，日志报
+`ignored because a higher-priority skill already exists`），被压的那份静默失效。
+
+需要 hok 侧补充时：命名 `hok-<topic>.md`，正文**指向**全局本体而不是复述它（复述必漂，见
+[`.agents/AGENTS.md`](../AGENTS.md) → 「规则分层」）。同理，根 `AGENTS.md` 只点名这些全局技能作闸门，
+**不**把它们的定义搬进仓库。
+
 ## 归档
 
 过期技能移入 **`.agents/archive/skills/`**（技能发现根之外，见 [`.agents/AGENTS.md`](../AGENTS.md)）。

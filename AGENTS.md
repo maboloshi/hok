@@ -168,6 +168,12 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   `*.local.md` are ignored). Three standing rule files, each auto-loaded when a file tool touches its
   directory: [`.agents/AGENTS.md`](.agents/AGENTS.md) (workspace), [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md)
   (document standard), [`.agents/skills/AGENTS.md`](.agents/skills/AGENTS.md) (skill standard).
+- **The gates above are carried by machine-local skills** (`~/.dsh/skills` on this machine:
+  `investigate-first`, `proactive-review`, `rust-deterministic-gate`, `worktree-parallel`,
+  `git-commit-practice`, …). They are deliberately **not** vendored here: a same-name copy under
+  `.agents/skills/` would be shadowed by the higher-priority root and would only add a second,
+  drifting definition. If that root is absent, those gates are unenforced — the hok-specific detail
+  lives in `.agents/skills/hok-*` either way.
 - **Never create `.dsh/`** (directory or link): with both project-level skill roots present, the
   rank-100 `.dsh/skills` shadows `.agents/skills`.
 - Human-facing reference material goes in the repo-root `docs/` (index: [`docs/README.md`](docs/README.md)).

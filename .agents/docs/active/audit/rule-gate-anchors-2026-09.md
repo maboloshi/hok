@@ -52,12 +52,9 @@ Updated: 2026-09-26
    - `hok-report-archive` 复刻 R1 双轴表 → 降级为指针，只留"开工扫哪些目录 / 收尾改哪些索引"。
    - 语言约定表（根 §Conventions 与 `.agents/AGENTS.md` 语言约定）双份 → 根只留一句指向。
    - 技能 `description` 复述规则（`hok-worktree-parallel`、`scoop-gap-audit`）→ description 只写"何时加载"。
-2. **`.agents/scripts/` 登记不全**：`git ls-files` 实测 11 个跟踪的非 `.mjs` 文件（`dump-help.js`、
-   `help-audit.js`、两个 `*.ps1`、`cleanup-bench/` 7 个含 `.bin` 样本），`.agents/AGENTS.md` 只登记 3 个
-   `.mjs`，与 R8「一次性脚本用完即删」冲突 → 决定"删"还是"登记为调查实验区"。
-3. **根 `AGENTS.md` 命令计数措辞**（"the count lives in `src/cmd/`"）：该目录实际 39 个条目（含生成物
+2. **根 `AGENTS.md` 命令计数措辞**（"the count lives in `src/cmd/`"）：该目录实际 39 个条目（含生成物
    `__cmd_reg__.rs` 与 `shared_args.rs`）→ 建议改指 `src/cmd/mod.rs` 的 `Command` 枚举。
-4. **主线名措辞**：根 Parallel work 写死 `` `main` ``，本机 `git config worktree-merge.mainbranch` =
+3. **主线名措辞**：根 Parallel work 写死 `` `main` ``，本机 `git config worktree-merge.mainbranch` =
    `refactor/edition-2024`；虽有一句"以 config 为准"，两处并列仍易误读。
 
 ## 4. 已否决 / 不改（附理由）
@@ -78,3 +75,21 @@ Updated: 2026-09-26
 - ❌ 子代理给出的技能体积数据有误（称 `scoop-gap-audit.md` 为 4225 B，实测 **6510 B / 51 行**）→ 结论不受影响，
   但**行数/体积类数字不写进规则文件**（`skills/AGENTS.md` 的过期数字已同批删掉）。
 - ⏸ 本轮未核实：全局技能 `file-editing` 正文、`~/.dsh/skills/.archive/`。
+
+## 6. 本轮已处置的缺口（跟进记录）
+
+- **`.agents/scripts/` 与 R8 的冲突**（原则是"用完即删"，实验室在 `.agents/tmp/`）。按"是否还要再跑一次"逐项处置：
+  - **删**：`json-tolerance-probe.ps1`、`private-bucket-probe.ps1`——两者在文档里只以 `.agents/tmp/` 路径被引用
+    （`active/audit/optimization-audit-2026-09.md`、`active/plan/private-bucket-plan-2026-09.md`），跟踪副本是
+    入库时的遗留，**可从 `b8ce863` 取回**。
+  - **留并登记**：`cleanup-bench/`（`docs/research/cleanup-delete-perf.md` 标为"复跑"、`active/spec/cleanup-parallel-spec.md`
+    标为"捕获工具链"）、`help-audit.js` 与 `dump-help.js`（`reports/prompts/clap-arg-parsing-corruption-prompt.md`
+    给出调用命令；该报告已冻结，删脚本会让复现路径失效）。
+  - 连带：`.agents/AGENTS.md` 的「脚本」一节把三类分开列（门禁 / 可复跑调查工具 / 用完即删），规则句补上
+    "实验室是 `.agents/tmp/`"。
+- **全局技能根边界：决定不搬，改为明写**（原为"搬进 `.agents/skills/` 还是写清边界"的决策门）。
+  - 理由：本目录与机器本地根**同名即覆盖**（实测 `.dsh/skills` rank 100 压过 `.agents/skills` rank 200，
+    日志报 `ignored because a higher-priority skill already exists`）⇒ 把 `investigate-first` 等原名搬进来
+    会被全局那份静默压掉；改名成 `hok-investigate-first` 则同时存在两份定义，正好是我在 §3 要收敛的"复述漂移"。
+  - 处置：根 `AGENTS.md`（Agent workspace）点明这些闸门由机器本地技能承载、**缺该根则闸门不生效**；
+    `.agents/skills/AGENTS.md` 新增「与全局技能根的分工」，写明不得同名、需要补充时用 `hok-*` 且只指向本体。
