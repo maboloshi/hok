@@ -25,6 +25,7 @@
 |---|---|
 | [`scoop-gap-analysis-2026-08.md`](active/audit/scoop-gap-analysis-2026-08.md) | 与官方 Scoop 的差距总表 + manifest 解析单入口细节 |
 | [`unsafe-audit.md`](active/audit/unsafe-audit.md) | `unsafe` 全量审计与豁免分类（`unsafe_code = deny` 的依据） |
+| [`scoop-gap-status.md`](active/audit/scoop-gap-status.md) | **对标差距的逐项现状**（P0/P1/P2/P3 的 ✅/⏸ 与依据）；方法论见技能 `scoop-gap-audit` |
 | [`command-deviation-audit-2026-09.md`](active/audit/command-deviation-audit-2026-09.md) | 36 个子命令 vs 官方 0.5.3 的偏离审计（约 280 条） |
 | [`optimization-audit-2026-09.md`](active/audit/optimization-audit-2026-09.md) | 精简 / 合并 / 优化空间审计（clippy + cargo-modules + machete + drywall + jscpd） |
 | [`s7-s14-investigation-2026-09.md`](active/audit/s7-s14-investigation-2026-09.md) | S7+S14 低风险批量逐项对照与落地进度 |

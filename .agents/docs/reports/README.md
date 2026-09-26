@@ -8,6 +8,7 @@
 
 | 文件 | 内容 | 归档原因 |
 |---|---|---|
+| `audit-fix-history-2026-08.md` | 审计修复史：2026-08-12/13 三轮（历史重构残留 / 隐藏问题 / 修复回归边界）+ uninstall 对齐官方收官 | **整段历史已闭环**；通用教训已提炼进技能 [[hok-audit-fix-history]]，五段 2026-08-15 记录并入 devlog `2026-08-15-nsis-extraction-and-7z-perf.md`（2026-09-26 归档） |
 | `refactor/`（12 篇：`plan.md` + `tokio-purity-plan.md` + `prompts/`） | Edition 2024 重构总计划与各阶段/纯净化 P1–P5 开工提示词 | **重构已完成并合入 `main`**（阶段 0–5、P1–P5 全 ✅）；整目录转为历史 |
 | `command-deviation-fix-plan-2026-09.md` | 全命令偏离修复计划 S1–S14（决策门 / 验收标准 / 提交拆分） | 计划已执行到收口；**未落地项（S11 余项 `ci-auto-pr`→H4、`checkurls`、`virustotal`、R6 头替换语义）已于 2026-09-26 转入** [`../active/plan/pending-tasks.md`](../active/plan/pending-tasks.md) |
 | `FINAL-REPORT-2026-08.md` | 2026-08 综合报告（框架修复 + 差距分析 + backlog） | 会话性总结，结论已吸收进活文档与技能记忆 |

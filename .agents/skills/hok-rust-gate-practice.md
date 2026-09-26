@@ -24,3 +24,11 @@ metadata:
   非要传就加 `--config skip_children=true`（已实测有效，`--skip-children` 不是 CLI 参数）。
 - 其余节奏（先写完整逻辑 → 收尾整轮一次 → 原始日志不回传 LLM、只回传
   OK/改 N 文件/残余 N 诊断）与全局 skill 一致。
+
+## 门禁命令（2026-09-19 起）
+- 整包可直接跑：`cargo clippy --workspace --all-targets -- -D warnings`（`--no-deps` 可选，仅提速）。
+- **历史**：2026-09-19 之前 vendored `crates/innospect` 的既有 lint 会挡住整包 `-D warnings`，
+  那时必须 `--exclude innospect --no-deps`。该 fork 已退役（改用 registry `innospect 0.1.4`，
+  见 `crates/libscoop/Cargo.toml` 与`.agents/docs/devlog/2026-09-19-innospect-registry-retire-fork.md`），
+  旧写法已失效——`.agents/docs/active/audit/s7-s14-investigation-2026-09.md` 里带
+  `〔pre-2026-09-19 …〕` 标记的行只作历史记录，别照抄。
