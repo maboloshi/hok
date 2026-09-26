@@ -12,7 +12,7 @@
 |---|---|---|---|
 | 2026-09-26 | 技能内容级审查：断言过期 / 重复 / description / 同名归档件 | `2806108` `1a9249a` `8c97220` | [`2026-09-26-skill-content-audit.md`](2026-09-26-skill-content-audit.md) |
 | 2026-09-26 | 清单缓存告警闩锁搬家：`serving_a_stale_cache_warns_once` flaky 连根修 | `9af599a` | [`2026-09-26-manifest-cache-warn-latch.md`](2026-09-26-manifest-cache-warn-latch.md) |
-| 2026-09-26 | 日志触发的收口与规则载体的闸门锚点审计 | `74de6a1` `c186cf5` `e1a2bce` | [`2026-09-26-devlog-trigger-and-gate-anchors.md`](2026-09-26-devlog-trigger-and-gate-anchors.md) |
+| 2026-09-26 | 日志触发的收口与规则载体的闸门锚点审计 | `74de6a1` `c186cf5` `e1a2bce` `d3d6ffb` | [`2026-09-26-devlog-trigger-and-gate-anchors.md`](2026-09-26-devlog-trigger-and-gate-anchors.md) |
 | 2026-09-25 | 下载超时/哈希详情/缓存命中三点修正 + 延迟校验竞态登记 | `4b2004b` `d49d6dd` `cdcfab1` `6620d69` | [`2026-09-25-download-timeout-hash-cache.md`](2026-09-25-download-timeout-hash-cache.md) |
 | 2026-09-25 | `hok download <合法本地 manifest>` 主线程栈溢出 | `6620d69` | [`2026-09-25-download-stack-overflow.md`](2026-09-25-download-stack-overflow.md) |
 | 2026-09-25 | `.parts` 残留分片清理：`remove_incomplete` 补上分片下载那半 | `7b92635` | [`2026-09-25-cleanup-parts-residual.md`](2026-09-25-cleanup-parts-residual.md) |
