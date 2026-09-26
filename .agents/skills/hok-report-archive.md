@@ -38,7 +38,7 @@ Get-ChildItem .agents/docs -Recurse -File -Include *.md,*.txt
    只在 `Status:` 下加 `Archived: YYYY-MM-DD`），并修掉 inbound link。
 2. 更新 `.agents/docs/reports/README.md` 索引（文件 / 内容 / 归档原因）。
 3. 活文档有变动 → 更新 `.agents/docs/README.md`（**R6：同一改动内**）。
-4. 新增日志条目 → 新建 `.agents/docs/devlog/YYYY-MM-DD-<english-slug>.md`，再跑 `node .agents/scripts/devlog-index.mjs`（**R7**）。
+4. 会话有落地 → 新建 `.agents/docs/devlog/YYYY-MM-DD-<english-slug>.md`，再跑 `node .agents/scripts/devlog-index.mjs`（触发、格式与落哪条提交见 [`docs/AGENTS.md` R7](../docs/AGENTS.md)）。
 5. 过期技能 → `.agents/archive/skills/`。
 6. **随会话提交**：`.agents/**` 已入库；只忽略 `.agents/tmp/` 与本机 `*.local.md`。
 

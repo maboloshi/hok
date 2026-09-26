@@ -106,6 +106,11 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 - **Deterministic wrap-up** (fmt / clippy / tests) — global `rust-deterministic-gate`; repo specifics
   `.agents/skills/hok-rust-gate-practice` (edition 2024, file-scoped `rustfmt`, never a whole-workspace
   `cargo fmt` while the tree already has diffs).
+- **Before landing** (fill-in and records) — every session that lands something leaves exactly one devlog
+  entry, and the plan/audit row it closes is back-filled in the same pass; the entry ships as its own
+  wrap-up commit. Trigger, format and commit placement:
+  [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R7; report archiving:
+  `.agents/skills/hok-report-archive`.
 
 ### Session hygiene
 - Global `session-scope-guard`: once a topic has clearly drifted from the opening subject *and* will
@@ -152,9 +157,10 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 - **Never create `.dsh/`** (directory or link): with both project-level skill roots present, the
   rank-100 `.dsh/skills` shadows `.agents/skills`.
 - Human-facing reference material goes in the repo-root `docs/` (index: [`docs/README.md`](docs/README.md)).
-- **Committing `.agents/**`**: the first landing is one dedicated commit; after that, the wrap-up quartet
-  rides along with its code topic (one topic = one commit), files are staged explicitly (never
-  `git add -A` / `.`), and anything changed inside a worktree must land with that topic. Full rules:
+- **Committing `.agents/**`**: the first landing is one dedicated commit; after that the plan/audit/skill
+  back-fill rides along with its code topic (one topic = one commit), while the devlog entry ships as its
+  own wrap-up commit — it has to cite that topic's sha. Files are staged explicitly (never `git add -A` / `.`),
+  and anything changed inside a worktree must land with that topic. Full rules:
   [`.agents/AGENTS.md`](.agents/AGENTS.md) → 「提交约定」.
 - References into `.agents/**` from tracked files must be **repo-relative**; machine-local absolute paths
   inside historical records stay verbatim.

@@ -3,7 +3,8 @@
 > **这是什么**：把散落在 `reports/command-deviation-fix-plan-2026-09.md` §8、`.agents/skills/*`、
 > `.agents/docs/reports/*`、代码内 TODO 里的**未完成项**汇到一张表。
 > **权威性**：本文件是**索引**；每条的主题细节、决策记录、验收仍以「来源」列指的文件为准。
-> 任何一项做完后，**同时**回填本表与该来源；**技能只装可复用知识，落地记录进 devlog**（判据见 `skills/AGENTS.md`）。
+> 任何一项做完后，**同时**回填本表与该来源；**技能只装可复用知识，落地记录进 devlog**（判据见
+> `skills/AGENTS.md`，触发与格式见 [`docs/AGENTS.md` R7](../../AGENTS.md)）。
 > **基线**：主线分支名取自 `git config worktree-merge.mainbranch`（**机器本地配置、不入库**，本机当前 = `refactor/edition-2024`）；
 > `main` 是最终目标线，本开发线的成果**尚未并入**（合并 / push / 版本号是独立主题）。
 > **派活时以实测 tip 为准**：`git rev-parse --short $(git config worktree-merge.mainbranch)`；下表里的数字都是当时的快照。
@@ -278,7 +279,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 4. 主树未提交的跟踪文件改动是否会被本次 ff 覆盖（有则先 `git stash push -m "<会话>-merge-leftovers" -- <files>`，ff 后 `pop`）；
 5. ff 后 **`git diff --cached --name-only` 必须为空**（收口脚本失败会把无关文档误暂存进索引，发现即 `git reset`）；
 6. 落地后在新树上重跑门禁（树与受测树逐字节相同时可省）；
-7. 回填：**本表**对应行 + 审计报告对应条 + 一条 devlog（**技能里不再追加落地记录**；汇总型热点文件只在主树改）。
+7. 回填：**本表**对应行 + 审计报告对应条 + 一条 devlog（触发与格式见 [docs/AGENTS.md R7](../../AGENTS.md)；**技能里不再追加落地记录**；汇总型热点文件只在主树改）。
 
 ### 8.6 随手项（父会话主树直接做，不需 worktree）
 

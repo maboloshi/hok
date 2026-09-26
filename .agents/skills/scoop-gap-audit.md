@@ -25,7 +25,8 @@ metadata:
 - **行为锚**：本地官方源码 `../Scoop/libexec|lib`（见 [[local-scoop-source-path]]），**勿联网**。
 - **编号**：P0 = 不兼容/静默错误；P1 = CLI 兼容缺口；P2 = 功能缺口；P3 = 低/风格。
   状态 **✅=已修 / ⏸=暂缓或有意不做**。
-- **收尾**：每修完一项 → 改状态表那一行 + 写一条 devlog。**别再往本文件堆落地记录**（判据见
+- **收尾**：每修完一项 → 改状态表那一行 + 写一条 devlog（触发与格式见
+  [`docs/AGENTS.md` R7](../docs/AGENTS.md)）。**别再往本文件堆落地记录**（判据见
   [`skills/AGENTS.md`](AGENTS.md)）。
 
 ## Manifest 解析专题（单入口架构）

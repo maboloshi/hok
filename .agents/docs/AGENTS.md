@@ -98,6 +98,11 @@ Updated: YYYY-MM-DD
 
 ## R7 日志：一条一文件
 
+- **何时写**：**每个有落地的开发会话写一条**——判据是"有没有落地"，不是"改动够不够大"。
+  计入：代码或文档改动落地、计划项/对标项修完、更正旧结论、审计或调研产出。纯问答、只读排查不计入。
+  常驻闸门见根 `AGENTS.md` → `### Gates (non-trivial changes)` → **Before landing**。
+- **落在哪条提交**：**自成一条收尾提交**（`docs(agents): log …`），不与代码同提交——第 3 行要引用
+  本次主题的代码提交 sha，同提交就无法自引。
 - 位置：`docs/devlog/YYYY-MM-DD-<english-slug>.md`（**扁平**，按文件名排序即时间序）。
   索引 `docs/devlog/README.md` 由 `scripts/devlog-index.mjs` 生成，**禁手改**。
 - 条目格式（脚本按此解析）：

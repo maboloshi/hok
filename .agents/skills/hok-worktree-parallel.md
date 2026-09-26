@@ -48,6 +48,6 @@ pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree 
 - 自测（须在本仓根运行）：`pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/test-worktree-merge.ps1"`。
 
 ## 收尾四件套（固定动作）
-① 活动计划 [`.agents/docs/active/plan/pending-tasks.md`](../docs/active/plan/pending-tasks.md) 自己那行（原 `command-deviation-fix-plan-2026-09.md` §6 已归档进 `reports/`，剩余项 S11 余项 / H4 / R6 均已转入 pending-tasks）；② `.agents/docs/active/audit/command-deviation-audit-2026-09.md` 对应条/状态行（对标项则改 [`scoop-gap-status.md`](../docs/active/audit/scoop-gap-status.md)）；③ **写一条 devlog** `.agents/docs/devlog/YYYY-MM-DD-<english-slug>.md`，再跑 `node .agents/scripts/devlog-index.mjs`（索引自动生成，禁手改）——**不再往技能里追加落地记录**（判据见 [`skills/AGENTS.md`](AGENTS.md)）。报告归档见 [[hok-report-archive]]。
+① 活动计划 [`.agents/docs/active/plan/pending-tasks.md`](../docs/active/plan/pending-tasks.md) 自己那行（原 `command-deviation-fix-plan-2026-09.md` §6 已归档进 `reports/`，剩余项 S11 余项 / H4 / R6 均已转入 pending-tasks）；② `.agents/docs/active/audit/command-deviation-audit-2026-09.md` 对应条/状态行（对标项则改 [`scoop-gap-status.md`](../docs/active/audit/scoop-gap-status.md)）；③ **写一条 devlog**（触发、格式与落哪条提交见 [`docs/AGENTS.md` R7](../docs/AGENTS.md)），再跑 `node .agents/scripts/devlog-index.mjs`（索引自动生成，禁手改）——**不再往技能里追加落地记录**（判据见 [`skills/AGENTS.md`](AGENTS.md)）。报告归档见 [[hok-report-archive]]。
 
 > 四件套里的 ③（往 `scoop-gap-audit.md` 追加条目）已废：技能只装可复用知识，记录归 devlog。
