@@ -11,7 +11,7 @@ metadata:
 ## hok 专属对照项
 1. **官方行为锚点**：读本地官方 Scoop 源码（`../Scoop\libexec|lib`，见 [[local-scoop-source-path]]）核对语义——参数含义、错误处理（error+continue vs abort）、幂等性、守卫条件、schema 字段归属；结论带 file:line。
 2. **架构合规**：五层单向依赖、模块职责单一（命名即文档）、剥离彻底性（无泄漏的依赖语义，如 permission 不依赖 persist_root）——细则见 [[hok-code-organization]]。
-3. **去重门槛**：去重类改动必须给出 ①净行数（`git diff --numstat`）②新增间接层 ③是否引入新写法 ④覆盖范围；**净增代码/净增间接层且真实问题无证据 → 否决**。门槛与反面案例的正文见 [[hok-code-organization]]。
+3. **去重门槛**：**本体见全局 skill `proactive-review` §7**（本文件不复述）；本仓判例（P2-6 clap `flatten`）见 [[hok-code-organization]]。
 4. **命名对齐官方**（如 `persist_permission` 而非 `ensure_global_permission`）。
 
 ## 历史教训（这些曾因「提交后才 review」产生补丁 commit，提交前就应抓住）

@@ -107,8 +107,9 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 ### Gates (non-trivial changes)
 - **Before implementing** — global `investigate-first`: research → report (evidence + options + a
   recommendation) → wait for an explicit go-ahead. When the request is ambiguous, ask; never treat
-  "this is obviously a bug" as permission. Refactors and dedup additionally pass
-  `.agents/skills/hok-code-organization` (name the real problem first; the four-part threshold).
+  "this is obviously a bug" as permission. Refactors and dedup additionally pass global
+  `proactive-review` (its dedup threshold, §7) and `.agents/skills/hok-code-organization`
+  (name the real problem first; the P2-6 case).
 - **Before committing** — global `proactive-review`; repo-specific checklist
   `.agents/skills/hok-proactive-review`.
 - **Before staging** — global `git-commit-practice`: one topic = one commit; run git with

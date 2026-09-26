@@ -1,7 +1,7 @@
 ---
 name: scoop-gap-audit
 title: Scoop 对标差距审计（方法论 + manifest 解析单入口）
-description: 与官方 Scoop 对标时的方法与入口——怎么跑差距审计、P0–P3 编号与 ✅/⏸ 语义、manifest 单入口解析契约、以及现状表/报告在哪。本文只装"怎么做"，不装"做过什么"。
+description: 与官方 Scoop 对标、或要查 hok 差距现状（P0–P3）与偏离审计入口时读：审计怎么跑、方法要点，以及现状表 / 报告 / 修复计划的落点。本文只装"怎么做"，不装"做过什么"。
 metadata:
   type: project
 ---

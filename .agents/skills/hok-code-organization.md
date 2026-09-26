@@ -1,7 +1,7 @@
 ---
 name: hok-code-organization
 title: Hok 代码组织规范
-description: 往 hok 加代码、做重构/去重、或新增目录与共享函数之前读：五层单向依赖、目录布局与 *_dir 语义、跨管道共享函数与坑、去重四项量化门槛与验收清单。
+description: 往 hok 加代码、做重构/去重、或新增目录与共享函数之前读：五层单向依赖、目录布局与 *_dir 语义、跨管道共享函数与坑、去重门槛的本仓判例（P2-6）与验收清单。
 metadata:
   type: project
 ---
@@ -10,7 +10,11 @@ Hok 代码组织规范（合并自 purpose/layering/target-structure/guide-check
 
 **Why:** 用户明确：重构/去重前先问「解决什么真实问题」（行为不一致/漂移风险/正确性 bug/维护成本），答不上就不做；行数、重复数量不是目标，**可漂移的重复**才值得合并；度量用「问题是否解决」而非行数；先读官方 Scoop 源码定行为锚（[[local-scoop-source-path]]）；「顺带」改动单独评估独立价值。
 
-**去重/重构量化门槛（P2-6 否决案例）：** 去重类改动提交前必须量化四项——①净行数（`git diff --numstat`）②新增间接层（`.enabled()`、`args.x.y` 之类）③是否引入第 N 套写法（与既有模式并存 = 一致性下降）④覆盖范围（只能合并「可合并子集」⇒ 剩下的大头仍重复，反而更不统一）。**净增代码或净增间接层、且真实问题无证据（无漂移、无 bug）→ 直接否决，不提交。** 案例：给 3 个从未漂移的 flag（`--offline`/`--no-hash-check`/`--assume-yes`）做 clap `flatten`，`--help` 逐字节一致，但净 **+54 行**、15 处 flatten + 14 处 `.enabled()`，而重复最重的 `--global`（9 处/6 种帮助文案）**无法**合并 ⇒ 已回退（见 `.agents/docs/active/audit/optimization-audit-2026-09.md` §8）。例外：`[workspace.dependencies]` 属依赖声明单点化，收益是版本/feature 防漂移（`flate2` 丢 `zlib-rs` 会把 `miniz_oxide` 拉回依赖树），代价是读者需跳转根 manifest——这类「防漂移」收益成立才做。
+**去重/重构量化门槛**：**本体见全局 skill `proactive-review` §7**（本文件不复述，只留本仓判例）。
+**判例（P2-6）**是给 3 个从未漂移的 flag（`--offline`/`--no-hash-check`/`--assume-yes`）做 clap `flatten`，
+`--help` 逐字节一致，但净 **+54 行**、15 处 flatten + 14 处 `.enabled()`，而重复最重的 `--global`
+（9 处/6 种帮助文案）**无法**合并 ⇒ 已回退（见 `.agents/docs/active/audit/optimization-audit-2026-09.md` §8）。
+例外：`[workspace.dependencies]` 属依赖声明单点化，收益是版本/feature 防漂移（`flate2` 丢 `zlib-rs` 会把 `miniz_oxide` 拉回依赖树），代价是读者需跳转根 manifest——这类「防漂移」收益成立才做。
 
 **How to apply:** 添加代码前走归属决策；lib.rs/mod.rs 用分区注释（`// ===` 或 `// ───`，全文一致）；mod.rs 只放子模块声明+核心类型。
 
