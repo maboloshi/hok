@@ -34,9 +34,15 @@ metadata:
 
 ## 提交与工具
 
-- PowerShell 里传含 `$` 的 commit message 用**单引号**（双引号会把 `$fname` 展开成空——已踩过）。
+- PowerShell 内联提交信息的展开坑（`$` / 反引号）与替代写法（`git commit -F <文件>`）见 [[hok-worktree-parallel]]。
 - rustfmt 单文件会递归格式化子模块 ⇒ 见 [[hok-rust-gate-practice]]（不在本文重复）。
 - 同一文件混多个主题、拆不出干净 commit 时，在 message 里注明。
+
+## 测试与并行
+
+- **"偶发红"先怀疑测试自身**：进程级 once 闩锁 + 并行测试会产生假 flaky（重跑即过）。闩锁要挂在**会话**
+  （`Session::mark_stale_warned` / `mark_mismatch_warned`，key 用 `bucket/name`）而不是进程 static，
+  并行跑同一测试才稳定。
 
 ## 相关
 

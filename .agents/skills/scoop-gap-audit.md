@@ -25,8 +25,8 @@ metadata:
 - **行为锚**：本地官方源码 `../Scoop/libexec|lib`（见 [[local-scoop-source-path]]），**勿联网**。
 - **编号**：P0 = 不兼容/静默错误；P1 = CLI 兼容缺口；P2 = 功能缺口；P3 = 低/风格。
   状态 **✅=已修 / ⏸=暂缓或有意不做**。
-- **收尾**：每修完一项 → 改状态表那一行 + 写一条 devlog。**别再往本文件堆落地记录**
-  （判据见 [`skills/AGENTS.md`](AGENTS.md)：把日期和提交号删掉还有指导价值吗？）。
+- **收尾**：每修完一项 → 改状态表那一行 + 写一条 devlog。**别再往本文件堆落地记录**（判据见
+  [`skills/AGENTS.md`](AGENTS.md)）。
 
 ## Manifest 解析专题（单入口架构）
 **所有 JSON 读取收敛到单一入口**：`internal::json::{parse_str, parse_str_or_none}` —— `strip_bom`（`internal/string.rs`）→ serde_json 严格 → json5 回退，两者都失败时报**严格错误**。消费者：`Manifest::parse/from_json/parse_str`、`config::read_json_file`、`formatjson::{format_manifest_file, schema_warnings}`，外加 psengine/script 的行级 BOM（非 JSON）。`grep "json5::from_str"` 全仓仅剩该模块一处；唯一吞错入口 = `parse_str_or_none`（仅 `schema_warnings`，官方无对应调用点）。I/O 与字节解码**留在调用方**（官方读 API 本就不同：`ReadAllLines` 探测编码 / `Get-Content -Encoding UTF8` / `ReadAllText`）。
