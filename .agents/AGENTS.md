@@ -62,7 +62,7 @@
 本目录**已入库** ⇒ 提交行为本身也是约定的一部分。
 
 1. **首次入库单独一条**：`chore(agents): bring the .agents workspace under version control`。
-   135 个文件一次进库，混进任何主题提交都会把该主题的 diff 淹掉。
+   整个目录一次进库（文件数不写死——它刚被证明会变），混进任何主题提交都会把该主题的 diff 淹掉。
 2. **此后：同主题同提交**。收尾四件套（计划 / 审计 / 技能 / 日志）与代码改动**放同一个提交**——
    它们是一次会话的闭环，拆开会让文档引用尚未落地的代码。只有**纯**文档/技能改动才用
    `docs(agents): …` 起头。
@@ -73,8 +73,10 @@
    （未跟踪时代不存在这个风险）。
 5. **汇总型热点文件仍只在主树改**：`docs/active/plan/pending-tasks.md`、
    `docs/active/audit/command-deviation-audit-2026-09.md`、`skills/scoop-gap-audit.md`。
-6. **不进的**：`.agents/tmp/`、本机 `*.local.md`（已 ignore）、一次性探针脚本（用完即删；
-   提交前用 `git status --short` 复核，别让"忘了删"的东西混进来）。
+6. **不进的**：`.agents/tmp/`、本机 `*.local.md`（已 ignore）、**机器生成的分析 dump**
+   （`*_report.txt` / `*_drywall.txt` / `*_duplicates.txt`，见根 `.gitignore`——即便它们被 `reports/README.md`
+   登记也不入库；索引 ≠ 版本控制）、一次性探针脚本（用完即删；提交前用 `git status --short` 复核，
+   别让"忘了删"的东西混进来）。
 
 ## 脚本
 

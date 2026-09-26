@@ -27,10 +27,10 @@
 | `s6-cleanup-cache-investigation-2026-09.md` | S6 `cleanup`/`cache` 数据安全：`-k` 保留当前版本、`cache rm` 按 app 名锚定、`-g` 管理员门与 `-a -g` 两趟 | 已闭环（`1e6b929`/`33ba858`/`1c1311b`/`cc2c072`） |
 | `download-stack-overflow-2026-09-25.md` | `hok download <合法本地 manifest>` 主线程栈溢出（0xC00000FD）：判别式 + 调用链定位 + 栈预算分解 + 方案 A–E 对照 | 已闭环（`6620d69`：链接期预留 8 MiB + CLI 级回归测试） |
 | `archive-refactor-retrospective.md` | 复盘：`archive.rs` 反复修改的教训（同一函数 4 个提交改 550+ 行、"加-删-加"重复） | 纯历史复盘，教训已吸收（2026-09-26 归档） |
-| `duplicates_report.txt` | 工作区重复代码扫描产物 | 分析产物，结论已用 |
-| `large_duplicates.txt` | 大重复块扫描产物 | 分析产物，结论已用 |
-| `full_workspace_report.txt` | 工作区全量分析报告 | 分析产物，结论已用 |
-| `full_workspace_drywall.txt` | 工作区 drywall 扫描产物 | 分析产物，结论已用 |
+| `duplicates_report.txt` | 工作区重复代码扫描产物（2026-07-27） | **机器生成产物，不入库**（本机保留）；结论已用，且行号锚定重构前的树 |
+| `large_duplicates.txt` | 大重复块扫描产物（2026-07-27） | **机器生成产物，不入库**（本机保留）；结论已用 |
+| `full_workspace_report.txt` | 工作区全量分析报告（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用，且引用已失效的 `crates/hok-shim-ref` |
+| `full_workspace_drywall.txt` | 工作区 drywall 扫描产物（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用 |
 | `prompts/`（7 篇） | 交给子代理 / 会话的 prompt 原文（base64 单编解码、clap 参数解析损坏、当前版本解析统一、i18n 自研替换、阶段 3b 源头发射门控、单步 spinner、宽松 JSON 单入口） | **非文档**：会话输入，2026-09-26 从 `docs/prompts/` 与 `docs/refactor/prompts/` 分离后归此 |
 
 ## 2026-09-26 移出本目录（判定当时就错）
@@ -48,5 +48,8 @@
 ## 说明
 
 - 以上文件均**已入库**（`.agents/**` 自 2026-09-26 起纳入版本控制）；归档 = 文件移动 + 索引更新 + 一次提交。
+- **唯一例外**：4 个机器生成的扫描产物（`duplicates_report.txt`、`large_duplicates.txt`、`full_workspace_report.txt`、
+  `full_workspace_drywall.txt`）按根 `.gitignore` 的「Generated analysis reports」约定**留在本机不入库**——
+  索引登记它们是为了说明"这里曾有过什么"，不代表它们进版本库。
 - 活文档入口：[`../README.md`](../README.md)。前沿计划：[`../reports/command-deviation-fix-plan-2026-09.md`](../reports/command-deviation-fix-plan-2026-09.md) 与 [`../active/plan/pending-tasks.md`](../active/plan/pending-tasks.md)。
 - 归档时**正文一字不动**，只在 `Status:` 行下插入 `Archived: YYYY-MM-DD`（历史文件当时无 `Status:` 头，则不加）。

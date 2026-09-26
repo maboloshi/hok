@@ -21,7 +21,9 @@ scripts/benchmark-output/
 Thumbs.db
 .DS_Store
 
-# Generated analysis reports
+# Generated analysis reports — machine dumps from one-off scans.
+# Deliberately unanchored: these never enter git, including copies archived
+# under `.agents/docs/reports/` (that index marks them as "not tracked").
 *_report.txt
 *_drywall.txt
 *_duplicates.txt
