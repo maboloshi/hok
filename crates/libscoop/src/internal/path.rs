@@ -61,10 +61,13 @@ pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 }
 
 // ─── Scoop layout helpers ────────────────────────────────────────────────
-// Root-parameterised layout resolvers. Kept only for call sites that cannot
-// use `Session` methods — i.e. rayon parallel scans in `package::query`,
-// where `&Session` is not `Sync` and cannot cross thread boundaries. All
-// other layout accessors live on `Session` (`session.apps_dir()` etc.).
+// Root-parameterised layout resolver, kept for call sites that carry only a
+// resolved root instead of a `Session`: the rayon scans in `package::query`
+// hand their workers plain values (`root_path`, `apps_dir`, `no_junction`) and
+// borrow no session state. This is a data-threading choice, not a thread-safety
+// requirement — `Session` is `Sync + Send` since the RwLock/AtomicBool/OnceLock
+// refactor (locked in by `session.rs` `session_is_sync_send`). All other layout
+// accessors live on `Session` (`session.apps_dir()` etc.).
 //
 // # User-level vs effective root
 //

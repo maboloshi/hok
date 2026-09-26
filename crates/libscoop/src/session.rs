@@ -367,7 +367,7 @@ impl Session {
     /// Get the `apps` directory under the effective root: `<root>/apps`.
     ///
     /// The root follows [`Session::effective_root_path()`], so this already
-    /// accounts for global mode. Use [`Session::app_dir`] / [`Session::version_dir`]
+    /// accounts for global mode. Use [`Session::app_dir`] / [`Session::versioned_dir`]
     /// for the per-package/per-version variants.
     #[inline]
     pub fn apps_dir(&self) -> std::path::PathBuf {

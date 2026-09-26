@@ -437,8 +437,11 @@ fn query_synced_cached(
         })
         .collect::<Vec<_>>();
 
-    // The notices are emitted outside the parallel section: `Session` is not
-    // `Sync`, so it cannot be touched from a rayon worker.
+    // The notices are emitted outside the parallel section: the rayon workers
+    // carry plain values, not `&Session`. That is a data-threading choice, not
+    // a thread-safety requirement — `Session` is `Sync + Send` since the
+    // RwLock/AtomicBool/OnceLock refactor (see `session.rs`
+    // `session_is_sync_send`).
     let mut packages = Vec::with_capacity(checked.len());
     for hit in checked {
         match hit {
