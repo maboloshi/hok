@@ -15,7 +15,6 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::{Connection, params};
 
@@ -160,33 +159,25 @@ fn stale_buckets_of(conn: &Connection, session: &Session) -> Fallible<Vec<String
     Ok(stale)
 }
 
-/// Once-per-process latch for [`warn_if_cache_stale`].
-static STALE_WARNED: AtomicBool = AtomicBool::new(false);
-
-/// Warn once per process when the cache about to be served may trail the
+/// Warn once per session when the cache about to be served may trail the
 /// buckets.
 ///
 /// This is the only way the user learns that `info` / `search` are about to
 /// answer from stale rows: the cache is refreshed by `hok update` alone, so the
 /// notice names that command.
+///
+/// The notice is claimed *after* the staleness check: a fresh cache must not
+/// consume the session's one notice, or the first stale query that follows in
+/// the same session would answer silently.
 pub(crate) fn warn_if_cache_stale(session: &Session, conn: &Connection) {
-    if STALE_WARNED.swap(true, Ordering::Relaxed) {
-        return;
-    }
-
     if let Ok(stale) = stale_buckets_of(conn, session)
         && !stale.is_empty()
+        && session.mark_stale_warned()
     {
         session
             .output()
             .warn(hok_i18n::t!("cmd.cache_stale", count = stale.len()));
     }
-}
-
-/// Reset the once-per-process warning latch (tests only).
-#[cfg(test)]
-pub(crate) fn reset_stale_warning() {
-    STALE_WARNED.store(false, Ordering::Relaxed);
 }
 
 /// A cached manifest whose manifest file on disk disagrees with the cache row.
@@ -207,18 +198,13 @@ pub(crate) enum CacheMismatch {
     Missing,
 }
 
-/// Packages already reported by [`warn_if_cache_mismatch`] in this process.
-///
-/// One command can reach the same package through several code paths
-/// (`depends` resolves the package and then resolves its tree), and the notice
-/// is about the cache, not about the command — once per package is enough.
-static MISMATCH_WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
 /// Warn that a cache hit disagreed with the file it came from, which the caller
 /// has already resolved in favour of the file.
 ///
 /// The notice is not optional: without it the user cannot tell that the cache
 /// trailed the buckets, and would have no reason to run `hok update`.
+///
+/// Once per package per session — see [`Session::mark_mismatch_warned`].
 pub(crate) fn warn_if_cache_mismatch(
     session: &Session,
     bucket: &str,
@@ -226,14 +212,8 @@ pub(crate) fn warn_if_cache_mismatch(
     mismatch: &CacheMismatch,
 ) {
     let key = format!("{bucket}/{name}");
-    {
-        let mut warned = MISMATCH_WARNED
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if warned.iter().any(|seen| seen == &key) {
-            return;
-        }
-        warned.push(key);
+    if !session.mark_mismatch_warned(&key) {
+        return;
     }
 
     let msg = match mismatch {
@@ -248,15 +228,6 @@ pub(crate) fn warn_if_cache_mismatch(
         CacheMismatch::Missing => hok_i18n::t!("cmd.cache_missing", name = name),
     };
     session.output().warn(msg);
-}
-
-/// Reset the once-per-package mismatch latch (tests only).
-#[cfg(test)]
-pub(crate) fn reset_mismatch_warning() {
-    MISMATCH_WARNED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
 }
 
 /// Check if the cache has any data.
@@ -1043,7 +1014,7 @@ mod tests {
     #[test]
     fn serving_a_stale_cache_warns_once() {
         use crate::test_utils::FakeGit;
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         let root = tmpdir("cache_warn");
         let session = test_session(&root);
@@ -1061,23 +1032,112 @@ mod tests {
             .insert(root.join("buckets").join("main"), "head-1".to_owned());
         session.set_git(fake).unwrap();
 
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        session
-            .set_output(Arc::new(move |out| sink.lock().unwrap().push(out)))
-            .unwrap();
+        let seen = record_output(&session);
 
-        reset_stale_warning();
         let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
         assert_eq!(packages.len(), 1, "the cached query still returns the row");
-
-        let warnings = seen.lock().unwrap().clone();
-        assert!(
-            warnings
-                .iter()
-                .any(|out| matches!(out, crate::output::Output::Warn(_))),
-            "a stale cache must warn: {warnings:?}"
+        assert_eq!(
+            warnings_of(&seen).len(),
+            1,
+            "a stale cache must warn: {:?}",
+            warnings_of(&seen)
         );
+
+        // The notice belongs to the session: a second stale query stays quiet.
+        let _ = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+        assert_eq!(
+            warnings_of(&seen).len(),
+            1,
+            "the stale notice must not repeat within a session"
+        );
+    }
+
+    /// A fresh cache must not consume the session's one stale notice: the
+    /// notice is about the rows the session serves, so the first stale query
+    /// after a fresh one still has to warn.
+    #[test]
+    fn a_fresh_query_keeps_the_stale_notice_for_later() {
+        use crate::test_utils::FakeGit;
+        use std::sync::Arc;
+
+        let root = tmpdir("cache_warn_fresh");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+
+        let bucket_dir = root.join("buckets").join("main");
+        let fake = Arc::new(FakeGit::default());
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir.clone(), "head-1".to_owned());
+        session.set_git(fake.clone()).unwrap();
+
+        // Fresh: the bucket's HEAD is the commit its rows were synced at.
+        {
+            let conn = open(&session).unwrap();
+            record_synced(&conn, &[("main".to_owned(), "head-1".to_owned())]).unwrap();
+        }
+        let seen = record_output(&session);
+        let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+        assert_eq!(packages.len(), 1);
+        assert!(
+            warnings_of(&seen).is_empty(),
+            "a fresh cache must not warn: {:?}",
+            warnings_of(&seen)
+        );
+
+        // The bucket moved on without a `hok update`: the notice applies now.
+        fake.head_ids
+            .lock()
+            .unwrap()
+            .insert(bucket_dir, "head-2".to_owned());
+        let _ = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+        assert_eq!(
+            warnings_of(&seen).len(),
+            1,
+            "the fresh query must not have used up the stale notice"
+        );
+    }
+
+    /// The notice is written to a session's sink, so every session has to send
+    /// its own: one sink must never silence another.
+    #[test]
+    fn every_session_warns_about_the_stale_cache() {
+        use crate::test_utils::FakeGit;
+        use std::sync::Arc;
+
+        let root = tmpdir("cache_warn_sessions");
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+
+        for _ in 0..2 {
+            let session = test_session(&root);
+            session
+                .config_mut()
+                .unwrap()
+                .set("use_sqlite_cache", "true")
+                .unwrap();
+
+            let fake = Arc::new(FakeGit::default());
+            fake.head_ids
+                .lock()
+                .unwrap()
+                .insert(root.join("buckets").join("main"), "head-1".to_owned());
+            session.set_git(fake).unwrap();
+
+            let seen = record_output(&session);
+            let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+            assert_eq!(packages.len(), 1);
+            assert_eq!(
+                warnings_of(&seen).len(),
+                1,
+                "each session must warn about the stale cache it serves"
+            );
+        }
     }
 
     /// Collect the warning texts a sink received.
@@ -1127,7 +1187,6 @@ mod tests {
         write_bucket_manifest(&root, "main", "v_bump", r#"{"version": "2.0"}"#);
 
         let seen = record_output(&session);
-        reset_mismatch_warning();
 
         let packages = crate::package::query::query_synced(
             &session,
@@ -1168,7 +1227,6 @@ mod tests {
         std::fs::remove_file(manifest_path(&root, "main", "v_phantom")).unwrap();
 
         let seen = record_output(&session);
-        reset_mismatch_warning();
 
         let packages = crate::package::query::query_synced(
             &session,

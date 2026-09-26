@@ -42,6 +42,7 @@
 //! not call `config_mut()` while a `config()` guard is still held
 //! (it fails with `ConfigInUse`).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -91,6 +92,18 @@ pub struct Session {
     /// Whether the user forced the transaction confirmation gate on
     /// (`--confirm`); overrides the `confirm` config default.
     force_confirm: AtomicBool,
+
+    /// Whether the "manifest cache may be stale" notice has already gone out.
+    ///
+    /// Per session, not per process: the notice is written to this session's
+    /// output sink, so the session that served the rows is the one that
+    /// remembers having said so (see [`Session::mark_stale_warned`]).
+    stale_warned: AtomicBool,
+
+    /// `bucket/package` keys of the manifest-cache mismatch notices already
+    /// emitted through this session's output sink (see
+    /// [`Session::mark_mismatch_warned`]).
+    mismatch_warned: Mutex<HashSet<String>>,
 
     /// Injectable network capability, defaulting to the real implementation.
     network: OnceLock<Arc<dyn Network + Send + Sync>>,
@@ -168,6 +181,8 @@ impl Session {
                 output: OnceLock::new(),
                 global: AtomicBool::new(false),
                 force_confirm: AtomicBool::new(false),
+                stale_warned: AtomicBool::new(false),
+                mismatch_warned: Mutex::new(HashSet::new()),
                 network: OnceLock::new(),
                 git: OnceLock::new(),
                 archive: OnceLock::new(),
@@ -187,6 +202,8 @@ impl Session {
             output: OnceLock::new(),
             global: AtomicBool::new(false),
             force_confirm: AtomicBool::new(false),
+            stale_warned: AtomicBool::new(false),
+            mismatch_warned: Mutex::new(HashSet::new()),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -228,6 +245,8 @@ impl Session {
             output: OnceLock::new(),
             global: AtomicBool::new(false),
             force_confirm: AtomicBool::new(false),
+            stale_warned: AtomicBool::new(false),
+            mismatch_warned: Mutex::new(HashSet::new()),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -274,6 +293,38 @@ impl Session {
     /// Whether the transaction confirmation gate was forced on by `--confirm`.
     pub fn force_confirm(&self) -> bool {
         self.force_confirm.load(Ordering::Relaxed)
+    }
+
+    /// Claim this session's single "the manifest cache may be stale" notice.
+    ///
+    /// Returns `true` for the caller that must emit it, `false` for every
+    /// later caller in the same session. The claim is per *session* because the
+    /// notice is written through [`Session::output()`]: one process can hold
+    /// several sessions (tests, embedders), each with its own sink, and a
+    /// notice one sink never saw must not be suppressed by another sink having
+    /// seen it.
+    pub(crate) fn mark_stale_warned(&self) -> bool {
+        !self.stale_warned.swap(true, Ordering::Relaxed)
+    }
+
+    /// Claim this session's notice for the manifest-cache mismatch of
+    /// `bucket/package`.
+    ///
+    /// Returns `true` for the caller that must emit it, `false` when this
+    /// session already reported that package: one command can reach the same
+    /// package through several code paths (`depends` resolves the package and
+    /// then resolves its tree), and the notice is about the cache, not about
+    /// the command.
+    pub(crate) fn mark_mismatch_warned(&self, key: &str) -> bool {
+        let mut warned = self
+            .mismatch_warned
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if warned.contains(key) {
+            return false;
+        }
+        warned.insert(key.to_owned());
+        true
     }
 
     /// Get the effective root path based on the global flag.
