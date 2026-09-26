@@ -25,8 +25,9 @@ DSH 支持两种技能形态（`@deepseek-ai/dsh-skill-filesystem/lib/index.js:5
 
 **反面案例（2026-09-26 清理，留作标尺）**：`scoop-gap-audit` 曾 **96.7 KB / 428 行**，29 章里 **28 章**
 是按日期追加的落地记录，是第二名技能的 **8.6 倍**、占技能目录约 60%——每次加载要注入 2–3 万 token，
-而它还是收尾四件套的固定目标。拆完后 **6.8 KB / 50 行**，记录进 `docs/devlog/` 与
-`docs/active/audit/scoop-gap-status.md`。`hok-audit-fix-history` 同型（85 → 43 行）。
+而它还是收尾四件套的固定目标。拆完后只剩可复用方法，落地记录进 `docs/devlog/` 与
+`docs/active/audit/scoop-gap-status.md`——**行数与体积不追记**（写进规则文件就过期）。
+`hok-audit-fix-history` 同型。
 
 ## frontmatter 契约
 

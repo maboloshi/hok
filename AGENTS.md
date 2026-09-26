@@ -97,20 +97,33 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 ### Housekeeping
 - `hok_/`, `hok~/` and `hok~.zip` at the repo root are historical backups — ignore them.
 
+### Always-on (no trigger — they shape every action)
+- Global `token-efficient-processing`; global `file-editing` (UTF-8 without BOM, LF, trailing newline;
+  never "read a fragment → `write` the whole file").
+- Global `chinese-interaction` — the **interaction** language follows the user, artefacts follow the
+  project (repo-root docs English, `.agents/**` Chinese; `.agents/AGENTS.md` → 语言约定).
+- Global `no-patchwork-fixes` — fix the misplaced semantic instead of hiding it behind a flag.
+
 ### Gates (non-trivial changes)
 - **Before implementing** — global `investigate-first`: research → report (evidence + options + a
   recommendation) → wait for an explicit go-ahead. When the request is ambiguous, ask; never treat
-  "this is obviously a bug" as permission.
+  "this is obviously a bug" as permission. Refactors and dedup additionally pass
+  `.agents/skills/hok-code-organization` (name the real problem first; the four-part threshold).
 - **Before committing** — global `proactive-review`; repo-specific checklist
   `.agents/skills/hok-proactive-review`.
+- **Before staging** — global `git-commit-practice`: one topic = one commit; run git with
+  `-c core.autocrlf=false` (the worktree stays LF); write the message to a file and use
+  `git commit -F <file>` — inline `-m` has been mangled by PowerShell before.
 - **Deterministic wrap-up** (fmt / clippy / tests) — global `rust-deterministic-gate`; repo specifics
   `.agents/skills/hok-rust-gate-practice` (edition 2024, file-scoped `rustfmt`, never a whole-workspace
   `cargo fmt` while the tree already has diffs).
 - **Before landing** (fill-in and records) — every session that lands something leaves exactly one devlog
   entry, and the plan/audit row it closes is back-filled in the same pass; the entry ships as its own
   wrap-up commit. Trigger, format and commit placement:
-  [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R7; report archiving:
-  `.agents/skills/hok-report-archive`.
+  [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R7; the document checks must exit 0
+  (`node .agents/scripts/devlog-index.mjs --check`, `doc-links.mjs`, `docs-index-check.mjs`);
+  report archiving follows [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md) R1–R9
+  (procedure: `.agents/skills/hok-report-archive`).
 
 ### Session hygiene
 - Global `session-scope-guard`: once a topic has clearly drifted from the opening subject *and* will
@@ -132,7 +145,8 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
     whoever lands later rebases and preserves both sides' semantics. The main line is read from
     `git config worktree-merge.mainbranch`;
   - each worktree builds into its own `target/`; verification trusts only a binary **you** built and
-    copied out yourself;
+    copied out yourself — and a fresh worktree must run `cargo build -p hok-shim` first, or
+    `crates/libscoop/build.rs:204` panics with "hok-shim binary not found";
   - `.agents/**` and this file are tracked, so every worktree has its own copy — edit and commit them
     normally. The **only** exception is the aggregate hotspot files
     (`active/plan/pending-tasks.md`, `active/audit/command-deviation-audit-2026-09.md`,
