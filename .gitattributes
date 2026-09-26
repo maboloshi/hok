@@ -8,6 +8,7 @@
 *.yml       text eol=lf working-tree-encoding=UTF-8
 *.yaml      text eol=lf working-tree-encoding=UTF-8
 *.json      text eol=lf
+.gitignore  text eol=lf
 *.md        text eol=lf
 *.txt       text eol=lf
 *.tsv       text eol=lf working-tree-encoding=UTF-8
@@ -18,12 +19,14 @@
 *.psm1      text eol=lf
 *.py        text eol=lf
 *.cjs       text eol=lf
+*.mjs       text eol=lf
 
 # Build / CI
 *.bat       text eol=crlf
 *.cmd       text eol=crlf
 
 # Binary / generated
+*.bin       binary
 *.zip       binary
 *.exe       binary
 *.rar       binary

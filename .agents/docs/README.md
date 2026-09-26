@@ -1,0 +1,49 @@
+# 活文档索引（`.agents/docs/`）
+
+> 本文件是 `.agents/docs/` 的**唯一活文档入口**。规则见 [`AGENTS.md`](AGENTS.md)。
+> 已冻结归档见 [`reports/README.md`](reports/README.md)；日志索引见 [`devlog/README.md`](devlog/README.md)。
+> 新增/移动/归档文档时**必须在同一次改动里更新本文件**（规则 R6）。
+
+## active/spec — 会被修订的规格与设计
+
+| 文档 | 内容 |
+|---|---|
+| [`cleanup-parallel-spec.md`](active/spec/cleanup-parallel-spec.md) | `cleanup` 并行化 + 逐版本进度的行为规格 |
+| [`output-system-design.md`](active/spec/output-system-design.md) | 输出系统分层设计（Output sink / 事件 / 样式 / 阶段进度） |
+| [`task-help-i18n.md`](active/spec/task-help-i18n.md) | 命令帮助文本的 i18n 方案 |
+
+## active/plan — 会被执行掉的计划
+
+| 文档 | 内容 |
+|---|---|
+| [`pending-tasks.md`](active/plan/pending-tasks.md) | 跨主题待办总表（含已推迟项的复核结论） |
+| [`private-bucket-plan-2026-09.md`](active/plan/private-bucket-plan-2026-09.md) | 私有 bucket 方案与落地步骤 |
+
+## active/audit — 随修复持续更新的审计基线
+
+| 文档 | 内容 |
+|---|---|
+| [`scoop-gap-analysis-2026-08.md`](active/audit/scoop-gap-analysis-2026-08.md) | 与官方 Scoop 的差距总表 + manifest 解析单入口细节 |
+| [`unsafe-audit.md`](active/audit/unsafe-audit.md) | `unsafe` 全量审计与豁免分类（`unsafe_code = deny` 的依据） |
+| [`command-deviation-audit-2026-09.md`](active/audit/command-deviation-audit-2026-09.md) | 36 个子命令 vs 官方 0.5.3 的偏离审计（约 280 条） |
+| [`optimization-audit-2026-09.md`](active/audit/optimization-audit-2026-09.md) | 精简 / 合并 / 优化空间审计（clippy + cargo-modules + machete + drywall + jscpd） |
+| [`s7-s14-investigation-2026-09.md`](active/audit/s7-s14-investigation-2026-09.md) | S7+S14 低风险批量逐项对照与落地进度 |
+| [`binary-size-analysis-2026-09.md`](active/audit/binary-size-analysis-2026-09.md) | `hok.exe` 体积归因与压缩分发方案对照 |
+| [`7zip-switch-investigation-2026-09.md`](active/audit/7zip-switch-investigation-2026-09.md) | 「适度切换外部 7z」收益调研与方案 A–D 对照 |
+
+## research — 结论已定的调研（只读）
+
+| 文档 | 内容 |
+|---|---|
+| [`nsis-research.md`](research/nsis-research.md) | NSIS 纯 Rust 提取的可行性调研 |
+| [`zip-sfx-research.md`](research/zip-sfx-research.md) | ZIP SFX 原生解压调研 |
+| [`cleanup-delete-perf.md`](research/cleanup-delete-perf.md) | `cleanup --delete` 性能分析与并行化依据 |
+
+## 历史与冻结
+
+| 位置 | 内容 |
+|---|---|
+| [`reports/`](reports/) | 已失效 / 已闭环报告与扫描产物（冻结，含 `prompts/` 会话输入） |
+| [`reports/refactor/`](reports/refactor/) | Edition 2024 重构总计划 + `tokio-purity-plan.md` + 各阶段开工提示词（重构已完成，2026-09-26 归档） |
+| [`reports/command-deviation-fix-plan-2026-09.md`](reports/command-deviation-fix-plan-2026-09.md) | 全命令偏离修复计划 S1–S14（2026-09-26 归档；**未落地项 S11 余项 / H4 / R6 已转入** [`active/plan/pending-tasks.md`](active/plan/pending-tasks.md)） |
+| [`legacy/`](legacy/) | 失效提案与上游 issue/PR 草稿（`nsis-issue.md`） |

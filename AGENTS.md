@@ -1,0 +1,159 @@
+# Workspace Overview — Scoop Ecosystem
+
+Monorepo of sibling git projects: the original Scoop (PowerShell) package manager,
+two independent Rust reimplementations (hok, hyperscoop), and shim test utilities.
+Each project is its own git repo (no root git); `reasonix.toml` at repo root defines
+the agent workspace/sandbox. **Current working directory = `hok/`.**
+
+> **Language convention** — repo-root docs (this file, `ARCHITECTURE.md`,
+> `README.md`, `CHANGELOG.md`) are **English**; a Chinese counterpart is a separate file
+> (`README-zh.md` is the only one today). The agent workspace (`.agents/**`) is **Chinese**.
+
+```
+Scoop/                  Original Scoop (PowerShell) package manager — v0.5.3
+hok/                    hok CLI — Rust Scoop reimplementation (v0.2.0)  ← current working directory
+hyperscoop/             hp CLI — Rust Scoop reimplementation (v4.2.0)
+shim_test/              Shim testing sandbox (C#/C++/Rust/Zig variants)
+hok_/, hok~/, hok~.zip  Historical hok backups/archives — do not modify
+```
+
+---
+
+## 1. hyperscoop/ — hp CLI (not current dir)
+
+Rust Windows package manager, edition 2024, Rust 1.91.0.
+
+- Entry: `src/main.rs` → `Cli` (clap) → `hyperscoop_middle::invoke_*`.
+- Crates: `.` (CLI hp: `command_args/`, `hyperscoop_middle/`, i18n, logging, self-update);
+  `crates/command`, `crates/hscoop_macro` (proc), `crates/shim`, `crates/hash`.
+- Locate: `src/command_args/` per-cmd args; `src/hyperscoop_middle/` logic; `src/i18n.rs` + `locales/`;
+  `script/` automation; `hyperscoop_source_bucket/`.
+- Commands: `cargo build --release`; `cargo test --workspace --all-features`; `cargo fmt --all`;
+  `cargo clippy --workspace --all-targets -D warnings`; `cargo bench --bench hash`; `cargo run --example pg_bar`.
+- Conventions: verbs mirror Scoop (`hp install`/`bucket`/`search`); `snake_case` fns / `CamelCase` types;
+  i18n `tr!("key","中文","English")`; `unsafe` / `unreachable_pub` warned.
+
+---
+
+## 2. hok/ — hok CLI (current working directory)
+
+Rust Scoop reimplementation, **edition 2024**, v0.2.0 (version source of truth: `Cargo.toml`); community-maintained fork of
+[chawyehsu/hok](https://github.com/chawyehsu/hok) (upstream paused). Deep dive in `ARCHITECTURE.md`;
+user guide in `README.md`; this section highlights only what those don't cover.
+
+**Entry:** `src/bin/hok.rs` (binary), `src/lib.rs` (library).
+
+- **Crates:** `.` (CLI hok: `src/cmd/`, `src/`); `crates/libscoop/` (core lib); `crates/hok-shim/`
+  (`no_std` shim gen, Win32 FFI); `crates/hok-i18n/` (i18n runtime: build-time locale tables + lookup macro);
+  `crates/hok-i18n-derive/` (derive patching clap tree).
+  Inno Setup decoding uses the registry crate `innospect`, NSIS uses `nsis` — **neither is vendored**;
+  version pins and upstream-patch history live in `crates/libscoop/Cargo.toml` (do not restate them
+  elsewhere — a copy drifts).
+- **Commands:** `cargo build` / `cargo test` (workspace auto-includes members); `cargo build/test -p libscoop`;
+  `cargo check`.
+- **Architecture:** `src/cmd/` per-cmd handlers; `build.rs` scans dir → auto-generates `__cmd_reg__.rs`
+  (add a cmd = drop a `.rs` with `execute()`; the count lives in `src/cmd/`). `src/eventloop.rs` async loop; `src/output.rs`
+  style; `src/cui.rs` prompts; `src/scoop_handler.rs`; `src/i18n.rs` two-pass lang detect.
+  `crates/libscoop/` install flow/extract/shim/persist/manifest/download/resolve/sync; `crates/libscoop/src/internal/`
+  submodules (the module list lives in the directory — not enumerated here; it has drifted twice). `hok-shim` shared core in `crates/hok-shim/src/lib.rs` (`no_std`, fixed buffers; Scoop Shim format) + bins
+  `hok-shim` (console) / `hok-shim-gui` differing only by PE subsystem.
+- **Commands list:** `alias`, `ci-auto-pr`, `bucket`, `cache`, `cat`, `checkhashes`, `checkup`,
+  `checkurls`, `checkver`, `cleanup`, `completions`, `config`, `create`, `depends`, `download`,
+  `export`, `formatjson`, `health`, `hold`, `home`, `import`, `info`, `install`, `list`,
+  `missing-checkver`, `prefix`, `reinstall`, `reset`, `search`, `shim`, `status`, `unhold`,
+  `uninstall`, `update`, `upgrade`, `virustotal`, `which`
+- **Conventions:** edition 2024, 4-space indent; `unsafe` FFI in hok-shim; i18n via the **in-house `hok-i18n`**
+  (`crates/hok-i18n/` flattens `locales/en.yml` / `locales/zh.yml` into lookup tables at build time) + `hok-i18n-derive`; Scoop install flow
+  `pre_install → extract → installer.script → link_current → shim → persist → post_install → metadata`;
+  config `~/.config/hok/config.json` (migrated once from Scoop); lib never writes stdout directly —
+  sync `Output` sink + async **`tokio::sync::mpsc`** event bus owned by `libscoop::Session` (async overview:
+  `ARCHITECTURE.md` → Async Runtime — `#[tokio::main]`, `spawn_blocking`, `CancellationToken`, backpressure); hashing in
+  `libscoop::internal::hash` (md-5/sha1/sha2 direct deps).
+
+---
+
+## 3. Scoop/ — Original Scoop (PowerShell)
+
+Reference/backward-compat testing only ([ScoopInstaller/Scoop](https://github.com/ScoopInstaller/Scoop),
+v0.5.3, PowerShell 5+). `bin/` entry (`scoop.ps1`), `lib/` core, `libexec/` command impls,
+`supporting/` bundled tools, `test/` Pester.
+
+---
+
+## 4. shim_test/
+
+Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.1/`, `Rust_Shim_v0.1.1/`,
+`Zig_Shim_v0.1.2/`.
+
+---
+
+## Conventions (all projects)
+- Scoop-compatible CLI verb naming; 4-space indent everywhere (Rust + configs); prefer `anyhow`.
+- Two independent Rust Scoop reimpls (hok, hyperscoop) share no code.
+- `justfile` automation in hyperscoop/ only. Workspace sandbox via `reasonix.toml`.
+
+## Notes
+
+### Housekeeping
+- `hok_/`, `hok~/` and `hok~.zip` at the repo root are historical backups — ignore them.
+
+### Gates (non-trivial changes)
+- **Before implementing** — global `investigate-first`: research → report (evidence + options + a
+  recommendation) → wait for an explicit go-ahead. When the request is ambiguous, ask; never treat
+  "this is obviously a bug" as permission.
+- **Before committing** — global `proactive-review`; repo-specific checklist
+  `.agents/skills/hok-proactive-review`.
+- **Deterministic wrap-up** (fmt / clippy / tests) — global `rust-deterministic-gate`; repo specifics
+  `.agents/skills/hok-rust-gate-practice` (edition 2024, file-scoped `rustfmt`, never a whole-workspace
+  `cargo fmt` while the tree already has diffs).
+
+### Session hygiene
+- Global `session-scope-guard`: once a topic has clearly drifted from the opening subject *and* will
+  keep expanding, **loudly** ask the user to open a new conversation (and propose its scope); do not
+  grow the new topic before they confirm.
+
+### Parallel work
+- **Orchestration** — global `worktree-parallel` §9, repo specifics
+  `.agents/skills/hok-agent-orchestration`. Before fanning work out to subagents: build a
+  **file + semantic overlap matrix** (one owner per hot file, shared entry point or shared predicate),
+  cap concurrency at 2–3, and make every prompt self-contained with hard prohibitions, known
+  environment traps and a main-line review at block boundaries. The parent session owns the landing
+  checklist and the handover document.
+- **Worktrees** — global `worktree-parallel`, repo specifics
+  `.agents/skills/hok-worktree-parallel` (script path, self-test, wrap-up quartet). The load-bearing
+  rules are:
+  - one conversation = one worktree = one topic, based on the main line's **current** tip;
+  - the main line **`main`** advances by linear `--ff-only` only — **merge commits are forbidden**;
+    whoever lands later rebases and preserves both sides' semantics. The main line is read from
+    `git config worktree-merge.mainbranch`;
+  - each worktree builds into its own `target/`; verification trusts only a binary **you** built and
+    copied out yourself;
+  - `.agents/**` and this file are tracked, so every worktree has its own copy — edit and commit them
+    normally. The **only** exception is the aggregate hotspot files
+    (`active/plan/pending-tasks.md`, `active/audit/command-deviation-audit-2026-09.md`,
+    `skills/scoop-gap-audit.md`), which are edited in the main tree only;
+  - **never `git add -A` / `git add .`** (stage by topic, file by file) and **never `git clean -fd`**.
+
+### Delivery and release
+- CI (`.github/workflows/cicd.yml`) runs only on **pushes to `main`** or on **pull requests** — a push
+  to a feature branch runs **no CI**, so run the gates locally before merging. See "Building, Testing
+  and Releasing" in `ARCHITECTURE.md`.
+- Releases are **manual**: `.github/workflows/release.yml` (`workflow_dispatch` plus a tag input) →
+  `pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify`. The version source of truth is `Cargo.toml`;
+  `cd_release_please` is gated on `chawyehsu/hok` and never runs on this fork, so version bumps and
+  `CHANGELOG.md` are hand-maintained.
+
+### Agent workspace
+- AI collaboration artefacts live in **`.agents/`** (tracked; only `.agents/tmp/` and machine-local
+  `*.local.md` are ignored). Three standing rule files, each auto-loaded when a file tool touches its
+  directory: [`.agents/AGENTS.md`](.agents/AGENTS.md) (workspace), [`.agents/docs/AGENTS.md`](.agents/docs/AGENTS.md)
+  (document standard), [`.agents/skills/AGENTS.md`](.agents/skills/AGENTS.md) (skill standard).
+- **Never create `.dsh/`** (directory or link): with both project-level skill roots present, the
+  rank-100 `.dsh/skills` shadows `.agents/skills`.
+- Human-facing reference material goes in the repo-root `docs/` (index: [`docs/README.md`](docs/README.md)).
+- **Committing `.agents/**`**: the first landing is one dedicated commit; after that, the wrap-up quartet
+  rides along with its code topic (one topic = one commit), files are staged explicitly (never
+  `git add -A` / `.`), and anything changed inside a worktree must land with that topic. Full rules:
+  [`.agents/AGENTS.md`](.agents/AGENTS.md) → 「提交约定」.
+- References into `.agents/**` from tracked files must be **repo-relative**; machine-local absolute paths
+  inside historical records stay verbatim.
