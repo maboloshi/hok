@@ -324,7 +324,7 @@ mod tests {
     // Fixture results below are pinned against upstream Scoop's
     // `Select-CurrentVersion` / `Get-InstalledVersion`, executed on Windows
     // PowerShell 5.1 over the same fixture shapes (see the official ground
-    // truth table in .dsh/docs/reports/optimization-audit-2026-09.md).
+    // truth table in .agents/docs/active/audit/optimization-audit-2026-09.md).
 
     /// Junction mode, intact `current\manifest.json` → its `version`.
     /// Official: `J1-junction-normal` → `1.2.3`.
