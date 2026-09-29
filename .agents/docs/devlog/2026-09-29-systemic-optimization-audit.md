@@ -51,6 +51,24 @@ as a publishable crate"，但 libscoop 自己既没有 `publish = false`，`READ
 会以为能用。报告 §1.5 给出互斥的两条路线：A 登记"不可独立使用"（当前架构下唯一自洽），B 真做成可独立
 引用（要动构建架构、把 locales 搬进 crate、先发布 i18n 两 crate，且 docs.rs 在 Linux 上永远构建不了）。
 
+## 追加二：能力面——"能构建也没用"（用户追问后实测）
+
+用户追问："第三方可能拿到很低级 API 需要自己造轮子，可能还没直接调用 hok 方便。"同样成立，
+且比 B3 更难绕：**libscoop 给的是内核（领域操作 + 事件协议），应用外壳整块留在 CLI 里。**
+
+- `Session::emitter()` 是 `pub(crate)`（`session.rs:538`），库内 28 个发射点用它；第三方公开面只有裸 `EventBus`。
+- 自己驱动事件循环是硬要求：`resolve.rs:269-288` 与 `sync.rs:380-401` 都 `try_send(Prompt…)` 后
+  `while let Some(..) = session.receive_response().await`。**完全不接总线**有安全兜底（`emitter()` 为 `None`
+  ⇒ 自动批准 / 选首个候选）；**"接了总线但不驱动"**（最容易犯）⇒ `try_send` 成功 ⇒ **永久挂死**。
+- `EVENT_BUS_CAPACITY = 20`（`constant.rs:22`）+ 发射点几乎全用 `try_send` ⇒ 满即 `Err` ⇒
+  被当作"没有前端" ⇒ **静默跳过事件甚至自动批准**。"部分实现"比"完全不实现"更危险（行为不一致且无报错）。
+- 要复刻的外壳规模：`eventloop.rs` 348 + `scoop_handler.rs` 345 + `output.rs` 484 + `cui.rs` 452 =
+  **1,629 行生产代码**，全部在 CLI crate；libscoop 只提供 `EventHandler` trait（`lib.rs:82`）。
+- 结论：只读状态（装了什么/能否升级）今天的 API 够用且优于解析 `hok` 文本输出；要执行装/卸/update，
+  就必须自己接协议 —— **"直接 shell out 调 hok 更省事"这个判断是对的**。这条把路线 A 的论据从
+  "构建不了"升级为"能构建也不划算"，同时说明路线 B 的真正缺口不是更多 `pub fn`，而是
+  **库内建默认事件消费者**（例如 `libscoop::headless`）。已写入报告 §1.6 与 pending-tasks。
+
 ## 未做的事（等拍板）
 
 六个方向明确留给用户/后续会话决定：是否放弃 ssh、libscoop 是否保留对外承诺、事件模型折叠还是下沉、

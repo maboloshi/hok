@@ -180,9 +180,73 @@ exit=101
   额外代价：`git2`/`rusqlite-bundled`/Windows-only 意味着**只能在 Windows 上构建**，crates.io 的
   docs.rs 也构建不了（docs.rs 是 Linux）——所以"docs.rs 徽章"这条路本身就不通，最多做 git 依赖。
 
-**判定**：路线 A 是**当前架构下唯一自洽**的选择；路线 B 需要一个明确的第三方消费场景作为前提。
+**判定**：路线 A 是**当前架构下唯一自洽**的选择；路线 B 需要一个明确的第三方消费场景作为前提，
+且必须连 §1.6 的能力面一起解决——只解决"能构建"而没有默认事件消费者，第三方仍然用不了。
 
-### 1.6 结构问题 S4：命令注册是双份真相
+### 1.6 结构问题 S3c（同属致命）：能构建也没用——能力面停在内核，缺"应用外壳"
+
+用户追问："第三方可能拿到很低级 API 需要自己造轮子，可能还没直接调用 hok 方便。"实测成立，
+且它比 B3 更难绕：**libscoop 暴露的是内核（操作 + 事件协议），应用外壳全在 CLI 里。**
+
+**证据 1 —— `emitter` 是 `pub(crate)`，第三方只能拿裸事件总线**
+
+`Session::emitter()`（`session.rs:538`）是 `pub(crate)`；库内 28 个调用点全靠它发事件。
+第三方能用的公开面是 `EventBus`（`event.rs:71-125`）+ `session.event_bus().sender()`。
+也就是说：库把"发事件"这半边对外开放，却把"该不该发"的开关（`emitter()` 的 `Option` 语义）留在内部。
+
+**证据 2 —— 自己驱动事件循环是硬要求，否则会**挂死**
+
+`resolve::select_candidate`（`resolve.rs:269-288`）：先 `try_send(PromptPackageCandidate)`，
+`try_send` 成功就 `while let Some(answer) = session.receive_response().await` —— 等回包。
+`sync::confirm_transaction`（`sync.rs:380-401`）同构，等不到就
+`Err(Error::Custom("event bus closed unexpectedly"))`。
+- 若第三方**完全不碰事件总线**：`emitter()` 为 `None` ⇒ 自动批准 / 自动选首个候选（有安全兜底）。
+- 若第三方"注册了总线但没驱动"（最容易犯的错）：`try_send` 成功 ⇒ 走进 `receive_response().await`
+  **永久等待**。这是可复现的挂死，不是理论风险。
+
+**证据 3 —— 出站 channel 只有 20 格，不消费就静默降级**
+
+`EVENT_BUS_CAPACITY = 20`（`constant.rs:22`）。所有发射点几乎都用 `try_send`（如 `sync.rs:385`、
+`resolve.rs:272`、`download.rs:199`），**满了就 `Err` ⇒ 被当作"没有前端"⇒ 静默跳过事件甚至自动批准**。
+所以"部分实现事件循环"比"完全不实现"更危险：行为不一致且无报错。
+
+**证据 4 —— 应用外壳在 CLI 里，且规模不小**
+
+| 模块 | 生产行 | 职责（第三方要自己写） |
+|---|---:|---|
+| `src/eventloop.rs` | 348 | 取 `receiver()`、起 tokio 任务、进度条/光标 RAII、交互提示、`reset_outbound` 二次事务 |
+| `src/scoop_handler.rs` | 345 | 穷举 87 个变体，映射到输出 |
+| `src/output.rs` | 484 | `Output` sink 与样式渲染 |
+| `src/cui.rs` | 452 | 确认框 / 候选选择 / 表格 |
+| **合计** | **1,629** | 纯"把内核接成人能用的东西" |
+
+**证据 5 —— 现有的"高层"入口是 CLI 编排，不是库 API**
+
+`install.rs:90-149` 是**薄**的（这一点仓库做得好），但薄在有 1,629 行外壳垫底的前提下：
+
+```rust
+let handle = crate::eventloop::run_event_loop_default(session);   // ← 外壳，且不在 libscoop 里
+let sync_result = package::sync::sync(session, to_install, options).await;
+handle.await.unwrap();
+```
+`run_event_loop_default` / `run_event_loop` 都在 **CLI crate**（`src/eventloop.rs:76,346`），
+libscoop 只提供 `EventHandler` trait（`lib.rs:82`）。第三方要复刻的正是这段编排。
+
+**所以真实的"能力面"边界是**：libscoop 给的是 `query` / `sync` / `status` / `config` / `bucket` 等
+**领域操作**（`list.rs:85-92` 那三行就是例子：`query` → `source::classify` → `AppStatus::from_package`
+已经是像样的高层返回值）；但**从"调用它"到"跑完不挂死"之间那 1.6k 行外壳没有打包**。
+
+**结论（对"该不该做路线 B"的影响）**
+
+- 若第三方只是要**读状态**（装了什么、能不能升级、bucket 里有什么）：今天的 API 够用，且比调 `hok` 解析文本更靠谱。
+- 若第三方要**执行生命周期**（装/卸/update）：必须自己接事件协议，风险是上述两条（挂死 / 静默降级），
+  成本约 1.6k 行的等价物。**"直接 shell out 调 hok 并解析输出"在这个场景下确实更省事**——用户这个判断对。
+- 要让路线 B 真正成立，缺的不是更多 `pub fn`，而是**库内建一个默认事件消费者**：
+  例如 `libscoop::headless`（内部驱动总线、非交互默许、把事件转成回调或 `Output`），
+  让"不接前端也能跑完且行为可预期"成为默认而非陷阱。这才是能砍掉那 1.6k 行的东西；
+  再加便利入口（如 `install(&session, pkgs, opts)` 一次调用）才有意义。
+
+### 1.7 结构问题 S4：命令注册是双份真相
 
 | 机制 | 位置 | 性质 |
 |---|---|---|
@@ -193,7 +257,7 @@ exit=101
 **判定：有意接受，不建议改**——clap derive 的命令表无法从目录扫描生成（每个变体要写参数类型/帮助文案），
 把 `enum Command` 换成宏只会把编译期错误换成宏展开难读。
 
-### 1.7 结构问题 S5：CLI 层内嵌 clap 本地化机制（约 130 行）
+### 1.8 结构问题 S5：CLI 层内嵌 clap 本地化机制（约 130 行）
 
 `src/cmd/mod.rs:454-571` 是一次**针对 clap 内部行为的绕行**：为让中文帮助里的 `Arguments:`/`Options:`
 标题本地化，对整棵命令树做两阶段改写，且带硬约束注释「`mut_arg` 只能在 `build()` 之前」。
@@ -201,7 +265,7 @@ exit=101
 
 **判定：保留，但把它登记为"高脆弱面"**：任何 clap 升级都要重跑全部帮助面逐字节比对（`.agents/scripts/dump-help.js`、`help-audit.js` 已具备）。这不是可优化点，是**必须持续付费的约束**——值得写进 `ARCHITECTURE.md`，否则下次升级 clap 会重踩。
 
-### 1.8 结构问题 S6：超长文件与超长函数（含测试）
+### 1.9 结构问题 S6：超长文件与超长函数（含测试）
 
 生产行最大的文件（剔除测试块）：
 
@@ -223,7 +287,7 @@ exit=101
 拆分收益最高；`internal/archive.rs` 是唯一能按格式（7z/zip/tar/gz/xz/zst/bz2/rar/nsis/inno）清楚切分的模块。
 两者都需要先有具体问题陈述（`hok-code-organization`：不为重构而重构）。
 
-### 1.9 构建期结构：embedded-shim 的前置依赖（已并入 §1.5）
+### 1.10 构建期结构：embedded-shim 的前置依赖（已并入 §1.5）
 
 `crates/libscoop/build.rs:157-229` 按 `target/{release,debug}` × 候选 target 目录查找 `hok-shim.exe`，找不到就
 `panic!("hok-shim binary not found … Run `cargo build -p hok-shim` first.")`。这使**任何新鲜 worktree 的第一次
@@ -491,7 +555,7 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 |---|---|---|---|
 | 11 | 事件模型折叠（`Start/Done/Progress` → `StepKind`），或把 28 个 debug-only 变体下沉到 `tracing` | §1.3 | (a)(b)(c) 三选一；影响 CLI + libscoop + 事件循环三处 |
 | 12 | libscoop 公开面收窄（`package/` 24 个 `pub` 子模块 → CLI 专用者降 `pub(crate)`） | §1.4、§1.5 | 是否保留"第三方可基于 libscoop 写前端"的承诺 |
-| 13 | `checkver.rs` 拆分 / `commit_one_install`+`commit_one_remove` 抽公共提交管线 | §1.8 | 必须先写清具体问题（`no-patchwork-fixes`：不得用开关掩盖 install/remove 语义差异） |
+| 13 | `checkver.rs` 拆分 / `commit_one_install`+`commit_one_remove` 抽公共提交管线 | §1.9 | 必须先写清具体问题（`no-patchwork-fixes`：不得用开关掩盖 install/remove 语义差异） |
 | 14 | `sxd-document`+`sxd-xpath` 替换调研 | §4.3 | 收益小、需重写提取语义 + 契约测试 |
 
 ### T4 — 明确不做（本文结论）
@@ -520,7 +584,8 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 以下**没有被本文判定**，需要用户或后续会话决定：
 
 1. **ssh 是否放弃**（§4.2 A）：官方 `lib/buckets.ps1` 明确支持 ssh 形态，而 hok 从未可用。
-2. **libscoop 的定位**（§1.5）：走路线 A（登记为"不可独立使用"，公开面随之可收窄）还是路线 B（补齐可独立引用）。
+2. **libscoop 的定位**（构建面 §1.5 + 能力面 §1.6）：走路线 A（登记为"不可独立使用"，公开面随之可收窄）
+   还是路线 B（补齐可独立引用；工作量为：构建架构 + `locales/` 搬位 + 发布两个 i18n crate + **库内建默认事件消费者**）。
    这一条决定 §1.4 与 §5.3 的走向，且是**唯一一个"不选就没法收口文档"的问题**。
 3. **事件模型方向**（§1.3）：(a) 折叠 / (b) 下沉 / (c) 不动。
 4. **`SyncArgs` 路线**（§2.2 P3）：flatten（CLI 表面变化）还是纯数据化。
@@ -566,6 +631,13 @@ cargo package -p libscoop                              # B1：应停在 "must ha
 cargo package -p hok-i18n --no-verify --list           # B2：产物只有 6 个文件，无 locales/
 # B3：把 target/ 改名后再构建，应 panic 在 build.rs:204；验完改名回来
 Rename-Item target target.audit-moved; cargo build -p libscoop; Rename-Item target.audit-moved target
+
+# 5c. §1.6「能力面」的复跑
+Select-String -Path 'crates\libscoop\src\**\*.rs' -Pattern 'session.emitter\(\)'   # 28 个发射点
+Select-String -Path 'crates\libscoop\src\session.rs' -Pattern 'fn emitter'          # pub(crate)
+Select-String -Path 'src\**\*.rs' -Pattern 'run_event_loop'                         # 外壳只在 CLI
+Select-String -Path 'crates\libscoop\src\package\resolve.rs' -Pattern 'receive_response'
+Select-String -Path 'crates\libscoop\src\package\sync.rs' -Pattern 'receive_response'
 
 # 6. 逻辑冗余关键点（应各只命中单入口）
 Select-String -Path 'crates\libscoop\src\**\*.rs' -Pattern 'is_nightly|nightly"'
