@@ -576,6 +576,11 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 | [`unsafe-audit.md`](unsafe-audit.md) | unsafe 台账；本文 §4.3 的 junction 判定引用其口径 |
 | [`scoop-gap-status.md`](scoop-gap-status.md) / [`command-deviation-audit-2026-09.md`](command-deviation-audit-2026-09.md) | 与官方 Scoop 的**行为**差距，本文不涉及；本文 §3.3 若确认为行为偏离，应登记到那两份 |
 | [`../spec/output-system-design.md`](../spec/output-system-design.md)（若存在）/ `ARCHITECTURE.md` | §1.3 的事件模型决策若拍板，需要回写 |
+| [`../plan/pending-tasks.md`](../plan/pending-tasks.md) §4.1 | **本文结论的使用规则**：区分"衰减资产（不该等）"与"投机性重构（该等，附触发条件）"，并给出粗粒度衰减指标。T1/T2 属前者，T3 属后者 |
+
+> **执行口径（2026-09-29 用户拍板）**：本文的 T1/T2 不排在"等功能全实现之后"——它们是衰减资产，
+> 每多一个功能落在同一文件上就更贵，且分叉表现为静默错误。但**代码本轮不动**，只落治理规则
+> （见 [`../plan/pending-tasks.md`](../plan/pending-tasks.md) §4.1）。
 
 ---
 

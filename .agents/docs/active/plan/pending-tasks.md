@@ -1,4 +1,4 @@
-# hok 未完成任务总表（2026-09-13 整理）
+# hok 未完成任务总表（2026-09-13 整理；2026-09-29 增 §4.1 重构分诊规则）
 
 > **这是什么**：把散落在 `reports/command-deviation-fix-plan-2026-09.md` §8、`.agents/skills/*`、
 > `.agents/docs/reports/*`、代码内 TODO 里的**未完成项**汇到一张表。
@@ -72,6 +72,56 @@
 | 测试 flaky：`manifest_cache::tests::serving_a_stale_cache_warns_once` | ✅ 已修（2026-09-26，`9af599a`，worktree `.worktrees/s-warn-latch`，分支 `fix/manifest-warn-latch`） | **修法（用户拍板 A+B）**：两处闩锁从进程级 static 搬进 `Session`（`stale_warned: AtomicBool` + `mismatch_warned: Mutex<HashSet<String>>`，`mark_stale_warned` / `mark_mismatch_warned`），并把 stale 判据提到 `swap(true)` **之前**（新鲜查询不再吃掉会话唯一的一次告警）；两个 `#[cfg(test)]` `reset_*_warning()` 随进程级状态一并删除，i18n 文案零改动。**根因 = 进程级 once 闩锁 + 每会话 sink 错位**：`manifest_cache.rs:163-184` 的 `static STALE_WARNED: AtomicBool` 在 `warn_if_cache_stale` 里**先 `swap(true)` 再判断是否 stale**（新鲜缓存也会吃掉闩锁），而 `session.output()` 是每会话的 ⇒ 并行测试互抢。`MISMATCH_WARNED: Mutex<Vec<String>>`（`:220-260`，key=`bucket/name`）同型；调用点 `query.rs:341-354`。**实测**（主线 `cb75ba4` clean 树）：`cargo test -p libscoop cache::` 默认并行 **2/25 失败**、同一命令 `-- --test-threads=1` **0/12 失败**，失败点恒为 `manifest_cache.rs:1075` "a stale cache must warn"。**实测**：改前同机 25 次并行该 filter **15/25 失败**（失败点与挂账逐字相同），改后 **0/20 失败**；`cargo test -p libscoop` 789 passed / 0 failed、`cargo test -p hok` 全绿、clippy + `rustfmt --edition 2024 --check` 干净。新增 3 条测试钉住语义（新鲜不吃闩锁 / 每会话各警告一次 / 会话内不重复），并**反向验证**：临时把闩锁改回进程级 static 或把 `swap` 提到 stale 判断之前 ⇒ 对应用例确定性失败（已回退） |
 | `scripts/*.py` 与 `.agents/tmp` 审计脚本重叠 | 待收敛 | 建议并入 `scripts/` 一处 |
 
+---
+
+### 4.1 重构分诊与治理（2026-09-29 立，用户拍板「只落规则、代码先不动」）
+
+**要回答的问题**：「系统性重构是不是该等功能全部实现之后再做？」
+**判据**：不能一刀切——两类东西判据相反。
+
+- **衰减资产（不该等）**：同一个决定已存在于 ≥2 处且**可能静默分叉**。每多一个功能落在同一文件上，
+  下一次改动要覆盖的副本就多一份，而且分叉表现是**静默错误**（校验不一致、测试读到真实 `~/scoop`），不是编译失败。
+  ⇒ 特征：无需新信息就能判对错，收益随代码增长**递减**（越晚做越贵）。
+- **投机性重构（该等）**：需要**需求稳定**或**性能/外部证据**才能判对错，现在动有返工风险。
+  ⇒ 特征：收益不随代码增长（什么时候做都一样贵），但做错的代价是白干。
+
+**A｜衰减资产清单（= 本表 §4 前 6 行与 §2 测试基建项，出处：审计报告 §2、§3）**
+
+| 项 | 现状 | 目标（唯一入口） |
+|---|---|---|
+| 架构固定顺序 `64bit→32bit→arm64` | `manifest.rs` 一处手写 4 遍 | 一个 `arch_specs()` 迭代器 |
+| hash 算法/前缀表 | 算法 4 份 + 前缀 2 份 | `internal/hash.rs` 单点 |
+| nightly 判定 | `is_nightly()` **零生产调用** + 4 处裸比较 | 全走 `Package::is_nightly` |
+| 元数据目录解析 | `current_meta_dir` 仅 1 调用点，`query.rs` 手写同款 | 全走 `current_meta_dir`（保留 `CurrentVersionSource`） |
+| 测试入口 | 7 份 CLI harness（**已漂移**）+ 9 份 `fn plain()` | 各一份共享模块 |
+
+**修法验收（防"越修越抽象"）**：① 只做"副本 → 单入口"，**不引入新抽象层**；② 零行为变更；
+③ 每项独立提交、可单独 revert；④ 若某处发现两个副本**语义确实不同**，登记为"有意偏离"并停止合并
+（判例见审计报告 §3.4）。
+
+**B｜投机性重构的触发条件（不是"以后再说"，而是写明什么时候该动）**
+
+| 项 | 触发条件 |
+|---|---|
+| 事件模型折叠（87 变体 → `StepKind`） | "新增一个事件要改 3 个文件"成为实际卡点时；或 H3/H4 落地后需求不再变动 |
+| 库内建默认事件消费者（`libscoop::headless`，审计 §1.6） | 出现**第一个真实第三方/嵌入需求**时；纯内部永远不需要 |
+| `commit_one_install` / `commit_one_remove` 抽公共管线 | install/remove 出现**第三次**语义分叉时（前两次已登记在 §3.3 T1/T3） |
+| `checkver.rs` 拆分 / `commit_one_*` 瘦身 | 需要先给出具体问题陈述（性能或维护痛点），否则不动 |
+| 公共 API 收窄（627 项 → CLI 所需） | libscoop 定位（路线 A / B）拍板时；见 §4 的 libscoop 行 |
+| `sxd-xpath` 替换、`futures` 移除 | 先有可度量的收益证据（编译时间/依赖数），否则不做 |
+
+**衰减指标（本表是常驻层，只放判据；复跑命令在审计报告 §10）**
+
+粗粒度即可，用途是"发现自己又抄了一份"：
+
+- nightly 判定 ≤1 个单入口，裸比较出现**第 5 处** ⇒ 触发 A；
+- hash 算法表 ≤1 处（`internal/hash.rs`），出现**第 5 处** ⇒ 触发 A；
+- 架构顺序定义 ≤1 处，出现**第 5 处** ⇒ 触发 A；
+- `Session::*_dir_in` 类 scope 决策 ≤1 个 helper，出现**第 7 个**孪生 ⇒ 触发 A；
+- CLI 集成测试 harness 与测试侧 oracle 各 ≤1 份 ⇒ 任何第 2 份出现即触发 A。
+
+> 为什么放粗阈值而不是精确计数：精确值会随代码漂移，写进常驻层就会变成第二份会过期的真相
+> （见 [`../../../../AGENTS.md`](../../../../AGENTS.md) → 「复述必漂」）。触发条件只写"该不该动"，具体数字按需重数。
 ---
 
 ## 5. 专题计划挂起（方案已定稿，实现未开工）
