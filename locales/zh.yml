@@ -140,6 +140,7 @@ cmd:
   cat_not_found: "找不到名为 '%{query}' 的包。"
   cat_invalid: "无效输入。"
   cat_render_failed: "无法渲染清单。"
+  cat_bat_failed: "bat 无法渲染清单（cat_style = '%{style}'）：%{reason}"
   checkhashes_mismatch_upd: "哈希不匹配！已更新"
   checkhashes_mismatch: "哈希不匹配：期望 %{expected}，实际 %{actual}"
   checkhashes_summary: "已扫描 %{total}: %{passed} 通过, %{failed} 失败, %{updated} 已更新。"
@@ -172,6 +173,7 @@ cmd:
   config_set: "配置项 '%{key}' 已设置为 '%{value}'"
   config_removed: "配置项 '%{key}' 已删除"
   config_not_set: "配置项 '%{key}' 未设置"
+  config_cat_style_invalid: "bat 不接受样式 '%{value}'：%{reason}（cat_style 会原样传给 'bat --style'，可用组件见 'bat --help'）"
   create_url_required: "需要提供 URL。"
   create_manifest_saved: "清单已保存到: %{path}"
   depends_invalid: "无效选择。"
@@ -353,7 +355,7 @@ cmd:
   config_desc_jobs: "并发包下载数"
   config_desc_aria2_min_split_size: "触发分片的最小大小"
   config_desc_cache_path: "下载缓存目录"
-  config_desc_cat_style: "用 bat 显示清单"
+  config_desc_cat_style: "传给 'bat --style' 的组件"
   config_desc_editor: "清单编辑用编辑器"
   config_desc_default_architecture: "安装首选架构"
   config_desc_global_path: "全局安装根目录"
@@ -623,7 +625,8 @@ cli_help:
       cache_path: 路径，默认 $SCOOP_CACHE 或 <root>/cache
             下载缓存目录。
       cat_style: 字符串，默认无
-            设置后使用 'bat' 显示清单（需安装 bat）。
+            设置后 'bat' 以这些 --style 组件显示清单（需安装 bat；
+            bat 不接受的值退回纯 JSON 输出）。
       editor: 字符串，默认无
             'hok config edit' 使用的编辑器（未设置时回退 $EDITOR，再到系统处理程序）。
       confirm: bool，默认 false

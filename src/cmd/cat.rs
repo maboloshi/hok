@@ -3,9 +3,9 @@
 use clap::Parser;
 use libscoop::{Session, fs, os, package};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-use crate::Result;
+use crate::{Result, output};
 
 /// Inspect the manifest of a package
 #[derive(Debug, Parser)]
@@ -38,20 +38,42 @@ fn pretty_manifest(resolved: &package::GetManifest) -> Result<String> {
     }
 }
 
-/// Pipe a JSON string through bat for syntax highlighting (Scoop's
-/// scoop cat only shells out to bat when cat_style is configured).
-fn run_bat(json: &str, style: &str) -> std::io::Result<()> {
-    let mut child = Command::new("bat.exe")
-        .args(["--no-paging", "--style", style, "--language", "json"])
+/// Pipe a JSON string through bat for syntax highlighting; the child's exit
+/// status is what tells the caller whether the manifest reached the user.
+///
+/// `stdout` stays inherited — bat writes the highlighted manifest straight to
+/// the terminal — while `stderr` is captured, so a rejected `cat_style` can be
+/// reported as hok's own warning naming the setting instead of as a bare bat
+/// parser error with no hint of where the value came from.
+fn run_bat(json: &str, style: &str) -> std::io::Result<std::process::Output> {
+    let mut child = super::bat_command(style)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(json.as_bytes())?;
+        // A style bat rejects makes it exit while parsing its arguments, before
+        // it reads anything, so the pipe may already be gone. That is not a
+        // failure of ours: the exit status below carries the diagnosis.
+        let _ = stdin.write_all(json.as_bytes());
     }
-    child.wait()?;
-    Ok(())
+    child.wait_with_output()
+}
+
+/// bat's own one-line diagnosis of a failed run.
+///
+/// A silent failure (a bat that exited without saying anything) still has to
+/// produce a reason, or the warning would trail off after its colon.
+fn bat_diagnosis(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    match output.status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => "terminated".to_string(),
+    }
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
@@ -72,13 +94,30 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let json = pretty_manifest(&resolved)?;
 
     // Only delegate to bat when a style is configured and bat is on PATH;
-    // otherwise (or if bat cannot start) print the plain pretty JSON so the
+    // otherwise (or when bat fails) print the plain pretty JSON so the
     // manifest content is always shown.
     let config = session.config();
     let style = config.cat_style();
-    let used_bat = !style.is_empty() && os::is_program_available("bat.exe");
-    if used_bat && run_bat(&json, style).is_ok() {
-        return Ok(());
+    if !style.is_empty() && os::is_program_available("bat.exe") {
+        match run_bat(&json, style) {
+            // bat rendered it: the manifest is already on the terminal.
+            Ok(output) if output.status.success() => return Ok(()),
+            // bat ran but rejected the invocation — `cat_style` is not a value
+            // its `--style` accepts. Name the setting (bat's message alone does
+            // not) and fall through to the plain JSON rather than ending the
+            // command with an empty screen.
+            Ok(output) => output::warn(hok_i18n::t!(
+                "cmd.cat_bat_failed",
+                style = style,
+                reason = bat_diagnosis(&output)
+            )),
+            // On PATH but unusable (a broken binary, a directory placeholder).
+            Err(err) => output::warn(hok_i18n::t!(
+                "cmd.cat_bat_failed",
+                style = style,
+                reason = err.to_string()
+            )),
+        }
     }
 
     println!("{json}");

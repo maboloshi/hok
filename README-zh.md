@@ -169,7 +169,7 @@ hok 尚未保存的设置的视图）。
 | `aria2-max-connection-per-server` | int | `5` | 每个下载对单个服务器的最大连接数 |
 | `aria2-min-split-size` | 大小 | `5M` | 触发分片下载的最小文件大小（如 `5M`、`10M`） |
 | `cache_path` | 路径 | `$SCOOP_CACHE` 或 `<root>/cache` | 下载缓存目录 |
-| `cat_style` | 字符串 | *(空)* | 设置后使用 `bat` 显示清单（需安装 `bat`） |
+| `cat_style` | 字符串 | *(空)* | 显示清单时传给 `bat --style` 的组件（需安装 `bat`；`bat` 不接受的值会退回纯 JSON 输出） |
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | 自动检测 | 安装时使用的首选架构 |
 | `global_path` | 路径 | `$SCOOP_GLOBAL` 或 `%ProgramData%\scoop` | 全局应用安装的根目录 |
 | `gh_token` | 字符串 | *(空)* | 用于认证请求的 GitHub API token |

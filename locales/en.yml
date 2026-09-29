@@ -140,6 +140,7 @@ cmd:
   cat_not_found: "Could not find package named '%{query}'."
   cat_invalid: "Invalid input."
   cat_render_failed: "Failed to render the manifest."
+  cat_bat_failed: "bat could not render the manifest (cat_style = '%{style}'): %{reason}"
   checkhashes_mismatch_upd: "hash mismatch! updated"
   checkhashes_mismatch: "hash mismatch: expected %{expected}, actual %{actual}"
   checkhashes_summary: "Scanned %{total}: %{passed} ok, %{failed} failed, %{updated} updated."
@@ -172,6 +173,7 @@ cmd:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_removed: "Config '%{key}' has been removed"
   config_not_set: "'%{key}' is not set"
+  config_cat_style_invalid: "bat does not accept '%{value}' as a style: %{reason} (cat_style is passed to 'bat --style'; run 'bat --help' for the accepted components)"
   create_url_required: "URL is required."
   create_manifest_saved: "Manifest saved to: %{path}"
   depends_invalid: "Invalid selection."
@@ -353,7 +355,7 @@ cmd:
   config_desc_jobs: "Concurrent package downloads"
   config_desc_aria2_min_split_size: "Minimum size to fragment"
   config_desc_cache_path: "Download cache directory"
-  config_desc_cat_style: "Show manifests through bat"
+  config_desc_cat_style: "Components passed to 'bat --style'"
   config_desc_editor: "Editor for manifests"
   config_desc_default_architecture: "Preferred install architecture"
   config_desc_global_path: "Root of global installs"
@@ -623,7 +625,8 @@ cli_help:
       cache_path: path, default $SCOOP_CACHE or <root>/cache
             Download cache directory.
       cat_style: string, default none
-            When set, use 'bat' to display manifests (requires bat installed).
+            When set, 'bat' displays manifests with these --style components
+            (requires bat installed; a value bat rejects falls back to plain JSON).
       editor: string, default none
             Editor used by 'hok config edit' ($EDITOR then the OS handler fall back).
       confirm: bool, default false

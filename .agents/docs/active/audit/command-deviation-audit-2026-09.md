@@ -55,7 +55,7 @@
 | `depends` | A/B | 输出为缩进树（官方平铺依赖序）；重复依赖重列；环形依赖不报错；helper 判定与 `lessmsi` 默认不同 | §5 |
 | `which` | A | 打印 shim 文件本身而非其指向的真实目标；不查 PATH、不查全局 shim；列出全部变体 | §5 |
 | `prefix` | B | 不回退全局目录；错误文案不同 | §5 |
-| `cat` | B | 不解析 URL/本地 manifest；多 bucket 交互提示（官方取第一个）；JSON 美化缩进/行尾不同 | §5 |
+| `cat` | B | 不解析 URL/本地 manifest；多 bucket 交互提示（官方取第一个）；JSON 美化缩进/行尾不同；bat 缺失/失败时退回纯 JSON（有意偏离） | §5 |
 | `home` | B | 不解析 URL/本地 manifest；多 bucket 交互提示；缺 `homepage` 无守卫 | §5 |
 | `bucket` | B | 空列表退出码 / 排序 / 列顺序 / `known` 输出 / `-k` 语义 / 不校验重复仓库与 git URL | §6 |
 | `config` | A | 键白名单化；`unset` vs `rm`；无单键读取；`proxy none` 语义相反；`aria2-min-split-size` 默认 20M vs 5M | §6 |
@@ -252,10 +252,10 @@
 |---|---|---|---|---|
 | prefix | hok 只解析本地安装，否则报错；官方先回退全局应用目录（`currentdir $app $true`） | `src/cmd/prefix.rs:20-31` | `libexec/scoop-prefix.ps1:12-21` | 行为缺失 |
 | prefix | hok 有两条不同文案（无 `current` 符号链接 / 未安装）；官方统一 `Could not find app path for '<app>'.` | `src/cmd/prefix.rs:25-30`、`locales/en.yml:177-178` | `libexec/scoop-prefix.ps1:20` | 输出或文案不同 |
-| cat | hok 只按精确名解析 bucket 清单；官方 `Get-Manifest` 还接受 manifest URL/UNC/本地文件，并回退已安装/deprecated 清单 | `src/cmd/cat.rs:60-65` | `libexec/scoop-cat.ps1:16`、`lib/manifest.ps1:38-41,52-75,95-99` | 行为缺失 |
-| cat | 多 bucket 命中：hok 交互式询问；官方取第一个匹配并只告警 | `src/cmd/cat.rs:74-87` | `lib/manifest.ps1:81-92,107-109` | 语义不同 |
-| cat | 美化：hok 用 serde（2 空格缩进、LF、保留单元素数组）；官方 `ConvertToPrettyJson` 用 4 空格、CRLF 并折叠单元素数组/多行字符串 | `src/cmd/cat.rs:35-36` | `lib/json.ps1:27,29,184-194` | 输出或文案不同 |
-| cat | `bat` 缺失时 hok 静默回退纯 JSON；官方无条件调用 `bat`，缺失即失败 | `src/cmd/cat.rs:96-101` | `libexec/scoop-cat.ps1:19-24` | 边界处理不同 |
+| cat | hok 只按精确名解析 bucket 清单；官方 `Get-Manifest` 还接受 manifest URL/UNC/本地文件，并回退已安装/deprecated 清单 | `src/cmd/cat.rs:85-92` | `libexec/scoop-cat.ps1:16`、`lib/manifest.ps1:38-41,52-75,95-99` | 行为缺失 |
+| cat | 多 bucket 命中：hok 交互式询问；官方取第一个匹配并只告警 | `src/cmd/mod.rs:95-107`（共享 `resolve_manifest_query`，与 `home` 同源） | `lib/manifest.ps1:81-92,107-109` | 语义不同 |
+| cat | 美化：hok 用 serde（2 空格缩进、LF、保留单元素数组）；官方 `ConvertToPrettyJson` 用 4 空格、CRLF 并折叠单元素数组/多行字符串 | `src/cmd/cat.rs:36` | `lib/json.ps1:27,29,184-194` | 输出或文案不同 |
+| cat | `bat` 缺失、起不来或**被 `cat_style` 值拒绝**（非 0 退出）时 hok 退回纯 JSON 并告警点名 `cat_style`；官方无条件调用 `bat`，失败即整条命令失败、清单不显示 | `src/cmd/cat.rs:96-121` | `libexec/scoop-cat.ps1:19-24` | 边界处理不同（**有意偏离**：清单可见优先；警告里带 bat 原始诊断） |
 | home | hok 只按精确名解析 bucket 清单；官方 `Get-Manifest` 还接受 URL/UNC/本地文件 | `src/cmd/home.rs:19-21` | `libexec/scoop-home.ps1:10`、`lib/manifest.ps1:38-41` | 行为缺失 |
 | home | 多 bucket 命中：hok 交互式让用户选序号；官方按 bucket 顺序静默取第一个 | `src/cmd/home.rs:35-52` | `lib/manifest.ps1:81-92` | 语义不同 |
 | home | 清单无 `homepage`：hok 把空串交给 ShellExecuteW 得到底层 IO 错误；官方 `Could not find homepage in manifest for '<app>'.` | `src/cmd/home.rs:32-33`、`manifest.rs:919-921`、`internal/os.rs:417-438` | `libexec/scoop-home.ps1:12-16` | 边界处理不同 |
@@ -329,6 +329,7 @@
 | hok 读写 `~/.config/hok/config.json`，官方 `~/.config/scoop/config.json`（已登记） | `config.rs:915-922` | `lib/core.ps1:1263-1264` | 有意偏离 |
 | `config edit`：hok 打开编辑器；官方把 `edit` 当键名输出 `'edit' is not set` | `src/cmd/config.rs:20-21,47-54` | `libexec/scoop-config.ps1:167-169` | 语义不同 |
 | `config set proxy none`：hok 直接删键（视为未设置）；官方写入字符串 `none`（绕过系统代理直连） | `config.rs:664-667` | `libexec/scoop-config.ps1:50-53`、`lib/core.ps1:119-130` | 语义不同 |
+| `config cat_style <值>`：hok 写入前用 `bat --no-paging --style <值> --language json` 求证，bat 拒绝则不写并报错 exit 1；官方 `set_config` 不校验，写了就存（坏值要到 `scoop cat` 才炸） | `src/cmd/config.rs:56-70,102-139`、`src/cmd/mod.rs:110-127` | `libexec/scoop-config.ps1:105-138`、`libexec/scoop-cat.ps1:19-24` | 有意偏离（把错误挡在设置时；`bat` 不在 PATH 时不拦） |
 
 ### 6.4 export / import
 

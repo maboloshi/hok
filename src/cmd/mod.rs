@@ -107,6 +107,26 @@ pub(crate) async fn resolve_manifest_query(
     .await?)
 }
 
+/// The `bat` invocation behind the `cat_style` setting.
+///
+/// Shared by the two commands that have to agree on it: `cat` renders the
+/// manifest through this command line, and `config` asks `bat` whether the
+/// value the user just typed is one it accepts. They must ask the *same*
+/// question — a longer or differently spelled invocation on either side would
+/// let a value pass `hok config` and still be rejected at render time.
+///
+/// `cat_style` is not hok's own vocabulary: it goes to `bat --style` verbatim,
+/// as it does upstream (`libexec/scoop-cat.ps1:21`). The accepted values
+/// therefore belong to the installed bat and change with it — components were
+/// added across its releases, and a `+`/`-` prefixed list modifies the previous
+/// set instead of replacing it — which is why neither caller keeps a list of
+/// them and the tool itself is asked instead.
+pub(crate) fn bat_command(style: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("bat.exe");
+    cmd.args(["--no-paging", "--style", style, "--language", "json"]);
+    cmd
+}
+
 /// Localized Info-column word for one concern kind.
 ///
 /// The *order* of the words is fixed once in

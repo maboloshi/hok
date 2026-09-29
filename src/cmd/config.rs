@@ -2,7 +2,8 @@
 
 use clap::{Parser, Subcommand};
 use libscoop::config::{ConfigCell, ConfigRow};
-use libscoop::{Session, config};
+use libscoop::{Session, config, os};
+use std::process::Stdio;
 
 use crate::format::{pad_visual, visual_width};
 use crate::output::style;
@@ -53,6 +54,20 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
         return match (args.key.as_deref(), args.value.as_deref()) {
             // `hok config <name> <value>` sets, like `scoop config <name> <value>`.
             (Some(key), Some(value)) => {
+                // `cat_style` is handed to `bat --style` verbatim, so the value
+                // is written only once bat says it accepts it: refusing here
+                // beats a `hok cat` that has to fall back to plain JSON every
+                // run. An empty value unsets the setting, which is always fine.
+                if key == "cat_style"
+                    && !value.is_empty()
+                    && let Some(reason) = bat_style_rejection(value)
+                {
+                    return Err(anyhow::anyhow!(hok_i18n::t!(
+                        "cmd.config_cat_style_invalid",
+                        value = value,
+                        reason = reason
+                    )));
+                }
                 config::set(session, key, value)?;
                 output::info(hok_i18n::t!("cmd.config_set", key = key, value = value));
                 Ok(())
@@ -82,6 +97,45 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// bat's rejection of `value` as a `--style` value, or `None` when there is
+/// nothing to reject.
+///
+/// `cat_style` is not hok's vocabulary: it goes to `bat --style` verbatim, so
+/// the accepted values are the installed bat's own and change with it
+/// (components were added across its releases, and a `+`/`-` prefixed list
+/// modifies the previous set instead of replacing it). A list frozen here
+/// would reject a newer bat's values, so the installed bat is asked — through
+/// the same [`super::bat_command`] that `cat` renders with.
+///
+/// bat not being on PATH is deliberately **not** a rejection: there is nothing
+/// to ask, and `cat` reports an unusable bat at the point where one is actually
+/// needed. A bat that cannot even be started gets the same treatment — that is
+/// a fact about the machine, not about the value.
+fn bat_style_rejection(value: &str) -> Option<String> {
+    if !os::is_program_available("bat.exe") {
+        return None;
+    }
+    let output = super::bat_command(value)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    if output.status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    Some(if stderr.is_empty() {
+        format!(
+            "bat exited with code {}",
+            output.status.code().unwrap_or(-1)
+        )
+    } else {
+        stderr.to_string()
+    })
 }
 
 /// Print one setting, or upstream's `'<name>' is not set`.

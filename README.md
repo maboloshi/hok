@@ -154,7 +154,7 @@ store yet).
 | `aria2-max-connection-per-server` | int | `5` | Maximum connections to one server per download |
 | `aria2-min-split-size` | size | `5M` | Minimum file size to trigger fragmented downloads (e.g. `5M`, `10M`) |
 | `cache_path` | path | `$SCOOP_CACHE` or `<root>/cache` | Download cache directory |
-| `cat_style` | string | *(empty)* | When set, use `bat` to display manifests (requires `bat` installed) |
+| `cat_style` | string | *(empty)* | Components passed to `bat --style` when displaying manifests (requires `bat` installed; a value `bat` rejects falls back to plain JSON) |
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | auto-detected | Preferred architecture used for installation |
 | `editor` | string | *(empty)* | Text editor used by `hok config edit` (e.g. `code --wait`); falls back to `$EDITOR`, then the system default handler |
 | `global_path` | path | `$SCOOP_GLOBAL` or `%ProgramData%\scoop` | Root directory for globally installed apps |
