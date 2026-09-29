@@ -28,6 +28,8 @@
 | [`scoop-gap-status.md`](active/audit/scoop-gap-status.md) | **对标差距的逐项现状**（P0/P1/P2/P3 的 ✅/⏸ 与依据）；方法论见技能 `scoop-gap-audit` |
 | [`command-deviation-audit-2026-09.md`](active/audit/command-deviation-audit-2026-09.md) | 36 个子命令 vs 官方 0.5.3 的偏离审计（约 280 条） |
 | [`optimization-audit-2026-09.md`](active/audit/optimization-audit-2026-09.md) | 精简 / 合并 / 优化空间审计（clippy + cargo-modules + machete + drywall + jscpd） |
+| [`systemic-optimization-audit-2026-09.md`](active/audit/systemic-optimization-audit-2026-09.md) | 系统性优化点盘点（结构 / 代码冗余 / 逻辑冗余 / crates 替代剪裁 / feature 裁剪） |
+| [`hok-overall-framework-analysis.md`](active/audit/hok-overall-framework-analysis.md) | ⚠️ 已被上一行取代（广度与深度不足；失真项见新报告 §0） |
 | [`s7-s14-investigation-2026-09.md`](active/audit/s7-s14-investigation-2026-09.md) | S7+S14 低风险批量逐项对照与落地进度 |
 | [`binary-size-analysis-2026-09.md`](active/audit/binary-size-analysis-2026-09.md) | `hok.exe` 体积归因与压缩分发方案对照 |
 | [`7zip-switch-investigation-2026-09.md`](active/audit/7zip-switch-investigation-2026-09.md) | 「适度切换外部 7z」收益调研与方案 A–D 对照 |
