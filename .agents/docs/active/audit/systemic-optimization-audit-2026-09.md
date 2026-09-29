@@ -99,7 +99,90 @@ Updated: 2026-09-29
 - `internal/` 已全部 `pub(crate)`（`internal/mod.rs`），收口已完成——这一层不是问题。
 - 反例（不要动）：`output::Output`、`Event`、`Session`、`QueryOption`/`SyncOption`、`hash`/`url`/`os`/`fs`/`string` 薄门面 —— CLI 与 `tests/` 都在用。
 
-### 1.5 结构问题 S4：命令注册是双份真相
+### 1.5 结构问题 S3b（致命）：libscoop 无法脱离本仓独立使用
+
+**结论先说：`libscoop` 今天只在"本仓 + 已构建过"的条件下可用。** 第三方以任何方式（crates.io / git / 裸 path）
+引用它，都拿不到一个能构建的 crate；而**全新 clone 里连 `cargo build -p libscoop` 都失败**。
+三个阻断点全部实测，且互不重叠——修掉一个还有下一个。
+
+**B1 —— 路径依赖没有版本号，`cargo package` 连清单校验都过不去（实测）**
+
+```
+$ cargo package -p libscoop
+error: failed to verify manifest at `crates/libscoop/Cargo.toml`
+  all dependencies must have a version requirement specified when packaging.
+  dependency `hok-i18n` does not specify a version
+```
+- 站点：`crates/libscoop/Cargo.toml:48`（`hok-i18n = { workspace = true }`，而 workspace 声明是
+  `Cargo.toml:26` 的纯 path）、`:95`（`hok-shim = { path = "../hok-shim" }`）。`crates/hok-i18n/Cargo.toml:11`
+  还有 `publish = false` —— 意味着即使给 libscoop 补上版本号，依赖也拿不到。
+- 性质：Cargo **不支持**发布带无版本 path 依赖的包（crates.io 上会解析成"同名任意版本"，必须显式约束）。
+
+**B2 —— locales 在 crate 之外，`hok-i18n` 自己就不可打包（实测 + 代码）**
+
+```
+$ cargo package -p hok-i18n --list
+.cargo_vcs_info.json  Cargo.lock  Cargo.toml  Cargo.toml.orig  build.rs  src/lib.rs
+```
+- 打包产物**只有 6 个文件**，没有 `locales/`——因为 `locales/{en,zh}.yml` 在仓库根，
+  而 `crates/hok-i18n/build.rs:33` 写的是 `manifest_dir.join("../../locales")`。
+- 推论（**由两个已实测事实推出，非直接实测**）：该 build script 对缺失目录会
+  `panic!("hok-i18n: cannot read …")`（`build.rs:37-38`）⇒ 发布出去的 `hok-i18n` 无法构建。
+- 同一个 `../../locales` 也是**仓库内**的隐含约束：把 `crates/hok-i18n` 单独拷出仓库即失效。
+
+**B3 —— 嵌入式 shim 依赖"本仓 target/ 里已有的产物"，干净克隆直接 panic（实测）**
+
+```
+$ cargo build -p libscoop          # 把 target/ 移走，模拟全新 clone
+thread 'main' panicked at crates\libscoop\build.rs:204:
+  hok-shim binary not found at D:\App\github项目\Scoop\hok\target\release\hok-shim.exe
+    Run `cargo build -p hok-shim` first.
+exit=101
+```
+- 根因：`crates/libscoop/build.rs:157-229` 需要 `hok-shim.exe` / `hok-shim-gui.exe` 的**二进制**来
+  `include_bytes!`，而 `candidate_target_dirs`（`:239-250`）的候选里**包含 workspace `target/`**。
+- 关键佐证（反证）：把 `CARGO_TARGET_DIR` 指向一个空目录再构建**会成功**（实测 2m24s）——
+  因为它在最后回退到本仓既存的 `target/release/hok-shim.exe`。也就是说"构建成功"这件事
+  完全依赖本仓曾经构过 shim，与目标目录无关。
+- `crates/libscoop/Cargo.toml:94-95` 的 `[build-dependencies] hok-shim` **是空壳**：`build.rs` 里
+  没有任何 `hok_shim::` 引用（grep 仅命中注释与 `"hok-shim"` 字符串字面量）。它大概被写来
+  "让 cargo 先构建 shim"，但**构建脚本之间没有顺序保证**，实际拿到二进制靠的是 `target/` 探测。
+  这使真正的依赖是隐式的文件系统探测，而不是 manifest 里的声明。
+
+**B4 —— 文档仍在承诺第三方可用（与实现矛盾）**
+
+| 位置 | 承诺 | 与实现的关系 |
+|---|---|---|
+| `crates/libscoop/Cargo.toml:5` | `documentation = "https://docs.rs/libscoop"` | 指向上游旧版（crates.io 上 libscoop 最新 **0.1.0-beta.7 / 2024-12-10**，`repository` 仍是 `chawyehsu/hok`） |
+| `crates/libscoop/README.md:5-15,27-30` | 4 个 crates.io/docs.rs 徽章 + `libscoop = "0.1"` 安装示例 | 本仓版本是 **0.2.0**，从未发布 |
+| `README.md:7,10,305-309` | 同样的 crates.io / docs.rs 徽章 | 同上 |
+
+**唯一的"决定痕迹"**是 `crates/hok-i18n/Cargo.toml:9-11`（`c99f07e`，2026-09-11）的一句注释：
+> `# Internal to the workspace: hok is the only consumer and libscoop is no longer`
+> `# treated as a publishable crate (Windows-only, off upstream).`
+
+但这条决定**只落在了 hok-i18n 上**：`libscoop` 自己没有 `publish = false`，README 与 crate 文档也没有改。
+所以现状既不是"完全没考虑"，也不是"已收口"，而是**决定做了、只执行了一半**——这正是它危险的地方：
+下一个人读到 README 会以为能用。
+
+**两条出路（互斥，需拍板；按 `investigate-first` 不自行选型）**
+
+- **路线 A｜承认定位：明确"不可独立使用"**（工作量小）
+  `libscoop`/`hok` 加 `publish = false`；删掉两处 README 的 crates.io/docs.rs 徽章与
+  `libscoop = "0.1"` 安装示例，改为"内部 crate，随 hok 一同构建"；`ARCHITECTURE.md` 写明
+  「必须先 `cargo build -p hok-shim`」是**设计约束**而非临时坑。收益：文档与现实一致，且把 B3 登记为
+  显式约束，不再被当成 bug 反复踩。
+- **路线 B｜真的做成可独立引用**（工作量大，且要动构建架构）
+  三件事必须一起做：① `hok-shim` 从 `[build-dependencies]` 变成**真依赖**（在 `build.rs` 里调用它导出的
+  函数/常量生成 shim，而不是探测 `target/` 里的二进制），或改为在 build.rs 里现场编译 shim 源码；
+  ② `locales/` 搬进 `crates/hok-i18n/locales/` 并把 `build.rs:33` 改成 `manifest_dir.join("locales")`，
+  同时给 `hok-i18n` 去掉 `publish = false`；③ 给 `hok-i18n`/`hok-i18n-derive` 补版本号，二者先发布。
+  额外代价：`git2`/`rusqlite-bundled`/Windows-only 意味着**只能在 Windows 上构建**，crates.io 的
+  docs.rs 也构建不了（docs.rs 是 Linux）——所以"docs.rs 徽章"这条路本身就不通，最多做 git 依赖。
+
+**判定**：路线 A 是**当前架构下唯一自洽**的选择；路线 B 需要一个明确的第三方消费场景作为前提。
+
+### 1.6 结构问题 S4：命令注册是双份真相
 
 | 机制 | 位置 | 性质 |
 |---|---|---|
@@ -110,7 +193,7 @@ Updated: 2026-09-29
 **判定：有意接受，不建议改**——clap derive 的命令表无法从目录扫描生成（每个变体要写参数类型/帮助文案），
 把 `enum Command` 换成宏只会把编译期错误换成宏展开难读。
 
-### 1.6 结构问题 S5：CLI 层内嵌 clap 本地化机制（约 130 行）
+### 1.7 结构问题 S5：CLI 层内嵌 clap 本地化机制（约 130 行）
 
 `src/cmd/mod.rs:454-571` 是一次**针对 clap 内部行为的绕行**：为让中文帮助里的 `Arguments:`/`Options:`
 标题本地化，对整棵命令树做两阶段改写，且带硬约束注释「`mut_arg` 只能在 `build()` 之前」。
@@ -118,7 +201,7 @@ Updated: 2026-09-29
 
 **判定：保留，但把它登记为"高脆弱面"**：任何 clap 升级都要重跑全部帮助面逐字节比对（`.agents/scripts/dump-help.js`、`help-audit.js` 已具备）。这不是可优化点，是**必须持续付费的约束**——值得写进 `ARCHITECTURE.md`，否则下次升级 clap 会重踩。
 
-### 1.7 结构问题 S6：超长文件与超长函数（含测试）
+### 1.8 结构问题 S6：超长文件与超长函数（含测试）
 
 生产行最大的文件（剔除测试块）：
 
@@ -140,7 +223,7 @@ Updated: 2026-09-29
 拆分收益最高；`internal/archive.rs` 是唯一能按格式（7z/zip/tar/gz/xz/zst/bz2/rar/nsis/inno）清楚切分的模块。
 两者都需要先有具体问题陈述（`hok-code-organization`：不为重构而重构）。
 
-### 1.8 构建期结构：embedded-shim 的前置依赖
+### 1.9 构建期结构：embedded-shim 的前置依赖（已并入 §1.5）
 
 `crates/libscoop/build.rs:157-229` 按 `target/{release,debug}` × 候选 target 目录查找 `hok-shim.exe`，找不到就
 `panic!("hok-shim binary not found … Run `cargo build -p hok-shim` first.")`。这使**任何新鲜 worktree 的第一次
@@ -407,8 +490,8 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 | 序 | 项 | 出处 | 待决点 |
 |---|---|---|---|
 | 11 | 事件模型折叠（`Start/Done/Progress` → `StepKind`），或把 28 个 debug-only 变体下沉到 `tracing` | §1.3 | (a)(b)(c) 三选一；影响 CLI + libscoop + 事件循环三处 |
-| 12 | libscoop 公开面收窄（`package/` 24 个 `pub` 子模块 → CLI 专用者降 `pub(crate)`） | §1.4 | 是否保留"第三方可基于 libscoop 写前端"的承诺 |
-| 13 | `checkver.rs` 拆分 / `commit_one_install`+`commit_one_remove` 抽公共提交管线 | §1.7 | 必须先写清具体问题（`no-patchwork-fixes`：不得用开关掩盖 install/remove 语义差异） |
+| 12 | libscoop 公开面收窄（`package/` 24 个 `pub` 子模块 → CLI 专用者降 `pub(crate)`） | §1.4、§1.5 | 是否保留"第三方可基于 libscoop 写前端"的承诺 |
+| 13 | `checkver.rs` 拆分 / `commit_one_install`+`commit_one_remove` 抽公共提交管线 | §1.8 | 必须先写清具体问题（`no-patchwork-fixes`：不得用开关掩盖 install/remove 语义差异） |
 | 14 | `sxd-document`+`sxd-xpath` 替换调研 | §4.3 | 收益小、需重写提取语义 + 契约测试 |
 
 ### T4 — 明确不做（本文结论）
@@ -437,7 +520,8 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 以下**没有被本文判定**，需要用户或后续会话决定：
 
 1. **ssh 是否放弃**（§4.2 A）：官方 `lib/buckets.ps1` 明确支持 ssh 形态，而 hok 从未可用。
-2. **libscoop 对外承诺**（§1.4）：是否保留"第三方前端"定位。这决定公开面是否可收窄。
+2. **libscoop 的定位**（§1.5）：走路线 A（登记为"不可独立使用"，公开面随之可收窄）还是路线 B（补齐可独立引用）。
+   这一条决定 §1.4 与 §5.3 的走向，且是**唯一一个"不选就没法收口文档"的问题**。
 3. **事件模型方向**（§1.3）：(a) 折叠 / (b) 下沉 / (c) 不动。
 4. **`SyncArgs` 路线**（§2.2 P3）：flatten（CLI 表面变化）还是纯数据化。
 5. **`tokio` 的 `rt-multi-thread` 能否从 libscoop 裁掉**：取决于库内是否有 `tokio::spawn`（§10 第 5 条给复跑命令），本文未下结论。
@@ -476,6 +560,12 @@ Select-String -Path 'crates\libscoop\src\**\*.rs','src\**\*.rs' -Pattern 'sys_lo
 # 5. 结构问题 S2 与 tokio 裁剪判据
 Select-String -Path 'crates\libscoop\src\event.rs' -Pattern '^    [A-Z][A-Za-z0-9]*\s*[\({,]'
 Select-String -Path 'crates\libscoop\src\**\*.rs' -Pattern 'tokio::spawn|spawn_blocking|Handle::current'
+
+# 5b. §1.5「能否独立使用」的三条复跑（B3 会破坏本仓 target/，用临时目录更稳）
+cargo package -p libscoop                              # B1：应停在 "must have a version requirement"
+cargo package -p hok-i18n --no-verify --list           # B2：产物只有 6 个文件，无 locales/
+# B3：把 target/ 改名后再构建，应 panic 在 build.rs:204；验完改名回来
+Rename-Item target target.audit-moved; cargo build -p libscoop; Rename-Item target.audit-moved target
 
 # 6. 逻辑冗余关键点（应各只命中单入口）
 Select-String -Path 'crates\libscoop\src\**\*.rs' -Pattern 'is_nightly|nightly"'

@@ -1,6 +1,6 @@
 # hok 系统性优化点审计：先更正上一版框架报告，再补全五个维度
 
-> 2026-09-29 ｜ 提交 `0205083` ｜ worktree 主树（`D:\App\github项目\Scoop\hok`）｜ 分支 `refactor/edition-2024`
+> 2026-09-29 ｜ 提交 `0205083` `0834850` ｜ worktree 主树（`D:\App\github项目\Scoop\hok`）｜ 分支 `refactor/edition-2024`
 
 ## 为什么重做
 
@@ -30,6 +30,26 @@
   真杠杆是 `git2` 关 `ssh`（`libssh2-sys` + 一处 openssl 分支）与 `criterion` 关 `plotters`。
 - **feature**：全仓 `cfg(feature)` **0 处**——当前无法编译期裁剪任何能力，可选性靠目标平台、
   环境变量+链接器、独立 crate/bin 三种机制表达；`[features] default = []` 两处是空壳。
+
+## 追加：libscoop「能否独立给第三方用」——成立，本轮的致命项
+
+用户提出这可能才是致命问题，验下来成立。三条阻断**全部实测**，且互不重叠（修一条还有下一条）：
+
+1. `cargo package -p libscoop` **exit 101**：`hok-i18n`（`Cargo.toml:48`）与 `hok-shim`（`:95`）是无版本
+   path 依赖，Cargo 拒绝打包；而 `crates/hok-i18n/Cargo.toml:11` 自带 `publish = false`。
+2. `cargo package -p hok-i18n --list` 产物只有 **6 个文件**、没有 `locales/`——因为 `locales/*.yml` 在仓库根，
+   而 `crates/hok-i18n/build.rs:33` 读的是 `manifest_dir.join("../../locales")`，读不到即 panic
+   ⇒ 即便发布出去也不可构建。
+3. 把 `target/` 移走（模拟全新 clone）后 `cargo build -p libscoop` **panic 在 `crates/libscoop/build.rs:204`**
+   （找不到 `hok-shim.exe`）。**反证很关键**：只把 `CARGO_TARGET_DIR` 指向空目录**会成功**——因为
+   `candidate_target_dirs`（`build.rs:239-250`）最后回退到本仓 `target/`；也就是说"构建成功"依赖的是
+   本仓曾经构过 shim。`[build-dependencies] hok-shim`（`Cargo.toml:94-95`）是空壳，`build.rs` 内零引用。
+
+最刺眼的是**决定只执行了一半**：`c99f07e`（2026-09-11）在 hok-i18n 里写下 "libscoop is no longer treated
+as a publishable crate"，但 libscoop 自己既没有 `publish = false`，`README.md` 与 `crates/libscoop/README.md`
+也还在挂 crates.io / docs.rs 徽章（crates.io 上最新仍是上游 `0.1.0-beta.7`，2024-12-10）。下一个人读 README
+会以为能用。报告 §1.5 给出互斥的两条路线：A 登记"不可独立使用"（当前架构下唯一自洽），B 真做成可独立
+引用（要动构建架构、把 locales 搬进 crate、先发布 i18n 两 crate，且 docs.rs 在 Linux 上永远构建不了）。
 
 ## 未做的事（等拍板）
 
