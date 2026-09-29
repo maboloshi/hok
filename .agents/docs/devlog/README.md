@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（51 条，自动生成）
+## 索引（52 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-09-29 | hok 系统性优化点审计：先更正上一版框架报告，再补全五个维度 | `0205083` | [`2026-09-29-systemic-optimization-audit.md`](2026-09-29-systemic-optimization-audit.md) |
 | 2026-09-27 | `cat_style` 是 bat 的 `--style` 值：吞掉的退出码 + 写入期求证 | `95fb819` | [`2026-09-27-bat-style-fallback.md`](2026-09-27-bat-style-fallback.md) |
 | 2026-09-26 | 技能内容级审查：断言过期 / 重复 / description / 同名归档件 | `2806108` `1a9249a` `8c97220` | [`2026-09-26-skill-content-audit.md`](2026-09-26-skill-content-audit.md) |
 | 2026-09-26 | 规则复述收敛（7 组）与根 AGENTS.md 两处措辞 | `9eea4a6` `c2fa597` `e5c516f` | [`2026-09-26-rule-restatement-convergence.md`](2026-09-26-rule-restatement-convergence.md) |
