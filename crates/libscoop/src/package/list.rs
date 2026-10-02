@@ -9,6 +9,8 @@ use std::cmp::Ordering;
 
 use crate::{Session, error::Fallible};
 
+use super::install_state::install_info_mtime;
+
 /// A single installed version directory of a package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledVersion {
@@ -73,17 +75,19 @@ pub fn list_installed_versions(session: &Session, name: &str) -> Fallible<Vec<In
 /// `yyyy-MM-dd HH:mm:ss`.
 ///
 /// Upstream starts from the app directory's `LastWriteTime` and overrides it
-/// with the current version's `install.json` `LastWriteTime` when that file
-/// exists (`scoop-list.ps1:34-40`), rendered through the format string in
+/// with the current version's install record (`scoop-install.json`, else
+/// `install.json`) `LastWriteTime` when that file exists
+/// (`scoop-list.ps1:34-41`, which resolves `info_path` the same way), rendered
+/// through the format string in
 /// `supporting/formats/ScoopTypes.Format.ps1xml:22-25`. Returns `None` when
 /// neither path can be stat'ed (an app whose directory vanished), so the
 /// caller renders an empty cell instead of a bogus date.
 pub fn update_time(session: &Session, name: &str, version: &str) -> Option<String> {
-    let install_json = session.versioned_dir(name, version).join("install.json");
-    let stamp = std::fs::metadata(&install_json)
-        .and_then(|m| m.modified())
-        .or_else(|_| std::fs::metadata(session.app_dir(name)).and_then(|m| m.modified()))
-        .ok()?;
+    let stamp = install_info_mtime(&session.versioned_dir(name, version)).or_else(|| {
+        std::fs::metadata(session.app_dir(name))
+            .and_then(|m| m.modified())
+            .ok()
+    })?;
     crate::internal::time::format_updated_local(stamp)
 }
 
@@ -125,38 +129,70 @@ mod tests {
         assert_eq!(compare_versions_desc("beta", "beta"), Ordering::Equal);
     }
 
-    /// `Updated` uses `install.json`'s mtime when present (even an old one),
-    /// and falls back to the app directory's when the file is missing;
-    /// a vanished app yields `None`.
+    /// `Updated` uses the install record's mtime when present (even an old
+    /// one), and falls back to the app directory's when the file is missing;
+    /// a vanished app yields `None`. Both the `scoop-install.json` and the
+    /// legacy `install.json` names count, the new one winning.
     #[test]
-    fn update_time_prefers_install_json_and_falls_back_to_the_app_dir() {
+    fn update_time_prefers_install_record_and_falls_back_to_the_app_dir() {
         let root = crate::test_utils::tmpdir("list_update_time");
         let session = crate::test_utils::test_session(&root);
         let version_dir = root.join("apps/app/1.0.0");
         std::fs::create_dir_all(&version_dir).unwrap();
 
-        // No install.json yet: the app directory is the fallback source.
+        // No install record yet: the app directory is the fallback source.
         let fallback = update_time(&session, "app", "1.0.0").expect("app dir exists");
         assert_eq!(fallback.len(), 19, "yyyy-MM-dd HH:mm:ss: {fallback}");
 
-        // With an install.json pinned to a known instant, that mtime wins —
-        // even though it is far older than the app directory.
-        let install_json = version_dir.join("install.json");
-        std::fs::write(&install_json, b"{}").unwrap();
-        let pinned = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
-        std::fs::File::options()
-            .write(true)
-            .open(&install_json)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(pinned))
-            .unwrap();
+        // A legacy install.json pinned to a known instant wins — even though
+        // it is far older than the app directory.
+        let legacy = version_dir.join("install.json");
+        pin_mtime(&legacy, 2_000_000_000);
         assert_eq!(
             update_time(&session, "app", "1.0.0").unwrap(),
-            crate::internal::time::format_updated_local(pinned).unwrap()
+            crate::internal::time::format_updated_local(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000)
+            )
+            .unwrap()
+        );
+
+        // A new-name record alone is read too (Scoop >= 0.6.0 shape).
+        std::fs::remove_file(&legacy).unwrap();
+        pin_mtime(&version_dir.join("scoop-install.json"), 2_100_000_000);
+        assert_eq!(
+            update_time(&session, "app", "1.0.0").unwrap(),
+            crate::internal::time::format_updated_local(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_100_000_000)
+            )
+            .unwrap()
+        );
+
+        // With both names present the new one resolves first.
+        pin_mtime(&legacy, 2_200_000_000);
+        assert_eq!(
+            update_time(&session, "app", "1.0.0").unwrap(),
+            crate::internal::time::format_updated_local(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_100_000_000)
+            )
+            .unwrap()
         );
 
         // Neither the version dir nor the app dir exists.
         std::fs::remove_dir_all(root.join("apps/app")).unwrap();
         assert!(update_time(&session, "app", "1.0.0").is_none());
+    }
+
+    /// Write `{}` to `path` with a pinned modification time.
+    fn pin_mtime(path: &std::path::Path, secs: u64) {
+        std::fs::write(path, b"{}").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
+            )
+            .unwrap();
     }
 }

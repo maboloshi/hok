@@ -111,7 +111,7 @@ pub struct Package {
     upgradable: OnceCell<Option<Box<Package>>>,
 
     /// Whether this install is broken/partial (missing `current` junction
-    /// or `manifest.json`/`install.json` under it). Set by `query_installed`
+    /// or install metadata under it). Set by `query_installed`
     /// only when [`QueryOption::Broken`] is active; never serialized.
     #[serde(skip)]
     install_failed: OnceCell<bool>,
@@ -333,7 +333,7 @@ impl Package {
         }
     }
 
-    /// Get the architecture recorded in the package's `install.json`.
+    /// Get the architecture recorded in the package's install record.
     ///
     /// This is the architecture *selected* at install time (after the
     /// `default_architecture` config and `-a/--arch` overrides), mirroring the
@@ -346,7 +346,7 @@ impl Package {
         }
     }
 
-    /// Get the source URL recorded in the package's `install.json`.
+    /// Get the source URL recorded in the package's install record.
     ///
     /// Only URL / local-manifest installs carry one; bucket installs record a
     /// bucket instead. Mirrors upstream's `$install.url`

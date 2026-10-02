@@ -184,7 +184,7 @@ pub async fn lookup(session: &Session, query: &str, verbose: bool) -> Fallible<L
         ))),
         _ => {
             // A bare name can match the same app in several buckets. Upstream
-            // describes the app as recorded in `install.json`, i.e. the bucket
+            // describes the app as recorded in the install record, i.e. the bucket
             // it was installed from, so prefer the strictly installed
             // candidate; failing that, any installed candidate; otherwise list
             // the candidates.
@@ -583,10 +583,11 @@ fn installed_in_global(session: &Session, name: &str) -> bool {
 
 /// All installed versions of `name`, oldest first.
 ///
-/// Mirrors upstream `Get-InstalledVersion` (lib/versions.ps1:71-102): only
-/// version directories holding an `install.json` count, the `current` junction
-/// and `_*.old*` backups are excluded, and the order is the `install.json`
-/// last-write time — *not* the version order that `hok list --versions` uses.
+/// Mirrors upstream `Get-InstalledVersion` (lib/versions.ps1:71-105): only
+/// version directories holding an install record (`scoop-install.json`, else
+/// the legacy `install.json`) count, the `current` junction and `_*.old*`
+/// backups are excluded, and the order is the install record's last-write
+/// time — *not* the version order that `hok list --versions` uses.
 fn installed_version_dirs(session: &Session, name: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(session.app_dir(name)) else {
         return Vec::new();
@@ -601,9 +602,7 @@ fn installed_version_dirs(session: &Session, name: &str) -> Vec<String> {
         if version == "current" || (version.starts_with('_') && version.contains(".old")) {
             continue;
         }
-        let Ok(modified) =
-            std::fs::metadata(entry.path().join("install.json")).and_then(|meta| meta.modified())
-        else {
+        let Some(modified) = install_state::install_info_mtime(&entry.path()) else {
             continue;
         };
         versions.push((modified, version));
@@ -900,7 +899,7 @@ mod tests {
         Session::new_with(&config_path).unwrap()
     }
 
-    /// Add a version directory (with the `install.json` upstream requires for
+    /// Add a version directory (with the install record upstream requires for
     /// a version to count as installed) next to the `current` metadata.
     fn add_version_dir(root: &Path, name: &str, version: &str) {
         let dir = root.join("apps").join(name).join(version);

@@ -15,10 +15,11 @@
 //!
 //! 1. URL / UNC (`manifest.ps1:38-41`) — fetch (HTTP/FTP) or read (UNC).
 //! 2. Installed (`:43-75`) — only reached when a version resolves in either
-//!    scope. The origin comes from `install.json`: its `bucket` names the
+//!    scope. The origin comes from the install record (`scoop-install.json`,
+//!    else `install.json`): its `bucket` names the
 //!    bucket to read the manifest from (with a `<bucket>\deprecated` fallback),
 //!    otherwise its `url` (remote or local), otherwise the installed
-//!    `manifest.json`.
+//!    manifest (`scoop-manifest.json`, else `manifest.json`).
 //! 3. Not installed (`:76-104`) — `parse_app` splits `bucket/name@version`; an
 //!    explicit bucket reads that bucket only, otherwise every added bucket is
 //!    scanned in order. A query that is an existing local file is read from
@@ -26,7 +27,7 @@
 //!
 //! The resolved result carries the install/source name
 //! (`appname_from_url` for URL/path queries), the source bucket (if any), and
-//! the source URL/path that upstream stores in `install.json` as `url`.
+//! the source URL/path that upstream stores in the install record as `url`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -206,13 +207,14 @@ async fn installed_source(session: &Session, query: &str) -> Fallible<Option<Get
     };
 
     let version_dir = app_dir_in(session, &name, is_global).join(version);
-    let install_json = version_dir.join("install.json");
-    if !install_json.is_file() {
+    // The record is `scoop-install.json`, else the legacy `install.json`
+    // (upstream `install_info`).
+    let Some(install_json) = install_state::install_info_path(&version_dir) else {
         // Upstream leaves `$manifest` null when there is no install record.
         return Err(Error::PackageNotFound(query.to_owned()));
-    }
+    };
     // Upstream's `parse_json` warns and yields `$null` for a broken
-    // install.json, and the lookup then misses the bucket record. Tolerated
+    // install record, and the lookup then misses the bucket record. Tolerated
     // here the same way (the strict read stays the install/query path's job).
     let info = install_state::parse_install_info(&install_json).ok();
 
@@ -253,7 +255,10 @@ async fn installed_source(session: &Session, query: &str) -> Fallible<Option<Get
             {
                 manifest = parse_file(source_url).ok();
             }
-            manifest.or_else(|| parse_file(version_dir.join("manifest.json")).ok())
+            manifest.or_else(|| {
+                install_state::installed_manifest_path(&version_dir)
+                    .and_then(|path| parse_file(path).ok())
+            })
         }
     };
 
@@ -470,7 +475,7 @@ pub(crate) async fn generate_user_manifest(
 
     let generated = std::fs::read_to_string(&out_path)?;
     // The workspace file doubles as the virtual manifest path, so the
-    // generated install records it in `install.json` as the source `url`
+    // generated install records it in the install record as the source `url`
     // (upstream stores the generated manifest's local path there).
     let manifest = Manifest::parse_str(&out_path.display().to_string(), &generated)?;
 

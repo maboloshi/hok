@@ -56,6 +56,8 @@ use crate::package::source::{SourceState, classify};
 use crate::package::{Package, QueryOption};
 use crate::{Session, bucket};
 
+use super::install_state::install_info_mtime;
+
 /// Which optional sections [`build_export`] emits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExportSections {
@@ -243,12 +245,13 @@ fn same_path(url: &str, path: &Path) -> bool {
     url.eq_ignore_ascii_case(&path)
 }
 
-/// `apps[].Updated` — the `install.json` timestamp when there is one, else the
-/// app directory's, as upstream does (`libexec/scoop-list.ps1:35-40`).
+/// `apps[].Updated` — the install record's timestamp when there is one (the
+/// new `scoop-install.json` first, else the legacy `install.json`), else the
+/// app directory's, as upstream does (`libexec/scoop-list.ps1:35-41`).
 fn app_updated(session: &Session, package: &Package) -> Option<String> {
     session
         .app_current_dir(package.name())
-        .and_then(|dir| mtime_string(&dir.join("install.json")))
+        .and_then(|dir| install_info_mtime(&dir).and_then(system_time_string))
         .or_else(|| mtime_string(&session.app_dir(package.name())))
 }
 
@@ -337,12 +340,12 @@ fn aliases(session: &Session) -> Fallible<Vec<Value>> {
 /// A path's last-modification time in upstream's timestamp shape, or `None`
 /// when the path is missing or its time is unreadable.
 fn mtime_string(path: &Path) -> Option<String> {
-    let duration = std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
+    system_time_string(std::fs::metadata(path).ok()?.modified().ok()?)
+}
+
+/// [`mtime_string`] for an already-read [`std::time::SystemTime`].
+fn system_time_string(modified: std::time::SystemTime) -> Option<String> {
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
     let timestamp = time::OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64).ok()?;
     let timestamp = timestamp.replace_nanosecond(duration.subsec_nanos()).ok()?;
     Some(internal_time::format_last_update(timestamp))
@@ -357,19 +360,20 @@ fn seconds_string(secs: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package::install_state::{SCOOP_INSTALL_JSON, SCOOP_MANIFEST_JSON};
     use crate::test_utils::{mark_installed, test_session, tmpdir, write_bucket_manifest};
 
     const MANIFEST: &str =
         r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#;
 
-    /// Mark an app installed from a manifest URL / local path (`install.json`
-    /// carries `url` instead of `bucket`).
+    /// Mark an app installed from a manifest URL / local path (the install
+    /// record carries `url` instead of `bucket`).
     fn mark_isolated(root: &Path, name: &str, url: &str) {
         let current = root.join("apps").join(name).join("current");
         std::fs::create_dir_all(&current).unwrap();
-        std::fs::write(current.join("manifest.json"), MANIFEST).unwrap();
+        std::fs::write(current.join(SCOOP_MANIFEST_JSON), MANIFEST).unwrap();
         std::fs::write(
-            current.join("install.json"),
+            current.join(SCOOP_INSTALL_JSON),
             serde_json::json!({ "architecture": "64bit", "url": url }).to_string(),
         )
         .unwrap();
@@ -423,7 +427,7 @@ mod tests {
         write_bucket_manifest(&root, "extras", "held", manifest);
         mark_installed(&root, "held", "extras", manifest, false);
         std::fs::write(
-            root.join("apps/held/current/install.json"),
+            root.join("apps/held/current/scoop-install.json"),
             r#"{"architecture": "32bit", "bucket": "extras", "hold": true}"#,
         )
         .unwrap();

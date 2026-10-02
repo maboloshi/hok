@@ -85,7 +85,8 @@ pub fn write_bucket_manifest(root: &std::path::Path, bucket: &str, name: &str, j
 }
 
 /// Mark `name` as installed under `root` by creating
-/// `<root>/apps/<name>/current/{manifest.json, install.json}`.
+/// `<root>/apps/<name>/current/{scoop-manifest.json, scoop-install.json}` —
+/// the names Scoop >= 0.6.0 (and hok) write.
 pub fn mark_installed(
     root: &std::path::Path,
     name: &str,
@@ -93,14 +94,59 @@ pub fn mark_installed(
     manifest_json: &str,
     held: bool,
 ) {
+    mark_installed_named(
+        root,
+        name,
+        bucket,
+        manifest_json,
+        held,
+        (
+            crate::package::install_state::SCOOP_MANIFEST_JSON,
+            crate::package::install_state::SCOOP_INSTALL_JSON,
+        ),
+    );
+}
+
+/// [`mark_installed`] with the pre-0.6.0 `manifest.json` / `install.json`
+/// names, for the legacy-read regression tests.
+pub fn mark_installed_legacy(
+    root: &std::path::Path,
+    name: &str,
+    bucket: &str,
+    manifest_json: &str,
+    held: bool,
+) {
+    mark_installed_named(
+        root,
+        name,
+        bucket,
+        manifest_json,
+        held,
+        (
+            crate::package::install_state::LEGACY_MANIFEST_JSON,
+            crate::package::install_state::LEGACY_INSTALL_JSON,
+        ),
+    );
+}
+
+/// [`mark_installed`] with explicit metadata file names.
+pub fn mark_installed_named(
+    root: &std::path::Path,
+    name: &str,
+    bucket: &str,
+    manifest_json: &str,
+    held: bool,
+    names: (&str, &str),
+) {
+    let (manifest_name, install_name) = names;
     let current = root.join("apps").join(name).join("current");
     std::fs::create_dir_all(&current).unwrap();
-    std::fs::write(current.join("manifest.json"), manifest_json).unwrap();
+    std::fs::write(current.join(manifest_name), manifest_json).unwrap();
     let install_info = format!(
         r#"{{"architecture": "64bit", "bucket": "{}", "hold": {}}}"#,
         bucket, held
     );
-    std::fs::write(current.join("install.json"), install_info).unwrap();
+    std::fs::write(current.join(install_name), install_info).unwrap();
 }
 // ─── In-memory network fake ────────────────────────────────────────────────
 

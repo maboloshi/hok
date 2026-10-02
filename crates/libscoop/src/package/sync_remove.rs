@@ -193,7 +193,7 @@ async fn commit_one_remove(
             .or_else(|| package.installed_version().map(|v| app_dir.join(v)));
 
     // A broken/partial install (e.g. install failed before `current` was
-    // linked, or `manifest.json`/`install.json` is missing) carries no
+    // linked, or the manifest/install record is missing) carries no
     // reliable manifest or install state. Mirror Scoop: `Confirm-InstallationStatus`
     // only checks that `apps/<name>` exists (so the app is still uninstallable),
     // but scoop-uninstall.ps1 skips the whole `if ($version)` block — the
@@ -495,12 +495,14 @@ async fn commit_one_remove(
 ///
 /// Package resolution mirrors upstream `scoop reset` (libexec/scoop-reset.ps1):
 /// the app is considered installed when `apps/<name>` exists and the current
-/// version can be resolved — reading `current\manifest.json`'s `version` first
+/// version can be resolved — reading `current\scoop-manifest.json`'s (else
+/// `current\manifest.json`'s) `version` first
 /// (`Select-CurrentVersion`), then falling back to version directories with an
-/// `install.json`, newest by modification time (`Get-InstalledVersion`).
+/// install record (`scoop-install.json`, else `install.json`), newest by
+/// modification time (`Get-InstalledVersion`).
 /// Unlike `query_installed`, this does **not** require both
-/// `current\manifest.json` and `current\install.json` to exist, so a
-/// half-broken install (e.g. missing `install.json`) can still be reset.
+/// the manifest and the install record to exist, so a
+/// half-broken install (e.g. missing install record) can still be reset.
 ///
 /// `index` / `total` position the package's `(k/N)` commit anchor. A
 /// single-package `hok reset <app>` passes `(1, 1)`; `reset --all` numbers
@@ -643,7 +645,7 @@ pub async fn reset(
 /// `reset --all` uses this to keep its `(k/N)` counter contiguous: genuinely
 /// not-installed-correctly apps are reported and excluded *before* counting,
 /// while repairable partial installs (a broken `current` junction but a valid
-/// versioned install, or a current manifest without `install.json`) still
+/// versioned install, or a current manifest without an install record) still
 /// resolve and stay in the batch.
 pub fn reset_eligible(session: &Session, name: &str) -> bool {
     resolve_reset_target(session, name, None).is_ok()
@@ -658,7 +660,7 @@ pub fn reset_eligible(session: &Session, name: &str) -> bool {
 /// - otherwise → [`resolve_current_version`]
 /// - manifest is parsed from the **version directory** (`installed_manifest`),
 ///   not from `current/`, so a stale/broken `current` junction doesn't matter
-/// - `install.json` is optional (`install_info` returns `$null` when missing);
+/// - the install record is optional (`install_info` returns `$null` when missing);
 ///   bucket defaults to [`ISOLATED_PACKAGE_BUCKET`]
 ///
 /// Returns `(package, apps/<name> dir, <version> dir)`.
@@ -692,12 +694,16 @@ fn resolve_reset_target(
         )));
     }
 
-    // Parse the version directory's manifest (upstream `installed_manifest`).
-    let manifest = parse_file(version_dir.join("manifest.json"))
-        .map_err(|_| Error::Custom(format!("'{}' ({}) isn't installed", name, version)))?;
+    // Parse the version directory's manifest (upstream `installed_manifest`:
+    // `scoop-manifest.json`, else the legacy `manifest.json`).
+    let not_installed = || Error::Custom(format!("'{}' ({}) isn't installed", name, version));
+    let manifest_path =
+        install_state::installed_manifest_path(&version_dir).ok_or_else(&not_installed)?;
+    let manifest = parse_file(manifest_path).map_err(|_| not_installed())?;
 
-    // install.json is optional; bucket defaults to the isolated bucket.
-    let install_info = install_state::parse_install_info(&version_dir.join("install.json")).ok();
+    // The install record is optional; bucket defaults to the isolated bucket.
+    let install_info = install_state::install_info_path(&version_dir)
+        .and_then(|path| install_state::parse_install_info(&path).ok());
     let bucket = install_info
         .as_ref()
         .and_then(|i| i.bucket().map(|s| s.to_owned()))

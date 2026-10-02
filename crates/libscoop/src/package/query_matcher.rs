@@ -38,7 +38,7 @@ pub enum QueryOption {
     UpgradableCheck,
 
     /// Include broken/partial installs (an install that failed before
-    /// current/manifest.json were written) when querying installed
+    /// current/install metadata were written) when querying installed
     /// packages. `list` surfaces them as install-failed; `uninstall` and
     /// `reinstall` accept them so a broken install can be torn down or
     /// recovered; `update` uses it to distinguish "broken, reinstall it"

@@ -30,8 +30,8 @@ use crate::{
 };
 
 use super::install_state::{
-    CurrentVersionSource, fill_install_state, load_bucket_manifest, maybe_fill_upgradable,
-    parse_install_info, resolve_current_version,
+    CurrentVersionSource, fill_install_state, install_info_path, installed_manifest_path,
+    load_bucket_manifest, maybe_fill_upgradable, parse_install_info, resolve_current_version,
 };
 use super::query_matcher::{QueryOption, build_matchers, manifest_matches, name_prefiltered_out};
 use super::{InstallState, InstallStateInstalled, Manifest, Package, manifest_cache};
@@ -115,9 +115,10 @@ pub fn query_installed(
                         } else {
                             pkg_dir.join("current")
                         };
-                        let manifest_path = meta_dir.join("manifest.json");
-                        let install_info_path = meta_dir.join("install.json");
-                        if let Ok(manifest) = parse_file(manifest_path)
+                        if let (Some(manifest_path), Some(install_info_path)) = (
+                            installed_manifest_path(&meta_dir),
+                            install_info_path(&meta_dir),
+                        ) && let Ok(manifest) = parse_file(manifest_path)
                             && let Ok(install_info) = parse_install_info(&install_info_path)
                         {
                             // Noted that packages installed via URLs don't have
@@ -192,7 +193,8 @@ pub fn query_installed(
 ///
 /// Version and bucket are best-effort: the version directory name is used
 /// as the version when resolvable, and the bucket is read from any
-/// `install.json` found under `current/` (or the resolved version dir).
+/// install record (`scoop-install.json`, else `install.json`) found under
+/// `current/` (or the resolved version dir).
 fn broken_package(name: &str, pkg_dir: &std::path::Path, no_junction: bool) -> Option<Package> {
     let current = resolve_current_version(pkg_dir, no_junction).map(|resolved| resolved.version);
     let version = current.clone().unwrap_or_default();
@@ -214,7 +216,7 @@ fn broken_package(name: &str, pkg_dir: &std::path::Path, no_junction: bool) -> O
     }
     let bucket = candidates
         .into_iter()
-        .find_map(|dir| parse_install_info(&dir.join("install.json")).ok())
+        .find_map(|dir| install_info_path(&dir).and_then(|path| parse_install_info(&path).ok()))
         .and_then(|info| info.bucket().map(|b| b.to_owned()))
         .unwrap_or_else(|| ISOLATED_PACKAGE_BUCKET.to_owned());
 
@@ -745,6 +747,70 @@ mod tests {
         // flag the app install-failed even though an older version resolves
         // and an upgrade is available.
         assert!(f.is_install_failed(), "damaged install must stay flagged");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A version dir carrying ONLY the Scoop >= 0.6.0 metadata names
+    /// (`scoop-manifest.json` + `scoop-install.json`) is reported as installed
+    /// with the right version and bucket. Regression: such an app used to be
+    /// invisible to `list`/`status`/`update`.
+    #[test]
+    fn query_installed_reads_scoop_prefixed_metadata_only() {
+        let root = tmpdir("query_scoop_names_only");
+        let session = test_session(&root);
+        let dir = root.join("apps/App").join("2.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("scoop-manifest.json"), mini_manifest("2.0.0")).unwrap();
+        std::fs::write(
+            dir.join("scoop-install.json"),
+            r#"{"architecture": "64bit", "bucket": "extras"}"#,
+        )
+        .unwrap();
+        crate::internal::fs::symlink_dir(&dir, root.join("apps/App/current")).unwrap();
+
+        let pkgs = query_installed(&session, &["*"], &[]).unwrap();
+        let app = pkgs
+            .iter()
+            .find(|p| p.name() == "App")
+            .expect("a new-name-only install must be visible");
+        assert_eq!(app.installed_version(), Some("2.0.0"));
+        assert_eq!(app.installed_bucket(), Some("extras"));
+        assert!(
+            !app.is_install_failed(),
+            "a complete new-name install is not broken"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The pre-0.6.0 names keep working: a version dir carrying ONLY
+    /// `manifest.json` + `install.json` is still read (read-side fallback; the
+    /// old names are not renamed or dropped).
+    #[test]
+    fn query_installed_reads_legacy_metadata_only() {
+        let root = tmpdir("query_legacy_names_only");
+        let session = test_session(&root);
+        crate::test_utils::mark_installed_legacy(
+            &root,
+            "old",
+            "main",
+            &mini_manifest("1.0.0"),
+            false,
+        );
+        let current = root.join("apps/old/current");
+        assert!(current.join("manifest.json").exists());
+        assert!(current.join("install.json").exists());
+        assert!(!current.join("scoop-manifest.json").exists());
+
+        let pkgs = query_installed(&session, &["*"], &[]).unwrap();
+        let app = pkgs
+            .iter()
+            .find(|p| p.name() == "old")
+            .expect("a legacy-name install must stay visible");
+        assert_eq!(app.installed_version(), Some("1.0.0"));
+        assert_eq!(app.installed_bucket(), Some("main"));
+        assert!(!app.is_install_failed());
 
         let _ = std::fs::remove_dir_all(&root);
     }

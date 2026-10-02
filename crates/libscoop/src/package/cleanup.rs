@@ -120,8 +120,9 @@ fn scope_app_dir(session: &Session, name: &str, global: bool) -> PathBuf {
 /// A version must resolve, and in junction mode the `current` junction must be
 /// present: a directory whose junction was lost mid-upgrade is "not installed
 /// correctly" even though a version directory survives. A missing
-/// `install.json` is *not* a failure here — upstream's `Select-CurrentVersion`
-/// reads the version from `current/manifest.json`.
+/// install record is *not* a failure here — upstream's `Select-CurrentVersion`
+/// reads the version from `current/scoop-manifest.json` (else
+/// `current/manifest.json`).
 fn install_failed(pkg_dir: &Path, no_junction: bool) -> bool {
     let installed = install_state::resolve_current_version(pkg_dir, no_junction).is_some();
     let has_current = no_junction || pkg_dir.join("current").exists();
@@ -598,8 +599,9 @@ mod tests {
         assert!(picked.is_empty(), "a damaged install must not be cleaned");
     }
 
-    /// A resolvable `current` manifest is enough, even without `install.json`:
-    /// upstream reads the version from `current/manifest.json`, not from the
+    /// A resolvable `current` manifest is enough, even without an install
+    /// record: upstream reads the version from the current manifest
+    /// (`scoop-manifest.json`, else `manifest.json`), not from the
     /// install metadata.
     #[test]
     fn confirm_installation_status_accepts_manifest_without_install_info() {
@@ -763,8 +765,8 @@ mod tests {
         let root = crate::test_utils::tmpdir("cleanup_no_junction_stale_current");
         let session = session_with_no_junction(&root);
         let pkg_dir = root.join("apps").join("app");
-        // Real installs carry `install.json` in every version dir — that file
-        // is the resolver's ordering key under NO_JUNCTION.
+        // Real installs carry an install record in every version dir — that
+        // file is the resolver's ordering key under NO_JUNCTION.
         for v in ["1.0.0", "2.0.0", "_1.0.0.old"] {
             std::fs::create_dir_all(pkg_dir.join(v)).unwrap();
             std::fs::write(

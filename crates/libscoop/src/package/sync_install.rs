@@ -8,7 +8,9 @@
 use std::io::IsTerminal;
 use tracing::debug;
 
-use crate::package::{InstallInfo, Package, download, manifest_source, operations, query, resolve};
+use crate::package::{
+    InstallInfo, Package, download, install_state, manifest_source, operations, query, resolve,
+};
 use crate::{
     Error, Event, QueryOption, Session, constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible,
     internal, persist, psmodule, shim, shortcut,
@@ -723,11 +725,12 @@ async fn commit_one_install(
         // it is only a junction to this dir — going through it would mean
         // re-resolving a version we already know, and would land on a
         // different dir if the junction is stale. Fall back to the new
-        // manifest if the old one can't be read.
-        let old_manifest_path = session
-            .versioned_dir(pkg.name(), old_version)
-            .join("manifest.json");
-        let old_manifest = crate::package::manifest::parse_file(old_manifest_path).ok();
+        // manifest if the old one can't be read. The old dir carries whichever
+        // metadata name its installer wrote (`scoop-manifest.json` for hok and
+        // Scoop >= 0.6.0, `manifest.json` before that).
+        let old_dir = session.versioned_dir(pkg.name(), old_version);
+        let old_manifest = install_state::installed_manifest_path(&old_dir)
+            .and_then(|path| crate::package::manifest::parse_file(path).ok());
         match old_manifest {
             Some(m) => env::remove_with_manifest(session, pkg, &m, version)?,
             None => env::remove(session, pkg)?,
@@ -894,8 +897,9 @@ async fn commit_one_install(
         .app_dir(pkg.name())
         .join(session.current_dir_name(&version));
 
-    // 1. Copy manifest from bucket to <meta_dir>/manifest.json
-    let manifest_dst = meta_dir.join("manifest.json");
+    // 1. Copy manifest from bucket to <meta_dir>/scoop-manifest.json
+    // (upstream `save_installed_manifest`, lib/manifest.ps1:123-132)
+    let manifest_dst = meta_dir.join(install_state::SCOOP_MANIFEST_JSON);
     if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
         // Isolated installs (URL / local path / generated version): persist
         // the raw manifest text captured at resolve time; fall back to
@@ -942,7 +946,7 @@ async fn commit_one_install(
         }
     }
 
-    // 2. Write <meta_dir>/install.json
+    // 2. Write <meta_dir>/scoop-install.json
     // (upstream `save_install_info` stores architecture, url, bucket —
     //  lib/install.ps1:73; the architecture is the *selected* one, i.e.
     //  after the `default_architecture` config and `-a/--arch` overrides)
@@ -967,8 +971,11 @@ async fn commit_one_install(
             None
         },
     );
-    if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
-        return Err(Error::Custom(format!("install.json write: {}", e)));
+    if let Err(e) = internal::fs::write_json(
+        meta_dir.join(install_state::SCOOP_INSTALL_JSON),
+        &install_info,
+    ) {
+        return Err(Error::Custom(format!("scoop-install.json write: {}", e)));
     }
 
     Ok(())
@@ -1245,9 +1252,10 @@ mod tests {
         "license": "MIT"
     }"#;
 
-    /// A local-path manifest installs as an isolated package: `manifest.json`
-    /// persists the raw source text and `install.json` records the source
-    /// path with no bucket.
+    /// A local-path manifest installs as an isolated package:
+    /// `scoop-manifest.json` persists the raw source text and
+    /// `scoop-install.json` records the source path with no bucket (the names
+    /// Scoop >= 0.6.0 writes).
     #[tokio::test]
     async fn install_local_path_manifest_is_isolated() {
         let root = crate::test_utils::tmpdir("install_local_path");
@@ -1264,12 +1272,17 @@ mod tests {
         let meta_dir = app_dir.join("current");
         assert!(meta_dir.is_dir(), "app should be installed under current");
 
-        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        let saved = std::fs::read_to_string(meta_dir.join("scoop-manifest.json")).unwrap();
         assert_eq!(saved, NO_DOWNLOAD_MANIFEST, "raw manifest text persisted");
+        assert!(
+            !meta_dir.join("manifest.json").exists(),
+            "only the new manifest name is written"
+        );
 
-        let install_info: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(meta_dir.join("install.json")).unwrap())
-                .unwrap();
+        let install_info: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(meta_dir.join("scoop-install.json")).unwrap(),
+        )
+        .unwrap();
         assert!(
             install_info["bucket"].is_null(),
             "isolated installs carry no bucket: {}",
@@ -1278,7 +1291,7 @@ mod tests {
         let url = install_info["url"].as_str().unwrap();
         assert!(
             url.ends_with("myapp.json"),
-            "install.json url records the manifest source: {}",
+            "the install record url records the manifest source: {}",
             url
         );
         assert!(!url.contains("apps"), "url is the source, not an app path");
@@ -1305,7 +1318,7 @@ mod tests {
         .unwrap();
 
         let meta_dir = root.join("apps").join("myapp").join("current");
-        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        let saved = std::fs::read_to_string(meta_dir.join("scoop-manifest.json")).unwrap();
         assert_eq!(saved, NO_DOWNLOAD_MANIFEST);
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1353,7 +1366,7 @@ mod tests {
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");
         assert!(
-            app_dir.join("current").join("manifest.json").exists(),
+            app_dir.join("current").join("scoop-manifest.json").exists(),
             "manifest persisted"
         );
 
@@ -1376,7 +1389,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A bucket install records no `url` key in install.json — upstream
+    /// A bucket install records no `url` key in the install record — upstream
     /// `save_install_info` (lib/install.ps1:73) strips null-valued keys, so
     /// the byte output matches Scoop (`{"architecture","bucket"}`), and
     /// Scoop's `manifest()` won't try to `ConvertFrom-Json` an artifact URL.
@@ -1389,7 +1402,8 @@ mod tests {
         install(&session, &["obsidian"], &[]).await.unwrap();
 
         let install_info: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.join("apps/obsidian/current/install.json")).unwrap(),
+            &std::fs::read_to_string(root.join("apps/obsidian/current/scoop-install.json"))
+                .unwrap(),
         )
         .unwrap();
         assert!(

@@ -1,7 +1,7 @@
 //! Installed package health checker.
 //!
 //! Scan the installed packages directory, check whether the file structure of each package is complete (`current` symlink,
-//! `install.json`, `manifest.json`), and return a list of discovered issues.
+//! install record, installed manifest), and return a list of discovered issues.
 //!
 //! This is hok's own diagnostic (the `health` command); upstream's `checkup`
 //! command inspects the *environment* instead — see
@@ -42,8 +42,8 @@ pub struct HealthIssue {
 ///
 /// Each installed package directory under `<root>/apps/` is checked for:
 /// - A `current` symlink or directory that exists.
-/// - Presence of `current/install.json`.
-/// - Presence of `current/manifest.json`.
+/// - Presence of an install record (`scoop-install.json` or `install.json`).
+/// - Presence of an installed manifest (`scoop-manifest.json` or `manifest.json`).
 ///
 /// # Returns
 ///
@@ -99,14 +99,18 @@ pub fn check_installed(session: &Session) -> Vec<HealthIssue> {
             current
         };
 
-        if !meta_dir.join("install.json").exists() {
+        // Both metadata names count: a version dir is complete when it carries
+        // the new `scoop-install.json`/`scoop-manifest.json` *or* the legacy
+        // `install.json`/`manifest.json` (lib/manifest.ps1:134-154). Only when
+        // neither exists is the file really missing.
+        if install_state::install_info_path(&meta_dir).is_none() {
             issues.push(HealthIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_install_json").to_string(),
             });
         }
 
-        if !meta_dir.join("manifest.json").exists() {
+        if install_state::installed_manifest_path(&meta_dir).is_none() {
             issues.push(HealthIssue {
                 name: name.to_string(),
                 message: hok_i18n::t!("cmd.missing_manifest_json").to_string(),
@@ -187,6 +191,50 @@ mod tests {
         let issues = check_installed(&session);
         assert_eq!(issues.len(), 1, "issues: {:?}", issues);
         assert_eq!(issues[0].name, "app");
+        assert!(
+            issues[0].message.contains("install.json"),
+            "unexpected message: {}",
+            issues[0].message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A version dir carrying only the Scoop >= 0.6.0 names is healthy: the
+    /// check must not claim a file is missing when the new name exists.
+    #[test]
+    fn check_installed_accepts_scoop_prefixed_metadata() {
+        let root = crate::test_utils::tmpdir("checkup_scoop_names");
+        let session = session_with_no_junction(&root, true);
+        let vdir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("scoop-manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+        std::fs::write(
+            vdir.join("scoop-install.json"),
+            r#"{"architecture": "64bit"}"#,
+        )
+        .unwrap();
+
+        let issues = check_installed(&session);
+        assert!(
+            issues.is_empty(),
+            "new-name-only install flagged: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The two names are checked independently: a new manifest with no install
+    /// record at all still reports exactly one missing-record issue.
+    #[test]
+    fn check_installed_reports_missing_record_beside_new_manifest() {
+        let root = crate::test_utils::tmpdir("checkup_new_manifest_no_record");
+        let session = session_with_no_junction(&root, true);
+        let vdir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("scoop-manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+
+        let issues = check_installed(&session);
+        assert_eq!(issues.len(), 1, "issues: {:?}", issues);
         assert!(
             issues[0].message.contains("install.json"),
             "unexpected message: {}",

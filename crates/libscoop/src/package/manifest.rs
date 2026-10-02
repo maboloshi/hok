@@ -66,7 +66,7 @@ pub struct Manifest {
 
     /// The raw manifest JSON text, kept only when the manifest was loaded
     /// from a string (URL download, local path, or generated user manifest).
-    /// Used to persist the exact content into `<app>/<version>/manifest.json`
+    /// Used to persist the exact content into `<app>/<version>/scoop-manifest.json`
     /// for isolated (URL/path) installs.
     #[serde(skip)]
     raw: Option<String>,
@@ -1599,7 +1599,7 @@ pub struct InstallInfo {
 }
 
 impl InstallInfo {
-    /// Construct install metadata for writing `install.json`, mirroring
+    /// Construct install metadata for writing `scoop-install.json`, mirroring
     /// upstream `save_install_info` (lib/install.ps1:73): null-valued
     /// `bucket`/`url` are omitted on serialization (`skip_serializing_if`),
     /// so bucket installs carry no `url` and isolated installs no `bucket`.

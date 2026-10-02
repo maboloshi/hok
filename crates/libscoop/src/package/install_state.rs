@@ -1,9 +1,15 @@
 //! Installed-package state resolution.
 //!
 //! Split from `package/query.rs`: reading an app's install state (version
-//! selection, `install.json`/`manifest.json` parsing, upgradability against
+//! selection, install-record/manifest parsing, upgradability against
 //! the origin bucket manifest) is a distinct concern from the query walkers
 //! in `query.rs`.
+//!
+//! This module also owns the two per-version metadata names: Scoop >= 0.6.0
+//! writes `scoop-install.json` / `scoop-manifest.json` and reads the new name
+//! first with the pre-0.6.0 `install.json` / `manifest.json` as fallback
+//! (`lib/manifest.ps1:123-154`). [`install_info_path`], [`installed_manifest_path`]
+//! and [`install_info_mtime`] are that rule in one place.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -19,9 +25,10 @@ use crate::package::{InstallState, InstallStateInstalled, Package};
 
 use super::query_matcher::QueryOption;
 
-/// Read and parse `<app>/<version>/install.json` into an [`InstallInfo`].
+/// Read and parse a version dir's install record into an [`InstallInfo`].
 ///
-/// The file-I/O boundary for the pure [`InstallInfo`] type.
+/// The file-I/O boundary for the pure [`InstallInfo`] type. The path itself
+/// comes from [`install_info_path`].
 pub(crate) fn parse_install_info(path: &Path) -> Fallible<InstallInfo> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?.read_to_end(&mut bytes)?;
@@ -37,6 +44,58 @@ pub(crate) fn parse_install_info(path: &Path) -> Fallible<InstallInfo> {
     Ok(info)
 }
 
+/// The install-record name Scoop >= 0.6.0 writes (`save_install_info`,
+/// lib/manifest.ps1:141-147).
+pub(crate) const SCOOP_INSTALL_JSON: &str = "scoop-install.json";
+/// The installed-manifest name Scoop >= 0.6.0 writes (`save_installed_manifest`,
+/// lib/manifest.ps1:123-132).
+pub(crate) const SCOOP_MANIFEST_JSON: &str = "scoop-manifest.json";
+/// The pre-0.6.0 install-record name, still read as a fallback.
+pub(crate) const LEGACY_INSTALL_JSON: &str = "install.json";
+/// The pre-0.6.0 manifest name, still read as a fallback.
+pub(crate) const LEGACY_MANIFEST_JSON: &str = "manifest.json";
+
+/// Resolve a version dir's metadata file: the new name when it exists, the
+/// legacy name otherwise — upstream's `Test-Path` then fallback
+/// (lib/manifest.ps1:136-138 and :151-153). `None` when neither exists.
+fn metadata_path(dir: &Path, current: &str, legacy: &str) -> Option<PathBuf> {
+    let current_path = dir.join(current);
+    if current_path.exists() {
+        return Some(current_path);
+    }
+    let legacy_path = dir.join(legacy);
+    legacy_path.exists().then_some(legacy_path)
+}
+
+/// The install record of a version dir: `<dir>/scoop-install.json` when it
+/// exists, else the legacy `<dir>/install.json` — upstream `install_info`
+/// (lib/manifest.ps1:149-154). `None` when neither exists.
+pub(crate) fn install_info_path(dir: &Path) -> Option<PathBuf> {
+    metadata_path(dir, SCOOP_INSTALL_JSON, LEGACY_INSTALL_JSON)
+}
+
+/// The installed manifest of a version dir: `<dir>/scoop-manifest.json` when it
+/// exists, else the legacy `<dir>/manifest.json` — upstream `installed_manifest`
+/// (lib/manifest.ps1:134-139). `None` when neither exists.
+pub(crate) fn installed_manifest_path(dir: &Path) -> Option<PathBuf> {
+    metadata_path(dir, SCOOP_MANIFEST_JSON, LEGACY_MANIFEST_JSON)
+}
+
+/// The install record's modification time — the ordering key of upstream
+/// `Get-InstalledVersion` (lib/versions.ps1:99-100), which globs both names.
+/// `None` when the dir carries no install record.
+///
+/// Divergence from upstream, deliberate: a dir carrying *both* names (only
+/// reachable by mixing a pre-0.6.0 write with a later one into the same
+/// version dir) has two LastWriteTimes, and upstream's sort-then-`Select-Object
+/// -Unique` makes the *older* one decide the dir's position; here the resolved
+/// file's time is used. Pathological mixture, no semantic worth pinning.
+pub(crate) fn install_info_mtime(dir: &Path) -> Option<SystemTime> {
+    std::fs::metadata(install_info_path(dir)?)
+        .and_then(|meta| meta.modified())
+        .ok()
+}
+
 /// Where a resolved current version came from — the upstream
 /// `Select-CurrentVersion` branch that produced it.
 ///
@@ -46,12 +105,13 @@ pub(crate) fn parse_install_info(path: &Path) -> Fallible<InstallInfo> {
 /// instead of re-implementing the resolution to find out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CurrentVersionSource {
-    /// `current\manifest.json` carried a concrete (non-`nightly`) version.
+    /// `current\scoop-manifest.json` (else `current\manifest.json`) carried a
+    /// concrete (non-`nightly`) version.
     CurrentManifest,
-    /// `current\manifest.json` said `nightly`; the version is the junction
+    /// That manifest said `nightly`; the version is the junction
     /// target's directory name.
     NightlyJunction,
-    /// Versions were resolved from the version dirs' `install.json` mtimes
+    /// Versions were resolved from the version dirs' install-record mtimes
     /// (`Get-InstalledVersion` fallback). Reached when the metadata under
     /// `current\` is absent or unreadable, and always under `NO_JUNCTION`,
     /// which has no `current` junction at all.
@@ -103,44 +163,49 @@ impl CurrentVersion {
 ///
 /// The branches, in upstream order:
 ///
-/// 1. `current\manifest.json`'s `version`, read **only when junctions are
-///    enabled**. A `nightly` version — or a junction sitting there without a
-///    usable manifest (an interrupted upgrade) — resolves to the junction
-///    target's directory name when it can be read.
-/// 2. Otherwise the version dir whose `install.json` was modified most
-///    recently, excluding `current` and `_*.old*` (upstream
-///    `Get-InstalledVersion`, `versions.ps1:71-105`).
+/// 1. `current\scoop-manifest.json` (else `current\manifest.json`)'s `version`,
+///    read **only when junctions are enabled**. A `nightly` version — or a
+///    junction sitting there without a usable manifest (an interrupted upgrade)
+///    — resolves to the junction target's directory name when it can be read.
+/// 2. Otherwise the version dir whose install record (`scoop-install.json`,
+///    else `install.json`) was modified most recently, excluding `current` and
+///    `_*.old*` (upstream `Get-InstalledVersion`, `versions.ps1:71-105`).
 ///
 /// Returns `None` when neither branch yields a version (nothing installed, or
-/// an app dir whose version dirs carry no `install.json`).
+/// an app dir whose version dirs carry no install record).
 ///
 /// Divergence from upstream, deliberately not emulated: when several version
-/// dirs share one `install.json` mtime, upstream's order comes out of
+/// dirs share one install-record mtime, upstream's order comes out of
 /// `Sort-Object` and its pipeline plumbing (observed to reverse enumeration
 /// order, `1.0.0,2.0.0` → last `1.0.0`); here the last enumerated dir wins.
 /// Same predicate, nondeterministic order — not a semantic to pin.
 pub(crate) fn resolve_current_version(pkg_dir: &Path, no_junction: bool) -> Option<CurrentVersion> {
-    // 1. `current\manifest.json` — upstream reads it only when the junction
-    //    mode is on (`versions.ps1:53`). Under NO_JUNCTION a leftover
-    //    `current` directory is a stale artifact, not the active version.
-    if !no_junction && let Ok(manifest) = parse_file(pkg_dir.join("current").join("manifest.json"))
-    {
-        let version = manifest.version().to_owned();
-        if version != "nightly" {
-            return Some(CurrentVersion::manifest(version));
-        }
-        if let Ok(target) = std::fs::read_link(pkg_dir.join("current"))
-            && let Some(name) = target.file_name().and_then(|s| s.to_str())
+    // 1. `current\scoop-manifest.json` (else `current\manifest.json`) —
+    //    upstream reads it only when the junction mode is on
+    //    (`versions.ps1:53-56`). Under NO_JUNCTION a leftover `current`
+    //    directory is a stale artifact, not the active version.
+    if !no_junction {
+        let current_dir = pkg_dir.join("current");
+        if let Some(path) = installed_manifest_path(&current_dir)
+            && let Ok(manifest) = parse_file(path)
         {
-            return Some(CurrentVersion::nightly(name.to_owned()));
+            let version = manifest.version().to_owned();
+            if version != "nightly" {
+                return Some(CurrentVersion::manifest(version));
+            }
+            if let Ok(target) = std::fs::read_link(&current_dir)
+                && let Some(name) = target.file_name().and_then(|s| s.to_str())
+            {
+                return Some(CurrentVersion::nightly(name.to_owned()));
+            }
         }
     }
 
-    // 2. version dirs with `install.json`, newest by modification time
+    // 2. version dirs with an install record, newest by modification time
     newest_version_dir(pkg_dir).map(CurrentVersion::fallback)
 }
 
-/// The version dir whose `install.json` was modified most recently, excluding
+/// The version dir whose install record was modified most recently, excluding
 /// `current` and `_*.old*` (upstream `Get-InstalledVersion`).
 fn newest_version_dir(pkg_dir: &Path) -> Option<String> {
     let mut candidates: Vec<(SystemTime, String)> = vec![];
@@ -150,9 +215,7 @@ fn newest_version_dir(pkg_dir: &Path) -> Option<String> {
             if name == "current" || (name.starts_with('_') && name.contains(".old")) {
                 continue;
             }
-            let install_json = entry.path().join("install.json");
-            if let Ok(meta) = std::fs::metadata(&install_json) {
-                let time = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            if let Some(time) = install_info_mtime(&entry.path()) {
                 candidates.push((time, name));
             }
         }
@@ -186,8 +249,8 @@ pub(crate) fn load_install_state(
     // version via the shared resolver and read the versioned dir's metadata
     // (upstream `currentdir`, lib/core.ps1).
     let (meta_dir, _) = current_meta_dir(&pkg_dir, no_junction)?;
-    let install_info = parse_install_info(&meta_dir.join("install.json")).ok()?;
-    let install_manifest = parse_file(meta_dir.join("manifest.json")).ok()?;
+    let install_info = parse_install_info(&install_info_path(&meta_dir)?).ok()?;
+    let install_manifest = parse_file(installed_manifest_path(&meta_dir)?).ok()?;
 
     Some(InstallState::Installed(InstallStateInstalled {
         version: install_manifest.version().to_owned(),
@@ -281,16 +344,33 @@ mod tests {
     /// Create `apps/app/<version>/{manifest,install}.json` with a pinned
     /// `install.json` mtime (the resolver's ordering key).
     fn add_version(pkg_dir: &Path, version: &str, mtime_secs: u64) {
+        add_version_with(
+            pkg_dir,
+            version,
+            mtime_secs,
+            LEGACY_MANIFEST_JSON,
+            LEGACY_INSTALL_JSON,
+        );
+    }
+
+    /// [`add_version`] with explicit metadata file names.
+    fn add_version_with(
+        pkg_dir: &Path,
+        version: &str,
+        mtime_secs: u64,
+        manifest_name: &str,
+        install_name: &str,
+    ) {
         let dir = pkg_dir.join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("manifest.json"), mini_manifest(version)).unwrap();
+        std::fs::write(dir.join(manifest_name), mini_manifest(version)).unwrap();
         std::fs::write(
-            dir.join("install.json"),
+            dir.join(install_name),
             r#"{"architecture": "64bit", "bucket": "test"}"#,
         )
         .unwrap();
         set_modified(
-            &dir.join("install.json"),
+            &dir.join(install_name),
             SystemTime::UNIX_EPOCH + Duration::from_secs(mtime_secs),
         );
     }
@@ -505,5 +585,143 @@ mod tests {
         }
         // With junctions enabled and no `current` link, nothing resolves.
         assert!(load_install_state(&root.join("apps"), "app", false).is_none());
+    }
+
+    // ── Scoop >= 0.6.0 metadata names ─────────────────────────────────────
+    // (`scoop-manifest.json` / `scoop-install.json`, read new-first with the
+    //  pre-0.6.0 names as fallback — lib/manifest.ps1:134-154)
+
+    /// A version dir carrying ONLY the new names is a first-class install:
+    /// junction mode reads `current\scoop-manifest.json`'s version, and the
+    /// mtime fallback enumerates the dir through `scoop-install.json`.
+    #[test]
+    fn resolve_current_version_reads_scoop_names_only() {
+        let (root, pkg_dir) = test_pkg("resolve_scoop_names");
+        add_version_with(
+            &pkg_dir,
+            "1.0.0",
+            1_000,
+            SCOOP_MANIFEST_JSON,
+            SCOOP_INSTALL_JSON,
+        );
+        add_version_with(
+            &pkg_dir,
+            "2.0.0",
+            2_000,
+            SCOOP_MANIFEST_JSON,
+            SCOOP_INSTALL_JSON,
+        );
+        assert!(
+            !pkg_dir.join("2.0.0").join(LEGACY_MANIFEST_JSON).exists(),
+            "fixture must carry the new names only"
+        );
+
+        // NO_JUNCTION: a new-name-only version dir is still a candidate.
+        assert_resolved(
+            resolve_current_version(&pkg_dir, true),
+            "2.0.0",
+            CurrentVersionSource::VersionDirs,
+        );
+
+        // Junction mode: the version comes from `current\scoop-manifest.json`.
+        crate::internal::fs::symlink_dir(pkg_dir.join("1.0.0"), pkg_dir.join("current")).unwrap();
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "1.0.0",
+            CurrentVersionSource::CurrentManifest,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With both names present the new one wins, for both files.
+    #[test]
+    fn scoop_names_win_over_legacy_names() {
+        let (root, pkg_dir) = test_pkg("resolve_names_precedence");
+        let dir = pkg_dir.join("1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(SCOOP_MANIFEST_JSON), mini_manifest("9.9.9")).unwrap();
+        std::fs::write(dir.join(LEGACY_MANIFEST_JSON), mini_manifest("1.0.0")).unwrap();
+        std::fs::write(
+            dir.join(SCOOP_INSTALL_JSON),
+            r#"{"architecture": "64bit", "bucket": "new"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(LEGACY_INSTALL_JSON),
+            r#"{"architecture": "32bit", "bucket": "old"}"#,
+        )
+        .unwrap();
+        crate::internal::fs::symlink_dir(&dir, pkg_dir.join("current")).unwrap();
+
+        assert_resolved(
+            resolve_current_version(&pkg_dir, false),
+            "9.9.9",
+            CurrentVersionSource::CurrentManifest,
+        );
+
+        let state = load_install_state(&root.join("apps"), "app", false).unwrap();
+        match state {
+            InstallState::Installed(s) => {
+                assert_eq!(s.bucket.as_deref(), Some("new"), "new record wins");
+                assert_eq!(s.arch, "64bit");
+            }
+            _ => panic!("expected installed state"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The path resolvers fall back to the legacy names and answer `None` only
+    /// when neither name exists.
+    #[test]
+    fn metadata_path_resolution_prefers_new_then_legacy() {
+        let root = test_utils::tmpdir("metadata_path_resolution");
+        let dir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(install_info_path(&dir), None);
+        assert_eq!(installed_manifest_path(&dir), None);
+        assert_eq!(install_info_mtime(&dir), None);
+
+        std::fs::write(dir.join(LEGACY_INSTALL_JSON), "{}").unwrap();
+        std::fs::write(dir.join(LEGACY_MANIFEST_JSON), "{}").unwrap();
+        assert_eq!(install_info_path(&dir), Some(dir.join(LEGACY_INSTALL_JSON)));
+        assert_eq!(
+            installed_manifest_path(&dir),
+            Some(dir.join(LEGACY_MANIFEST_JSON))
+        );
+        assert!(install_info_mtime(&dir).is_some());
+
+        std::fs::write(dir.join(SCOOP_INSTALL_JSON), "{}").unwrap();
+        std::fs::write(dir.join(SCOOP_MANIFEST_JSON), "{}").unwrap();
+        assert_eq!(install_info_path(&dir), Some(dir.join(SCOOP_INSTALL_JSON)));
+        assert_eq!(
+            installed_manifest_path(&dir),
+            Some(dir.join(SCOOP_MANIFEST_JSON))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `load_install_state` reads a new-name-only version dir under NO_JUNCTION.
+    #[test]
+    fn load_install_state_reads_scoop_names() {
+        let root = test_utils::tmpdir("load_state_scoop_names");
+        let vdir = root.join("apps").join("app").join("1.2.3");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join(SCOOP_MANIFEST_JSON), mini_manifest("1.2.3")).unwrap();
+        std::fs::write(
+            vdir.join(SCOOP_INSTALL_JSON),
+            r#"{"architecture": "64bit", "bucket": "main", "hold": true}"#,
+        )
+        .unwrap();
+
+        let state = load_install_state(&root.join("apps"), "app", true).unwrap();
+        match state {
+            InstallState::Installed(s) => {
+                assert_eq!(s.version, "1.2.3");
+                assert_eq!(s.bucket.as_deref(), Some("main"));
+                assert!(s.held);
+            }
+            _ => panic!("expected installed state"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
