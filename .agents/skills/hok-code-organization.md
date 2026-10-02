@@ -13,7 +13,7 @@ Hok 代码组织规范（合并自 purpose/layering/target-structure/guide-check
 **去重/重构量化门槛**：**本体见全局 skill `proactive-review` §7**（本文件不复述，只留本仓判例）。
 **判例（P2-6）**是给 3 个从未漂移的 flag（`--offline`/`--no-hash-check`/`--assume-yes`）做 clap `flatten`，
 `--help` 逐字节一致，但净 **+54 行**、15 处 flatten + 14 处 `.enabled()`，而重复最重的 `--global`
-（9 处/6 种帮助文案）**无法**合并 ⇒ 已回退（见 `.agents/docs/active/audit/optimization-audit-2026-09.md` §8）。
+（9 处/6 种帮助文案）**无法**合并 ⇒ 已回退。
 例外：`[workspace.dependencies]` 属依赖声明单点化，收益是版本/feature 防漂移（`flate2` 丢 `zlib-rs` 会把 `miniz_oxide` 拉回依赖树），代价是读者需跳转根 manifest——这类「防漂移」收益成立才做。
 
 **How to apply:** 添加代码前走归属决策；lib.rs/mod.rs 用分区注释（`// ===` 或 `// ───`，全文一致）；mod.rs 只放子模块声明+核心类型。
