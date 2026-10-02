@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 
 use regex::{Regex, RegexBuilder};
 
+use crate::internal::network::HeaderProfile;
 use crate::internal::url;
 use crate::{
     Session,
@@ -128,12 +129,9 @@ async fn get_hash_for_app(
         }
     }
 
-    let gh_token = crate::network::github_token(session);
-    let token = gh_token.as_deref();
-
     let hash: Option<String> = match hashmode.as_str() {
         "extract" => find_hash_in_textfile(session, &hashfile_url, subs, &regex).await,
-        "json" => find_hash_in_json(session, &hashfile_url, subs, &jsonpath, token).await,
+        "json" => find_hash_in_json(session, &hashfile_url, subs, &jsonpath).await,
         "xpath" => find_hash_in_xml(session, &hashfile_url, subs, &xpath).await,
         "rdf" => find_hash_in_rdf(session, &hashfile_url, &basename).await,
         "metalink" => match find_hash_in_headers(session, url).await {
@@ -173,8 +171,13 @@ async fn get_hash_for_app(
             let Some(api_url) = url::github_releases_list_api_url(url) else {
                 return download_and_compute_sha256(session, app, version, url, cache_dir).await;
             };
-            let jp = format!("$..assets[?(@.browser_download_url == '{url}')].digest");
-            find_hash_in_json(session, &api_url, subs, &jp, token).await
+            // `$originurl = strip_fragment $url` (`lib/autoupdate.ps1:214`) is
+            // what the API's `browser_download_url` actually holds, and the
+            // `$url` substitution is already fragment-stripped
+            // (`Substitution::with_url`).
+            let originurl = subs.apply("$url");
+            let jp = github_digest_jsonpath(&originurl);
+            find_hash_in_json(session, &api_url, subs, &jp).await
         }
         // `download`, an empty mode, and any unrecognised mode all fall through
         // to the download fallback (upstream's switch has no such case).
@@ -237,7 +240,7 @@ async fn find_hash_in_textfile(
     subs: &Substitution,
     regex: &str,
 ) -> Option<String> {
-    let body = fetch_hash_file(session, url, None).await?;
+    let body = fetch_hash_file(session, url, HeaderProfile::Autoupdate).await?;
     extract_hash_from_hash_file(&body, subs, regex)
 }
 
@@ -301,15 +304,14 @@ fn extract_hash_from_hash_file(hashfile: &str, subs: &Substitution, regex: &str)
     format_hash(&hash)
 }
 
-/// `find_hash_in_json` (lib/autoupdate.ps1:112-138).
+/// `find_hash_in_json` (lib/autoupdate.ps1:112-146).
 async fn find_hash_in_json(
     session: &Session,
     url: &str,
     subs: &Substitution,
     jsonpath: &str,
-    token: Option<&str>,
 ) -> Option<String> {
-    let body = fetch_hash_file(session, url, token).await?;
+    let body = fetch_hash_file(session, url, HeaderProfile::AutoupdateJson).await?;
     // `json_path` escapes substituted values only for `=~` filters
     // (lib/json.ps1:98).
     let jsonpath = if jsonpath.contains("=~") {
@@ -319,6 +321,13 @@ async fn find_hash_in_json(
     };
     let hash = json_path_first(&body, &jsonpath)?;
     format_hash(&hash)
+}
+
+/// `"$..assets[?(@.browser_download_url == '<originurl>')].digest"`
+/// (`lib/autoupdate.ps1:303`), where `$originurl = strip_fragment $url`
+/// (`lib/autoupdate.ps1:214`).
+fn github_digest_jsonpath(originurl: &str) -> String {
+    format!("$..assets[?(@.browser_download_url == '{originurl}')].digest")
 }
 
 /// `json_path $json $jsonpath $substitutions` with upstream's single-result
@@ -352,7 +361,7 @@ async fn find_hash_in_xml(
     subs: &Substitution,
     xpath: &str,
 ) -> Option<String> {
-    let body = fetch_hash_file(session, url, None).await?;
+    let body = fetch_hash_file(session, url, HeaderProfile::Autoupdate).await?;
     let xpath = subs.apply(xpath);
     let hash = super::extract_xpath(&body, &xpath)?;
     format_hash(&hash)
@@ -360,7 +369,7 @@ async fn find_hash_in_xml(
 
 /// `find_hash_in_rdf` (lib/autoupdate.ps1:20-39).
 async fn find_hash_in_rdf(session: &Session, url: &str, basename: &str) -> Option<String> {
-    let body = fetch_hash_file(session, url, None).await?;
+    let body = fetch_hash_file(session, url, HeaderProfile::Autoupdate).await?;
     let hash = rdf_digest_for(&body, basename)?;
     format_hash(&hash)
 }
@@ -444,11 +453,15 @@ async fn find_hash_in_headers(session: &Session, url: &str) -> Option<String> {
 /// Fetch a hash file and decode it the way upstream's `StreamReader` does
 /// (lib/autoupdate.ps1:53-69): sniff the gzip magic, and never fail on a
 /// non-UTF-8 body.
-async fn fetch_hash_file(session: &Session, url: &str, token: Option<&str>) -> Option<String> {
+///
+/// `profile` is the upstream fetcher's header contract — only
+/// [`HeaderProfile::AutoupdateJson`] authorizes against the GitHub API
+/// (lib/autoupdate.ps1:122-125).
+async fn fetch_hash_file(session: &Session, url: &str, profile: HeaderProfile) -> Option<String> {
     if url.is_empty() {
         return None;
     }
-    let raw = network::download_bytes(session, url, 30, token)
+    let raw = network::download_bytes(session, url, 30, profile)
         .await
         .ok()?;
     Some(crate::internal::network::decode_body(&raw))
@@ -761,6 +774,60 @@ mod tests {
     #[test]
     fn json_path_first_missing_token_is_none() {
         assert_eq!(json_path_first(r#"{"a":1}"#, "$.b"), None);
+    }
+
+    // ── github mode: origin url (find_hash_in_json) ─────────────────────────
+
+    #[test]
+    fn github_digest_jsonpath_uses_the_fragment_stripped_url() {
+        // `$originurl = strip_fragment $url` (`lib/autoupdate.ps1:214,303`).
+        let subs =
+            super::super::version_substitutions("1.0", &[], &std::collections::HashMap::new())
+                .with_url("https://github.com/o/r/releases/download/v1.0/app.exe#/dl.7z");
+        assert_eq!(
+            github_digest_jsonpath(&subs.apply("$url")),
+            "$..assets[?(@.browser_download_url == \
+             'https://github.com/o/r/releases/download/v1.0/app.exe')].digest"
+        );
+    }
+
+    /// The GitHub release lookup must match the API's `browser_download_url`,
+    /// which never carries Scoop's `#/` fragment. Serving the asset under the
+    /// stripped URL therefore proves the fragment is dropped before the
+    /// jsonpath is built; the raw URL would match nothing and (since the
+    /// artifact itself is not served) fail the whole lookup.
+    #[tokio::test]
+    async fn github_hash_lookup_strips_the_url_fragment() {
+        use crate::test_utils::{FakeNetwork, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("hash_gh_fragment");
+        let session = test_session(&root);
+        let fake = Arc::new(FakeNetwork::new());
+        let digest = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        fake.serve(
+            "https://api.github.com/repos/o/r/releases",
+            format!(
+                r#"{{"assets":[{{"browser_download_url":"https://github.com/o/r/releases/download/v1.0/app.exe","digest":"sha256:{digest}"}}]}}"#
+            )
+            .into_bytes(),
+        );
+        session.set_network(fake).unwrap();
+
+        let base =
+            super::super::version_substitutions("1.0", &[], &std::collections::HashMap::new());
+        let hashes = download_and_hash_multi(
+            &session,
+            "app",
+            "1.0",
+            &["https://github.com/o/r/releases/download/v1.0/app.exe#/dl.7z".to_string()],
+            &[],
+            &base,
+            &root.join("cache"),
+        )
+        .await
+        .expect("the digest must be found without downloading the artifact");
+        assert_eq!(hashes, vec![digest.to_string()]);
     }
 
     // ── rdf_digest_for (find_hash_in_rdf) ──────────────────────────────────

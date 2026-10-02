@@ -155,7 +155,7 @@ pub async fn get_manifest(
         let manifest = if is_unc(&url) {
             parse_file(Path::new(&url))?
         } else {
-            let text = crate::network::download_page(session, &url, 120, None).await?;
+            let text = crate::network::download_page(session, &url, 120).await?;
             Manifest::parse_str(&url, &text)?
         };
         return Ok(GetManifest {
@@ -243,9 +243,7 @@ async fn installed_source(session: &Session, query: &str) -> Fallible<Option<Get
             {
                 // Upstream warns and continues when the download fails; an
                 // unreachable recorded URL must not abort the lookup.
-                if let Ok(text) =
-                    crate::network::download_page(session, source_url, 120, None).await
-                {
+                if let Ok(text) = crate::network::download_page(session, source_url, 120).await {
                     manifest = Manifest::parse_str(source_url, &text).ok();
                 }
             }

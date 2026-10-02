@@ -57,10 +57,13 @@ pub struct RequestOptions<'a> {
     pub cookies: Option<&'a HashMap<String, String>>,
     pub token: Option<&'a str>,
     pub extra_headers: Option<&'a HashMap<String, String>>,
-    /// Attach upstream's GitHub API *download* headers — `Accept:
-    /// application/octet-stream` and `X-GitHub-Api-Version: 2022-11-28`
-    /// (`lib/download.ps1:97-101`). Paired with [`Self::token`].
-    pub github_api: bool,
+    /// Attach upstream's GitHub API *download* `Accept:
+    /// application/octet-stream` header (`lib/download.ps1:97-101`).
+    pub github_accept: bool,
+    /// Attach `X-GitHub-Api-Version: 2022-11-28` — the download path
+    /// (`lib/download.ps1:101`) and `autoupdate`'s JSON hash fetcher
+    /// (`lib/autoupdate.ps1:124`).
+    pub github_api_version: bool,
     /// Resume a partial single-stream download from this byte offset via a
     /// `Range: bytes={range_start}-` request (0 = fresh download). Used by the
     /// single-stream path so an interrupted `.download` resumes next run.
@@ -75,9 +78,11 @@ pub struct RequestOptions<'a> {
 ///
 /// Upstream assembles request headers in four places, each with slightly
 /// different rules (downloads send no Referer, PRIVATE_HOSTS, GitHub API auth).
-/// This enum is the single description of those differences, so every hok
-/// request path can be checked against its upstream counterpart by name instead
-/// of by re-reading each call site.
+/// The `autoupdate` hash fetchers are the one group whose members disagree:
+/// `find_hash_in_json` authorizes against the GitHub API, the other fetchers
+/// never do — so they get a profile each. This enum is the single description
+/// of those differences, so every hok request path can be checked against its
+/// upstream counterpart by name instead of by re-reading each call site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderProfile {
     /// `Invoke-Download` (`lib/download.ps1:88-111`) — the file downloader
@@ -87,8 +92,12 @@ pub enum HeaderProfile {
     CheckUrls,
     /// `checkver`'s page fetch (`bin/checkver.ps1:118-246`).
     Checkver,
-    /// `autoupdate`'s hash fetchers (`lib/autoupdate.ps1:20-206`), including
-    /// `find_hash_in_headers`.
+    /// `find_hash_in_json` (`lib/autoupdate.ps1:114-146`) — the only
+    /// `autoupdate` fetcher that sends GitHub API headers.
+    AutoupdateJson,
+    /// The other `autoupdate` hash fetchers (`find_hash_in_textfile`,
+    /// `find_hash_in_xml`, `find_hash_in_rdf`, `find_hash_in_headers`,
+    /// `lib/autoupdate.ps1:20-206`).
     Autoupdate,
 }
 
@@ -115,28 +124,53 @@ impl HeaderProfile {
     pub fn referer(self, url: &str) -> Option<String> {
         match self {
             Self::Download => None,
-            Self::CheckUrls | Self::Checkver | Self::Autoupdate => Some(strip_filename(url)),
+            Self::CheckUrls | Self::Checkver | Self::Autoupdate | Self::AutoupdateJson => {
+                Some(strip_filename(url))
+            }
         }
     }
 
-    /// Does upstream attach the GitHub API *download* headers to `url`?
+    /// Does upstream attach the GitHub API *download* `Accept` header to `url`?
     /// `lib/download.ps1:97` matches `api\.github\.com/repos`.
-    pub fn uses_github_download_headers(self, url: &str) -> bool {
+    pub fn uses_github_accept(self, url: &str) -> bool {
         self == Self::Download && url.contains("api.github.com/repos")
+    }
+
+    /// Does upstream attach `X-GitHub-Api-Version: 2022-11-28` to `url`?
+    ///
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`;
+    /// `lib/autoupdate.ps1:122` matches `^https://api\.github\.com/.*` — HTTPS
+    /// only, so the token is never sent over plain HTTP.
+    pub fn uses_github_api_version(self, url: &str) -> bool {
+        match self {
+            Self::Download => url.contains("api.github.com/repos"),
+            Self::AutoupdateJson => is_https_github_api(url),
+            Self::CheckUrls | Self::Checkver | Self::Autoupdate => false,
+        }
     }
 
     /// Does upstream attach the configured GitHub token to `url`?
     ///
     /// `lib/download.ps1:97` matches `api\.github\.com/repos`;
-    /// `bin/checkver.ps1:219` matches any `api.github.com` path. Upstream never
-    /// sends the token anywhere else, so hok must not either.
+    /// `bin/checkver.ps1:219` matches any `api.github.com` path;
+    /// `lib/autoupdate.ps1:122` matches `^https://api\.github\.com/.*` — HTTPS
+    /// only. Upstream never sends the token anywhere else, so hok must not
+    /// either.
     pub fn uses_github_token(self, url: &str) -> bool {
         match self {
             Self::Download => url.contains("api.github.com/repos"),
             Self::Checkver => url.contains(GITHUB_API_HOST),
+            Self::AutoupdateJson => is_https_github_api(url),
             Self::CheckUrls | Self::Autoupdate => false,
         }
     }
+}
+
+/// `$url -match '^https://api\.github\.com/.*'` (`lib/autoupdate.ps1:122`).
+/// PowerShell's `-match` is case-insensitive.
+fn is_https_github_api(url: &str) -> bool {
+    url.to_ascii_lowercase()
+        .starts_with("https://api.github.com/")
 }
 
 // ---------------------------------------------------------------------------
@@ -191,10 +225,11 @@ pub(crate) fn apply_headers<'a>(
         // intentional deviation from the reference implementation.
         req = req.header(AUTHORIZATION, format!("Bearer {token}"));
     }
-    if opts.github_api {
-        req = req
-            .header(ACCEPT, "application/octet-stream")
-            .header("X-GitHub-Api-Version", "2022-11-28");
+    if opts.github_accept {
+        req = req.header(ACCEPT, "application/octet-stream");
+    }
+    if opts.github_api_version {
+        req = req.header("X-GitHub-Api-Version", "2022-11-28");
     }
     if let Some(extra) = opts.extra_headers {
         for (k, v) in extra {
@@ -781,6 +816,7 @@ mod tests {
             HeaderProfile::CheckUrls,
             HeaderProfile::Checkver,
             HeaderProfile::Autoupdate,
+            HeaderProfile::AutoupdateJson,
         ] {
             assert_eq!(
                 profile.referer("https://downloads.sourceforge.net/project/x/y.exe"),
@@ -791,22 +827,47 @@ mod tests {
     }
 
     #[test]
-    fn github_download_headers_only_on_the_repos_path() {
+    fn github_download_accept_only_on_the_repos_path() {
         // `lib/download.ps1:97` matches `api\.github\.com/repos`.
         assert!(
-            HeaderProfile::Download
-                .uses_github_download_headers("https://api.github.com/repos/o/r/releases")
+            HeaderProfile::Download.uses_github_accept("https://api.github.com/repos/o/r/releases")
         );
-        assert!(!HeaderProfile::Download.uses_github_download_headers("https://api.github.com/"));
+        assert!(!HeaderProfile::Download.uses_github_accept("https://api.github.com/"));
         assert!(
             !HeaderProfile::Checkver
-                .uses_github_download_headers("https://api.github.com/repos/o/r/releases")
+                .uses_github_accept("https://api.github.com/repos/o/r/releases")
+        );
+        // `lib/autoupdate.ps1:122` asks for JSON, never octet-stream.
+        assert!(
+            !HeaderProfile::AutoupdateJson
+                .uses_github_accept("https://api.github.com/repos/o/r/releases")
         );
     }
 
     #[test]
+    fn github_api_version_only_where_upstream_sends_it() {
+        // Download: the repos path (`lib/download.ps1:97-101`).
+        assert!(
+            HeaderProfile::Download.uses_github_api_version("https://api.github.com/repos/o/r")
+        );
+        assert!(!HeaderProfile::Download.uses_github_api_version("https://api.github.com/"));
+        // Autoupdate's JSON hash fetcher (`lib/autoupdate.ps1:122-125`).
+        assert!(
+            HeaderProfile::AutoupdateJson
+                .uses_github_api_version("https://api.github.com/repos/o/r/releases")
+        );
+        // The other autoupdate fetchers add nothing.
+        assert!(
+            !HeaderProfile::Autoupdate.uses_github_api_version("https://api.github.com/repos/o/r")
+        );
+        // checkver sends only the bearer token (`bin/checkver.ps1:177`).
+        assert!(!HeaderProfile::Checkver.uses_github_api_version("https://api.github.com/x"));
+    }
+
+    #[test]
     fn github_token_never_leaks_to_other_hosts() {
-        // `lib/autoupdate.ps1:319` and `bin/checkurls.ps1` never authorize.
+        // The generic autoupdate fetchers and `bin/checkurls.ps1` never
+        // authorize.
         assert!(!HeaderProfile::Autoupdate.uses_github_token("https://api.github.com/repos/o/r"));
         assert!(!HeaderProfile::CheckUrls.uses_github_token("https://api.github.com/repos/o/r"));
         // `lib/download.ps1:97` — the repos path only.
@@ -815,6 +876,14 @@ mod tests {
         // `bin/checkver.ps1:219` — any api.github.com path.
         assert!(HeaderProfile::Checkver.uses_github_token("https://api.github.com/users/o"));
         assert!(!HeaderProfile::Checkver.uses_github_token("https://example.com/x"));
+        // `lib/autoupdate.ps1:122` — https only (`^https://api\.github\.com/.*`).
+        assert!(
+            HeaderProfile::AutoupdateJson.uses_github_token("https://api.github.com/repos/o/r")
+        );
+        assert!(
+            !HeaderProfile::AutoupdateJson.uses_github_token("http://api.github.com/repos/o/r")
+        );
+        assert!(!HeaderProfile::AutoupdateJson.uses_github_token("https://example.com/x"));
     }
 
     #[test]
@@ -824,7 +893,8 @@ mod tests {
         let opts = RequestOptions {
             user_agent: Some("ua"),
             token: Some("tok"),
-            github_api: true,
+            github_accept: true,
+            github_api_version: true,
             ..Default::default()
         };
         let req = apply_headers(client.get("https://api.github.com/repos/o/r"), &opts)
@@ -832,6 +902,27 @@ mod tests {
             .expect("request builds");
 
         assert_eq!(req.headers()[ACCEPT], "application/octet-stream");
+        assert_eq!(req.headers()["x-github-api-version"], "2022-11-28");
+        assert_eq!(req.headers()[AUTHORIZATION], "Bearer tok");
+    }
+
+    #[test]
+    fn github_json_api_headers_carry_no_accept_type() {
+        // `lib/autoupdate.ps1:122-125` — bearer + API version, nothing else.
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            token: Some("tok"),
+            github_api_version: true,
+            ..Default::default()
+        };
+        let req = apply_headers(
+            client.get("https://api.github.com/repos/o/r/releases"),
+            &opts,
+        )
+        .build()
+        .expect("request builds");
+
+        assert!(req.headers().get(ACCEPT).is_none());
         assert_eq!(req.headers()["x-github-api-version"], "2022-11-28");
         assert_eq!(req.headers()[AUTHORIZATION], "Bearer tok");
     }

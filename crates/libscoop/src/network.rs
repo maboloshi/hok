@@ -14,9 +14,10 @@
 //!   `info -v`).
 //! - [`download_file`] — download to a local path (`create`, `checkhashes`,
 //!   checkver's download-and-hash).
-//! - [`download_bytes`] — download as raw bytes, for payload sniffing.
-//! - [`download_page`] — download as a UTF-8 string, optionally with a Bearer
-//!   token for GitHub API (`checkver`).
+//! - [`download_bytes`] — download as raw bytes, for payload sniffing; the
+//!   [`HeaderProfile`] picks the call site's rules (GitHub token / API version
+//!   included).
+//! - [`download_page`] — download as a UTF-8 string (`checkver`'s hash files).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -59,7 +60,8 @@ pub(crate) struct ScoopRequest {
     referer: Option<String>,
     extra_headers: Option<HashMap<String, String>>,
     token: Option<String>,
-    github_api: bool,
+    github_accept: bool,
+    github_api_version: bool,
 }
 
 impl ScoopRequest {
@@ -92,7 +94,8 @@ impl ScoopRequest {
             } else {
                 None
             },
-            github_api: profile.uses_github_download_headers(url),
+            github_accept: profile.uses_github_accept(url),
+            github_api_version: profile.uses_github_api_version(url),
         }
     }
 
@@ -116,7 +119,8 @@ impl ScoopRequest {
             cookies: None,
             extra_headers: self.extra_headers.as_ref(),
             token: self.token.as_deref(),
-            github_api: self.github_api,
+            github_accept: self.github_accept,
+            github_api_version: self.github_api_version,
             range_start: 0,
         }
     }
@@ -165,10 +169,14 @@ pub async fn download_file(session: &Session, url: &str, dest: &Path) -> Fallibl
     Ok(())
 }
 
-/// Download a URL's raw bytes with Scoop's `autoupdate` headers
-/// (`lib/autoupdate.ps1:20-206`).
+/// Download a URL's raw bytes with a call site's header contract
+/// (`lib/autoupdate.ps1:20-206` for [`HeaderProfile::Autoupdate`] /
+/// [`HeaderProfile::AutoupdateJson`]).
 ///
-/// `token` is optional and only overrides the token the profile resolved.
+/// `profile` is also what decides whether the GitHub token and
+/// `X-GitHub-Api-Version` are attached, so a caller can never widen them: the
+/// token follows the URL, which is the only input upstream's `find_hash_in_json`
+/// consults (`lib/autoupdate.ps1:122-125`).
 ///
 /// Callers that need to sniff the payload before decoding it (checkver's hash
 /// files are gzip-compressed on some hosts, `lib/autoupdate.ps1:58-64`) use
@@ -177,16 +185,12 @@ pub async fn download_bytes(
     session: &Session,
     url: &str,
     timeout_secs: u64,
-    token: Option<&str>,
+    profile: HeaderProfile,
 ) -> Fallible<Vec<u8>> {
-    let request = ScoopRequest::for_url(session, url, HeaderProfile::Autoupdate);
-    let mut opts = request.options(timeout_secs);
-    if token.is_some() {
-        opts.token = token;
-    }
+    let request = ScoopRequest::for_url(session, url, profile);
     session
         .network()
-        .download(url, &opts)
+        .download(url, &request.options(timeout_secs))
         .await
         .map_err(Error::Custom)
 }
@@ -194,14 +198,9 @@ pub async fn download_bytes(
 /// Download a URL's content as a UTF-8 string with Scoop-compatible headers.
 ///
 /// See [`download_bytes`] for the header injection; this adds a strict UTF-8
-/// decode.
-pub async fn download_page(
-    session: &Session,
-    url: &str,
-    timeout_secs: u64,
-    token: Option<&str>,
-) -> Fallible<String> {
-    let data = download_bytes(session, url, timeout_secs, token).await?;
+/// decode and uses the generic [`HeaderProfile::Autoupdate`] contract.
+pub async fn download_page(session: &Session, url: &str, timeout_secs: u64) -> Fallible<String> {
+    let data = download_bytes(session, url, timeout_secs, HeaderProfile::Autoupdate).await?;
     String::from_utf8(data).map_err(|e| Error::Custom(format!("UTF-8 decode error: {}", e)))
 }
 

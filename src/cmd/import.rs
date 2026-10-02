@@ -67,7 +67,7 @@ async fn read_scoopfile(session: &Session, file: &str) -> Result<String> {
         .iter()
         .any(|scheme| file.starts_with(scheme))
     {
-        return Ok(libscoop::network::download_page(session, file, 120, None).await?);
+        return Ok(libscoop::network::download_page(session, file, 120).await?);
     }
     Ok(fs::read_to_string(file)?)
 }
