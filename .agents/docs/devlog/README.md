@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（53 条，自动生成）
+## 索引（54 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-03 | 把「怎么写 skill」补进技能规范本体，并清掉两处会漂的指针 | `625c2a4` | [`2026-10-03-skill-authoring-standard.md`](2026-10-03-skill-authoring-standard.md) |
 | 2026-10-02 | 上游 Scoop 0.5.3 → 0.6.0 影响评估与 P0/P1/P3 落地 | `03f7ee2` `baf4c53` `507aab2` `4168ba8` `aa14266` | [`2026-10-02-upstream-0.6.0-impact-and-port.md`](2026-10-02-upstream-0.6.0-impact-and-port.md) |
 | 2026-09-29 | hok 系统性优化点审计：先更正上一版框架报告，再补全五个维度 | `0205083` `0834850` | [`2026-09-29-systemic-optimization-audit.md`](2026-09-29-systemic-optimization-audit.md) |
 | 2026-09-27 | `cat_style` 是 bat 的 `--style` 值：吞掉的退出码 + 写入期求证 | `95fb819` | [`2026-09-27-bat-style-fallback.md`](2026-09-27-bat-style-fallback.md) |
