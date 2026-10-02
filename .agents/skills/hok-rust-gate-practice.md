@@ -18,23 +18,20 @@ metadata:
   在 `--` 之前）或用输出过滤，别放 `--` 后。
 - 仓库存在既有 fmt diff 时禁整包 `cargo fmt`；先用 `git diff --name-only -- '*.rs'` 圈定本次
   改动文件，只 fmt 本次文件。
-- **`rustfmt` 会递归子模块**：传入任何含 `mod xxx;` 声明的文件（`internal/mod.rs`、`package/checkver.rs`…）
-  都会连带格式化其子模块文件——本仓 `internal/github.rs`、`internal/network.rs`、`package/checkver_hash.rs`
-  带既有 fmt 偏差，曾两次被连带改写后 `git checkout` 回退。**不要传含 mod 声明的文件**；
-  非要传就加 `--config skip_children=true`（已实测有效，`--skip-children` 不是 CLI 参数）。
-- ⚠️ **`skip_children=true` 的盲区（该 flag 会「看不见」子模块，不只是「不碰」）**：传含 `mod tests { … }`
-  的文件时，子模块**根本不被检查**，于是"文件级 fmt 干净"是假绿。本仓判例：`package/operations/script.rs`
-  用 `--config skip_children=true --check` 报干净，而整文件 `rustfmt --edition 2024 --check` 报该测试模块未格式化；
-  子代理报告里写的正是"file-scoped（含 skip_children）干净"，差点以假绿收尾。
-  ⇒ 收尾对**改动文件**要么用**不带 `skip_children`** 的整文件检查（若该文件有既有偏差，只核对你改动的 hunk 是否被报），
-  要么显式再查一遍子模块；`skip_children` 只用于"避免连带改写**别人的**文件"，不能当"我改的文件已达标"的证据。
+- **子模块递归：写入模式防误伤，检查模式防漏检**（两条相反，别混用）。
+  `rustfmt` 会递归处理含 `mod` 声明的文件，所以：
+  - **写入**（`rustfmt <file>`，无 `--check`）：**不要**传含 `mod` 声明的文件，否则会连带改写子模块——
+    本仓 `internal/github.rs`、`internal/network.rs`、`package/checkver_hash.rs` 带既有偏差，曾两次被连带改后回退。
+    真要传就加 `--config skip_children=true`（已实测有效，`--skip-children` 不是 CLI 参数）——该 flag 只保证**不碰**子模块。
+  - **检查**（`--check`）：**不要加 `skip_children`**，它会让子模块**不被检查** ⇒ "文件级 fmt 干净"是假绿。
+    判例：`package/operations/script.rs` 用 `skip_children=true --check` 报干净，整文件 `--check` 才报出其 `mod tests` 未格式化；
+    子代理报告写的正是"file-scoped（含 skip_children）干净"，差点以假绿收尾。
+    ⇒ 对**本次改动文件**统一用**不带 `skip_children`** 的整文件 `--check`；报出的既有偏差里，只看是否含你改动的 hunk。
+    （`rustfmt --check` 不会写盘，所以"误伤别人的文件"这条顾虑在检查模式不存在。）
 - 其余节奏（先写完整逻辑 → 收尾整轮一次 → 原始日志不回传 LLM、只回传
   OK/改 N 文件/残余 N 诊断）与全局 skill 一致。
 
 ## 门禁命令
 - 整包可直接跑：`cargo clippy --workspace --all-targets -- -D warnings`（`--no-deps` 可选，仅提速）。
-- **历史**：2026-09-19 之前 vendored `crates/innospect` 的既有 lint 会挡住整包 `-D warnings`，
-  那时必须 `--exclude innospect --no-deps`。该 fork 已退役（改用 registry `innospect 0.1.4`，
-  见 `crates/libscoop/Cargo.toml` 与`.agents/docs/devlog/2026-09-19-innospect-registry-retire-fork.md`），
-  旧写法已失效——`.agents/docs/active/audit/s7-s14-investigation-2026-09.md` 里带
-  `〔pre-2026-09-19 …〕` 标记的行只作历史记录，别照抄。
+- ⚠️ 若在**旧记录**里看到 `--exclude innospect`：那是已退役的 vendored fork 时代的写法，现在不该再出现
+  （该依赖已改用 registry 版，见 `crates/libscoop/Cargo.toml`）；旧审计/报告里的这类命令行属历史记录，别照抄。
