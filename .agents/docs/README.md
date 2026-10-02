@@ -43,6 +43,7 @@
 | [`nsis-research.md`](research/nsis-research.md) | NSIS 纯 Rust 提取的可行性调研 |
 | [`zip-sfx-research.md`](research/zip-sfx-research.md) | ZIP SFX 原生解压调研 |
 | [`cleanup-delete-perf.md`](research/cleanup-delete-perf.md) | `cleanup --delete` 性能分析与并行化依据 |
+| [`manifest-history-index.md`](research/manifest-history-index.md) | 「git 库 → 索引库」清单历史索引调研草稿（存什么/放哪里/怎么建/能否并行，成本实测） |
 
 ## 历史与冻结
 
