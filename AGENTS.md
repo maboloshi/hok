@@ -10,7 +10,7 @@ the agent workspace/sandbox. **Current working directory = `hok/`.**
 > rule (`<name>-zh.md` counterparts, translations) lives in [`.agents/AGENTS.md`](.agents/AGENTS.md) → 语言约定.
 
 ```
-Scoop/                  Original Scoop (PowerShell) package manager — v0.5.3
+Scoop/                  Original Scoop (PowerShell) package manager — v0.6.0
 hok/                    hok CLI — Rust Scoop reimplementation (v0.2.0)  ← current working directory
 hyperscoop/             hp CLI — Rust Scoop reimplementation (v4.2.0)
 shim_test/              Shim testing sandbox (C#/C++/Rust/Zig variants)
@@ -76,7 +76,7 @@ user guide in `README.md`; this section highlights only what those don't cover.
 ## 3. Scoop/ — Original Scoop (PowerShell)
 
 Reference/backward-compat testing only ([ScoopInstaller/Scoop](https://github.com/ScoopInstaller/Scoop),
-v0.5.3, PowerShell 5+). `bin/` entry (`scoop.ps1`), `lib/` core, `libexec/` command impls,
+v0.6.0, PowerShell 5+). `bin/` entry (`scoop.ps1`), `lib/` core, `libexec/` command impls,
 `supporting/` bundled tools, `test/` Pester.
 
 ---

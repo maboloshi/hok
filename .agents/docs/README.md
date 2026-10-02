@@ -34,6 +34,7 @@
 | [`binary-size-analysis-2026-09.md`](active/audit/binary-size-analysis-2026-09.md) | `hok.exe` 体积归因与压缩分发方案对照 |
 | [`7zip-switch-investigation-2026-09.md`](active/audit/7zip-switch-investigation-2026-09.md) | 「适度切换外部 7z」收益调研与方案 A–D 对照 |
 | [`rule-gate-anchors-2026-09.md`](active/audit/rule-gate-anchors-2026-09.md) | 规则载体的闸门锚点审计（20 个载体的闸门/知识分层、复述漂移与缺锚点清单） |
+| [`upstream-0.6.0-impact-2026-10.md`](active/audit/upstream-0.6.0-impact-2026-10.md) | 官方 Scoop 0.5.3 → 0.6.0（76 提交）对 hok 的影响逐项评估与本会话处置 |
 
 ## research — 结论已定的调研（只读）
 
