@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use super::psengine::{PsChannel, PsEngine};
+use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::Package;
 use crate::{Error, Event, Session, error::Fallible, internal};
 
@@ -129,6 +130,22 @@ fn install_env_additions(
                 env.insert("PATH".to_string(), path.to_string_lossy().into_owned());
             }
         }
+    }
+}
+
+/// The value a package script sees as `$bucket`.
+///
+/// Upstream sets `$bucket = $install.bucket` (uninstall/update) and leaves it
+/// `$null` for an app installed from a URL or local path, so an isolated
+/// package's script must see an **empty string** — not hok's internal
+/// [`ISOLATED_PACKAGE_BUCKET`] sentinel, which is a storage detail of the
+/// installed record and the installed manifest.
+fn script_bucket(package: &Package) -> &str {
+    let bucket = package.bucket();
+    if bucket == ISOLATED_PACKAGE_BUCKET {
+        ""
+    } else {
+        bucket
     }
 }
 
@@ -288,7 +305,10 @@ $fname = '{fname}'
     );
     env.insert("SCOOP_PACKAGE_NAME".into(), package.name().to_owned());
     env.insert("SCOOP_PACKAGE_VERSION".into(), version.clone());
-    env.insert("SCOOP_PACKAGE_BUCKET".into(), package.bucket().to_owned());
+    env.insert(
+        "SCOOP_PACKAGE_BUCKET".into(),
+        script_bucket(package).to_owned(),
+    );
     env.insert("SCOOP_PACKAGE_CMD".into(), cmd.to_owned());
     env.insert("version".into(), version);
     env.insert(
@@ -581,7 +601,7 @@ pub fn expand_scoop_str(
     let buckets_dir = session.buckets_dir();
     let version = pkg.version();
     let app = pkg.name();
-    let bucket = pkg.bucket();
+    let bucket = script_bucket(pkg);
 
     let working_dir_str = working_dir.to_string_lossy().to_string();
     let root_path_str = root_path.to_string_lossy().to_string();
@@ -753,7 +773,7 @@ fn run_ps1_file(
         .env("SCOOP_APP_DIR", working_dir.as_os_str())
         .env("SCOOP_PACKAGE_NAME", package.name())
         .env("SCOOP_PACKAGE_VERSION", package.version())
-        .env("SCOOP_PACKAGE_BUCKET", package.bucket())
+        .env("SCOOP_PACKAGE_BUCKET", script_bucket(package))
         .env("SCOOP_PACKAGE_CMD", cmd);
     ps.args(args);
     let status = ps.status()?;
@@ -1520,6 +1540,30 @@ mod tests {
         assert_eq!(expanded[0], "1.0.0");
         assert_eq!(expanded[1], "test-pkg");
         assert_eq!(expanded[2], "test-bucket");
+    }
+
+    /// An isolated (URL / local-path) install must expose an **empty** `$bucket`,
+    /// not the internal `__isolated__` sentinel: upstream reads `$bucket` from
+    /// `install.json`, which carries no bucket for such installs. Both the
+    /// PowerShell-preamble env and the `expand_scoop_vars` string path must agree.
+    #[test]
+    fn test_isolated_package_bucket_is_empty() {
+        let (session, _pkg, working_dir, _tmp) = setup_expand_scoop_vars_test("isolated_bucket");
+        let manifest = crate::package::Manifest::from_json(
+            "iso-pkg",
+            r#"{"version": "1.0.0", "homepage": "https://example.com"}"#,
+        )
+        .unwrap();
+        let pkg = Package::from(
+            "iso-pkg",
+            crate::constant::ISOLATED_PACKAGE_BUCKET,
+            manifest,
+        );
+
+        assert_eq!(script_bucket(&pkg), "");
+
+        let expanded = expand_scoop_vars(&["$bucket"], &session, &pkg, &working_dir, "uninstall");
+        assert_eq!(expanded[0], "");
     }
 
     /// Test that $cmd is expanded to "install" or "uninstall" accordingly.

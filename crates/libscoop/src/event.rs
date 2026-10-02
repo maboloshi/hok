@@ -278,17 +278,29 @@ pub enum Event {
     /// Package environment path(s) removal has finished.
     PackageEnvPathRemoveDone,
 
-    /// Package environment variable(s) setting has started.
-    PackageEnvVarSetStart,
+    /// One `env_set` variable is about to be written, with its **expanded**
+    /// value. Upstream prints this unconditionally, not only in verbose mode
+    /// (`Write-Output "Setting … environment variable: $name = $val"`,
+    /// lib/install.ps1:337).
+    PackageEnvVarSet {
+        /// Variable name, as written in the manifest.
+        name: String,
+        /// The value after Scoop-variable expansion (`$dir`, `$version`, …).
+        value: String,
+        /// `true` for a `-g` install (upstream prints "system" rather than
+        /// "user").
+        global: bool,
+    },
 
-    /// Package environment variable(s) setting has finished.
-    PackageEnvVarSetDone,
-
-    /// Package environment variable(s) removal has started.
-    PackageEnvVarRemoveStart,
-
-    /// Package environment variable(s) removal has finished.
-    PackageEnvVarRemoveDone,
+    /// One `env_set` variable is about to be removed.
+    /// (`Write-Output "Removing … environment variable: $name"`,
+    /// lib/install.ps1:348).
+    PackageEnvVarRemove {
+        /// Variable name, as written in the manifest.
+        name: String,
+        /// `true` for a `-g` install.
+        global: bool,
+    },
 
     /// Package integrity check has started.
     PackageIntegrityCheckStart,

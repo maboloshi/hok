@@ -7,7 +7,7 @@
 use clap::{ArgAction, Parser};
 use libscoop::{Session, package};
 
-use crate::{Result, output};
+use crate::{ExitCode, Result, output};
 
 /// Download package(s) into the cache folder without installing
 #[derive(Debug, Parser)]
@@ -52,7 +52,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let handle = crate::eventloop::run_event_loop_default(session);
     let result = package::download::download_apps(session, &queries, &opts).await;
     handle.await.unwrap();
-    result?;
+    let all_succeeded = result?;
+
+    // Upstream exits non-zero when any requested app failed to download, after
+    // still downloading the rest (`exit [int]$download_failed`,
+    // libexec/scoop-download.ps1:153-156). The per-app errors were already
+    // reported, so the exit code is all that is left to mirror.
+    if !all_succeeded {
+        return Err(ExitCode(1).into());
+    }
 
     Ok(())
 }

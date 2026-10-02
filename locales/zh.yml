@@ -416,6 +416,8 @@ cmd:
   cache_removing: "正在移除 %{name}..."
   cache_deleted_label: "已删除:"
   manifest_no_version: "包 '%{name}' 的 manifest 未指定版本。"
+  env_var_setting: "设置%{scope}环境变量：%{name} = %{value}"
+  env_var_removing: "移除%{scope}环境变量：%{name}"
   manifest_version_invalid: "包 '%{name}' 的 manifest 版本包含不支持的字符。"
   arch_unsupported: "包 '%{name}' 不支持当前架构！"
   downloaded_success: "已成功下载 '%{name}' (%{version})！"

@@ -14,9 +14,12 @@
 //! - **Isolated path support**: Respects Scoop's `use_isolated_path`
 //!   config, which can use a custom env var name instead of `PATH`.
 //! - **Event emission**: Fires `PackageEnvPathAddStart/Done`,
-//!   `PackageEnvVarSetStart/Done` and `PackageEnvPathRemoveStart/Done`,
-//!   `PackageEnvVarRemoveStart/Done` events — in Scoop's order (path
-//!   entries first, then variables), for the event loop.
+//!   `PackageEnvVarSet` (per variable, carrying the expanded value) and
+//!   `PackageEnvPathRemoveStart/Done`, `PackageEnvVarRemove` (per variable) —
+//!   in Scoop's order (path entries first, then variables), for the event loop.
+//!   Upstream prints one line per variable unconditionally (lib/install.ps1:337
+//!   and :348), which is why the variable events carry their own payload rather
+//!   than being coarse start/done markers.
 //! - **`$dir` expansion**: `env_set` values go through the same
 //!   installer-variable expansion as `installer.args` (via
 //!   [`expand_scoop_vars`](crate::package::operations::expand_scoop_vars)),
@@ -113,17 +116,18 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     // Set environment variables
     if let Some(env_set) = package.manifest().env_set() {
         require_env_privileges(session, package)?;
-        if let Some(tx) = session.emitter() {
-            let _ = tx.try_send(Event::PackageEnvVarSetStart);
-        }
+        let global = session.is_global();
 
         for (key, value) in env_set {
             let expanded = expand_scoop_vars(&[value.as_str()], session, package, &working_dir, "");
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageEnvVarSet {
+                    name: key.clone(),
+                    value: expanded[0].clone(),
+                    global,
+                });
+            }
             internal::env::set(key, Some(&OsString::from(expanded[0].clone())), scope)?;
-        }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.try_send(Event::PackageEnvVarSetDone);
         }
     }
 
@@ -228,17 +232,16 @@ fn remove_impl(
     // Unset environment variables
     if let Some(env_set) = manifest.env_set() {
         require_env_privileges(session, package)?;
-        if let Some(tx) = session.emitter() {
-            let _ = tx.try_send(Event::PackageEnvVarRemoveStart);
-        }
+        let global = session.is_global();
 
-        let keys = env_set.keys();
-        for key in keys {
+        for key in env_set.keys() {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageEnvVarRemove {
+                    name: key.clone(),
+                    global,
+                });
+            }
             internal::env::set(key, None, scope)?;
-        }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.try_send(Event::PackageEnvVarRemoveDone);
         }
     }
 

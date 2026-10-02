@@ -165,17 +165,29 @@ impl EventHandler for ScoopHandler {
                 tracing::debug!("{}", hok_i18n::t!("detail.env_path_removed"));
             }
 
-            Event::PackageEnvVarSetStart => {
-                tracing::debug!("{}", hok_i18n::t!("detail.setting_env_var"));
+            // One line per `env_set` variable, unconditionally — upstream
+            // prints these with `Write-Output` regardless of verbosity
+            // (lib/install.ps1:337 and :348), unlike the verbose step lines.
+            Event::PackageEnvVarSet {
+                name,
+                value,
+                global,
+            } => {
+                let scope = if *global { "system" } else { "user" };
+                output::info(hok_i18n::t!(
+                    "cmd.env_var_setting",
+                    scope = scope,
+                    name = name,
+                    value = value
+                ));
             }
-            Event::PackageEnvVarSetDone => {
-                tracing::debug!("{}", hok_i18n::t!("detail.env_var_set"));
-            }
-            Event::PackageEnvVarRemoveStart => {
-                tracing::debug!("{}", hok_i18n::t!("detail.removing_env_var"));
-            }
-            Event::PackageEnvVarRemoveDone => {
-                tracing::debug!("{}", hok_i18n::t!("detail.env_var_removed"));
+            Event::PackageEnvVarRemove { name, global } => {
+                let scope = if *global { "system" } else { "user" };
+                output::info(hok_i18n::t!(
+                    "cmd.env_var_removing",
+                    scope = scope,
+                    name = name
+                ));
             }
 
             // --- Persist ---
@@ -241,7 +253,7 @@ impl EventHandler for ScoopHandler {
 
             // --- Post-install notes ---
             Event::PackageNotes(note) => {
-                output::info(note);
+                output::notes(note);
             }
 
             // --- Cache hit ---

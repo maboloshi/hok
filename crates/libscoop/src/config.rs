@@ -1156,6 +1156,7 @@ pub fn map_official_key(key: &str) -> OfficialKey {
 /// `hok import` reports the two apart for the same reason). Upstream's own
 /// settings list is `libexec/scoop-config.ps1:21-153`.
 const OFFICIAL_ONLY_KEYS: &[&str] = &[
+    "aria2-fallback-enabled",
     "aria2-options",
     "aria2-retry-wait",
     "aria2-warning-enabled",
@@ -1170,6 +1171,7 @@ const OFFICIAL_ONLY_KEYS: &[&str] = &[
     "show_update_log",
     "update_nightly",
     "use_external_7zip",
+    "use_git_history",
     "use_lessmsi",
 ];
 
@@ -1791,9 +1793,11 @@ mod tests {
             "aria2-warning-enabled",
             "aria2-retry-wait",
             "aria2-options",
+            "aria2-fallback-enabled",
             "debug",
             "force_update",
             "shim",
+            "use_git_history",
         ] {
             let err = crate::config::set(&session, key, "x").unwrap_err();
             assert!(

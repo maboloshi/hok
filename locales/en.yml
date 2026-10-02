@@ -416,6 +416,8 @@ cmd:
   cache_removing: "Removing %{name}..."
   cache_deleted_label: "Deleted:"
   manifest_no_version: "Manifest for '%{name}' doesn't specify a version."
+  env_var_setting: "Setting %{scope} environment variable: %{name} = %{value}"
+  env_var_removing: "Removing %{scope} environment variable: %{name}"
   manifest_version_invalid: "Manifest version for '%{name}' has an unsupported character."
   arch_unsupported: "'%{name}' doesn't support the current architecture!"
   downloaded_success: "'%{name}' (%{version}) was downloaded successfully!"

@@ -227,6 +227,37 @@ pub fn info(msg: impl AsRef<str>) {
     println!("{}", style::dim(msg.as_ref()));
 }
 
+/// Post-install notes, framed the way upstream `show_notes` does
+/// (lib/install.ps1:355-362): the `Notes` heading, a `-----` rule, the notes
+/// themselves, and a closing rule.
+///
+/// The notes arrive already expanded (`$dir`, `$persist_dir`, …) from the
+/// install pipeline; this only frames and colours them. Upstream prints the
+/// notes through `Write-Output`, so they belong on **stdout**, and the whole
+/// block is subordinate detail — hence dim, like [`info`].
+pub fn notes(notes: impl AsRef<str>) {
+    for line in [
+        // Reuses the `info` view's label: upstream has exactly one word for
+        // this heading, so a second key would only be a copy that drifts.
+        hok_i18n::t!("cmd.info_notes"),
+        "-----".to_string(),
+        notes.as_ref().to_string(),
+        "-----".to_string(),
+    ] {
+        info(line);
+    }
+}
+
+/// A package suggestion line ("'x' suggests installing 'y'."), in
+/// upstream's **DarkYellow** (`lib/install.ps1:421`), on stdout.
+///
+/// Deliberately not [`warn`]: a suggestion is not a warning, carries no
+/// `WARN` prefix, and must not move to stderr (upstream writes it with
+/// `Write-Host`, and hok's stdout carries the install transcript).
+pub fn suggest(msg: impl AsRef<str>) {
+    println!("{}", style::warning(msg.as_ref()));
+}
+
 /// Informational side note on **stderr** (dim).
 ///
 /// For a note addressed to the human that must not join the command's stdout:

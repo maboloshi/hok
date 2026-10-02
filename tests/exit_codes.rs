@@ -80,6 +80,45 @@ impl Env {
     }
 }
 
+/// `scoop download` still downloads the remaining apps after one fails, but the
+/// process must report the failure: upstream ends with
+/// `exit [int]$download_failed` (`libexec/scoop-download.ps1`), so one bad
+/// manifest makes the whole invocation exit 1.
+///
+/// The fixture uses a manifest whose version carries an unsupported character,
+/// which hok rejects before any network access (`cmd.manifest_version_invalid`)
+/// — so this stays offline and deterministic.
+#[test]
+fn download_failure_exits_nonzero() {
+    let env = Env::new("download_failure");
+
+    let good = env.cwd.join("good.json");
+    std::fs::write(
+        &good,
+        // A valid version but a URL that is never reached: the version check
+        // happens before resolution, so this file only needs to be plausible.
+        r#"{"version": "1.0.0", "url": "http://127.0.0.1:1/x.bin", "hash": "0000000000000000000000000000000000000000000000000000000000000000"}"#,
+    )
+    .unwrap();
+    let bad = env.cwd.join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"{"version": "1.0!", "url": "http://127.0.0.1:1/x.bin", "hash": "0000000000000000000000000000000000000000000000000000000000000000"}"#,
+    )
+    .unwrap();
+
+    let bad = bad.to_string_lossy().into_owned();
+    let (code, text) = env.run_in(&env.cwd, &["download", &bad]);
+    assert_eq!(
+        code, 1,
+        "a rejected manifest must fail the download invocation: {text}"
+    );
+
+    // An unresolvable path is a failure too, and must not abort the run.
+    let (code, text) = env.run_in(&env.cwd, &["download", r"D:\nonexistent\app.json"]);
+    assert_eq!(code, 1, "an unresolvable query must exit non-zero: {text}");
+}
+
 /// Help screens exit 0 (Scoop renders help for a bare `scoop`), usage errors
 /// exit 1.
 #[test]

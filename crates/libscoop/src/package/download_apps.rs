@@ -27,12 +27,27 @@ pub struct DownloadOptions {
 /// `name@version`, a manifest URL, or a local manifest path — and a
 /// failure on one app does not abort the rest. No dependencies are
 /// downloaded and no installation state is touched.
+///
+/// # Returns
+///
+/// `Ok(true)` when every resolved app downloaded successfully, `Ok(false)`
+/// when at least one app failed to resolve or download (the reason is already
+/// reported per-package). Upstream turns that into a non-zero exit code
+/// (`exit [int]$download_failed`, libexec/scoop-download.ps1:153-156); hok
+/// returns the answer so the CLI can do the same, since the library never
+/// exits the process itself.
 pub async fn download_apps(
     session: &Session,
     queries: &[&str],
     opts: &DownloadOptions,
-) -> Fallible<()> {
+) -> Fallible<bool> {
     let mut packages: Vec<Package> = Vec::new();
+    // Upstream sets `$download_failed` at every failure point — a query that
+    // cannot be resolved, a manifest without a usable version, an unsupported
+    // architecture, and a failed transfer (libexec/scoop-download.ps1). The
+    // first three are per-query and never reach `PackageSet`, so they are
+    // tracked here; the transfer failures come back from `download_and_verify`.
+    let mut batch_failed = false;
 
     for &query in queries {
         match resolve_download_query(session, query).await {
@@ -42,6 +57,7 @@ pub async fn download_apps(
                     session
                         .output()
                         .error(hok_i18n::t!("cmd.manifest_no_version", name = query));
+                    batch_failed = true;
                     continue;
                 }
                 if !version
@@ -51,6 +67,7 @@ pub async fn download_apps(
                     session
                         .output()
                         .error(hok_i18n::t!("cmd.manifest_version_invalid", name = query));
+                    batch_failed = true;
                     continue;
                 }
                 // Architecture support: no download URLs for the effective
@@ -59,6 +76,7 @@ pub async fn download_apps(
                     session
                         .output()
                         .error(hok_i18n::t!("cmd.arch_unsupported", name = pkg.name()));
+                    batch_failed = true;
                     continue;
                 }
                 packages.push(pkg);
@@ -69,6 +87,7 @@ pub async fn download_apps(
                     query = query,
                     error = e
                 ));
+                batch_failed = true;
             }
         }
     }
@@ -79,14 +98,14 @@ pub async fn download_apps(
         if let Some(tx) = session.emitter() {
             let _ = tx.try_send(Event::DownloadDone);
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let refs: Vec<&Package> = packages.iter().collect();
 
     // HEAD requests fill in remote_size: fragmented download and the
     // progress bar both depend on it (same as the install pipeline).
-    let result: Fallible<()> = async {
+    let result: Fallible<bool> = async {
         let mut set = PackageSet::new(session, &refs, !opts.force)?;
         set.calculate_download_size().await?;
         let failed = download_and_verify(&mut set, !opts.check_hash, true, false).await?;
@@ -101,12 +120,13 @@ pub async fn download_apps(
             }
         }
 
+        // Upstream's per-app failures do not stop the batch; it reports them
+        // through its exit code instead (`exit [int]$download_failed`,
+        // libexec/scoop-download.ps1), so hand the caller a "did anything
+        // fail" answer rather than an error.
+        let mut failed: Vec<_> = failed.into_iter().collect();
         if !failed.is_empty() {
-            // Individual failures were already printed per-package; the
-            // batch summary is informational. Scoop keeps downloading the
-            // remaining apps and still exits 0 (`scoop-download.ps1:110-143`),
-            // so no aggregate error is raised.
-            let mut failed: Vec<_> = failed.into_iter().collect();
+            // Individual failures were already printed per-package.
             failed.sort();
             session.output().error(hok_i18n::t!(
                 "cmd.download_failed_list",
@@ -114,7 +134,7 @@ pub async fn download_apps(
             ));
         }
 
-        Ok(())
+        Ok(!batch_failed && failed.is_empty())
     }
     .await;
 
@@ -124,9 +144,7 @@ pub async fn download_apps(
         let _ = tx.try_send(Event::DownloadDone);
     }
 
-    result?;
-
-    Ok(())
+    result
 }
 
 /// Resolve one download query to a [`Package`], mirroring the install
@@ -220,8 +238,13 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[&manifest], &opts).await.unwrap();
+        let all_ok = download_apps(&session, &[&manifest], &opts).await.unwrap();
         server.shutdown();
+
+        // Upstream reports a failed batch through its exit code
+        // (`exit [int]$download_failed`); `download_apps` surfaces that as
+        // "not everything succeeded" for the CLI to turn into a non-zero exit.
+        assert!(!all_ok, "a failed download must not report success");
 
         let mut states = Vec::new();
         while let Ok(ev) = rx.try_recv() {
@@ -508,11 +531,12 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+        let all_ok = download_apps(&session, &[manifest.to_str().unwrap()], &opts)
             .await
             .unwrap();
         server.shutdown();
 
+        assert!(all_ok, "a clean batch must report success");
         let files = cache_files(&session);
         assert_eq!(files.len(), 1, "cache files: {:?}", files);
         assert!(
@@ -833,19 +857,20 @@ mod tests {
         let session = crate::test_utils::test_session(&root);
         let url = format!("http://{}/app.bin", server.addr);
         // Wrong hash: the downloaded file must be removed after verification.
-        // The failure is reported per package, but the batch still succeeds —
-        // Scoop continues on failure and exits 0 (`scoop-download.ps1:143`).
+        // The failure is reported per package; the batch as a whole reports
+        // failure so the CLI can exit non-zero, exactly as upstream does.
         let manifest = write_manifest(&root, "badapp", "1.0", &url, &"0".repeat(64));
 
         let opts = DownloadOptions {
             force: false,
             check_hash: true,
         };
-        download_apps(&session, &[manifest.to_str().unwrap()], &opts)
+        let all_ok = download_apps(&session, &[manifest.to_str().unwrap()], &opts)
             .await
             .expect("a failed package must not fail the batch");
         server.shutdown();
 
+        assert!(!all_ok, "a hash mismatch must fail the batch result");
         assert!(
             cache_files(&session).is_empty(),
             "corrupt cache file must be removed"
@@ -893,7 +918,7 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(
+        let all_ok = download_apps(
             &session,
             &[no_version.to_str().unwrap(), bad_char.to_str().unwrap()],
             &opts,
@@ -901,6 +926,7 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(!all_ok, "a rejected version must not report success");
         assert!(cache_files(&session).is_empty());
     }
 
@@ -917,7 +943,7 @@ mod tests {
             force: false,
             check_hash: true,
         };
-        download_apps(
+        let all_ok = download_apps(
             &session,
             &[manifest.to_str().unwrap(), r"D:\nonexistent\app.json"],
             &opts,
@@ -926,6 +952,8 @@ mod tests {
         .unwrap();
         server.shutdown();
 
+        // The good app still landed, but the batch as a whole reports failure.
+        assert!(!all_ok, "one unresolvable query must fail the batch");
         assert_eq!(cache_files(&session).len(), 1);
     }
 

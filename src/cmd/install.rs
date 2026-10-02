@@ -135,7 +135,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let suggestions = package::query::suggest(session, &to_install)?;
     for entry in &suggestions {
         let joined = entry.candidates.join("' or '");
-        output::info(hok_i18n::t!(
+        output::suggest(hok_i18n::t!(
             "cmd.suggests_install",
             pkg = entry.package,
             names = joined
