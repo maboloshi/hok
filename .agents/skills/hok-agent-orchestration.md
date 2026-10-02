@@ -1,7 +1,7 @@
 ---
 name: hok-agent-orchestration
 title: hok 多子代理并行开发编排纪律
-description: hok 专属：把偏离/修复计划拆给多个可续子代理并行做时的纪律——派活前的文件+语义重叠矩阵、并发上限、prompt 契约、决策门、证据纪律、收口落地检查单与交接文档模式。机制与沙箱坑见 hok-worktree-parallel。
+description: hok 专属：把偏离/修复计划拆给多个可续子代理并行做时的纪律——派活前的文件+语义重叠矩阵（含父会话在飞的已跟踪文件）、并发上限、prompt 契约、决策门、门禁跑几次、证据纪律、收口落地检查单与交接文档模式。机制与沙箱坑见 hok-worktree-parallel。
 metadata:
   type: project
 ---
@@ -14,8 +14,7 @@ metadata:
 **并发不是免费的**：每条并行分支的收口成本 ≈ 一次 rebase + 一次门禁 + 可能的**手工重放**；先做重叠矩阵、封顶 2–3 条，比多开几条快得多。
 
 ## 1. 派活前：重叠矩阵（**必做，两步**）
-1. **文件重叠**：把每条子任务的改动面列出来，标出热点文件。hok 的**必然冲突热点**：
-   `locales/en.yml`、`locales/zh.yml`、`README.md`、`README-zh.md`、`src/cmd/mod.rs`、`tests/exit_codes.rs`。
+1. **文件重叠**：把每条子任务的改动面列出来，标出热点文件；常见热点与"父会话自己也在改"的核对步骤见全局 `worktree-parallel` §9.1（**别在这里复述那份清单**）。hok 侧额外最容易撞的是 `src/cmd/mod.rs`（命令注册表）与 `tests/exit_codes.rs`。
    ⇒ **热点文件同一时间只派一条会话**，其余串行或明确预告冲突并接受手工解。
 2. **语义重叠**（更容易漏）：同一个**共享谓词 / 单入口 / 枚举**是否被两条同时改？
    实例：S10 的 D1 与 S11 的 Q4(a) 都在改 `internal::string::matches_any_glob`（一条加了大小写不敏感、另一条加"忽略 `.json` 后缀"）——只看文件看不出，结果白白多花一次冲突解决。
@@ -39,6 +38,22 @@ metadata:
 - **上限 2–3 条**在飞；超过就要预期"父会话手工重放"。
 - 批次内部**互不重叠**优先（实例：Wave 1 = `checkver` 挂起 + 缺环境变量 panic，两条文件零交集）。
 - 设计题（如"解析失败该报错/警告/计数"）**单开**，不要和机械修复混批。
+
+## 4.5 门禁跑几次（判据本体见全局 `worktree-parallel` §9.7，此处只记 hok 落点）
+
+- **每个子代理分支自测一次**：`cargo clippy -p libscoop --all-targets -- -D warnings` + `cargo test -p libscoop`
+  + **整文件** `rustfmt --edition 2024 --check <改动文件>`。这是它唯一能自己证伪的机会，别砍。
+- **主干只跑一次完整门禁，在最终树上**：`cargo test --workspace`（含根 `tests/*`）+ `clippy --workspace --all-targets`。
+  顺序必须是 重放/解冲突 → 重跑门禁 → 以**重放后的 tip** 当 `-VerifiedRef` 再 ff——`-VerifiedRef` 要求"与被测树逐字节相同"，
+  base 落后时先 ff 必然报漂移，是预期不是错误。
+- **可省的判据**：`worktree-merge.ps1` 打印"落地后的树与被测树逐字节相同"且**本批未发生 rebase**。
+  实例（0.6.0 回合）：两条子代理各跑一次 `-p libscoop` 门禁，父会话只在最终树跑一次 workspace 全量 +
+  一次 workspace clippy + 三个文档门禁（`devlog-index --check` / `doc-links` / `docs-index-check`），
+  没有再对子代理的分支重复跑全量。
+- **不要为了省而砍掉的**：新写的**能反驳自己假设**的那条用例（实例：`download` 退出码最初只跟踪"已解析但下载失败"，
+  新用例 `test_download_apps_one_bad_query_does_not_abort_others` 判红后才发现"解析失败也算失败"，
+  上游 5 个失败点都要置位——静态读码看不出来）。
+- **别做的**：对同一棵树在父会话里连跑两遍门禁；或反过来"子代理完全不跑、全等父会话"（错假设会漂到落地才暴露）。
 
 ## 5. 证据纪律（本轮最值钱的部分）
 | 规则 | 理由/实例 |

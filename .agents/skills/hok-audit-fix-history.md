@@ -1,7 +1,7 @@
 ---
 name: hok-audit-fix-history
 title: 审计修复沉淀的通用教训（事件闭环 / 语义组合 / 基准纪律）
-description: 多轮审计修复沉淀的通用教训：事件必须闭环否则 join 挂死、改 sync 语义先查 SyncOption 组合、基准必须 --release、前置过滤优于事后同步、进度渲染降频。动 install/uninstall/update 或写基准前先读。
+description: 多轮审计修复沉淀的通用教训：对标改动先枚举三类读取（解析/mtime/枚举）、上游同一行为常拆在多个提交里、事件必须闭环否则 join 挂死、改 sync 语义先查 SyncOption 组合、基准必须 --release、前置过滤优于事后同步、进度渲染降频。动 install/uninstall/update、做上游对标或写基准前先读。
 metadata:
   type: project
 ---
@@ -9,6 +9,19 @@ metadata:
 **用途**：动 install / uninstall / update 流程、改事件、写性能基准**之前**先过一遍这份清单。
 **历史**（三轮审计各修了什么、uninstall 怎么对齐官方）见
 [`reports/audit-fix-history-2026-08.md`](../docs/reports/audit-fix-history-2026-08.md)——本文只留可复用的教训。
+
+## 对标修复（改命名 / 路径解析 / 落地形态之前）
+
+- **先把「读取」枚举成三类，再动手**：①**元数据解析**（`parse_install_info` 那类）②**mtime / 排序**
+  （`Get-InstalledVersion` 按 LastWriteTime 选版本那类）③**枚举 / glob**（列版本、列清单）。
+  对标改动最常漏的是 ②③——它们不做内容解析，`grep 读文件` 时看不出来。
+  判例：上游 Scoop 0.6.0 把 `install.json`/`manifest.json` 改成 `scoop-install.json`/`scoop-manifest.json`，
+  第一轮读点清单列了 11 处**解析/存在性**读点，却漏了 5 处 **mtime 类**（`list`/`export` 的 `Updated` 列、
+  `newest_version_dir`、`info` 的版本目录选择、坏包的 best-effort bucket）。**这类漏点不会报错**，
+  只会静默回落到"app 目录的 mtime"或"该版本目录不被列为候选"。
+- **别只信审计/清单里的行号**：清单是静态读码的产物，收尾前用 `grep` 对目标符号重跑一遍并逐条勾选。
+- **上游同一行为常拆在多个提交里**（本轮 checkver GitHub 模式是 4 个提交**一次**变更）：改动前先按
+  "行为"而不是"提交"归组，否则会移植到一半、新旧语义混在一起。
 
 ## 事件闭环（最容易挂死的地方）
 

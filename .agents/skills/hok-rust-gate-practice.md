@@ -1,7 +1,7 @@
 ---
 name: hok-rust-gate-practice
 title: hok Rust 改动收尾实操卡（edition=2024 仓库专属）
-description: 在 hok 里跑 rustfmt/clippy 收尾时读（通用闭环见全局 rust-deterministic-gate）：edition 2024 独立 rustfmt、含 mod 声明的文件会递归格式化子模块、既有 fmt diff 时禁整包 cargo fmt、clippy 可整包跑。
+description: 在 hok 里跑 rustfmt/clippy 收尾时读（通用闭环见全局 rust-deterministic-gate）：edition 2024 独立 rustfmt、含 mod 声明的文件会递归格式化子模块（且 `skip_children=true` 会「看不见」子模块、造成假绿）、既有 fmt diff 时禁整包 cargo fmt、clippy 可整包跑。
 metadata:
   type: project
 ---
@@ -22,6 +22,12 @@ metadata:
   都会连带格式化其子模块文件——本仓 `internal/github.rs`、`internal/network.rs`、`package/checkver_hash.rs`
   带既有 fmt 偏差，曾两次被连带改写后 `git checkout` 回退。**不要传含 mod 声明的文件**；
   非要传就加 `--config skip_children=true`（已实测有效，`--skip-children` 不是 CLI 参数）。
+- ⚠️ **`skip_children=true` 的盲区（该 flag 会「看不见」子模块，不只是「不碰」）**：传含 `mod tests { … }`
+  的文件时，子模块**根本不被检查**，于是"文件级 fmt 干净"是假绿。本仓判例：`package/operations/script.rs`
+  用 `--config skip_children=true --check` 报干净，而整文件 `rustfmt --edition 2024 --check` 报该测试模块未格式化；
+  子代理报告里写的正是"file-scoped（含 skip_children）干净"，差点以假绿收尾。
+  ⇒ 收尾对**改动文件**要么用**不带 `skip_children`** 的整文件检查（若该文件有既有偏差，只核对你改动的 hunk 是否被报），
+  要么显式再查一遍子模块；`skip_children` 只用于"避免连带改写**别人的**文件"，不能当"我改的文件已达标"的证据。
 - 其余节奏（先写完整逻辑 → 收尾整轮一次 → 原始日志不回传 LLM、只回传
   OK/改 N 文件/残余 N 诊断）与全局 skill 一致。
 
