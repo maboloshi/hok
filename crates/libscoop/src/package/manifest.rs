@@ -312,8 +312,7 @@ pub struct Checkver {
     pub sourceforge: Option<Sourceforge>,
 
     /// `"checkver": "github"` — upstream's string shortcut. The repository is
-    /// taken from `homepage`, and this form always sets `useGithubAPI`
-    /// (`bin/checkver.ps1:150-157`).
+    /// taken from `homepage` (`bin/checkver.ps1:155-163`).
     #[serde(skip)]
     pub github_homepage: bool,
 
@@ -321,12 +320,6 @@ pub struct Checkver {
     /// (`bin/checkver.ps1:159-163`).
     #[serde(skip)]
     pub github: Option<String>,
-
-    /// Upstream only lets the `github` map form use the GitHub API when it is
-    /// the *only* key of the checkver object
-    /// (`$json.checkver.PSObject.Properties.Count -eq 1`).
-    #[serde(skip)]
-    pub github_solo: bool,
 
     /// `"checkver": "sourceforge"` — the string shortcut. Unlike the
     /// `sourceforge` map form it derives the project from `homepage`, falling

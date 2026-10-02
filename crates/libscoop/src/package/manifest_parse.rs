@@ -336,10 +336,8 @@ impl<'de> Deserialize<'de> for Checkver {
                 A: de::MapAccess<'de>,
             {
                 let mut cv = Checkver::default();
-                let mut keys = 0usize;
 
                 while let Some(key) = map.next_key::<String>()? {
-                    keys += 1;
                     match key.as_str() {
                         "github" => cv.github = Some(map.next_value()?),
                         "re" | "regex" => cv.regex = Some(map.next_value()?),
@@ -359,9 +357,6 @@ impl<'de> Deserialize<'de> for Checkver {
                     }
                 }
 
-                // `$json.checkver.PSObject.Properties.Count -eq 1`: upstream
-                // counts every key, including ones it does not recognise.
-                cv.github_solo = keys == 1 && cv.github.is_some();
                 Ok(cv)
             }
         }
