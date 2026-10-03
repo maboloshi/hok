@@ -174,9 +174,9 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 - **The gates above are carried by machine-local skills** (`~/.agents/skills` on this machine:
   `investigate-first`, `proactive-review`, `rust-deterministic-gate`, `worktree-parallel`,
   `git-commit-practice`, …). They are deliberately **not** vendored here: a same-name copy under
-  `.agents/skills/` would be shadowed by the higher-priority root and would only add a second,
-  drifting definition. If that root is absent, those gates are unenforced — the hok-specific detail
-  lives in `.agents/skills/hok-*` either way.
+  the project's `.agents/skills/` would outrank the user-level one (rank 200 vs 500) and would only
+  add a second, drifting definition. If that root is absent, those gates are unenforced — the
+  hok-specific detail lives in `.agents/skills/hok-*` either way.
 - **Never create `.dsh/`** (directory or link): with both project-level skill roots present, the
   rank-100 `.dsh/skills` shadows `.agents/skills`.
 - Human-facing reference material goes in the repo-root `docs/` (index: [`docs/README.md`](docs/README.md)).
