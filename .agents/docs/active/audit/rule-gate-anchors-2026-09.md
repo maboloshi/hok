@@ -1,7 +1,7 @@
 # 规则载体的闸门锚点审计（2026-09）
 
 Status: active
-Updated: 2026-09-26
+Updated: 2026-10-04
 
 > **起因**：devlog 触发在 8 个文件里各写一遍、措辞漂成三种（"每条会话" / "每项修完" / "新增条目"），
 > 本会话被这个缝隙绊到；`c186cf5` 已把触发收口进 `.agents/docs/AGENTS.md` R7。这次把**整档闸门**扫一遍。
@@ -96,7 +96,8 @@ Updated: 2026-09-26
 - ✅ `.agents/scripts/`：`git ls-files` 实测 11 个非 `.mjs` 跟踪文件，登记确实不全。
 - ❌ 子代理给出的技能体积数据有误（称 `scoop-gap-audit.md` 为 4225 B，实测 **6510 B / 51 行**）→ 结论不受影响，
   但**行数/体积类数字不写进规则文件**（`skills/AGENTS.md` 的过期数字已同批删掉）。
-- ⏸ 本轮未核实：全局技能 `file-editing` 正文、`~/.dsh/skills/.archive/`。
+- ⏸ 本轮未核实：全局技能 `file-editing` 正文。（`~/.dsh/skills/.archive/` 已不存在——全局技能根已整体迁至
+  `~/.agents/skills`，归档在同级 `~/.dsh/skills-archive/`。）
 
 ## 6. 本轮已处置的缺口（跟进记录）
 

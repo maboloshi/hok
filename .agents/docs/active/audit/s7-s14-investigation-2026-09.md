@@ -185,7 +185,7 @@
 | P3 | 按 S7 / S14 分 2 个 worktree | 贴合会话命名 | **不推荐**：S14 的 bucket/shim 与 S7 的 bucket/shim 是同一批文件与同一批条目，会正面冲突（fix plan 原文即把二者合成批次 7） |
 
 **合并顺序**（P1）：任一条先落地，其余两条逐一 `rebase --onto <最新主线 tip> <自己的 base>` → 漂移校验 → 主树 `git merge --ff-only`；一律用
-`pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree .worktrees/<...> [-VerifiedRef <实测 ref>]`。
+`pwsh "$HOME/.agents/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree .worktrees/<...> [-VerifiedRef <实测 ref>]`。
 **禁止 merge commit。**
 
 ---
@@ -196,7 +196,7 @@
   `.gitignore`（新增 `!.agents/docs/`）、`README.md` / `README-zh.md` / `crates/hok-shim/Cargo.toml` / `crates/libscoop/src/package/install_state.rs`（`docs/…` → `.agents/docs/…` 路径修正）。
   ⇒ `--ff-only` 落地时若本批提交也改了 `README*`，git 会以「本地改动会被覆盖」拒绝。**需先决定处置**（保留不动 / 先单独提交 / stash）。
 - 旧 worktree `s1-s13`、`s2-alias`、`s4-config`、`s5-checkup`、`s6-cleanup-cache` 仍在磁盘（分支均已并入主干），不影响本批。
-- 已确认合并工具就位：`worktree-merge.ps1` / `test-worktree-merge.ps1`（`~/.dsh/skills/worktree-parallel/scripts/`），`git config worktree-merge.mainbranch = main`。
+- 已确认合并工具就位：`worktree-merge.ps1` / `test-worktree-merge.ps1`（`~/.agents/skills/worktree-parallel/scripts/`），`git config worktree-merge.mainbranch = main`。
 
 ---
 

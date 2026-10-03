@@ -171,7 +171,7 @@
 1. `git rev-parse --short $(git config worktree-merge.mainbranch)` = 主线当前 tip（**派活时以实际 tip 为准并写进 prompt**）；
 2. `git status --short` 主树是否干净（`.agents/**` 与 `AGENTS.md` 已入库；未跟踪项只应是 `.agents/tmp/` 与本机 `*.local.md`）；有 ` M` 跟踪文件改动要先 stash 记录；
 3. `git worktree list` 只应有主树 + 本轮要开的；
-4. 合并脚本在位：`~/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1`（自测 `test-worktree-merge.ps1` 须在仓库根跑）；
+4. 合并脚本在位：`~/.agents/skills/worktree-parallel/scripts/worktree-merge.ps1`（自测 `test-worktree-merge.ps1` 须在仓库根跑）；
 5. 本机环境坑提醒（写进每条 prompt）：**出站 HTTPS 不可用**（真实源冒烟不可行，只能本地夹具/回环）、`gh` 可用、沙箱 Schannel 不可用。
 
 ### 8.2 重叠矩阵（派活前必做）
@@ -356,7 +356,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 - **决策门在子代理自己的会话里回答**（GUI 会话头的血脉目录进入）；**父会话必须保持存活**，否则子代理输入框变只读。
 - **收口口径**：子代理报"可合并 tip" → 父会话
-  `pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree <wt> -VerifiedRef <在重放后的树上实测过的 ref>`；
+  `pwsh "$HOME/.agents/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree <wt> -VerifiedRef <在重放后的树上实测过的 ref>`；
   前提：worktree **非 detached HEAD**、落地后 `git diff --cached --name-only` 为空（脚本失败会把无关文档误暂存进索引，见 `hok-worktree-parallel`）。
 - **已完成**的父会话随手项：`scoop-gap-audit` 的「`mode: github` 缺 digest null 回落」已更正为已解决。
 - **暂缓**：§8.6 的归档类改动（`task-help-i18n.md`、已落地 prompts）按 `hok-report-archive` 在**会话收官时**统一做——脚本化的归档会牵动 `reports/optimization-audit-2026-09.md` 等处的路径引用，不宜在两条子代理在飞时改。

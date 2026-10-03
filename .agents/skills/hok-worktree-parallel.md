@@ -24,7 +24,7 @@ metadata:
 ## 合并工具（全局技能包）
 脚本已从本仓被忽略的 `.agents/scripts/` 迁到全局技能包（去 hok 化：状态文件名、恢复 ref 前缀、主仓库与主线的自动推导），**单一实体，本仓不再保留副本**：
 ```powershell
-pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree .worktrees/s5-checkup [-VerifiedRef <实测过的 ref>] [-DryRun]
+pwsh "$HOME/.agents/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree .worktrees/s5-checkup [-VerifiedRef <实测过的 ref>] [-DryRun]
 ```
 - 用法与退出码 `0/1/2/3` 见全局 `worktree-parallel` §8；本仓无需传 `-MainRepo`/`-MainBranch`。
 - 手工兜底序列见全局 `worktree-parallel` §5。⚠️ **本机沙箱下 `git rebase --continue` 的"确认提交信息"这一步走不通**：msys 的 `true.exe`/`sh.exe` 起不来（`fatal error - couldn't create signal pipe, Win32 error 5`），`GIT_EDITOR=true`、`core.editor=:`、`cmd /c exit 0`、乃至自编的原生 no-op exe 都失败（git 会经 `sh -c` 启动编辑器）。
@@ -46,7 +46,7 @@ pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/worktree-merge.ps1" -Worktree 
 - ⚠️ **收口脚本失败时仍要核对暂存区**（`.agents/**` 已入库，"必须保持未跟踪"这条不变量已失效，但夹带无关改动仍要拦）：S9 落地那次脚本在 worktree 处于 **detached HEAD**（子代理重放后没把分支引用摆正）时报 `ERR the worktree is on a detached HEAD`，随后它"保存当前工作区状态"的尝试失败，**留下 74 个 `.agents/**`（+`AGENTS.md`/`scripts/*.py`）被 `A` 暂存**（当时 `.agents/**` 还是未跟踪的），并使被重写的未跟踪文档 mtime 变化（编辑器会因此报"文件已变，需重读"，**内容其实完好**，别误判为被覆盖）。
   **排查/修复**：`git -C <repo> diff --cached --name-only` 看有无暂存项 → **`git -C <repo> reset`**（mixed，只动索引，工作区不受影响）→ 复查 `git status --short` 无多余暂存项。
   **预防**：落地前先确认 worktree 不在 detached HEAD（`git -C <worktree> rev-parse --abbrev-ref HEAD` 应为分支名）；子代理若用 `cherry-pick -n` 重放，必须让它把分支引用指到新 tip（`git branch -f <branch> <tip>`）再报"可合并 tip"。
-- 自测（须在本仓根运行）：`pwsh "$HOME/.dsh/skills/worktree-parallel/scripts/test-worktree-merge.ps1"`。
+- 自测（须在本仓根运行）：`pwsh "$HOME/.agents/skills/worktree-parallel/scripts/test-worktree-merge.ps1"`。
 
 ## 收尾四件套（固定动作）
 ① 活动计划 [`.agents/docs/active/plan/pending-tasks.md`](../docs/active/plan/pending-tasks.md) 自己那行（该表的存续项都在这里）；② `.agents/docs/active/audit/command-deviation-audit-2026-09.md` 对应条/状态行（对标项则改 [`scoop-gap-status.md`](../docs/active/audit/scoop-gap-status.md)）；③ **写一条 devlog**（触发与格式见 [`docs/AGENTS.md` R7](../docs/AGENTS.md)），再跑 `node .agents/scripts/devlog-index.mjs`（索引自动生成，禁手改）——**不再往技能里追加落地记录**（判据见 [`skills/AGENTS.md`](AGENTS.md)）。报告归档见 [[hok-report-archive]]。

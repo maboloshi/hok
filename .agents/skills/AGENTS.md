@@ -52,7 +52,7 @@ DSH 支持两种技能形态（`@deepseek-ai/dsh-skill-filesystem/lib/index.js:5
 
 - 改技能前先 `grep` 同一主题在**其它技能文件**里是否也有规则体：有就收敛到一处，别处降级为指针。
 - 违反的后果不是"文字漂移"，而是**直接矛盾**——两处都写完整规则时没人会同时看到它们。
-- **改全局技能根（`~/.dsh/skills`）时按同一纪律**：两边各写一份完整规则，就是必然的下一处矛盾。
+- **改全局技能根（`~/.agents/skills`）时按同一纪律**：两边各写一份完整规则，就是必然的下一处矛盾。
 - **判例**：`hok-rust-gate-practice` 曾写"不要传含 `mod` 声明的文件"，`hok-agent-orchestration`
   同时要求"整文件 `rustfmt --check`"，两条方向相反且各自看起来都合理；根因是"写入模式"与"检查模式"
   的顾虑被混成一件事，两处各记一半。修法是并列成一条规则讲清分界，而不是在任一处打补丁。
@@ -83,7 +83,7 @@ metadata:
 
 跨仓库的通用纪律（`investigate-first` / `proactive-review` / `rust-deterministic-gate` /
 `worktree-parallel` / `git-commit-practice` / `file-editing` / `chinese-interaction` / …）住**机器本地**
-技能根（本机 `~/.dsh/skills`）；本目录只装 hok 专属知识。两者**不得同名**：同名技能在多个技能根里并存
+技能根（本机 `~/.agents/skills`）；本目录只装 hok 专属知识。两者**不得同名**：同名技能在多个技能根里并存
 会触发 rank 覆盖（本项目实测：`.dsh/skills` rank 100 压过本目录 rank 200，日志报
 `ignored because a higher-priority skill already exists`），被压的那份静默失效。
 
