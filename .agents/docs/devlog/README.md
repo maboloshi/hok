@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（56 条，自动生成）
+## 索引（57 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-04 | 全局工作区约定重排，并修掉两处会说反的规则 | `46be764` `754a56b` | [`2026-10-04-workspace-convention-readability-and-rule-fixes.md`](2026-10-04-workspace-convention-readability-and-rule-fixes.md) |
 | 2026-10-04 | 机器本地技能根迁到 ~/.agents/skills，并修掉仓内所有旧指针 | `9411488` | [`2026-10-04-machine-local-skill-root-repoint.md`](2026-10-04-machine-local-skill-root-repoint.md) |
 | 2026-10-03 | 把「怎么写 skill」补进技能规范本体，并清掉两处会漂的指针 | `625c2a4` | [`2026-10-03-skill-authoring-standard.md`](2026-10-03-skill-authoring-standard.md) |
 | 2026-10-03 | 0.6.0 审计 P2 口径更正与清单历史索引调研草稿 | `89864c0` | [`2026-10-03-0.6.0-p2-intent-corrections-and-manifest-history-index.md`](2026-10-03-0.6.0-p2-intent-corrections-and-manifest-history-index.md) |
