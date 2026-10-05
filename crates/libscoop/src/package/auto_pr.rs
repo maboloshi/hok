@@ -25,7 +25,7 @@ use crate::Session;
 use crate::internal::git;
 use crate::internal::github;
 use crate::internal::url;
-use crate::package::checkver::CheckverReport;
+use crate::package::checkver::{CheckverEvent, CheckverReport};
 use crate::package::manifest_walker;
 
 // ---------------------------------------------------------------------------
@@ -151,10 +151,16 @@ pub async fn run_auto_pr(
         skip_updated: config.skip_updated,
         version: None,
         timeout: 30,
+        // `ci-auto-pr` keeps upstream's unbounded, completion-order fetch; its
+        // own output topic can cap it later.
+        jobs: 0,
+        ordered: false,
         throw_error: false,
     };
-    let _ = crate::package::checkver::execute(cv_args, session, |report| {
-        if let Some(cb) = on_report.as_mut() {
+    let _ = crate::package::checkver::execute(cv_args, session, |ev| {
+        if let CheckverEvent::Report(report) = ev
+            && let Some(cb) = on_report.as_mut()
+        {
             cb(report);
         }
     })
@@ -178,10 +184,14 @@ pub async fn run_auto_pr(
             skip_updated: false,
             version: None,
             timeout: 30,
+            jobs: 0,
+            ordered: false,
             throw_error: false,
         };
-        let _ = crate::package::checkver::execute(cv_args, session, |report| {
-            if let Some(cb) = on_report.as_mut() {
+        let _ = crate::package::checkver::execute(cv_args, session, |ev| {
+            if let CheckverEvent::Report(report) = ev
+                && let Some(cb) = on_report.as_mut()
+            {
                 cb(report);
             }
         })

@@ -38,6 +38,8 @@
 //! - closure_done / closure_fail: per-package success/failure closure.
 //! - done / ok: success markers.
 //! - info / warn / err: side notes and prefixes.
+//! - result_line / result_message_line: bucket-scan report lines
+//!   (`SYM name  detail` / `SYM name: message`, from [`ResultMark`]).
 //! - field / named: structured label/value lines.
 
 use std::io::Write;
@@ -361,7 +363,16 @@ pub fn field(label: impl AsRef<str>, value: impl AsRef<str>) {
 
 /// Operation completed with a success marker: check msg (green).
 pub fn done(msg: impl AsRef<str>) {
-    println!("  {} {}", style::success("✓"), style::success(msg.as_ref()));
+    println!("{}", done_line(msg));
+}
+
+/// The `  ✓ {msg}` completion line as a styled string, without printing.
+///
+/// The testable, re-routable half of [`done`]: a caller drawing its own live
+/// progress row (checkver's spinner) must emit the line *through* that row
+/// instead of straight to stdout, or the two fight over the terminal.
+pub fn done_line(msg: impl AsRef<str>) -> String {
+    format!("  {} {}", style::success("✓"), style::success(msg.as_ref()))
 }
 
 /// Per-package commit header: `(k/N) name` with an optional `: old -> new`
@@ -416,6 +427,86 @@ pub fn closure_fail(pkg: impl AsRef<str>, err: impl AsRef<str>) {
         style::emphasis(pkg.as_ref()),
         style::danger(err.as_ref())
     );
+}
+
+/// The outcome a report line states — one symbol and one [`style`] role each.
+///
+/// Shared by the bucket-scanning report commands (`checkver` first, its
+/// siblings later) so the symbol set cannot drift command by command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultMark {
+    /// A newer version exists: `↑`.
+    Updated,
+    /// The upstream version went backwards: `↓`.
+    Downgrade,
+    /// Up to date / passed: `✓`.
+    Ok,
+    /// Failed: `✗`.
+    Failed,
+    /// Warning: `!`.
+    Warn,
+}
+
+impl ResultMark {
+    /// The symbol this mark prints in column 1, bold and coloured.
+    fn symbol(self) -> String {
+        match self {
+            ResultMark::Updated => style::accent_bold("↑"),
+            ResultMark::Downgrade => style::warning_bold("↓"),
+            ResultMark::Ok => style::success("✓"),
+            ResultMark::Failed => style::danger_bold("✗"),
+            ResultMark::Warn => style::warning_bold("!"),
+        }
+    }
+
+    /// The role a diagnostic message takes under this mark.
+    fn message(self, msg: &str) -> String {
+        match self {
+            ResultMark::Failed => style::danger(msg),
+            ResultMark::Warn => style::warning(msg),
+            _ => style::success(msg),
+        }
+    }
+}
+
+/// One measurement result, as a styled string: `SYM name  detail`.
+///
+/// `detail` is a noun phrase the caller composes — a version delta, a count, a
+/// path — and it keeps whatever colouring the caller gave it, so a delta can be
+/// dim/green/green instead of one flat colour. Everything else (the symbol, the
+/// name's emphasis, the two-space column) belongs to this module, which is what
+/// keeps the marks from drifting per command.
+///
+/// Returned rather than printed because a caller with a live progress row has
+/// to route the line through that row's own sink.
+pub fn result_line(mark: ResultMark, name: impl AsRef<str>, detail: impl AsRef<str>) -> String {
+    let detail = detail.as_ref();
+    if detail.is_empty() {
+        format!("{} {}", mark.symbol(), style::emphasis(name.as_ref()))
+    } else {
+        format!(
+            "{} {}  {detail}",
+            mark.symbol(),
+            style::emphasis(name.as_ref())
+        )
+    }
+}
+
+/// One diagnostic result, as a styled string: `SYM name: message`.
+///
+/// The sentence-shaped counterpart of [`result_line`]; `message` takes the
+/// colour of `mark`.
+pub fn result_message_line(
+    mark: ResultMark,
+    name: impl AsRef<str>,
+    message: impl AsRef<str>,
+) -> String {
+    format!(
+        "{} {}: {}",
+        mark.symbol(),
+        style::emphasis(name.as_ref()),
+        mark.message(message.as_ref())
+    )
 }
 
 /// Print "ok".
@@ -648,6 +739,51 @@ mod tests {
         });
         without_color(|| {
             assert_eq!(status_in_place_line("x"), "\r\x1b[2K  x");
+        });
+    }
+
+    /// A result line is `SYM name  detail` (just `SYM name` with no detail), and
+    /// `SYM name: message` for the sentence-shaped form.
+    #[test]
+    fn result_lines_use_one_mark_per_outcome() {
+        let _guard = LOCK.lock().unwrap();
+        without_color(|| {
+            assert_eq!(
+                result_line(ResultMark::Ok, "mihomo-v3", "(1.19.32)"),
+                "✓ mihomo-v3  (1.19.32)"
+            );
+            assert_eq!(
+                result_line(ResultMark::Updated, "a", "(1 -> 2)"),
+                "↑ a  (1 -> 2)"
+            );
+            assert_eq!(
+                result_line(ResultMark::Downgrade, "a", "(2 -> 1)"),
+                "↓ a  (2 -> 1)"
+            );
+            assert_eq!(result_line(ResultMark::Ok, "a", ""), "✓ a");
+            assert_eq!(
+                result_message_line(ResultMark::Failed, "wps64", "download failed"),
+                "✗ wps64: download failed"
+            );
+            assert_eq!(result_message_line(ResultMark::Warn, "a", "hi"), "! a: hi");
+        });
+    }
+
+    /// Every mark resolves through an existing palette role — no result line
+    /// invents a colour, and the detail stays the caller's to style.
+    #[test]
+    fn result_marks_reuse_the_palette() {
+        let _guard = LOCK.lock().unwrap();
+        with_color(|| {
+            assert!(result_line(ResultMark::Updated, "a", "").contains("38;5;6m"));
+            assert!(result_line(ResultMark::Downgrade, "a", "").contains("38;5;3m"));
+            assert!(result_line(ResultMark::Ok, "a", "").contains("38;5;2m"));
+            assert!(result_line(ResultMark::Failed, "a", "").contains("38;5;1m"));
+            assert!(result_message_line(ResultMark::Warn, "a", "x").contains("38;5;3m"));
+            assert!(
+                result_line(ResultMark::Ok, "a", "DETAIL").contains("DETAIL"),
+                "the detail is the caller's and passes through untouched"
+            );
         });
     }
 }

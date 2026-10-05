@@ -19,7 +19,7 @@
 //!   handles internal synchronisation.
 
 use crate::output::style;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use libscoop::package::download::{PackageVerifyProgressContext, VerifyState};
 use std::collections::HashMap;
 use std::io::IsTerminal;
@@ -43,6 +43,22 @@ impl RowUI {
     pub fn new() -> RowUI {
         RowUI {
             mp: MultiProgress::new(),
+            bars: HashMap::new(),
+            labels: HashMap::new(),
+        }
+    }
+
+    /// Rows whose *finished lines are the command's output*, so every row and
+    /// every [`println`](RowUI::println) call lands on **stdout**.
+    ///
+    /// [`new`](RowUI::new) inherits `MultiProgress`'s stderr default, which is
+    /// right for a progress indicator that accompanies a stdout transcript
+    /// (`bucket update`) but wrong for a report command: the results would go to
+    /// stderr and a redirected run would lose them. `indicatif` still renders
+    /// nothing off a TTY, so a pipe is unaffected either way.
+    pub fn on_stdout() -> RowUI {
+        RowUI {
+            mp: MultiProgress::with_draw_target(ProgressDrawTarget::stdout()),
             bars: HashMap::new(),
             labels: HashMap::new(),
         }
@@ -128,6 +144,20 @@ impl RowUI {
     /// for it): `indicatif` places the line above every live row.
     pub fn note(&self, msg: impl AsRef<str>) {
         let _ = self.mp.println(format!("  {}", style::dim(msg.as_ref())));
+    }
+
+    /// Print an already-rendered line above the rows, verbatim.
+    ///
+    /// The raw counterpart of [`note`](RowUI::note): no indent and no dim, so a
+    /// finished result line keeps the colours its own renderer chose
+    /// (`output::result_line` and friends).
+    ///
+    /// ⚠️ `indicatif` renders *nothing* when the stream is not a terminal, so
+    /// this swallows the line off a TTY — a caller that must keep its output in
+    /// a pipe has to fall back to `println!` (that is what `BucketRows::Plain`
+    /// exists for).
+    pub fn println(&self, line: impl AsRef<str>) {
+        let _ = self.mp.println(line.as_ref());
     }
 }
 

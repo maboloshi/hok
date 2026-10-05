@@ -155,7 +155,11 @@ cmd:
   checkver_script_fallback: "%{e}。回退到 checkver.script ..."
   checkver_github_err: "%{name} 的 checkver 要求 %{field} 是有效的 GitHub 仓库 URL"
   checkver_no_url: "没有 checkver URL"
-  checkver_no_extract: "无法提取版本号"
+  checkver_no_match: "在 %{url} 中匹配不到 '%{regex}'"
+  checkver_no_version: "在 %{url} 中找不到新版本"
+  checkver_checking: "正在检查清单 %{done}/%{total}"
+  checkver_no_manifests: "没有需要检查的清单。"
+  checkver_summary: "已检查 %{total} 个清单：%{outdated} 个可更新，%{failed} 个失败，%{current} 个已最新。"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
   checkurls_no_manifests: "没有需要检查的清单。"
   cleanup_no_old: "没有旧版本需要清理。"
@@ -589,9 +593,10 @@ cli_help:
         默认为当前目录，但配合 `--update`/`--force-update`（会重写清单）时必须显式给出，否则 hok 拒绝运行。
       update: 用新版本更新清单并触发自动更新
       force_update: 即使版本不变也强制更新（用于哈希更新场景）
-      skip_updated: 跳过已是最新的清单
+      skip_updated: 只输出可更新或出错的清单（跳过已最新的，对应官方 `-SkipUpdated`）
       version: 更新清单到指定版本（跳过版本检测）
       timeout: 请求超时秒数
+      jobs: 并发检查的清单数（0 表示不限）
       throw_error: 遇到首个错误即抛出，而不是继续处理其余清单
   cleanup:
     about: 通过删除旧版本清理应用

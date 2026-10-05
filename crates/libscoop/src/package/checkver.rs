@@ -72,6 +72,23 @@ pub struct CheckverOptions {
     /// Request timeout in seconds
     pub timeout: u64,
 
+    /// Maximum number of manifests fetched concurrently (`0` = no cap).
+    ///
+    /// Upstream fires every request at once (`bin/checkver.ps1:110-248`); the
+    /// cap exists so a whole-bucket scan cannot open hundreds of sockets at
+    /// once. It also decides whether [`ordered`](Self::ordered) buys anything:
+    /// with no cap every fetch starts at t=0, so an ordered run degenerates to
+    /// "print everything when the slowest prefix item lands".
+    pub jobs: usize,
+
+    /// Emit reports in manifest order instead of completion order.
+    ///
+    /// `true` is the "packages were named on the command line" mode: the
+    /// results read back in discovery order, at the cost of head-of-line
+    /// blocking. `false` is the whole-bucket mode, where finishing order is the
+    /// fastest feedback.
+    pub ordered: bool,
+
     /// Throw on the first failure instead of reporting it and continuing
     /// (upstream `-ThrowError`).
     pub throw_error: bool,
@@ -121,6 +138,70 @@ impl CheckverReport {
             severity: ReportSeverity::Ok,
         }
     }
+}
+
+/// What a running checkver reports to its caller.
+///
+/// Both kinds travel through one callback so the caller keeps a single mutable
+/// handle on its renderer; two `FnMut` parameters would force it to share that
+/// renderer through interior mutability for no gain.
+#[derive(Debug, Clone, Copy)]
+pub enum CheckverEvent<'a> {
+    /// `done` of `total` fetches have completed, emitted just before the report
+    /// of the fetch that landed.
+    ///
+    /// Emitted even for manifests whose report the caller suppresses
+    /// (`skip_updated`), which is why it is a separate event rather than
+    /// something the caller can count off the reports.
+    Progress { done: usize, total: usize },
+    /// One manifest's outcome.
+    Report(&'a CheckverReport),
+}
+
+/// Tally of a finished run, for the caller's summary line.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CheckverSummary {
+    /// Manifests that were actually checked (declared `checkver` and produced a
+    /// report).
+    pub checked: u32,
+    /// A version newer than the manifest's was found.
+    pub outdated: u32,
+    /// The version found equals the manifest's.
+    pub up_to_date: u32,
+    /// Could not be checked (download, extraction, script or update failure).
+    pub failed: u32,
+}
+
+impl CheckverSummary {
+    /// Fold one terminal report in.
+    ///
+    /// Only a manifest's *outcome* report may be passed here — never the
+    /// `checkver.script` fallback notice, which is a second report for the same
+    /// manifest and would inflate the failure count.
+    fn record(&mut self, report: &CheckverReport) {
+        self.checked += 1;
+        if report.message.is_some() {
+            self.failed += 1;
+        } else if report
+            .new_version
+            .as_ref()
+            .is_some_and(|v| v != &report.current)
+        {
+            self.outdated += 1;
+        } else {
+            self.up_to_date += 1;
+        }
+    }
+}
+
+/// Tally a manifest's outcome and hand it to the caller.
+fn finish_report(
+    report: &CheckverReport,
+    summary: &mut CheckverSummary,
+    on_event: &mut impl FnMut(CheckverEvent<'_>),
+) {
+    summary.record(report);
+    on_event(CheckverEvent::Report(report));
 }
 
 /// Outcome of fetching the check page for a single manifest.
@@ -176,13 +257,43 @@ static SOURCEFORGE_HOMEPAGE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// Move every finished fetch that is ready to be reported into `out`.
+///
+/// An ordered run parks a fetch that landed early in `slots` until every
+/// earlier manifest has been reported, so the output keeps manifest order at
+/// the cost of head-of-line blocking; an unordered run hands it straight over.
+/// `next_emit` is the first manifest not yet reported.
+fn queue_ready(
+    ordered: bool,
+    index: usize,
+    fetch: CheckverFetch,
+    slots: &mut [Option<CheckverFetch>],
+    next_emit: &mut usize,
+    out: &mut Vec<(usize, CheckverFetch)>,
+) {
+    if !ordered {
+        out.push((index, fetch));
+        return;
+    }
+    slots[index] = Some(fetch);
+    while *next_emit < slots.len() {
+        match slots[*next_emit].take() {
+            Some(fetch) => {
+                out.push((*next_emit, fetch));
+                *next_emit += 1;
+            }
+            None => break,
+        }
+    }
+}
+
 pub async fn execute(
     options: CheckverOptions,
     session: &Session,
-    on_report: impl FnMut(&CheckverReport),
-) -> Fallible<()> {
-    let mut on_report = on_report;
+    mut on_event: impl FnMut(CheckverEvent<'_>),
+) -> Fallible<CheckverSummary> {
     let dir = &options.dir;
+    let mut summary = CheckverSummary::default();
 
     // Don't use --version with wildcard app pattern
     if options.version.is_some() && options.app[0] == "*" {
@@ -245,6 +356,8 @@ pub async fn execute(
             let mut report = CheckverReport::new(stem, current);
             report.new_version = Some(ver_override.clone());
             if options.skip_updated && ver_override == &report.current {
+                // Suppressed for display, but still part of the tally.
+                summary.record(&report);
                 continue;
             }
             if options.update || options.force_update {
@@ -267,7 +380,7 @@ pub async fn execute(
             if failed && options.throw_error {
                 return Err(Error::Custom(report.message.clone().unwrap_or_default()));
             }
-            on_report(&report);
+            finish_report(&report, &mut summary, &mut on_event);
             continue;
         }
 
@@ -284,7 +397,7 @@ pub async fn execute(
             let mut report = CheckverReport::new(stem, current);
             report.message = Some(message);
             report.severity = ReportSeverity::Error;
-            on_report(&report);
+            finish_report(&report, &mut summary, &mut on_event);
             continue;
         }
 
@@ -292,7 +405,7 @@ pub async fn execute(
             let mut report = CheckverReport::new(stem, current);
             report.message = Some(hok_i18n::t!("cmd.checkver_no_url").to_string());
             report.severity = ReportSeverity::Error;
-            on_report(&report);
+            finish_report(&report, &mut summary, &mut on_event);
             continue;
         }
 
@@ -338,183 +451,236 @@ pub async fn execute(
     // events (bin/checkver.ps1:110-248, 255-419).
     let net = session.network();
     let cancel = session.cancellation_token();
-    let fetch_results: Vec<(usize, CheckverFetch)> =
-        futures::stream::iter(pending.iter().enumerate())
-            .map(|(i, item)| {
-                let url = item.url.clone();
-                let script = item.script_text.clone();
-                let manifest_user_agent = checkver_user_agent(&item.cv, &item.current);
-                let manifest_json_path = item.manifest_json_path.clone();
-                let app = item.stem.clone();
-                let expected_ver = item.current.clone();
-                let net = net.clone();
-                let cancel = cancel.clone();
-                let proxy_ref = proxy.as_deref();
-                async move {
-                    // Scoop's checkver header contract (`bin/checkver.ps1:118-246`)
-                    // through the shared entry point: User-Agent (the manifest's
-                    // `checkver.useragent` wins), Referer, PRIVATE_HOSTS and the
-                    // GitHub token only for `api.github.com` URLs.
-                    let request = ScoopRequest::for_url(session, &url, HeaderProfile::Checkver)
-                        .with_user_agent(manifest_user_agent.as_deref());
-                    // The script in its final form: upstream's `$json`, `$app`
-                    // and `$expected_ver` are already in scope there, so hok
-                    // reconstructs them as a preamble.
-                    let script = script.map(|script| {
-                        let preamble = manifest_json_path
-                            .as_deref()
-                            .map(|p| script_preamble(&app, &expected_ver, p))
-                            .unwrap_or_default();
-                        format!("{preamble}{script}")
-                    });
+    let total = pending.len();
+    // `0` keeps upstream's "fire everything at once"; any other value caps the
+    // number of in-flight requests.
+    let jobs = if options.jobs == 0 {
+        total.max(1)
+    } else {
+        options.jobs
+    };
+    let mut stream = futures::stream::iter(pending.iter().enumerate())
+        .map(|(i, item)| {
+            let url = item.url.clone();
+            let script = item.script_text.clone();
+            let manifest_user_agent = checkver_user_agent(&item.cv, &item.current);
+            let manifest_json_path = item.manifest_json_path.clone();
+            let app = item.stem.clone();
+            let expected_ver = item.current.clone();
+            let net = net.clone();
+            let cancel = cancel.clone();
+            let proxy_ref = proxy.as_deref();
+            async move {
+                // Scoop's checkver header contract (`bin/checkver.ps1:118-246`)
+                // through the shared entry point: User-Agent (the manifest's
+                // `checkver.useragent` wins), Referer, PRIVATE_HOSTS and the
+                // GitHub token only for `api.github.com` URLs.
+                let request = ScoopRequest::for_url(session, &url, HeaderProfile::Checkver)
+                    .with_user_agent(manifest_user_agent.as_deref());
+                // The script in its final form: upstream's `$json`, `$app`
+                // and `$expected_ver` are already in scope there, so hok
+                // reconstructs them as a preamble.
+                let script = script.map(|script| {
+                    let preamble = manifest_json_path
+                        .as_deref()
+                        .map(|p| script_preamble(&app, &expected_ver, p))
+                        .unwrap_or_default();
+                    format!("{preamble}{script}")
+                });
 
-                    // Upstream downloads first even when `checkver.script` is
-                    // set, but a failure only skips the manifest when there is
-                    // no script to fall back on (`bin/checkver.ps1:307-321`).
-                    let body = match net.download(&url, &request.options(timeout)).await {
-                        Ok(bytes) => crate::internal::network::decode_body(&bytes),
-                        Err(e) => match script.as_deref() {
-                            None => return (i, CheckverFetch::DownloadError(e)),
-                            // `Write-Host "... Falling back to checkver.script ..."`
-                            // then the page decode is skipped and the script runs.
-                            Some(script) => {
-                                let warning =
-                                    hok_i18n::t!("cmd.checkver_script_fallback", e = e).to_string();
-                                return match run_checkver_script(
-                                    script,
-                                    Some(&url),
-                                    proxy_ref,
-                                    timeout,
-                                    &cancel,
-                                )
-                                .await
-                                {
-                                    Ok(page) => (
-                                        i,
-                                        CheckverFetch::ScriptFallback {
-                                            warning,
-                                            page: page.unwrap_or_default(),
-                                        },
-                                    ),
-                                    Err(e) => (i, CheckverFetch::ScriptError(e.to_string())),
-                                };
-                            }
-                        },
-                    };
+                // Upstream downloads first even when `checkver.script` is
+                // set, but a failure only skips the manifest when there is
+                // no script to fall back on (`bin/checkver.ps1:307-321`).
+                let body = match net.download(&url, &request.options(timeout)).await {
+                    Ok(bytes) => crate::internal::network::decode_body(&bytes),
+                    Err(e) => match script.as_deref() {
+                        None => return (i, CheckverFetch::DownloadError(e)),
+                        // `Write-Host "... Falling back to checkver.script ..."`
+                        // then the page decode is skipped and the script runs.
+                        Some(script) => {
+                            let warning =
+                                hok_i18n::t!("cmd.checkver_script_fallback", e = e).to_string();
+                            return match run_checkver_script(
+                                script,
+                                Some(&url),
+                                proxy_ref,
+                                timeout,
+                                &cancel,
+                            )
+                            .await
+                            {
+                                Ok(page) => (
+                                    i,
+                                    CheckverFetch::ScriptFallback {
+                                        warning,
+                                        page: page.unwrap_or_default(),
+                                    },
+                                ),
+                                Err(e) => (i, CheckverFetch::ScriptError(e.to_string())),
+                            };
+                        }
+                    },
+                };
 
-                    match script {
-                        None => (i, CheckverFetch::Page(body)),
-                        Some(script) => match run_checkver_script(
-                            &script,
-                            Some(&url),
-                            proxy_ref,
-                            timeout,
-                            &cancel,
-                        )
-                        .await
+                match script {
+                    None => (i, CheckverFetch::Page(body)),
+                    Some(script) => {
+                        match run_checkver_script(&script, Some(&url), proxy_ref, timeout, &cancel)
+                            .await
                         {
                             Ok(Some(page)) => (i, CheckverFetch::Page(page)),
                             // An empty script output is a page with nothing
                             // to extract, exactly like an empty body.
                             Ok(None) => (i, CheckverFetch::Page(String::new())),
                             Err(e) => (i, CheckverFetch::ScriptError(e.to_string())),
-                        },
+                        }
                     }
                 }
-            })
-            // The concurrency cap must be at least 1. `buffer_unordered(0)` never
-            // polls its source stream — the `in_progress_queue.len() < max` fill
-            // loop is skipped and the queue is empty — so the stream is never
-            // drained, `is_done()` stays false and the `collect` below parks
-            // forever without registering a waker: a silent, permanent hang.
-            // An empty `pending` (no manifest declares `checkver`, or `--version`
-            // handled every manifest inline) then collects an empty vector and
-            // Phase 3 is a no-op.
-            .buffer_unordered(pending.len().max(1))
-            .collect()
-            .await;
+            }
+        })
+        // The concurrency cap must be at least 1. `buffer_unordered(0)` never
+        // polls its source stream — the `in_progress_queue.len() < max` fill
+        // loop is skipped and the queue is empty — so the stream is never
+        // drained, `is_done()` stays false and `poll_next` parks forever
+        // without registering a waker: a silent, permanent hang.
+        // An empty `pending` (no manifest declares `checkver`, or `--version`
+        // handled every manifest inline) then yields nothing and the loop
+        // below is a no-op, so `total` stays 0 and `jobs` is 1.
+        .buffer_unordered(jobs);
 
-    // ── Phase 3: process each result as it completes ────────────────
-    for (idx, fetch) in fetch_results {
-        let PendingItem {
-            stem,
-            path,
-            manifest,
-            current,
-            url: _,
-            regex,
-            jsonpath,
-            cv,
-            script_text: _,
-            manifest_json_path: _,
-        } = &pending[idx];
+    // ── Phase 3: process each result as it lands ────────────────────
+    // Ordered runs park a finished fetch in `slots` until every earlier
+    // manifest has been reported, so the output reads back in manifest order;
+    // unordered runs hand it straight to the queue. Either way the body below
+    // handles exactly one manifest.
+    let mut slots: Vec<Option<CheckverFetch>> = (0..total).map(|_| None).collect();
+    let mut queue: Vec<(usize, CheckverFetch)> = Vec::new();
+    let mut next_emit = 0usize;
+    let mut done = 0usize;
 
-        let mut report = CheckverReport::new(stem.clone(), current.clone());
+    while let Some((i, fetch)) = stream.next().await {
+        done += 1;
+        on_event(CheckverEvent::Progress { done, total });
+        queue_ready(
+            options.ordered,
+            i,
+            fetch,
+            &mut slots,
+            &mut next_emit,
+            &mut queue,
+        );
 
-        let (raw, fallback_warning) = match fetch {
-            CheckverFetch::Page(content) => (content, None),
-            // `Write-Host "... Falling back to checkver.script ..."`: a warning,
-            // not a failure — the script's output is the page.
-            CheckverFetch::ScriptFallback { warning, page } => (page, Some(warning)),
-            CheckverFetch::DownloadError(e) => {
-                report.message = Some(hok_i18n::t!("cmd.err_download", e = e).to_string());
-                report.severity = ReportSeverity::Error;
-                if options.throw_error {
-                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+        for (idx, fetch) in queue.drain(..) {
+            let PendingItem {
+                stem,
+                path,
+                manifest,
+                current,
+                url,
+                regex,
+                jsonpath,
+                cv,
+                script_text: _,
+                manifest_json_path: _,
+            } = &pending[idx];
+
+            let mut report = CheckverReport::new(stem.clone(), current.clone());
+
+            let (raw, fallback_warning) = match fetch {
+                CheckverFetch::Page(content) => (content, None),
+                // `Write-Host "... Falling back to checkver.script ..."`: a warning,
+                // not a failure — the script's output is the page.
+                CheckverFetch::ScriptFallback { warning, page } => (page, Some(warning)),
+                CheckverFetch::DownloadError(e) => {
+                    report.message = Some(hok_i18n::t!("cmd.err_download", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
+                    if options.throw_error {
+                        return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                    }
+                    finish_report(&report, &mut summary, &mut on_event);
+                    continue;
                 }
-                on_report(&report);
-                continue;
-            }
-            CheckverFetch::ScriptError(e) => {
-                report.message = Some(hok_i18n::t!("cmd.checkver_script_err", e = e).to_string());
-                report.severity = ReportSeverity::Error;
-                if options.throw_error {
-                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                CheckverFetch::ScriptError(e) => {
+                    report.message =
+                        Some(hok_i18n::t!("cmd.checkver_script_err", e = e).to_string());
+                    report.severity = ReportSeverity::Error;
+                    if options.throw_error {
+                        return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                    }
+                    finish_report(&report, &mut summary, &mut on_event);
+                    continue;
                 }
-                on_report(&report);
-                continue;
+            };
+
+            if let Some(message) = fallback_warning {
+                let mut notice = CheckverReport::new(stem.clone(), current.clone());
+                notice.message = Some(message);
+                notice.severity = ReportSeverity::Warn;
+                // A second report for the same manifest: shown, but never
+                // tallied (it is not an outcome).
+                on_event(CheckverEvent::Report(&notice));
             }
-        };
 
-        if let Some(message) = fallback_warning {
-            let mut notice = CheckverReport::new(stem.clone(), current.clone());
-            notice.message = Some(message);
-            notice.severity = ReportSeverity::Warn;
-            on_report(&notice);
-        }
+            // Extract version
+            let subs = version_substitutions(current, &[], &HashMap::new());
+            let extract_result =
+                extract_version(&raw, cv, jsonpath.as_deref(), regex.as_deref(), &subs);
 
-        // Extract version
-        let subs = version_substitutions(current, &[], &HashMap::new());
-        let extract_result =
-            extract_version(&raw, cv, jsonpath.as_deref(), regex.as_deref(), &subs);
-
-        let (ver, captures, named_captures) = match extract_result {
-            Some((ver, caps, named)) => (ver, caps, named),
-            None => {
-                report.message = Some(hok_i18n::t!("cmd.checkver_no_extract").to_string());
-                report.severity = ReportSeverity::Error;
-                if options.throw_error {
-                    return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+            let (ver, captures, named_captures) = match extract_result {
+                Some((ver, caps, named)) => (ver, caps, named),
+                None => {
+                    // Upstream's two `next` messages (`bin/checkver.ps1:408,414`):
+                    // a configured regex that did not match names itself, anything
+                    // else just "no version found".
+                    report.message = Some(match regex.as_deref() {
+                        Some(re) => {
+                            hok_i18n::t!("cmd.checkver_no_match", regex = re, url = url).to_string()
+                        }
+                        None => hok_i18n::t!("cmd.checkver_no_version", url = url).to_string(),
+                    });
+                    report.severity = ReportSeverity::Error;
+                    if options.throw_error {
+                        return Err(Error::Custom(report.message.clone().unwrap_or_default()));
+                    }
+                    finish_report(&report, &mut summary, &mut on_event);
+                    continue;
                 }
-                on_report(&report);
-                continue;
-            }
-        };
+            };
 
-        report.new_version = Some(ver.clone());
-        report.autoupdate_available = manifest.autoupdate().is_some()
-            && ver != report.current
-            && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
+            report.new_version = Some(ver.clone());
+            report.autoupdate_available = manifest.autoupdate().is_some()
+                && ver != report.current
+                && crate::compare_versions(&ver, &report.current) == std::cmp::Ordering::Greater;
 
-        // ForceUpdate implies Update (matching Scoop behavior)
-        let do_update = options.update || options.force_update;
+            // ForceUpdate implies Update (matching Scoop behavior)
+            let do_update = options.update || options.force_update;
 
-        if ver == report.current {
-            // SkipUpdated: skip display (and update) for up-to-date manifests
-            if options.skip_updated && !options.force_update {
-                continue;
-            }
-            if options.force_update {
+            if ver == report.current {
+                // SkipUpdated: skip display (and update) for up-to-date manifests
+                if options.skip_updated && !options.force_update {
+                    // Suppressed for display, but still part of the tally.
+                    summary.record(&report);
+                    continue;
+                }
+                if options.force_update {
+                    match apply_autoupdate(
+                        session,
+                        path,
+                        manifest,
+                        &ver,
+                        &captures,
+                        &named_captures,
+                    )
+                    .await
+                    {
+                        Ok(()) => report.updated = true,
+                        Err(e) => {
+                            report.message = Some(update_failed_message(&e));
+                            report.severity = ReportSeverity::Error;
+                        }
+                    }
+                }
+            } else if do_update {
                 match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures)
                     .await
                 {
@@ -525,30 +691,21 @@ pub async fn execute(
                     }
                 }
             }
-        } else if do_update {
-            match apply_autoupdate(session, path, manifest, &ver, &captures, &named_captures).await
-            {
-                Ok(()) => report.updated = true,
-                Err(e) => {
-                    report.message = Some(update_failed_message(&e));
-                    report.severity = ReportSeverity::Error;
-                }
-            }
-        }
 
-        // `catch { if ($ThrowError) { throw $_ } else { error ... } }`
-        if options.throw_error
-            && let Some(message) = &report.message
-        {
-            return Err(Error::Custom(message.clone()));
+            // `catch { if ($ThrowError) { throw $_ } else { error ... } }`
+            if options.throw_error
+                && let Some(message) = &report.message
+            {
+                return Err(Error::Custom(message.clone()));
+            }
+            finish_report(&report, &mut summary, &mut on_event);
         }
-        on_report(&report);
     }
 
     // Drop the `$json` scratch files created for `checkver.script`.
     let _ = std::fs::remove_dir_all(&json_dir);
 
-    Ok(())
+    Ok(summary)
 }
 
 fn update_failed_message(e: &dyn std::fmt::Display) -> String {
@@ -2786,6 +2943,43 @@ mod tests {
         assert!(arch_specific(&au, "arm64", "hash").is_none());
     }
 
+    /// Ordered mode reports in manifest order even when the fetches land out of
+    /// order; unordered mode reports each one the moment it lands.
+    ///
+    /// No network involved: the reordering *is* the subject here, so it is
+    /// exercised directly instead of through a race the test would have to
+    /// coerce into a fixed shape.
+    #[test]
+    fn results_are_reported_in_the_requested_order() {
+        // Manifest indices 0..3, landing 2 -> 0 -> 1.
+        let arrival = [(2usize, "c"), (0usize, "a"), (1usize, "b")];
+        let cases = [(true, ["a", "b", "c"]), (false, ["c", "a", "b"])];
+
+        for (ordered, expected) in cases {
+            let mut slots: Vec<Option<CheckverFetch>> = arrival.iter().map(|_| None).collect();
+            let mut next_emit = 0usize;
+            let mut queue = Vec::new();
+            let mut emitted = Vec::new();
+            for (index, tag) in arrival {
+                queue_ready(
+                    ordered,
+                    index,
+                    CheckverFetch::Page(tag.to_string()),
+                    &mut slots,
+                    &mut next_emit,
+                    &mut queue,
+                );
+                for (_, fetch) in queue.drain(..) {
+                    match fetch {
+                        CheckverFetch::Page(page) => emitted.push(page),
+                        _ => panic!("this test only builds pages"),
+                    }
+                }
+            }
+            assert_eq!(emitted, expected, "ordered = {ordered}");
+        }
+    }
+
     // ── end-to-end with an in-memory network fake ─────────────────────────
 
     #[tokio::test]
@@ -2827,13 +3021,19 @@ mod tests {
             skip_updated: false,
             version: None,
             timeout: 10,
+            jobs: 0,
+            ordered: false,
             throw_error: false,
         };
 
         let mut reports = Vec::new();
-        execute(opts, &session, |r| reports.push(r.clone()))
-            .await
-            .unwrap();
+        execute(opts, &session, |ev| {
+            if let CheckverEvent::Report(r) = ev {
+                reports.push(r.clone());
+            }
+        })
+        .await
+        .unwrap();
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].stem, "app");
@@ -3233,12 +3433,18 @@ mod tests {
             skip_updated: false,
             version: None,
             timeout: 30,
+            jobs: 0,
+            ordered: false,
             throw_error: false,
         };
         let mut reports = Vec::new();
-        execute(opts, &session, |r| reports.push(r.clone()))
-            .await
-            .unwrap();
+        execute(opts, &session, |ev| {
+            if let CheckverEvent::Report(r) = ev {
+                reports.push(r.clone());
+            }
+        })
+        .await
+        .unwrap();
         reports
     }
 
@@ -3504,7 +3710,11 @@ mod tests {
         let mut reports = Vec::new();
         tokio::time::timeout(
             COMPLETION_BUDGET,
-            execute(options, session, |r| reports.push(r.clone())),
+            execute(options, session, |ev| {
+                if let CheckverEvent::Report(r) = ev {
+                    reports.push(r.clone());
+                }
+            }),
         )
         .await
         .expect("checkver must terminate with an empty `pending` list")
@@ -3526,6 +3736,8 @@ mod tests {
             skip_updated: false,
             version: version.map(str::to_string),
             timeout: 10,
+            jobs: 0,
+            ordered: false,
             throw_error: false,
         }
     }

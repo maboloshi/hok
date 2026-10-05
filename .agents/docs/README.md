@@ -9,7 +9,7 @@
 | 文档 | 内容 |
 |---|---|
 | [`cleanup-parallel-spec.md`](active/spec/cleanup-parallel-spec.md) | `cleanup` 并行化 + 逐版本进度的行为规格 |
-| [`output-system-design.md`](active/spec/output-system-design.md) | 输出系统分层设计（Output sink / 事件 / 样式 / 阶段进度） |
+| [`output-system-design.md`](active/spec/output-system-design.md) | 输出系统分层设计（Output sink / 事件 / 样式 / 阶段进度）；§十一 为桶扫描类命令的结果行规范 |
 | [`task-help-i18n.md`](active/spec/task-help-i18n.md) | 命令帮助文本的 i18n 方案 |
 
 ## active/plan — 会被执行掉的计划
@@ -44,6 +44,7 @@
 | [`zip-sfx-research.md`](research/zip-sfx-research.md) | ZIP SFX 原生解压调研 |
 | [`cleanup-delete-perf.md`](research/cleanup-delete-perf.md) | `cleanup --delete` 性能分析与并行化依据 |
 | [`manifest-history-index.md`](research/manifest-history-index.md) | 「git 库 → 索引库」清单历史索引调研草稿（存什么/放哪里/怎么建/能否并行，成本实测） |
+| [`manifest-scan-output-2026-10.md`](research/manifest-scan-output-2026-10.md) | 桶扫描类命令（checkver + 4 兄弟）输出盘点与差距基线；方向见 `output-system-design.md` §十一 |
 
 ## 历史与冻结
 
