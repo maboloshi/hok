@@ -93,6 +93,8 @@ cmd:
   list_no_match: "No installed app matched."
   list_no_apps: "There aren't any apps installed."
   search_no_match: "No matches found."
+  search_no_query: "No query provided. Usage: hok search <query> [options]"
+  search_summary: "Found %{count} package(s) matching '%{query}'"
   list_summary_versions: "%{versions} older version(s) retained across %{apps} app(s)"
   no_aliases: "No aliases configured."
   alias_added: "alias added: %{name} -> %{value}"

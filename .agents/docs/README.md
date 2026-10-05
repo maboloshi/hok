@@ -9,6 +9,7 @@
 | 文档 | 内容 |
 |---|---|
 | [`cleanup-parallel-spec.md`](active/spec/cleanup-parallel-spec.md) | `cleanup` 并行化 + 逐版本进度的行为规格 |
+| [`search-output-design.md`](active/spec/search-output-design.md) | `search` 命令表格输出重设计（无参数修正 + 列布局 + 底部汇总） |
 | [`output-system-design.md`](active/spec/output-system-design.md) | 输出系统分层设计（Output sink / 事件 / 样式 / 阶段进度）；§十一 为桶扫描类命令的结果行规范 |
 | [`task-help-i18n.md`](active/spec/task-help-i18n.md) | 命令帮助文本的 i18n 方案 |
 

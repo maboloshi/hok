@@ -93,6 +93,8 @@ cmd:
   list_no_match: "没有匹配的已安装应用。"
   list_no_apps: "尚未安装任何应用。"
   search_no_match: "未找到匹配项。"
+  search_no_query: "未提供查询参数。用法：hok search <查询> [选项]"
+  search_summary: "找到 %{count} 个匹配 '%{query}' 的包"
   list_summary_versions: "在 %{apps} 个应用中保留了 %{versions} 个旧版本"
   no_aliases: "没有配置别名。"
   alias_added: "别名已添加: %{name} -> %{value}"
