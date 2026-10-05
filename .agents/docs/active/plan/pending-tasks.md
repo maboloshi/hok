@@ -158,7 +158,7 @@
 | **待归档候选**（任务已完成使命，按 `hok-report-archive` 判定 #3） | `.agents/docs/active/spec/task-help-i18n.md`（由 `c4082b6` + `d29297f` 完成：`--help` 结构头统一 + 全命令帮助面测试）；`.agents/docs/reports/prompts/clap-arg-parsing-corruption-prompt.md`（同一对提交闭环）；`prompts/{current-version-resolution,tolerant-json-single-entry,i18n-inhouse-replacement,base64-single-codec}-prompt.md`（均已落地并被 `reports/optimization-audit-2026-09.md` §9–§11 吸收） |
 | `reports/README.md` 索引 | `optimization-audit-2026-09.md` 仍标"待执行"，但 P1 已全部执行完毕（§8 执行结果）⇒ 措辞需更新；§11 之后新增的报告需补进索引 |
 | 未跟踪杂项决断 | ✅ **已决断（2026-09-26）**：`scripts/analyze_cohesion.py`、`scripts/analyze_rust_project.py` **已删除**（只扫 `src/`、不覆盖 `crates/`；在 GBK 控制台 `UnicodeEncodeError` 崩溃；职责已被 cargo-modules / clippy 取代。备份在项目外 `_backups/`）；仓库根 `AGENTS.md`、`CLAUDE.md` 与 `.agents/**` **已入库** |
-| NSIS 上游提案 | `.agents/docs/legacy/nsis-issue.md` 的 2 个 PR（目录跟踪 API、solid 静默失败修复）**仍值得提交上游**——hok 侧已缓解（`max_decompressed_size(512 MiB)`）≠ 上游根治；PR 3（zstd）已实证撤销 |
+| NSIS 上游提案 | ✅ **已闭环（2026-10-05 复核）**：`.agents/docs/legacy/nsis-issue.md` 的提案全部由上游合并——issue #2（目录跟踪 `dest_path()`）由上游 PR #19 修复、issue #3（solid 截断/吞错）由上游 PR #8 修复，issue #4 / PR #5（lzma-rust2 + zlib-rs，提交 `201df25`）直接合并，均随 **nsis-rs 0.4.0（2026-08-15）** 发布；hok 已切回 registry（`9766e7b`）。PR 3（zstd）已实证撤销。**上游现为 0.5.0（2026-09-27，含 breaking API），hok 仍钉 `nsis = "0.4"`，升级未评估（另立待办）** |
 
 ---
 

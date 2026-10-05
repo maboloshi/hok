@@ -54,7 +54,7 @@
 - **实测定性（makensis 3.12 编译 72MiB solid 样本 bigtest.exe）**：crate 在 `files()` 迭代时 `validate_data_bounds` **明确报错**（`file data payload: expected at least 75497476, got 67104998`），并非完全静默——修复前 hok `extract_nsis` 失败 → **7z.exe 兜底（正确但非纯 Rust）**，不会装坏文件；
 - **已修复（commit a1e99f0）**：`extract_nsis` 改用 `NsisInstaller::builder(&data).max_decompressed_size(512 MiB)`——bigtest.exe 实测提取成功，`big.bin` 72MiB **SHA256 与原始一致**（44.8s）；
 - 512 MiB 覆盖现实安装器（Obsidian electron-builder payload ~114MiB）；极端 >512MiB 仍失败 → 7z 兜底；
-- 上游修复（PR 2：去 `unwrap_or_else(Vec::new)` 吞错 + 文档化 Truncate）仍值得提交——hok 侧缓解 ≠ 上游根治。
+- 上游已根治（nsis-rs 0.4.0）：`unwrap_or_else(Vec::new)` 吞错由上游 [PR #8](https://github.com/ATRAPSLLC/nsis-rs/pull/8) 移除，截断/失败改由 `SolidStatus` + `Error::OutputTooLarge` 表达；hok 侧 512 MiB 预算仍保留（大 solid 安装器仍需），但已不再承担诊断职责。
 
 **P2（行为边界，无实测样本）**：
 - `ASSIGNVAR($OUTDIR)` 运行时路径（代码已处理，无样本）；
@@ -96,5 +96,5 @@
 ## 9. 关联
 
 - 工作记忆：`.agents/skills/hok-nsis-extraction.md`
-- **上游提案草稿：`.agents/docs/legacy/nsis-issue.md`（2 个 PR：①目录跟踪 API ②solid 静默失败修复；PR 3 zstd 已实证撤销）**——提交上游前按该文件「沟通要点」逐项确认
+- **上游提案记录：`.agents/docs/legacy/nsis-issue.md`**——全部提案（①目录跟踪 API ②solid 静默失败修复；PR 3 zstd 已实证撤销）已由上游合并（nsis-rs 0.4.0 / innospect 0.1.4），该文件只作历史记录，**勿再按其「沟通要点」推进提案**
 - 提交：`1db3bc4`（指令流跟踪）/ `7aaef75`（uninstaller 提取）/ `298eae9`（FirstHeader 检测）

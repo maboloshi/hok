@@ -26,7 +26,7 @@ NSIS 安装包纯 Rust 提取已落地。背景：把 NSIS/Inno 排除出 7z SFX
 
 ## 当前局限（按影响排序，下次处理按此优先级）
 
-**P1（已修复）：solid 全流 64 MiB 预算**——定性修正：crate 在 `files()` 迭代**明确报错**（非静默），修复前 hok 走 7z 兜底；已改用 `builder().max_decompressed_size(512MiB)`（archive.rs:1386），72 MiB solid 样本实测 SHA256 一致；上游 0.4.0 起改报 `Error::OutputTooLarge`（archive.rs:1382-1384），PR 2 的剩余价值只剩文档化 Truncate 与上游 `unwrap_or_else(Vec::new)` 的吞错口
+**P1（已修复）：solid 全流 64 MiB 预算**——定性修正：crate 在 `files()` 迭代**明确报错**（非静默），修复前 hok 走 7z 兜底；已改用 `builder().max_decompressed_size(512MiB)`（archive.rs:1386），72 MiB solid 样本实测 SHA256 一致；上游 0.4.0 起由 `SolidStatus` + `Error::OutputTooLarge` 承担该语义（archive.rs:1382-1384）——上游提案已全部合并，此项无待办
 
 **P2（行为边界，无实测样本，代码已部分处理）：**
 - `ASSIGNVAR($OUTDIR)` 运行时路径：pass1 已处理（var==22 更新 cur_dir），但**无实测样本**——`SetOutPath $someVar` 动态路径安装器未验证
@@ -42,7 +42,7 @@ NSIS 安装包纯 Rust 提取已落地。背景：把 NSIS/Inno 排除出 7z SFX
 - `is_nsis_installer` 启发式：1MiB 扫描上限 + magic 匹配，超大 stub/魔改安装器可能漏判 → 7z 兜底（正确但非纯 Rust）
 
 **Why:** 用户要求 NSIS 去 7z.exe 依赖；nsis crate 现成最优解，目录跟踪已补齐（7z 语义对齐）。
-**How to apply:** NSIS 提取逻辑在 `internal/archive.rs` 的 `extract_nsis`；目录/路径语义**不要自己再实现**——上游 `dest_path()` + `to_install_path()` 已对齐 7z，改动前先确认上游版本行为。验证用 `test_nsis_install_path_render` 纯函数 + `NSIS_SAMPLE` 的 corpus 测试 + `7z l` 对比；勿用 `NsisString::to_path()`（$PLUGINSDIR→_plugins/ 映射，破坏字面语义）。**详细调研/局限/方案对照见 `.agents/docs/research/nsis-research.md`（§5 局限分级、§6 纯 Rust 方案盘点、§7 7z 局限、§8 下次处理）**；**上游提案草稿在 `.agents/docs/legacy/nsis-issue.md`（已归档）（2 个 PR：①ExtractedFile 目录跟踪 dest_path ②solid 静默失败修复；PR 3 zstd 已实证撤销）**。
+**How to apply:** NSIS 提取逻辑在 `internal/archive.rs` 的 `extract_nsis`；目录/路径语义**不要自己再实现**——上游 `dest_path()` + `to_install_path()` 已对齐 7z，改动前先确认上游版本行为。验证用 `test_nsis_install_path_render` 纯函数 + `NSIS_SAMPLE` 的 corpus 测试 + `7z l` 对比；勿用 `NsisString::to_path()`（$PLUGINSDIR→_plugins/ 映射，破坏字面语义）。**详细调研/局限/方案对照见 `.agents/docs/research/nsis-research.md`（§5 局限分级、§6 纯 Rust 方案盘点、§7 7z 局限、§8 下次处理）**；**上游提案记录在 `.agents/docs/legacy/nsis-issue.md`（已归档，仅历史）——①`dest_path()` 目录跟踪 ②solid 失败语义两项均已由上游合并进 `nsis` 0.4（hok 已切回 registry），勿再按该文件提交提案**。
 
 ## ⚠️ extract_pseudo_7z 分流现状（改动前必读）
 
