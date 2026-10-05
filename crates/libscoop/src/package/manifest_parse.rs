@@ -194,19 +194,25 @@ impl<'de> Deserialize<'de> for License {
                     Err(de::Error::missing_field("identifier"));
                 let mut url = None;
 
-                // It is needed to explicitly specify types `<String, String>`
-                // of the key and value for the `next_entry` method here,
-                // otherwise the deserializer will complain about the invalid
-                // type of the key, which is basically similar to:
-                // https://github.com/influxdata/pbjson/issues/55
-                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                // One pair per iteration: `next_key` here plus exactly one
+                // typed `next_value` per arm. An unknown key's value is
+                // skipped with `IgnoredAny`, which accepts any value type.
+                //
+                // Do not go back to `next_entry::<String, String>` plus a
+                // "skip invalid fields" `next_value` in the `_` arm: that
+                // consumes *two* pairs for an unknown key, swallowing the
+                // following member — and when the unknown key is the last
+                // one, the `json5` fallback panics in
+                // `Map::next_value_seed` (json5-0.4.1 `src/de.rs:469`), which
+                // `panic = "abort"` turns into a whole-process abort. Scoop
+                // never validates the schema at run time, so unknown keys
+                // must be ignored, whatever their value type.
+                while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "identifier" => identifier = Ok(value),
-                        "url" => url = Some(value),
+                        "identifier" => identifier = Ok(map.next_value::<String>()?),
+                        "url" => url = Some(map.next_value::<String>()?),
                         _ => {
-                            // skip invalid fields
-                            map.next_value::<serde_json::Value>()?;
-                            continue;
+                            map.next_value::<de::IgnoredAny>()?;
                         }
                     }
                 }
@@ -253,14 +259,14 @@ impl<'de> Deserialize<'de> for Sourceforge {
                 let mut project = None;
                 let mut path = None;
 
-                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                // Same shape as `License::visit_map`: one pair per iteration,
+                // so that an unknown key cannot consume the next member.
+                while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "project" => project = Some(value),
-                        "path" => path = Some(value),
+                        "project" => project = Some(map.next_value::<String>()?),
+                        "path" => path = Some(map.next_value::<String>()?),
                         _ => {
-                            // skip invalid fields
-                            map.next_value::<serde_json::Value>()?;
-                            continue;
+                            map.next_value::<de::IgnoredAny>()?;
                         }
                     }
                 }

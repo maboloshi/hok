@@ -2257,6 +2257,57 @@ mod tests {
     }
 
     #[test]
+    fn license_unknown_keys_do_not_eat_the_next_member() {
+        // Regression (pre-existing, found while seeding the manifest history
+        // index): `License::visit_map` consumed an unknown key's value twice —
+        // `next_entry` already had it — so the strict `serde_json` parse
+        // failed and the text fell through to the `json5` fallback, whose
+        // `Map::next_value_seed` panics on an exhausted map when the unknown
+        // key is the last member. Both profiles set `panic = "abort"`, so a
+        // single third-party manifest with a typo (`"url:"`, e.g. scoop-app's
+        // `pianobar_MCOfficer.json`) took the whole process down. Scoop never
+        // validates its schema at run time, so such keys are simply ignored.
+        let cases = [
+            // Unknown key last: used to abort the process.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"identifier":"Freeware","url:":"https://example.com/x"}}"#,
+                "Freeware",
+            ),
+            // Unknown key first: used to swallow `identifier`.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"url:":"https://example.com/x","identifier":"Freeware"}}"#,
+                "Freeware",
+            ),
+            // Unknown key with a non-string value.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"identifier":"MIT","weird":1}}"#,
+                "MIT",
+            ),
+        ];
+        for (json, identifier) in cases {
+            let m = manifest_from(json);
+            assert_eq!(m.license().identifier(), identifier, "{json}");
+        }
+    }
+
+    #[test]
+    fn checkver_sourceforge_unknown_keys_do_not_eat_the_next_member() {
+        // Same regression as the license one, for `Sourceforge::visit_map`.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "checkver": { "sourceforge": { "project": "foo", "bogus": "x" } }
+            }"#,
+        );
+        let cv = m.checkver().expect("checkver");
+        let sf = cv.sourceforge.as_ref().expect("sourceforge");
+        assert_eq!(sf.project.as_deref(), Some("foo"));
+    }
+
+    #[test]
     fn autoupdate_hash_string_form_parses() {
         // `autoupdate.hash` may be a plain string (e.g. "mode:json") —
         // upstream's HashHelper accepts objects, strings and arrays.
