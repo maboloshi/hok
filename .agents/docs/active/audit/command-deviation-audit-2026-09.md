@@ -392,11 +392,12 @@
 | hok 不支持 `-App` 为 manifest 文件路径（官方据此推导 `$Dir` 并只匹配叶子名） | `src/cmd/checkver.rs:18-20`、`manifest_walker.rs:71-78` | `bin/checkver.ps1:78-80` | 行为缺失 |
 | app 模式匹配：hok 大小写敏感；官方 `Get-ChildItem -Filter` 在 Windows 上大小写不敏感 | `internal/string.rs:60-72` | `bin/checkver.ps1:83` | 边界处理不同 |
 | hok 扫描时排除 `package.json`；官方 `*.json` 递归会把它当应用处理 | `manifest_walker.rs:44-46` | `bin/checkver.ps1:83` | 边界处理不同 |
-| hok 独有 `-t/--timeout`（默认 30s，同时限制脚本执行）；官方对抓取不设超时 | `src/cmd/checkver.rs:38-40`、`checkver.rs:175,391` | `bin/checkver.ps1:116-121` | hok 独有命令(无官方对标) |
+| hok 独有 `-t/--timeout`（默认 30s，同时限制脚本执行）与 `-j/--jobs`（并发抓取上限，默认 8，`0`=不限）；官方对抓取既不设超时也不设并发上限（`DownloadDataAsync` 全量齐发） | `src/cmd/checkver.rs:48-54`、`checkver.rs:457-461` | `bin/checkver.ps1:116-121,110-248` | hok 独有命令(无官方对标) |
 | hok 未实现 `-ThrowError`（代码 TODO 自述），autoupdate 异常只打印，退出码仍 0 | `checkver.rs:45-47` | `bin/checkver.ps1:67,412-418` | 行为缺失 |
 | `-V/--version` 时 hok 把版本当第一个捕获组传给 autoupdate（生成 `$match1`）；官方此时 `$matchesHashtable` 未赋值 | `checkver.rs:220-229` | `bin/checkver.ps1:411` | 边界处理不同 |
 | 版本不同但清单无 `autoupdate` 键时 hok 仍重写 version 落盘；官方仅在 `$Update -and $json.autoupdate` 时更新 | `checkver.rs:508-518,840-846` | `bin/checkver.ps1:404,406` | 语义不同 |
-| hok 仅在 `ver > current` 时打印 "autoupdate available"；官方 `Compare-Version != 0`（降级也算） | `checkver.rs:484-486` | `bin/checkver.ps1:395-397` | 语义不同 |
+| hok 用符号行表达版本变化（`↑` 升 / `↓` 降），不再单独打印 "autoupdate available"；官方对 `Compare-Version != 0`（降级也算）都打该行 | `checkver.rs:651`、`src/cmd/checkver.rs:147-158` | `bin/checkver.ps1:395-397` | 输出或文案不同 |
+| **报告形态（有意偏离，已登记）**：hok = 符号结果行（`↑ ↓ ✓ ✗ !`）+ TTY 单行转圈 + 尾部汇总，**结果与错误一律走 stdout**，抽取失败的消息带上正则与 URL；官方 = `$app: $ver` 行、错误走 stderr、无汇总，且 `next()` 打印的是全局 `$App`（多位置参数时张冠李戴） | `src/cmd/checkver.rs:61-193`、`src/output.rs:437-510` | `bin/checkver.ps1:422-437,274-277,408,414` | 有意偏离（方向本体 [`output-system-design.md`](../spec/output-system-design.md) §十一） |
 | `"checkver":"sourceforge"` 字符串 hok 当字面正则；官方走 SourceForge RSS+CDATA 快捷分支 | `manifest_parse.rs:319-322` | `bin/checkver.ps1:171-183` | 语义不同 |
 | SourceForge 无自定义 re 时 hok 用 `/([\d.]+)/` 扫整页；官方用锚定文件路径的 CDATA 正则 | `checkver.rs:261-263` | `bin/checkver.ps1:169,182,196` | 语义不同 |
 | SourceForge project 提取 hok 只认 `sourceforge.net/projects/<p>`，漏 `sf.net`/`sourceforge.io`/`<project>.sourceforge.net`，也无 `strip_ext $name` 兜底 | `internal/url.rs:204-206`、`checkver.rs:257-258` | `bin/checkver.ps1:172-177` | 边界处理不同 |
