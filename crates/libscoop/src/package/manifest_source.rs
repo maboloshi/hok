@@ -37,7 +37,7 @@ use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::error::Fallible;
 use crate::internal;
 use crate::package::manifest::{Manifest, parse_file};
-use crate::package::{Package, checkver, identity, install_state, source};
+use crate::package::{Package, checkver, identity, install_state, manifest_history, source};
 use crate::{Error, Session};
 
 /// The result of resolving a query to a concrete manifest — upstream
@@ -405,6 +405,14 @@ fn isolated_package(resolved: GetManifest) -> Package {
     Package::from(&resolved.name, ISOLATED_PACKAGE_BUCKET, resolved.manifest)
 }
 
+/// The workspace file a generated or historical manifest is written to
+/// (upstream's `usermanifestsdir`, `lib/manifest.ps1:325-326`).
+fn workspace_manifest_path(session: &Session, name: &str) -> Fallible<PathBuf> {
+    let workspace = session.workspace_dir();
+    internal::fs::ensure_dir(&workspace)?;
+    Ok(workspace.join(format!("{name}.json")))
+}
+
 /// Generate (or reuse) a manifest for the given `app@version`, mirroring
 /// upstream `generate_user_manifest` (lib/manifest.ps1).
 ///
@@ -436,6 +444,42 @@ pub(crate) async fn generate_user_manifest(
         given = version,
         manifest = resolved.manifest.version()
     ));
+
+    // Historical manifest from the bucket's git history — upstream's
+    // `Find-HistoricalManifest` (`lib/manifest.ps1:277-303`), answered here by
+    // the manifest history index instead of a `git log --follow -G` pickaxe
+    // scan per query. The index is derived data, so a lookup failure warns and
+    // falls through to autoupdate rather than failing the command.
+    if session.config().use_git_history()
+        && let Some(bucket) = resolved.bucket.as_deref()
+    {
+        session.output().info(hok_i18n::t!(
+            "cmd.resolving_historical_manifest",
+            name = resolved.name,
+            version = version
+        ));
+        match manifest_history::find(session, bucket, &resolved.name, version) {
+            Ok(Some(text)) => {
+                let out_path = workspace_manifest_path(session, &resolved.name)?;
+                std::fs::write(&out_path, &text)?;
+                let manifest = Manifest::parse_str(&out_path.display().to_string(), &text)?;
+                return Ok(GetManifest {
+                    name: resolved.name,
+                    manifest,
+                    bucket: resolved.bucket,
+                    url: resolved.url,
+                    candidates: Vec::new(),
+                });
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                "manifest history lookup failed for '{}@{}': {e}",
+                resolved.name,
+                version
+            ),
+        }
+    }
+
     session.output().warn(hok_i18n::t!(
         "cmd.generating_manifest",
         name = resolved.name,
@@ -449,9 +493,7 @@ pub(crate) async fn generate_user_manifest(
         )));
     }
 
-    let workspace = session.workspace_dir();
-    internal::fs::ensure_dir(&workspace)?;
-    let out_path = workspace.join(format!("{}.json", resolved.name));
+    let out_path = workspace_manifest_path(session, &resolved.name)?;
 
     // Base manifest text: the raw string for URL/path installs, otherwise
     // read from the bucket file (raw is only kept for string-loaded ones).

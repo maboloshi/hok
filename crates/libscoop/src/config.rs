@@ -236,6 +236,15 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     use_sqlite_cache: Option<bool>,
 
+    /// Resolve historical manifests from the bucket's git history.
+    ///
+    /// Upstream's `use_git_history` (`lib/manifest.ps1:211`), which defaults
+    /// to `true` there. hok gates only the *read* path with it: the index the
+    /// read path consults is harmless derived data, exactly as upstream builds
+    /// its cache regardless of the switch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    use_git_history: Option<bool>,
+
     /// Disable `current` version junction creation.
     ///
     /// The 'current' version alias will not be used. Shims and shortcuts will
@@ -486,6 +495,13 @@ impl Config {
         self.inner.use_sqlite_cache.unwrap_or(false)
     }
 
+    /// Whether historical manifests are resolved from the bucket's git
+    /// history (upstream's `use_git_history`, on by default).
+    #[inline]
+    pub fn use_git_history(&self) -> bool {
+        self.inner.use_git_history.unwrap_or(true)
+    }
+
     /// The user-configured default architecture, if any.
     ///
     /// Maps to Scoop's `default_architecture` config; when set it overrides
@@ -649,6 +665,13 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
+            "use_git_history" => match is_unset {
+                true => self.inner.use_git_history = None,
+                false => match value.parse::<bool>() {
+                    Ok(value) => self.inner.use_git_history = Some(value),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "proxy" => match value {
                 "" | "none" => self.inner.proxy = None,
                 _ => self.inner.proxy = Some(value.to_string()),
@@ -766,6 +789,7 @@ impl Default for Config {
             last_update: Default::default(),
             use_isolated_path: Default::default(),
             use_sqlite_cache: Default::default(),
+            use_git_history: Default::default(),
             no_junction: Default::default(),
             language: Default::default(),
             no_color: Default::default(),
@@ -1037,6 +1061,7 @@ const SETTINGS: &[&str] = &[
     "no_junction",
     "proxy",
     "root_path",
+    "use_git_history",
     "use_isolated_path",
     "use_sqlite_cache",
     "virustotal_api_key",
@@ -1096,6 +1121,7 @@ const SHARED_KEYS: &[&str] = &[
     "no_junction",
     "private_hosts",
     "proxy",
+    "use_git_history",
     "use_isolated_path",
     "use_sqlite_cache",
     "virustotal_api_key",
@@ -1171,7 +1197,6 @@ const OFFICIAL_ONLY_KEYS: &[&str] = &[
     "show_update_log",
     "update_nightly",
     "use_external_7zip",
-    "use_git_history",
     "use_lessmsi",
 ];
 
@@ -1369,6 +1394,11 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
     ));
 
     let isolated = config.use_isolated_path();
+    rows.push(row(
+        "use_git_history",
+        ConfigCell::text(fmt_bool(config.use_git_history())),
+        ConfigCell::text("true"),
+    ));
     rows.push(row(
         "use_isolated_path",
         match isolated {
@@ -1698,6 +1728,7 @@ mod tests {
             "proxy",
             "root_path",
             "script_engine",
+            "use_git_history",
             "use_isolated_path",
             "use_sqlite_cache",
             "virustotal_api_key",
@@ -1797,7 +1828,6 @@ mod tests {
             "debug",
             "force_update",
             "shim",
-            "use_git_history",
         ] {
             let err = crate::config::set(&session, key, "x").unwrap_err();
             assert!(

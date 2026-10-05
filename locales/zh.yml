@@ -430,6 +430,7 @@ cmd:
   download_failed_list: "以下包下载失败: %{names}"
   no_hash_skip: "包 '%{name}' 的 manifest 中没有哈希，跳过校验"
   version_mismatch: "指定版本 (%{given}) 与 manifest (%{manifest}) 不一致"
+  resolving_historical_manifest: "正在解析 '%{name}' (%{version}) 的历史 manifest"
   generating_manifest: "正在尝试为 '%{name}' (%{version}) 生成 manifest"
   auto_pr_snapshotting: "正在快照"
   auto_pr_manifests: "manifest"

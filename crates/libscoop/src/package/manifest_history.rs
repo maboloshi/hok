@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::internal::git::{HistoryCommit, HistoryRepo};
 use crate::internal::json::parse_str;
@@ -98,6 +98,71 @@ fn drop_buckets_not_added(conn: &Connection, added: &[crate::bucket::Bucket]) ->
             params.as_slice(),
         )?;
     }
+    Ok(())
+}
+
+/// Read one historical manifest version back out of the index.
+///
+/// Returns the raw manifest text recorded for `(bucket, name, version)`, or
+/// `None` when the index has no row for it, when the bucket carries no
+/// repository, or when the recorded row turned out to be stale.
+///
+/// A stale row — a blob the repository no longer carries, non-UTF-8 content, or
+/// a manifest whose own `version` is not the requested one — is deleted before
+/// returning, so the next lookup goes straight to the autoupdate fallback
+/// instead of reading a bad blob again. That is the cost of recording an OID:
+/// `git gc --prune` can take the object away.
+///
+/// A bucket whose repository cannot be opened keeps its rows: not being able to
+/// read is not the same as the row being wrong.
+///
+/// This is the read half of the index; [`refresh`] is the write half.
+pub fn find(
+    session: &Session,
+    bucket: &str,
+    name: &str,
+    version: &str,
+) -> Fallible<Option<String>> {
+    let conn = super::manifest_cache::open(session)?;
+    let blob_oid = conn
+        .query_row(
+            "SELECT blob_oid FROM hok_manifest_history
+             WHERE bucket = ?1 AND name = ?2 AND version = ?3",
+            params![bucket, name, version],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(blob_oid) = blob_oid else {
+        return Ok(None);
+    };
+
+    let Some(history) = HistoryRepo::open(session.bucket_dir(bucket)) else {
+        return Ok(None);
+    };
+    let text = history.blob_text(&blob_oid);
+    let usable = text.as_deref().is_some_and(|text| {
+        parse_str::<VersionProbe>(text)
+            .ok()
+            .and_then(|probe| probe.version)
+            .is_some_and(|found| found == version)
+    });
+    if !usable {
+        invalidate(&conn, bucket, name, version)?;
+        tracing::warn!(
+            "manifest history index dropped a stale row for '{bucket}/{name}@{version}'"
+        );
+        return Ok(None);
+    }
+
+    Ok(text)
+}
+
+/// Drop one index row that no longer points at a usable manifest.
+fn invalidate(conn: &Connection, bucket: &str, name: &str, version: &str) -> Fallible<()> {
+    conn.execute(
+        "DELETE FROM hok_manifest_history WHERE bucket = ?1 AND name = ?2 AND version = ?3",
+        params![bucket, name, version],
+    )?;
     Ok(())
 }
 
@@ -818,6 +883,106 @@ mod tests {
             ["1.0"],
             "the remaining bucket is untouched"
         );
+    }
+
+    /// The read half: `find` returns the recorded blob's text, and misses —
+    /// without touching a repository — for a version the index never saw.
+    #[test]
+    fn find_returns_the_recorded_manifest_text() {
+        let root = tmpdir("history_find");
+        let session = test_session(&root);
+        let repo = bucket_repo(&root, "main");
+        let old = r#"{"version": "1.0", "description": "old"}"#;
+        commit_file(&repo, "bucket/foo.json", old);
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "2.0"}"#);
+
+        refresh(&session).unwrap();
+
+        assert_eq!(
+            find(&session, "main", "foo", "1.0").unwrap().as_deref(),
+            Some(old)
+        );
+        assert!(find(&session, "main", "foo", "9.9").unwrap().is_none());
+        // An unknown bucket has no rows, so the lookup misses before it needs
+        // a repository to read from.
+        assert!(find(&session, "nope", "foo", "1.0").unwrap().is_none());
+    }
+
+    /// A blob `gc --prune` took away is a *stale* row: `find` drops it and
+    /// reports a miss, so the caller falls back to autoupdate instead of
+    /// reading the same bad blob again.
+    #[test]
+    fn find_drops_a_row_whose_blob_is_gone() {
+        let root = tmpdir("history_find_pruned");
+        let session = test_session(&root);
+        let repo = bucket_repo(&root, "main");
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "1.0"}"#);
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "2.0"}"#);
+
+        refresh(&session).unwrap();
+
+        let bucket_dir = root.join("buckets").join("main");
+        let history = HistoryRepo::open(&bucket_dir).unwrap();
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        let oid = rows(&conn, "main")
+            .into_iter()
+            .find(|row| row.1 == "1.0")
+            .map(|row| row.2)
+            .expect("the old version is indexed");
+        drop(conn);
+
+        // The fixture writes loose objects, so removing the file really prunes
+        // it; a packed clone would keep answering from the pack and the test
+        // would pass for the wrong reason.
+        let object = bucket_dir
+            .join(".git")
+            .join("objects")
+            .join(&oid[..2])
+            .join(&oid[2..]);
+        std::fs::remove_file(&object).unwrap();
+        assert!(
+            history.blob_text(&oid).is_none(),
+            "the blob must really be gone before the fallback is asserted"
+        );
+
+        assert!(find(&session, "main", "foo", "1.0").unwrap().is_none());
+
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        assert_eq!(
+            versions_of(&conn, "main"),
+            ["2.0"],
+            "the stale row must be dropped"
+        );
+    }
+
+    /// The same invalidation for a row whose blob no longer holds the promised
+    /// version (a rewritten history): it is dropped, not served.
+    #[test]
+    fn find_drops_a_row_whose_blob_lost_the_version() {
+        let root = tmpdir("history_find_mismatch");
+        let session = test_session(&root);
+        let repo = bucket_repo(&root, "main");
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "1.0"}"#);
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "2.0"}"#);
+        refresh(&session).unwrap();
+
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        let oid = rows(&conn, "main")
+            .into_iter()
+            .find(|row| row.1 == "2.0")
+            .map(|row| row.2)
+            .unwrap();
+        conn.execute(
+            "UPDATE hok_manifest_history SET blob_oid = ?1 WHERE version = '1.0'",
+            [&oid],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert!(find(&session, "main", "foo", "1.0").unwrap().is_none());
+
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        assert_eq!(versions_of(&conn, "main"), ["2.0"]);
     }
 
     /// A database that cannot be opened is the one failure `refresh` reports:

@@ -430,6 +430,7 @@ cmd:
   download_failed_list: "download failed for: %{names}"
   no_hash_skip: "no hash in manifest for '%{name}', skipping verification"
   version_mismatch: "Given version (%{given}) does not match manifest (%{manifest})"
+  resolving_historical_manifest: "Resolving historical manifest for '%{name}' (%{version})"
   generating_manifest: "Attempting to generate manifest for '%{name}' (%{version})"
   auto_pr_snapshotting: "Snapshotting"
   auto_pr_manifests: "manifests"
