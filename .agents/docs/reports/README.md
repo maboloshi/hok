@@ -18,7 +18,7 @@
 | `analysis-report.md` | 项目重构分析报告（大文件拆分方案） | 被取代（重构已落地，方案已执行） |
 | `manifest-parse-audit.md` | Manifest 解析对比审计（官方 schema.json vs ManifestSpec） | 结论已合并入 `scoop-gap-audit` 技能记忆 |
 | `status-gap-analysis.md` | `hok status` 对标官方 `scoop status`（app_status / ScoopTypes 格式） | 结论已并入 `scoop-gap-audit`（2026-09-26 补登记） |
-| `h3-parse-visibility-design-2026-09.md` | H3 设计报告：清单解析失败的可见性策略 | 已落地（2026-09-26 补登记） |
+| `h3-parse-visibility-design-2026-09.md` | H3 设计报告：清单解析失败的可见性策略 | 设计调研已闭环、报告冻结；**代码未落地**——`pending-tasks.md` §1 H3 仍挂着待拍板的 D1–D5（2026-10-05 复核，2026-09-26 补登记） |
 | `manifest-runtime-tolerance-scoping-2026-09.md` | hok 解析"过严"的性质 / 范围 / 选型专项 | 已闭环（2026-09-26 补登记） |
 | `rars-winsqlite3-handover-2026-09.md` | rars / winsqlite3 依赖替换换会话交接（标记**未完成**） | 交接已消费，任务转入后续会话（2026-09-26 补登记） |
 | `s2-alias-investigation-2026-09.md` | S2 `alias` 可用性调研 + 决策与落地记录（方案 A：官方式 `shims\scoop-<name>.ps1` 脚本别名） | 已闭环（`3c90095`），结论已同步 `scoop-gap-audit` |

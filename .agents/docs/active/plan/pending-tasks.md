@@ -1,4 +1,4 @@
-# hok 未完成任务总表（2026-09-13 整理；2026-09-29 增 §4.1 重构分诊规则）
+# hok 未完成任务总表（2026-09-13 整理；2026-09-29 增 §4.1 重构分诊规则；2026-10-05 逐条复核并关闭已落地项）
 
 > **这是什么**：把散落在 `reports/command-deviation-fix-plan-2026-09.md` §8、`.agents/skills/*`、
 > `.agents/docs/reports/*`、代码内 TODO 里的**未完成项**汇到一张表。
@@ -20,8 +20,8 @@
 |---|---|---|---|---|
 | **H1** | **`hok checkver` 挂起** | ✅ **已修复并落地**（= §8 R1，2026-09-13） | 根因（S1 定位 + 父会话独立核验）：`package/checkver.rs:383` 的 `.buffer_unordered(pending.len())` 在 `pending` 为空时容量 **0**；vendored `futures-util-0.3.34/.../buffer_unordered.rs:62-86` 在 `max=0` 时永不 poll 源流 ⇒ 返回 `Pending` 且无 waker ⇒ `collect().await` **永久挂起**。**触发面比原判断宽**：空目录 / 全部无 checkver / app glob 不匹配 / **任何 `--version`**（`:241-269` 全 `continue`，实测先打印版本行再挂死） | 已按用户 4 项决策实现（A2 `.max(1)` + `--version` 回归 + TODO 清理 + 同类站点加固），5 提交落地主线 `43795484`；改动面 `checkver.rs`/`download.rs`/`download_fragmented.rs` |
 | **H2** | **缺环境变量 panic** | ✅ **已修复并落地**（= §8 R2，2026-09-13） | 2026-09-13 复现：清空 `USERPROFILE`/`HOME` 后跑 `hok list` → `panicked at crates\libscoop\src\internal\fs.rs:63:30`（`Option::unwrap()` on `None`），debug 回溯链：`fs::write_json:63` ← `config::write:790` ← `config::init_default:780` ← `Session::new:182`。**归因更正（S2 实测，2026-09-13）**：被写的是 **`hok_config_path()`**（`config.rs:889-891`，经 `Config::default` 的 `path:` 字段 `config.rs:758`），**不是** `scoop_config_path()`——后者只喂 `ConfigBuilder::scoop_path`，是**只读**回落（`config.rs:47-49` 注释 "Never written to"）。两者都因 `home_join` 为空而为空路径，但**只有 `hok_config_path` 进入写链**；`hok_config_path` 走 `home_dir()`（仅 `USERPROFILE`/`HOME`），**不走** `config_dir()`（APPDATA）⇒ 这就是"APPDATA 存在照样炸"的原因（实测：保留 `HOME`、去掉 `APPDATA` 不炸）。父会话的"反直觉点"**被证实**：读链确实回落默认，但"回落成默认"这一步本身要写盘 | **两层修（用户已拍板并落地）**：① `fs.rs:63` 与同型 `fs.rs:115`（`symlink_dir` 的 `lnk.parent().unwrap()`）改返回 `Error::Io(InvalidInput, …)` 而非 panic（`Error` 已有 `Io(#[from] io::Error)`，i18n 键 `error.io` 已存在，无需新增键）；② `config::init_default`（`config.rs:780`）对**空 `config.path`** 跳过写入（它本就是 `let _ = write(...)` best-effort）。**反对**把 `scoop_config_path` 改回退 `%APPDATA%`：修不到真正的写入源，且会改变 Windows 配置落点（语义级变更）。**另发现同型可达点**：`config.rs:110` 迁移写 `write_json(&self.path)`。**影响面**：panic 发生在 `Session::new` ⇒ **所有命令**都炸（`hok --version` 不炸）|
-| **H3** | **清单解析失败静默消失**：解析失败的清单在查询/安装路径变成「找不到软件包」 | **未开工（设计题，必须先过决策门）**（= §8 R3） | `package/query.rs` 的 `filter_map`（现约 60 / 270 / 275 / 379 行；报告记的是 120/285） | P0-4（`autoupdate.hash.mode: github`）难定位的**根因**。要定「搜索/安装遇到不可解析清单：报错 / 警告 / 计数」，会改单入口的错误传播策略，**风险最高，单开** |
-| **H4** | **`ci-auto-pr` 对齐**（S11 余项） | **未开工**（= §8 R4） | 用户在 CI 里用它更新清单；审计 §7.7 差异点：变更判定（字节快照 vs `hub diff`） | **要做**。注意它**写盘并提交**，受 `-d` 写盘护栏约束——当前 `-d` 默认 `bucket`，应改为「写盘时要求显式目标」 |
+| **H3** | **清单解析失败静默消失**：解析失败的清单在查询/安装路径变成「找不到软件包」 | **未开工（设计报告已出，D1–D5 待拍板）**（= §8 R3；2026-10-05 复核：代码零改动） | 设计报告 [`reports/h3-parse-visibility-design-2026-09.md`](../../reports/h3-parse-visibility-design-2026-09.md)（2026-09-18）：本机 4 bucket 21710 清单里 80 个 hok 拒收、**80/80 官方接受**；推荐 O2a+O3（显式查询逐条 warn + 全量扫描汇总计数 + `checkver`/`checkurls` 补官方原文 + `parse_file` 非 UTF-8 分支补 warn），**待拍板 D1–D5**（输出形态 / 退出码 / 缓存侧 / 80 缺口另立 / 文案）。**复核证据**：`query.rs` 至今无任何可见性告警，`Error parsing JSON at '<path>'.` 仍只在 `missing_checkver.rs:113`（S11 单独落地），解析侧只有 `manifest.rs:837` 的 tracing `warn!`（需 `-v`/`RUST_LOG`） | P0-4（`autoupdate.hash.mode: github`）难定位的**根因**。要定「搜索/安装遇到不可解析清单：报错 / 警告 / 计数」，会改单入口的错误传播策略，**风险最高，单开**（设计已做完，只剩拍板 + 实现） |
+| **H4** | **`ci-auto-pr` 对齐**（S11 余项） | **未开工**（= §8 R4；2026-10-05 复核：仍是默认 `bucket`，护栏未接入） | 用户在 CI 里用它更新清单；审计 §7.7 差异点：变更判定（字节快照 vs `hub diff`）。**复核证据**：`src/cmd/auto_pr.rs:22` 仍是 `#[arg(short = 'd', long, default_value = "bucket")]`，且不在 `write_dir`/`scan_dir` 单一入口的使用者之列（现使用者只有 `checkhashes`/`checkver`/`formatjson`） | **要做**。注意它**写盘并提交**，受 `-d` 写盘护栏约束——应改为「写盘时要求显式目标」 |
 
 ---
 
@@ -29,9 +29,9 @@
 
 | # | 主题 | 状态 | 证据 | 建议 |
 |---|---|---|---|---|
-| **R5** | **恢复 `-c/--cascade`**：`SyncOption::Cascade`/`NoDependentCheck` **无任何构造者** ⇒ 级联卸载在生产**不可达**，`resolve_cascade` 只被 4 个单测调用 | **未开工** | 已核实：`package/resolve.rs:219` 定义枚举，`sync_remove.rs:33/99` 读取，全仓无 `SyncOption::Cascade` 构造点。成因：`5f2532e`（eventloop 统一）连同 `options.push(SyncOption::Cascade)` 一起删掉，提交信息未提 | **单开**（属新功能 + 有意偏离官方）。恢复后 held 依赖按新政策**恒报错**（要求先 `hok unhold`，无 bypass）。**别顺手删这条已测通的逻辑** |
-| **R6** | **`PRIVATE_HOSTS` 注入语义 = 替换（官方）而 hok 是 append**：同名头（Referer / User-Agent / Authorization）会发两条 | **未开工** | 官方 `$wreq.Headers[$key] = $value` 是替换；`internal/network.rs:188-192` 用 reqwest `.header()`（append）。reqwest 已有替换入口 `RequestBuilder::headers(map)` → `util::replace_headers` | 改法 ≈ 12 行。三个坑：① 别改成**静默跳过**（无效头名/值现在会让请求报错，保持 loud）；② 官方 checkver 自己也会出重复头（`checkver.ps1:240-246`），**别照抄这个 bug**；③ 官方只在 download/checkurls/checkver 注入，hok 全 profile 注入是既有有意偏离，保持 |
-| — | **`HeaderProfile::CheckUrls` 不发 Referer**（追加待办） | 未开工（随 checkver/checkurls 专题） | 现状按官方 `bin/checkurls.ps1:60` 发 ⇒ 反盗链 CDN（腾讯/阿里云同款）上出现**假坏链** | 跟随下载路径的既有决定；`Checkver`/`Autoupdate` 保持官方口径不动 |
+| **R5** | **恢复 `-c/--cascade`**：`SyncOption::Cascade`/`NoDependentCheck` **无任何构造者** ⇒ 级联卸载在生产**不可达**，`resolve_cascade` 只被 4 个单测调用 | **未开工**（2026-10-05 复核：仍无构造者） | 已核实：`package/resolve.rs:219` 定义枚举，`sync_remove.rs:33/99` 读取，全仓无 `SyncOption::Cascade` 构造点（2026-10-05 全仓 grep 仅这 3 处命中，读 2 写 0）。成因：`5f2532e`（eventloop 统一）连同 `options.push(SyncOption::Cascade)` 一起删掉，提交信息未提 | **单开**（属新功能 + 有意偏离官方）。恢复后 held 依赖按新政策**恒报错**（要求先 `hok unhold`，无 bypass）。**别顺手删这条已测通的逻辑** |
+| **R6** | **`PRIVATE_HOSTS` 注入语义 = 替换（官方）而 hok 是 append**：同名头（Referer / User-Agent / Authorization）会发两条 | **未开工**（2026-10-05 复核：仍是 append） | 官方 `$wreq.Headers[$key] = $value` 是替换；`internal/network.rs` 的 `apply_headers` 用 reqwest `.header()`（append，2026-10-05 复核落在 `:235-236`）。reqwest 已有替换入口 `RequestBuilder::headers(map)` → `util::replace_headers` | 改法 ≈ 12 行。三个坑：① 别改成**静默跳过**（无效头名/值现在会让请求报错，保持 loud）；② 官方 checkver 自己也会出重复头（`checkver.ps1:240-246`），**别照抄这个 bug**；③ 官方只在 download/checkurls/checkver 注入，hok 全 profile 注入是既有有意偏离，保持 |
+| — | **`HeaderProfile::CheckUrls` 不发 Referer**（追加待办） | 未开工（随 checkver/checkurls 专题；2026-10-05 复核：仍在发） | 现状按官方 `bin/checkurls.ps1:60` 发（`network.rs` 的 `referer()` 对 `CheckUrls` 仍返回 `Some(strip_filename(url))`）⇒ 反盗链 CDN（腾讯/阿里云同款）上出现**假坏链** | 跟随下载路径的既有决定；`Checkver`/`Autoupdate` 保持官方口径不动 |
 | — | `checkurls`（S11 余项） | **暂缓**（用户用得少） | 只读扫描，审计差异多为输出/边界 | 与上一条合并成一个专题 |
 | — | `virustotal`（S11 余项，含退出位掩码） | **不做**（用户基本不用） | 审计 §7.5 | 登记为不修 |
 | — | **`cleanup` 失败汇总文案与实现语义冲突**（「重启后可重试」暗示存在延迟删除，实际没有）→ **已并入 cleanup 并行化专题**（规格定稿 `.agents/docs/active/spec/cleanup-parallel-spec.md`，K1=C1 / K2=0 已拍板）：文案随该专题一起改，不再单列 | ✅ **已落地**（2026-09-20，随 cleanup 并行化专题；提交 `3bca476` `54a87d0` `2ad6e9d` `e8c09f1`，主线 tip `e8c09f1`） | 文案：`locales/zh.yml:164`「已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）」/ `locales/en.yml:164`「… (retry after restart)」；全仓**无** `MoveFileEx(..., MOVEFILE_DELAY_UNTIL_REBOOT)` ⇒ 不存在任何重启后自动删除。2026-09-20 实测（release，旧版本目录 200 文件 + 1 占用）：`ERROR 无法移除 app1 v0.9.0：另一个程序正在使用此文件…(os error 32)` + 汇总行同上 + **exit 0**；目录被**部分删除**（剩 1 个锁定文件），释放占用后再跑一次即清干净。另测：非提升进程 `MOVEFILE_DELAY_UNTIL_REBOOT` = `err 5`（需管理员），真做延迟删除也不可行 | **改文案**（如「关闭占用程序后重试」）：多数占用（程序仍在运行）关掉程序即可，不必重启；「真做延迟删除」应否决（需管理员 + 空间延后释放）。证据与复跑脚本见 `.agents/docs/research/cleanup-delete-perf.md` §4 |
@@ -60,7 +60,7 @@
 
 | 项 | 状态 | 说明 / 来源 |
 |---|---|---|
-| **framework P1-5：`config.rs` 混入命令操作** | **仍未做** | `list_all_rows`（`config.rs:1189`）、`edit`（`:1387`）仍在 lib 层；devlog 2026-09-12 仍记为"分层违反"。命令逻辑应上移 CLI |
+| **framework P1-5：`config.rs` 混入命令操作** | **仍未做**（2026-10-05 复核：仍在 lib 层） | `list_all_rows`（`config.rs:1234`）、`edit`（`:1432`）仍在 lib 层（行号为 2026-10-05 复核值）；devlog 2026-09-12 仍记为"分层违反"。命令逻辑应上移 CLI |
 | ~~P1-4 可见性落差~~ / ~~P1-6 checkver Args 镜像~~ | **已解决（更正）** | `lib.rs:66` 已是 `mod internal`（私有）+ `pub use` 门面；checkver 侧改为 `CheckverOptions`（`package/checkver.rs:69`，注释明示"deliberately not a clap struct"） |
 | `innospect` 上游化（12.8k 行 fork ≈ 生产代码 21%） | ✅ 已完成（2026-09-19，`f5922b3`） | 上游 0.1.4 收录 PR #3（并额外改成从 Inno 属性字节读 LZMA2 字典）⇒ registry `innospect = "0.1.4"`、删除 `crates/innospect`；A/B 解码真实 Inno 安装器（zed 6.4.3）逐字节一致，见 devlog 2026-09-19 |
 | 4.1 超长函数拆分（36 个 ≥120 行；`checkver.rs::execute` + `apply_autoupdate` 占 713 行收益最高） | ⏸ 未动 | 需先有明确问题陈述；`commit_one_install`/`commit_one_remove` 结构对称，**先核对是否真能抽公共管线**（别用开关掩盖 install/remove 语义差异） |
@@ -72,7 +72,7 @@
 | 清单缓存：本地桶 mtime/size 行级记账 | 未做（收益为 0） | 唯一收益场景是无 git 的本地目录桶；本机 4 个桶全是 git 仓库。真要做按"目录 stat 差分 → 只重读变化文件"落地 |
 | 表格：CJK 包名的缓存文件被拒 | ✅ 已修（2026-09-25，`ff05b80` + `cb75ba4`） | 根因比 CJK 更宽：`REGEX_CACHE_FILE` 的 name/version 字符类 `[0-9a-zA-Z._-]+` 让**任何**含 `+`/`_` 的版本号（`1.9.11_2007`、`1.4.3-canary.1+29d9638da`）与 CJK 包名一样不可见 ⇒ `cache` 列表、`cleanup -k`、`cache rm <app>` 三处都跳过它，只有 `cache rm *` 能删；已改 `^[^#]+#[^#]+#`。同批：`cleanup -k` 补删除汇总行、坏安装的缓存也删（详见 devlog 2026-09-25） |
 | 测试 flaky：`manifest_cache::tests::serving_a_stale_cache_warns_once` | ✅ 已修（2026-09-26，`9af599a`，worktree `.worktrees/s-warn-latch`，分支 `fix/manifest-warn-latch`） | **修法（用户拍板 A+B）**：两处闩锁从进程级 static 搬进 `Session`（`stale_warned: AtomicBool` + `mismatch_warned: Mutex<HashSet<String>>`，`mark_stale_warned` / `mark_mismatch_warned`），并把 stale 判据提到 `swap(true)` **之前**（新鲜查询不再吃掉会话唯一的一次告警）；两个 `#[cfg(test)]` `reset_*_warning()` 随进程级状态一并删除，i18n 文案零改动。**根因 = 进程级 once 闩锁 + 每会话 sink 错位**：`manifest_cache.rs:163-184` 的 `static STALE_WARNED: AtomicBool` 在 `warn_if_cache_stale` 里**先 `swap(true)` 再判断是否 stale**（新鲜缓存也会吃掉闩锁），而 `session.output()` 是每会话的 ⇒ 并行测试互抢。`MISMATCH_WARNED: Mutex<Vec<String>>`（`:220-260`，key=`bucket/name`）同型；调用点 `query.rs:341-354`。**实测**（主线 `cb75ba4` clean 树）：`cargo test -p libscoop cache::` 默认并行 **2/25 失败**、同一命令 `-- --test-threads=1` **0/12 失败**，失败点恒为 `manifest_cache.rs:1075` "a stale cache must warn"。**实测**：改前同机 25 次并行该 filter **15/25 失败**（失败点与挂账逐字相同），改后 **0/20 失败**；`cargo test -p libscoop` 789 passed / 0 failed、`cargo test -p hok` 全绿、clippy + `rustfmt --edition 2024 --check` 干净。新增 3 条测试钉住语义（新鲜不吃闩锁 / 每会话各警告一次 / 会话内不重复），并**反向验证**：临时把闩锁改回进程级 static 或把 `swap` 提到 stale 判断之前 ⇒ 对应用例确定性失败（已回退） |
-| `scripts/*.py` 与 `.agents/tmp` 审计脚本重叠 | 待收敛 | 建议并入 `scripts/` 一处 |
+| `scripts/*.py` 与 `.agents/tmp` 审计脚本重叠 | ✅ **已收敛**（2026-09-26 删除重叠源；2026-10-05 复核） | 重叠源是 `scripts/analyze_cohesion.py`、`scripts/analyze_rust_project.py`（已删除）。现存 3 个各有专责、彼此不重叠：`benchmark_shims.py`（shim 基准，`crates/hok-shim/README.md:133` 引用）、`check_helpers.py`（配 `scripts/known-helpers.txt`）、`extract_cli_help.py`（clap help 提取）；与 `.agents/scripts/` 的门禁 JS 也无重复。`.agents/tmp/` 只剩机器本地草稿（已 ignore），不入库 |
 
 ---
 
@@ -155,8 +155,8 @@
 
 | 项 | 说明 |
 |---|---|
-| **待归档候选**（任务已完成使命，按 `hok-report-archive` 判定 #3） | `.agents/docs/active/spec/task-help-i18n.md`（由 `c4082b6` + `d29297f` 完成：`--help` 结构头统一 + 全命令帮助面测试）；`.agents/docs/reports/prompts/clap-arg-parsing-corruption-prompt.md`（同一对提交闭环）；`prompts/{current-version-resolution,tolerant-json-single-entry,i18n-inhouse-replacement,base64-single-codec}-prompt.md`（均已落地并被 `reports/optimization-audit-2026-09.md` §9–§11 吸收） |
-| `reports/README.md` 索引 | `optimization-audit-2026-09.md` 仍标"待执行"，但 P1 已全部执行完毕（§8 执行结果）⇒ 措辞需更新；§11 之后新增的报告需补进索引 |
+| **待归档候选**（任务已完成使命，按 `hok-report-archive` 判定 #3） | ✅ **prompt 部分已完成**（2026-09-26）：`clap-arg-parsing-corruption-prompt.md` 与 4 份已落地 prompt 现都在 `.agents/docs/reports/prompts/`（该目录共 7 篇，见 `reports/README.md`）。⏳ **仅剩** `.agents/docs/active/spec/task-help-i18n.md`（`c4082b6` + `d29297f` 已完成其使命）待在会话收官时归档 |
+| `reports/README.md` 索引 | ✅ **已闭环**（2026-10-05 复核）：`optimization-audit-2026-09.md` 已按 R4 提回 `active/audit/`（见 README 的「2026-09-26 移出本目录」表），"待执行"措辞不复存在；`docs-index-check.mjs` 报 reports 顶层 23 篇全部登记、0 缺口 |
 | 未跟踪杂项决断 | ✅ **已决断（2026-09-26）**：`scripts/analyze_cohesion.py`、`scripts/analyze_rust_project.py` **已删除**（只扫 `src/`、不覆盖 `crates/`；在 GBK 控制台 `UnicodeEncodeError` 崩溃；职责已被 cargo-modules / clippy 取代。备份在项目外 `_backups/`）；仓库根 `AGENTS.md`、`CLAUDE.md` 与 `.agents/**` **已入库** |
 | NSIS 上游提案 | ✅ **已闭环（2026-10-05 复核）**：`.agents/docs/legacy/nsis-issue.md` 的提案全部由上游合并——issue #2（目录跟踪 `dest_path()`）由上游 PR #19 修复、issue #3（solid 截断/吞错）由上游 PR #8 修复，issue #4 / PR #5（lzma-rust2 + zlib-rs，提交 `201df25`）直接合并，均随 **nsis-rs 0.4.0（2026-08-15）** 发布；hok 已切回 registry（`9766e7b`）。PR 3（zstd）已实证撤销。**上游现为 0.5.0（2026-09-27，含 breaking API），hok 仍钉 `nsis = "0.4"`，升级未评估（另立待办）** |
 
@@ -197,7 +197,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 | 波次 | 会话 | 并行度 | 依赖 |
 |---|---|---|---|
-| **Wave 1** | S1 `H1` ∥ S2 `H2` | **2 条**（零文件交集） | 无 |
+| **Wave 1** | S1 `H1` ∥ S2 `H2` | **2 条**（零文件交集） | 无 —— ✅ **已全部落地**（S1 `43795484` / S2 `9b672207`，见 §1） |
 | **Wave 2** | S3 `H3`（设计题，单开）∥ S4 `H4` | **2 条**（错开 `locales/*`：S3 先落地再开 S4，或反之） | Wave 1 落地后 |
 | **Wave 3** | S5 `R5` ∥ S6 `R6+CheckUrls` | **2 条** | Wave 2 落地后；与 S7 串行（README 冲突） |
 | **Wave 4** | S7 私有 bucket SSH | **1 条**（四步四提交，本身够长） | 用户要 SSH bucket 时再开 |
@@ -209,7 +209,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 ### 8.4 每会话卡片
 
-#### S1 — `H1` `checkver` 挂起（Wave 1）
+#### S1 — `H1` `checkver` 挂起（Wave 1）✅ 已落地 `43795484`
 
 - **worktree / 分支**：`.worktrees/r1-checkver-hang` / `fix/r1-checkver-hang`（base = 主线当时 tip）
 - **复现（已确认）**：`hok checkver -d <空目录>` → 无输出、30s 不退出（`target/release/hok.exe`，主线 `4748ae1`）
@@ -233,7 +233,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
   等我确认后再改代码。
   ```
 
-#### S2 — `H2` 缺环境变量 panic（Wave 1）
+#### S2 — `H2` 缺环境变量 panic（Wave 1）✅ 已落地 `9b672207`
 
 - **worktree / 分支**：`.worktrees/r2-env-panic` / `fix/r2-env-panic`
 - **根因（S2 复核后更正，2026-09-13）**：清空 `USERPROFILE`/`HOME` → `Session::new:182` → `config::init_default:780` → `config::write:790` → `fs::write_json:63` `path.parent().unwrap()` on `None`。写链上的空路径来自 **`hok_config_path()`**（`config.rs:889-891`，经 `Config::default` 的 `path:` 字段 `config.rs:758`），**不是** `scoop_config_path()`（后者只喂 `ConfigBuilder::scoop_path`，只读、从不写）。`hok_config_path` 走 `home_dir()`（仅 `USERPROFILE`/`HOME`）⇒ 与 `APPDATA` 无关（实测：保留 `HOME`、去掉 `APPDATA` **不炸**）。**影响面**：panic 在 `Session::new` ⇒ 所有建 session 的命令都炸（`list`/`info`/`config -a`/`cache`/`status`/`health`），仅 `--version` 不炸。**第二个可达入口**：`config.rs:110`（迁移写）在 exe 旁有 portable `config.json` 且无 home 时同样 panic
@@ -338,8 +338,8 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 ### 8.6 随手项（父会话主树直接做，不需 worktree）
 
 - ✅ **已完成**：`scoop-gap-audit` 里"`mode: github` 缺 digest null 回落"已更正为已解决（2026-09-13，主树改）；
-- 待办：`checkver.rs:47-60` 的陈旧 TODO 块清理（**归 S1**，避免与 S1 抢同一文件）；
-- §7 的归档与索引：`task-help-i18n.md`、`prompts/clap-arg-parsing-corruption-prompt.md` 及 4 份已落地 prompt → `.agents/docs/reports/`（或 `legacy/`），并更新 `reports/README.md` 索引；
+- ✅ `checkver.rs` 陈旧 TODO 块 **已清理**（`b339afc`，随 S1 落地）——该项原写"归 S1，避免抢同一文件"，S1 已落地，2026-10-05 复核关闭（与 §6 表格该行一致）；
+- §7 的归档与索引：✅ **prompt 部分已完成**（2026-09-26，7 份 prompt 已在 `reports/prompts/`）；⏳ 仅剩 `.agents/docs/active/spec/task-help-i18n.md` 待在会话收官时归档（见 §7）；
 - ✅ §7 的未跟踪杂项决断（2026-09-26）：`scripts/analyze_*.py` **已删除**；根 `AGENTS.md`、`CLAUDE.md` 与 `.agents/**` **已入库**（详见 §7 表格该行）。
 - ✅ 已落地（2026-09-26，规则架构）：闸门锚点审计的 3 项——复述收敛（7 组）、根 `AGENTS.md` 的命令计数措辞
   （改指 `src/cmd/mod.rs` 的 `Command` 枚举）、主线名措辞（不再写死 `main`）。逐组本体与"去重门槛归属"的取舍见
@@ -348,11 +348,11 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 > **证据纪律**：每条会话交回的是**可复跑的命令 + 前后对照**，不是结论；允许用证据反驳本表（本表的 H2 曾被初判为"疑似已修"，实测推翻了它——**先重跑再下结论**）。
 
-### 8.7 Wave 1 进行中（2026-09-13 派活）
+### 8.7 Wave 1 已收口（2026-09-13 派活；两会话均落地）
 
 | 会话 | agent id | worktree / 分支 | base | 状态 |
 |---|---|---|---|---|
-| **S1** | `5fa53fcf-e5b4-41f8-81cf-63af2d8eb59d` | `.worktrees/r1-checkver-hang` / `fix/r1-checkver-hang` | `4748ae1` | **报告已交回、机制经父会话核验**（`buffer_unordered(0)` 确定性死锁；触发面含 `--version`）；**用户 4 条已转达 → 开工实现**（4 个 commit：A2 修复 / 回归含 `--version` / 陈旧 TODO / 同类站点加固） |
+| **S1** | `5fa53fcf-e5b4-41f8-81cf-63af2d8eb59d` | `.worktrees/r1-checkver-hang` / `fix/r1-checkver-hang` | `4748ae1` | ✅ **已收口进主线（2026-09-13）**：重放到 `9b67220` 后 5/5 `cherry-pick -n` 零冲突 → `--ff-only` 落地，主线 tip **`43795484`**，无 merge commit、漂移校验逐字节相同。提交：`a932bd4`（A2 `.max(1)` 修复）/`224298c`（回归含 `--version`）/`b339afc`（清陈旧 TODO）/`4a270fb`（同类站点加固）/`4379548`（style）。机制经父会话核验：`buffer_unordered(0)` 确定性死锁，触发面含 `--version` |
 | **S2** | `d35260bb-752e-4e44-aa98-c836fef124ab` | `.worktrees/r2-env-panic` / `fix/r2-env-panic` | `4748ae1` | ✅ **已收口进主线**（`--ff-only`，3 提交，无 merge commit；漂移校验"逐字节相同"）→ 主线 tip **`9b672207`**。交付：`82969d7`（fs/config 降级不 panic）＋`3bf7203`（空路径测试）＋`9b67220`（空串 SCOOP/SCOOP_GLOBAL ≡ 未设置，对齐官方） |
 
 - **决策门在子代理自己的会话里回答**（GUI 会话头的血脉目录进入）；**父会话必须保持存活**，否则子代理输入框变只读。
