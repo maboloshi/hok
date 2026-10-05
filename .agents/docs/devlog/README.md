@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（60 条，自动生成）
+## 索引（61 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-05 | CLI 帮助：全局选项与命令选项分节显示 | `db896cc` `7bf67d4` | [`2026-10-05-cli-help-global-option-separation.md`](2026-10-05-cli-help-global-option-separation.md) |
 | 2026-10-05 | pending-tasks 逐条复核：关闭已落地项，开放项补今日证据 | `5f73d5f` | [`2026-10-05-pending-tasks-closure-sweep.md`](2026-10-05-pending-tasks-closure-sweep.md) |
 | 2026-10-05 | NSIS 上游提案全部闭环，记录从「待提交」改为「已合并」 | `2a8d91b` | [`2026-10-05-nsis-upstream-proposal-merged.md`](2026-10-05-nsis-upstream-proposal-merged.md) |
 | 2026-10-05 | hok checkver 输出重做：符号结果行 + 单行转圈 + 汇总 | `cb1fd39` | [`2026-10-05-checkver-report-rework.md`](2026-10-05-checkver-report-rework.md) |
