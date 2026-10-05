@@ -793,4 +793,164 @@ mod tests {
         assert_eq!(resolved.manifest.version(), "2.0.0");
         assert!(session.workspace_dir().join("nourl.json").exists());
     }
+
+    // --- the historical-manifest chain (plan section 4) ---------------------
+
+    /// A git-backed bucket: `<root>/buckets/<bucket>/bucket/<name>.json`
+    /// committed once per body, newest last.
+    fn git_bucket(root: &Path, bucket: &str, name: &str, bodies: &[&str]) {
+        let dir = root.join("buckets").join(bucket);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let rel = format!("bucket/{name}.json");
+        for body in bodies {
+            commit_body(&repo, &rel, body);
+        }
+    }
+
+    /// Write `rel` and commit it on the current HEAD, returning the new commit.
+    fn commit_body(repo: &git2::Repository, rel: &str, content: &str) -> String {
+        let full = repo.workdir().unwrap().join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, content).unwrap();
+
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree_to(repo).unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        let sig = git2::Signature::new("hok tester", "tester@example.com", &git2::Time::new(0, 0))
+            .unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, rel, &tree, &parents)
+            .unwrap()
+            .to_string()
+    }
+
+    /// The historical body: distinguishable from the HEAD one, and carrying an
+    /// `autoupdate` section so the fallback path can run offline.
+    const HISTORICAL: &str = r#"{"version":"1.0.0","homepage":"https://example.com","license":"MIT",
+        "description":"historical","url":"https://example.com/app-1.0.0.zip",
+        "autoupdate":{"extract_dir":"dir-$version"}}"#;
+
+    /// The HEAD body: version 2.0.0, same autoupdate capability.
+    const HEAD_BODY: &str = r#"{"version":"2.0.0","homepage":"https://example.com","license":"MIT",
+        "description":"head","url":"https://example.com/app-2.0.0.zip",
+        "autoupdate":{"extract_dir":"dir-$version"}}"#;
+
+    /// The whole point of the index: a version that is not at HEAD comes back
+    /// as the **exact bytes** of the commit that carried it, with no autoupdate
+    /// run — the chain is offline from the caller's point of view.
+    #[tokio::test]
+    async fn historical_version_is_read_back_byte_for_byte() {
+        let (session, root) = setup("gen-history-hit");
+        git_bucket(&root, "main", "demo", &[HISTORICAL, HEAD_BODY]);
+        manifest_history::refresh(&session).unwrap();
+
+        let resolved = generate_user_manifest(&session, "demo", Some("main"), "1.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(resolved.manifest.version(), "1.0.0");
+        assert_eq!(
+            resolved.manifest.raw(),
+            Some(HISTORICAL),
+            "the historical blob's own bytes, not an autoupdated HEAD"
+        );
+        // Written to `usermanifestsdir`, the same place autoupdate writes to.
+        assert!(session.workspace_dir().join("demo.json").exists());
+    }
+
+    /// `use_git_history = false` skips the history step (and only that step):
+    /// the version is regenerated through autoupdate, and turning the setting
+    /// back on restores the historical answer.
+    #[tokio::test]
+    async fn use_git_history_false_regenerates_through_autoupdate() {
+        let (session, root) = setup("gen-history-disabled");
+        git_bucket(&root, "main", "demo", &[HISTORICAL, HEAD_BODY]);
+        manifest_history::refresh(&session).unwrap();
+
+        crate::config::set(&session, "use_git_history", "false").unwrap();
+        let regenerated = generate_user_manifest(&session, "demo", Some("main"), "1.0.0")
+            .await
+            .unwrap();
+        assert!(
+            regenerated.manifest.raw().unwrap().contains("head"),
+            "the autoupdate fallback starts from HEAD: {:?}",
+            regenerated.manifest.raw()
+        );
+        assert_eq!(regenerated.manifest.version(), "1.0.0");
+
+        crate::config::set(&session, "use_git_history", "true").unwrap();
+        let historical = generate_user_manifest(&session, "demo", Some("main"), "1.0.0")
+            .await
+            .unwrap();
+        assert_eq!(historical.manifest.raw(), Some(HISTORICAL));
+    }
+
+    /// An index that was never built (old database, `hok update` not run since)
+    /// is simply a miss: the command keeps working through autoupdate.
+    #[tokio::test]
+    async fn empty_index_falls_through_to_autoupdate() {
+        let (session, root) = setup("gen-history-empty");
+        git_bucket(&root, "main", "demo", &[HISTORICAL, HEAD_BODY]);
+
+        let resolved = generate_user_manifest(&session, "demo", Some("main"), "1.0.0")
+            .await
+            .unwrap();
+        assert_eq!(resolved.manifest.version(), "1.0.0");
+        assert!(resolved.manifest.raw().unwrap().contains("head"));
+    }
+
+    /// A row whose blob `git gc --prune` removed is stale: the lookup falls
+    /// back to autoupdate without an error, and drops the row so the next
+    /// lookup does not read the same dead OID again.
+    #[tokio::test]
+    async fn pruned_blob_falls_back_and_drops_the_row() {
+        let (session, root) = setup("gen-history-pruned");
+        git_bucket(&root, "main", "demo", &[HISTORICAL, HEAD_BODY]);
+        manifest_history::refresh(&session).unwrap();
+
+        let bucket_dir = root.join("buckets").join("main");
+        let history = crate::internal::git::HistoryRepo::open(&bucket_dir).unwrap();
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        let oid: String = conn
+            .query_row(
+                "SELECT blob_oid FROM hok_manifest_history WHERE version = '1.0.0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        // Loose objects in this fixture, so removing the file really prunes it.
+        std::fs::remove_file(
+            bucket_dir
+                .join(".git")
+                .join("objects")
+                .join(&oid[..2])
+                .join(&oid[2..]),
+        )
+        .unwrap();
+        assert!(
+            history.blob_text(&oid).is_none(),
+            "the blob must really be gone before the fallback is asserted"
+        );
+
+        let resolved = generate_user_manifest(&session, "demo", Some("main"), "1.0.0")
+            .await
+            .unwrap();
+        assert_eq!(resolved.manifest.version(), "1.0.0");
+        assert!(resolved.manifest.raw().unwrap().contains("head"));
+
+        let conn = crate::package::manifest_cache::open(&session).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM hok_manifest_history WHERE version = '1.0.0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "the stale row must be gone");
+    }
 }
