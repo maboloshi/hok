@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（57 条，自动生成）
+## 索引（58 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-05 | hok checkver 输出重做：符号结果行 + 单行转圈 + 汇总 | `cb1fd39` | [`2026-10-05-checkver-report-rework.md`](2026-10-05-checkver-report-rework.md) |
 | 2026-10-04 | 全局工作区约定重排，并修掉两处会说反的规则 | `46be764` `754a56b` | [`2026-10-04-workspace-convention-readability-and-rule-fixes.md`](2026-10-04-workspace-convention-readability-and-rule-fixes.md) |
 | 2026-10-04 | 机器本地技能根迁到 ~/.agents/skills，并修掉仓内所有旧指针 | `9411488` | [`2026-10-04-machine-local-skill-root-repoint.md`](2026-10-04-machine-local-skill-root-repoint.md) |
 | 2026-10-03 | 把「怎么写 skill」补进技能规范本体，并清掉两处会漂的指针 | `625c2a4` | [`2026-10-03-skill-authoring-standard.md`](2026-10-03-skill-authoring-standard.md) |
