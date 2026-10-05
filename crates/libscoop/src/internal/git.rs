@@ -4,7 +4,7 @@
 //! attempted but abandoned because gix's dependency tree is prohibitively
 //! large (aws-lc-rs, quinn-proto, h2, icu — causing 20+ min first build).
 
-use git2::{CredentialType, FetchOptions, Repository};
+use git2::{CredentialType, Delta, FetchOptions, Repository};
 use regex::Regex;
 use std::{collections::HashMap, path::Path, result::Result, sync::LazyLock};
 
@@ -483,6 +483,295 @@ pub fn diff_manifest_changes<P: AsRef<Path>>(
     Ok(out)
 }
 
+// ─── Manifest-history walk primitives ──────────────────────────────────────
+//
+// Backs the `hok_manifest_history` index (`package/manifest_history.rs`): one
+// pass down the first-parent chain, one `diff_tree_to_tree` per step, so the
+// seed scan never re-reads whole trees per app (the O(commits × apps) shape
+// that made the per-app pickaxe route infeasible). Rename detection is
+// deliberately off — a renamed manifest arrives as old-path deleted + new-path
+// added, exactly like `diff_manifest_changes`; the index keys on the file
+// name and keeps the old path in `path` so a row can be traced back.
+//
+// The first-parent choice mirrors `last_commit_for_file`'s treesame
+// simplification: bucket histories are near-linear, and a merge that merely
+// carried a change into HEAD is invisible there already.
+//
+/// Safety cap on the first-parent walk (the seed scan visits every commit in
+/// the chain; a pathological history must not loop forever). Generous over
+/// the measured 175k-commit worst case (main 81k + extras 93k, research §2).
+const MAX_HISTORY_COMMITS: usize = 500_000;
+
+/// An open bucket repository for the manifest-history index.
+///
+/// The seed and the incremental scan each read thousands of blobs, so both
+/// hold one handle for a whole pass: opening the repository per blob would
+/// re-read its config on every manifest. This is also the seam that keeps
+/// `git2` out of `package/` — the index builder works with this type, not
+/// with libgit2 directly.
+pub struct HistoryRepo {
+    repo: Repository,
+}
+
+impl HistoryRepo {
+    /// Open the repository at `path`, or `None` when the directory is not a
+    /// repository (a plain directory bucket has no history to index).
+    pub fn open<P: AsRef<Path>>(path: P) -> Option<HistoryRepo> {
+        Repository::open(path.as_ref())
+            .ok()
+            .map(|repo| HistoryRepo { repo })
+    }
+
+    /// The current HEAD commit as 40-hex, or `None` when the repository has
+    /// no commits.
+    pub fn head(&self) -> Option<String> {
+        Some(
+            self.repo
+                .head()
+                .ok()?
+                .peel_to_commit()
+                .ok()?
+                .id()
+                .to_string(),
+        )
+    }
+
+    /// Whether `oid` is reachable from `head` (including `head` itself),
+    /// walking first parents — the same chain [`HistoryRepo::walk_chain`]
+    /// traverses. A commit from a rewritten or re-cloned history reports
+    /// `false`, so the caller re-seeds instead of walking from a baseline
+    /// that no longer describes this repository.
+    pub fn is_ancestor(&self, head: &str, oid: &str) -> bool {
+        // Commits cross this boundary as 40-hex, like `head_commit_id` and
+        // `diff_manifest_changes`: `package/` never has to name a git2 type.
+        let (Some(head), Some(oid)) = (parse_oid(head), parse_oid(oid)) else {
+            return false;
+        };
+        // Anchor the walk at `head` and descend first parents looking for
+        // `oid` — the same direction as `walk`. Starting from `oid` instead
+        // would answer the opposite question ("is head an ancestor of oid")
+        // and reject every stored baseline the walk legitimately visits.
+        let Ok(mut commit) = self.repo.find_commit(head) else {
+            return false;
+        };
+        for _ in 0..=MAX_HISTORY_COMMITS {
+            if commit.id() == oid {
+                return true;
+            }
+            if commit.parent_count() == 0 {
+                return false;
+            }
+            // First parent only — matches the walk this validates.
+            let Ok(parent) = commit.parent(0) else {
+                return false;
+            };
+            commit = parent;
+        }
+        false
+    }
+
+    /// The UTF-8 text of blob `oid`, or `None` when it cannot be read — the
+    /// object was pruned (`gc --prune`) or is not UTF-8. Callers treat `None`
+    /// as "skip this manifest", never as a failure.
+    pub fn blob_text(&self, oid: &str) -> Option<String> {
+        let blob = self.repo.find_blob(parse_oid(oid)?).ok()?;
+        std::str::from_utf8(blob.content()).ok().map(str::to_owned)
+    }
+
+    /// Walk the first-parent chain from `head` down, yielding one entry per
+    /// commit — **without reading a single tree**.
+    ///
+    /// Split from [`HistoryRepo::manifest_deltas`] so a caller can walk the
+    /// chain cheaply, fan the expensive tree-diff and blob work out to a
+    /// thread pool, and still keep the walk itself sequential and ordered. On
+    /// a real bucket that split is the whole point: 92,616 commits of chain
+    /// walking take under a second, while diffing their trees takes ~177 s
+    /// (93% of a seed).
+    ///
+    /// - `start`: resume point (inclusive). A seed interrupted mid-chain
+    ///   resumes at the commit it last recorded, which is re-processed — the
+    ///   index rows are written with `INSERT OR IGNORE`, so that is a no-op.
+    ///   `None`, or a commit that cannot be read, starts at `head`.
+    /// - `until`: stop **after** yielding this commit (inclusive) — this is
+    ///   what bounds an incremental scan at its stored baseline.
+    ///
+    /// A repository that cannot be walked yields a short (possibly empty)
+    /// walk; the caller treats "did not reach the stop commit" as "baseline
+    /// not advanced", which re-scans next time.
+    pub fn walk_chain(
+        &self,
+        head: &str,
+        start: Option<&str>,
+        until: Option<&str>,
+    ) -> impl Iterator<Item = HistoryCommit> + '_ {
+        struct State<'r> {
+            next: Option<git2::Commit<'r>>,
+            until: Option<git2::Oid>,
+            steps: usize,
+            done: bool,
+        }
+
+        impl Iterator for State<'_> {
+            type Item = HistoryCommit;
+
+            fn next(&mut self) -> Option<HistoryCommit> {
+                if self.done {
+                    return None;
+                }
+                let commit = self.next.take()?;
+                let id = commit.id();
+                // The stop commit is yielded, then the walk ends (inclusive).
+                if self.until == Some(id) {
+                    self.done = true;
+                }
+                self.steps += 1;
+                if self.steps > MAX_HISTORY_COMMITS {
+                    self.done = true;
+                    return None;
+                }
+
+                // `tree_id` is read out of the commit object: no tree is
+                // loaded here, which is what keeps this walk cheap.
+                let parent = commit.parent(0).ok();
+                let entry = HistoryCommit {
+                    commit: id.to_string(),
+                    tree: commit.tree_id().to_string(),
+                    parent_tree: parent.as_ref().map(|parent| parent.tree_id().to_string()),
+                    committed_at: commit.author().when().seconds(),
+                };
+
+                // Advance: first parent, else root (no parent → next() ends).
+                self.next = parent;
+
+                Some(entry)
+            }
+        }
+
+        // Resolve the starting commit: `start` when it exists, else `head`.
+        let start_commit = start
+            .and_then(parse_oid)
+            .and_then(|oid| self.repo.find_commit(oid).ok())
+            .or_else(|| parse_oid(head).and_then(|oid| self.repo.find_commit(oid).ok()));
+
+        State {
+            next: start_commit,
+            until: until.and_then(parse_oid),
+            steps: 0,
+            done: false,
+        }
+    }
+
+    /// The manifest deltas between two of this repository's trees, as 40-hex
+    /// tree OIDs.
+    ///
+    /// `old_tree` is the first parent's tree; `None` for a root commit, which
+    /// then reports every manifest in `new_tree` as an addition.
+    ///
+    /// This is the expensive half of the walk — one full tree diff per commit
+    /// — so it takes plain OIDs and does not borrow the chain walk: callers
+    /// run it across a thread pool, each worker with its own
+    /// [`HistoryRepo`].
+    pub fn manifest_deltas(&self, new_tree: &str, old_tree: Option<&str>) -> Vec<HistoryDelta> {
+        let Some(new_tree) = parse_oid(new_tree).and_then(|oid| self.repo.find_tree(oid).ok())
+        else {
+            return Vec::new();
+        };
+        let old_tree = old_tree
+            .and_then(parse_oid)
+            .and_then(|oid| self.repo.find_tree(oid).ok());
+
+        // A directory-prefix glob like `bucket/*.json` cannot be used here:
+        // libgit2 feeds a literal pathspec to a plain fnmatch (`wildmatch`)
+        // that does NOT let `*` cross `/`, so it silently matches nothing and
+        // the diff yields empty deltas. The diff is built unfiltered and every
+        // delta is checked by path in `manifest_deltas_of` instead.
+        let diff = self
+            .repo
+            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None);
+        let Ok(diff) = diff else {
+            return Vec::new();
+        };
+        manifest_deltas_of(&diff)
+    }
+}
+
+/// Parse a 40-hex commit or blob id, rejecting anything else.
+fn parse_oid(hex: &str) -> Option<git2::Oid> {
+    git2::Oid::from_str(hex).ok()
+}
+
+/// One commit of the first-parent chain, as [`HistoryRepo::walk_chain`] yields
+/// it: the commit, its tree and its first parent's tree as 40-hex OIDs, and the
+/// author time. The trees are only *read* later, by
+/// [`HistoryRepo::manifest_deltas`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryCommit {
+    /// The commit itself, 40-hex.
+    pub commit: String,
+    /// The commit's root tree, 40-hex.
+    pub tree: String,
+    /// The first parent's root tree, 40-hex — `None` for a root commit, which
+    /// is also how a completed seed recognises the end of the chain.
+    pub parent_tree: Option<String>,
+    /// Author time of `commit`, Unix seconds — the `committed_at` the index
+    /// records for the versions this commit introduced.
+    pub committed_at: i64,
+}
+
+/// A manifest file that changed between two adjacent commits of a bucket repo,
+/// with the blob OID on the **new** side (present for added/modified deltas;
+/// `None` for deleted ones — the content is gone from that commit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryDelta {
+    /// Repo-relative path with `/` separators.
+    pub path: String,
+    /// True when the update removed the file (no content on the new side).
+    pub deleted: bool,
+    /// Blob OID on the new side of the delta, when there is one (40-hex).
+    pub blob_oid: Option<String>,
+}
+
+/// The manifest deltas of one tree diff. Rename detection stays off; only
+/// `.json` manifests are reported, mirroring [`diff_manifest_changes`].
+fn manifest_deltas_of(diff: &git2::Diff<'_>) -> Vec<HistoryDelta> {
+    let mut out = Vec::new();
+    for delta in diff.deltas() {
+        let deleted = matches!(delta.status(), Delta::Deleted);
+        let candidate = if deleted {
+            delta.old_file().path()
+        } else {
+            delta.new_file().path()
+        };
+        let Some(p) = candidate else {
+            continue;
+        };
+        let path = p.to_string_lossy().into_owned();
+        // Exactly `diff_manifest_changes`' rule, which `manifest_walker`'s
+        // discovery agrees with: every `.json` except the repo-level
+        // `package.json`. A bucket may keep its manifests at the repository
+        // root or under a category directory — `Bucket::path_of_manifest`
+        // accepts both — so requiring a `bucket/` prefix here would silently
+        // index nothing for those buckets. A JSON that is not a manifest is
+        // dropped later, when its version fails to parse.
+        if !path.ends_with(".json") || path.ends_with("package.json") {
+            continue;
+        }
+        let blob_oid = if deleted {
+            None
+        } else {
+            // `Oid::nonzero` is git2 0.19+; `0000…0` marks an unavailable id.
+            let oid = delta.new_file().id();
+            (oid != git2::Oid::zero()).then(|| oid.to_string())
+        };
+        out.push(HistoryDelta {
+            path,
+            deleted,
+            blob_oid,
+        });
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Infra trait (git capability)
 // ---------------------------------------------------------------------------
@@ -633,13 +922,46 @@ mod tests {
         repo.find_tree(builder.write().unwrap()).unwrap()
     }
 
-    /// Write a file in the working tree and commit it on HEAD.
+    /// Write a file in the working tree and commit it on HEAD, creating any
+    /// missing parent directories (`bucket/…` fixtures are not checked out by
+    /// `Repository::init` alone) and materialising the full tree.
     fn commit_file(repo: &Repository, rel: &str, content: &str, msg: &str) {
         let full = repo.workdir().unwrap().join(rel);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(&full, content).unwrap();
 
+        // The existing fixture wrote one flat file per commit into a fresh
+        // index; nested fixtures accumulate `bucket/` entries instead, so
+        // rebuild the index from the working tree (what `git add` would do)
+        // and keep previously committed files present. `index.add_path` needs
+        // a repo-relative path with `/` separators on Windows too.
+        let workdir = repo.workdir().unwrap().to_owned();
         let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new(rel)).unwrap();
+        index.clear().unwrap();
+        let push = |rel: String, index: &mut git2::Index| {
+            let _ = index.add_path(std::path::Path::new(&rel));
+        };
+        for entry in std::fs::read_dir(&workdir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                push(entry.file_name().to_string_lossy().into_owned(), &mut index);
+            } else if path.is_dir() {
+                for nested in std::fs::read_dir(&path).unwrap().flatten() {
+                    if nested.path().is_file() {
+                        push(
+                            format!(
+                                "{}/{}",
+                                entry.file_name().to_string_lossy(),
+                                nested.file_name().to_string_lossy()
+                            ),
+                            &mut index,
+                        );
+                    }
+                }
+            }
+        }
         index.write().unwrap();
         let tree_id = index.write_tree_to(repo).unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -993,6 +1315,265 @@ mod tests {
         assert!(last_commit_for_file(&untracked).is_none());
 
         cleanup(&dir);
+    }
+
+    // --- manifest-history walk primitives --------------------------------
+
+    /// A fixture matching the seed scan's real shape: manifests live under
+    /// `bucket/`, root-level JSON (`package.json`) must stay invisible, and
+    /// each commit bumps exactly one manifest.
+    fn history_fixture(name: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(name);
+        let repo = Repository::init(&dir).unwrap();
+        commit_file(&repo, "bucket/foo.json", r#"{"version": "1.0"}"#, "add foo");
+        commit_file(&repo, "bucket/bar.json", r#"{"version": "1.0"}"#, "add bar");
+        commit_file(
+            &repo,
+            "bucket/foo.json",
+            r#"{"version": "2.0"}"#,
+            "bump foo",
+        );
+        commit_file(&repo, "bucket/notes.txt", "notes\n", "add non-manifest");
+        commit_file(&repo, "package.json", "{}\n", "add root package");
+        (dir, repo)
+    }
+
+    /// The chain with each entry's deltas: the shape the seed indexes, now
+    /// that the product walks the chain and diffs per chunk.
+    fn walk_with_deltas(
+        history: &HistoryRepo,
+        head: &str,
+    ) -> Vec<(HistoryCommit, Vec<HistoryDelta>)> {
+        history
+            .walk_chain(head, None, None)
+            .map(|entry| {
+                let deltas = history.manifest_deltas(&entry.tree, entry.parent_tree.as_deref());
+                (entry, deltas)
+            })
+            .collect()
+    }
+
+    /// The walk yields every commit from HEAD to the root exactly once, in
+    /// first-parent order, with manifest deltas on every step.
+    #[test]
+    fn history_walk_covers_the_whole_first_parent_chain() {
+        let (dir, _repo) = history_fixture("history-walk");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let chain: Vec<HistoryCommit> = history.walk_chain(&head, None, None).collect();
+
+        // Walk order is newest-first: root package, notes, bump, add-bar,
+        // add-foo. The bump is entry 2; the root commit is the last entry.
+        assert_eq!(chain.len(), 5, "one entry per commit, root included");
+        assert_eq!(chain[0].commit, head);
+        // The chain walk reads no trees, and hands the parallel diff exactly
+        // the two tree OIDs it needs: the commit's and its first parent's.
+        assert!(!chain[0].tree.is_empty());
+        assert_eq!(
+            chain[0].parent_tree.as_deref(),
+            Some(chain[1].tree.as_str())
+        );
+        assert!(
+            chain.last().unwrap().parent_tree.is_none(),
+            "a root commit has no parent tree — the seed's end-of-chain signal"
+        );
+
+        let steps = walk_with_deltas(&history, &head);
+        let deltas: usize = steps.iter().map(|(_, deltas)| deltas.len()).sum();
+        assert_eq!(deltas, 3, "three manifest-touching commits");
+        assert_eq!(steps[2].1.len(), 1, "the bump commit only changed foo");
+        assert_eq!(steps[2].1[0].path, "bucket/foo.json");
+        assert!(!steps[2].1[0].deleted);
+
+        // The root commit is `add foo` (bar came later): diffed against the
+        // empty tree it carries exactly the one manifest added there, and
+        // `package.json` never appears at all.
+        let root = &steps[4].1;
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].path, "bucket/foo.json");
+        assert!(
+            steps
+                .iter()
+                .flat_map(|(_, deltas)| deltas)
+                .all(|d| d.path.ends_with(".json") && !d.path.ends_with("package.json")),
+            "the manifest filter must match diff_manifest_changes"
+        );
+
+        // Every non-deleted delta carries a real blob OID, and the recorded
+        // author time is the commit's.
+        assert!(
+            steps
+                .iter()
+                .flat_map(|(_, deltas)| deltas)
+                .filter(|d| !d.deleted)
+                .all(|d| d.blob_oid.is_some())
+        );
+        assert!(chain.iter().all(|c| c.committed_at == 0), "pinned sig time");
+
+        cleanup(&dir);
+    }
+
+    /// `blob_text` reads exactly the bytes the index records, and answers
+    /// `None` for an object it cannot read — the read path's invalidation
+    /// signal (`gc --prune` removes the blob).
+    #[test]
+    fn history_blob_text_reads_the_indexed_manifest() {
+        let (dir, _repo) = history_fixture("history-blob");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+
+        let bumped = walk_with_deltas(&history, &head)
+            .into_iter()
+            .flat_map(|(_, deltas)| deltas)
+            .find(|d| d.path == "bucket/foo.json")
+            .and_then(|d| d.blob_oid)
+            .unwrap();
+        assert_eq!(
+            history.blob_text(&bumped).as_deref(),
+            Some(r#"{"version": "2.0"}"#),
+            "the newest foo blob is the bumped version"
+        );
+
+        // An OID the repository does not hold is unreadable, not an error.
+        assert!(
+            history
+                .blob_text("4444444444444444444444444444444444444444")
+                .is_none()
+        );
+
+        cleanup(&dir);
+    }
+
+    /// Resume semantics: `start` is inclusive (the first entry is the stored
+    /// baseline itself), `until` stops after the named commit, and an
+    /// unreachable `start` falls back to HEAD rather than yielding nothing.
+    #[test]
+    fn history_walk_resume_bounds_are_inclusive() {
+        let (dir, _repo) = history_fixture("history-resume");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let chain: Vec<String> = history
+            .walk_chain(&head, None, None)
+            .map(|c| c.commit)
+            .collect();
+        let base = &chain[3];
+
+        // Inclusive start: the baseline commit itself is yielded first, then
+        // every older commit down to the root.
+        let tail: Vec<String> = history
+            .walk_chain(&head, Some(base), None)
+            .map(|c| c.commit)
+            .collect();
+        assert_eq!(tail, chain[3..]);
+
+        // Inclusive stop: everything from HEAD down to (and including) the
+        // baseline — this is what bounds an incremental scan.
+        let bounded: Vec<String> = history
+            .walk_chain(&head, None, Some(base))
+            .map(|c| c.commit)
+            .collect();
+        assert_eq!(bounded, chain[..4]);
+
+        // An unreachable stored baseline degrades to a full walk from HEAD.
+        let ghost = "1111111111111111111111111111111111111111";
+        assert_eq!(history.walk_chain(&head, Some(ghost), None).count(), 5);
+        assert!(!history.is_ancestor(&head, ghost));
+        // Reachability is directional: HEAD is not reachable from its parent.
+        assert!(history.is_ancestor(&head, &chain[1]));
+        assert!(!history.is_ancestor(&chain[1], &head));
+
+        cleanup(&dir);
+    }
+
+    /// An unreachable stop commit yields the full walk instead of stopping at
+    /// nothing — the caller still detects "baseline not advanced" by checking
+    /// whether the recorded commit was reached.
+    #[test]
+    fn history_walk_unknown_stop_yields_the_full_walk() {
+        let (dir, _repo) = history_fixture("history-stop");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let ghost = "2222222222222222222222222222222222222222";
+        assert_eq!(history.walk_chain(&head, None, Some(ghost)).count(), 5);
+
+        cleanup(&dir);
+    }
+
+    /// A deleted manifest appears with `deleted: true` and no blob OID —
+    /// the history index must not drop its row for a deletion.
+    #[test]
+    fn history_walk_reports_deletions_without_a_blob() {
+        let dir = temp_dir("history-delete");
+        let repo = Repository::init(&dir).unwrap();
+        commit_file(&repo, "bucket/gone.json", r#"{"version": "1.0"}"#, "add");
+        // Remove the file from the working tree, then commit the deletion.
+        std::fs::remove_file(dir.join("bucket").join("gone.json")).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .remove_path(std::path::Path::new("bucket/gone.json"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree_to(&repo).unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig(), &sig(), "remove", &tree, &[&parent])
+            .unwrap();
+
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let deleted = walk_with_deltas(&history, &head)
+            .into_iter()
+            .flat_map(|(_, deltas)| deltas)
+            .find(|d| d.path == "bucket/gone.json")
+            .unwrap();
+        assert!(deleted.deleted);
+        assert!(deleted.blob_oid.is_none());
+
+        cleanup(&dir);
+    }
+
+    /// Baseline validation walks the same chain as the indexer: a stored
+    /// baseline that is still reachable answers true, one from a rewritten
+    /// history answers false.
+    #[test]
+    fn history_is_ancestor_matches_the_walk_chain() {
+        let (dir, _repo) = history_fixture("history-ancestor");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let chain: Vec<String> = history
+            .walk_chain(&head, None, None)
+            .map(|c| c.commit)
+            .collect();
+
+        // Every commit the walk yields is reachable from HEAD, and so is HEAD.
+        for commit in &chain {
+            assert!(
+                history.is_ancestor(&head, commit),
+                "walk entry {commit} must be reachable from {head}"
+            );
+        }
+        assert!(history.is_ancestor(&head, &head));
+        // A commit that does not exist must force a re-seed.
+        assert!(!history.is_ancestor(&head, "3333333333333333333333333333333333333333"));
+
+        cleanup(&dir);
+    }
+
+    /// A plain directory bucket has no repository to index — `open` is the
+    /// single place that decides this, so every caller can skip uniformly.
+    #[test]
+    fn history_repo_open_rejects_a_plain_directory() {
+        let plain = temp_dir("history-plain");
+        std::fs::create_dir_all(plain.join("bucket")).unwrap();
+        assert!(HistoryRepo::open(&plain).is_none());
+
+        // An initialised repository with no commits has no HEAD to walk.
+        let empty = temp_dir("history-empty");
+        Repository::init(&empty).unwrap();
+        assert!(HistoryRepo::open(&empty).unwrap().head().is_none());
+
+        cleanup(&plain);
+        cleanup(&empty);
     }
 
     /// The normalization table was evaluated against upstream's

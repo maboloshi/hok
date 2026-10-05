@@ -174,6 +174,15 @@ async fn update_buckets(session: &Session) -> Result<()> {
     // nothing is printed at all when the cache is disabled in config.
     refresh_manifest_cache(session, &changes)?;
 
+    // The manifest history index is maintained next to the cache but not by
+    // it. It is deliberately un-gated from `use_sqlite_cache` (it backs
+    // `app@<old version>` resolution, not cache serving), and it is derived
+    // data: a failure keeps the previous baseline for the next update to retry
+    // and is logged, never surfaced as a failed `hok update`.
+    if let Err(e) = package::manifest_history::refresh(session) {
+        tracing::warn!("manifest history index refresh failed: {e}");
+    }
+
     // Buckets that were never fetched are named once, at the end: by now their
     // rows are settled, and this is the line that survives a scrollback or a CI
     // log. The exit code stays 0 — upstream reports a failed pull and carries

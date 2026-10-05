@@ -57,6 +57,7 @@ pub(crate) mod install_state;
 pub mod list;
 pub(crate) mod manifest;
 pub mod manifest_cache;
+pub mod manifest_history;
 pub mod manifest_source;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
