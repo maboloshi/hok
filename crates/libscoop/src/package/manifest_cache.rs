@@ -78,6 +78,38 @@ pub fn open(session: &Session) -> Fallible<Connection> {
         );",
     )?;
 
+    // The history index is derived data: rows are only added or explicitly
+    // invalidated, never pruned with the `app` table's current-version DELETEs.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS 'hok_manifest_history' (
+            bucket      TEXT    NOT NULL,
+            name        TEXT    NOT NULL COLLATE NOCASE,
+            version     TEXT    NOT NULL,
+            blob_oid    TEXT    NOT NULL,
+            path        TEXT    NOT NULL,
+            committed_at INTEGER NOT NULL,
+            PRIMARY KEY (bucket, name, version)
+        ) WITHOUT ROWID;",
+    )?;
+
+    // Seed progress and incremental updates advance in the same transaction as
+    // the index rows, so there is one history rather than two files to drift.
+    //
+    // `seeded` disambiguates the two meanings `indexed_commit` carries over a
+    // bucket's lifetime: while a seed walks down the chain it is the *oldest*
+    // commit covered (a resume cursor), and once the seed reaches the root it
+    // becomes the *newest* commit covered (the anchor an incremental scan
+    // diffs from). Without the flag a bucket interrupted mid-seed would look
+    // already-anchored, and the next scan would mark the index complete while
+    // the older half of its history was never read.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS 'hok_manifest_history_sync' (
+            bucket TEXT PRIMARY KEY,
+            indexed_commit TEXT NOT NULL,
+            seeded INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+
     Ok(conn)
 }
 
@@ -662,6 +694,99 @@ mod tests {
             .join(bucket)
             .join("bucket")
             .join(format!("{name}.json"))
+    }
+
+    #[test]
+    fn history_index_tables_are_created_with_the_expected_shape() {
+        let root = tmpdir("history_index_ddl");
+        let session = test_session(&root);
+        let conn = open(&session).unwrap();
+
+        for table in ["hok_manifest_history", "hok_manifest_history_sync"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{table} must exist after open()");
+        }
+
+        // `seeded` is what distinguishes a resume cursor from an incremental
+        // anchor, so it must be there and not nullable.
+        let seeded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('hok_manifest_history_sync')
+                 WHERE name = 'seeded' AND \"notnull\" = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(seeded, 1, "the sync table must carry NOT NULL `seeded`");
+
+        // WITHOUT ROWID: there is no rowid to select.
+        assert!(
+            conn.query_row("SELECT rowid FROM hok_manifest_history", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .is_err(),
+            "the history table must be WITHOUT ROWID"
+        );
+
+        // The primary key decides what `INSERT OR IGNORE` collapses, so check
+        // it behaviourally: `name` participates case-insensitively (the `app`
+        // table's rule — bucket file names are case-insensitive on Windows)
+        // and `version` keeps distinct releases apart.
+        let insert = |name: &str, version: &str| {
+            conn.execute(
+                "INSERT OR IGNORE INTO hok_manifest_history
+                     (bucket, name, version, blob_oid, path, committed_at)
+                 VALUES ('main', ?1, ?2,
+                         '0000000000000000000000000000000000000000',
+                         'bucket/foo.json', 1)",
+                [name, version],
+            )
+            .unwrap();
+        };
+        insert("foo", "1.0");
+        insert("FOO", "1.0");
+        insert("foo", "2.0");
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM hok_manifest_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 2, "NOCASE name and version form the primary key");
+
+        // The commit-1 shape of the sync insert (no `seeded`) still works, so
+        // a database written before the column existed keeps loading.
+        conn.execute(
+            "INSERT INTO hok_manifest_history_sync (bucket, indexed_commit) VALUES (?1, ?2)",
+            ["main", "abc"],
+        )
+        .unwrap();
+
+        // Re-opening is the upgrade path for an existing database.
+        drop(conn);
+        let conn = open(&session).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM hok_manifest_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 2, "open() must be idempotent");
+        let defaulted: bool = conn
+            .query_row(
+                "SELECT seeded FROM hok_manifest_history_sync WHERE bucket = 'main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!defaulted, "an omitted `seeded` defaults to 0");
+
+        drop(conn);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
