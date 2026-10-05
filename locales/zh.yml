@@ -503,6 +503,7 @@ cli_help:
     subcommands: "子命令"
     options: "选项"
     arguments: "参数"
+    global_options: "全局选项"
   after_help: "输入 'hok help <命令>' 查看特定命令的帮助。"
   help:
     about: "打印此消息或给定子命令的帮助"

@@ -480,6 +480,19 @@ fn option_takes_value(cmd: &clap::Command, option: &str) -> bool {
 fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
     let args_h = hok_i18n::t!("cli_help.heading.arguments").to_string();
     let opts_h = hok_i18n::t!("cli_help.heading.options").to_string();
+    let global_opts_h = hok_i18n::t!("cli_help.heading.global_options").to_string();
+
+    // Collect the global argument ids from the top-level Cli (before build,
+    // so we can distinguish them from per-subcommand options after build).
+    let global_ids: std::collections::HashSet<String> = cmd
+        .get_arguments()
+        .filter(|a| {
+            // clop 4.5 exposes is_global_set() on Arg; fall back to comparing
+            // against the parent command's known global args if unavailable.
+            a.is_global_set()
+        })
+        .map(|a| a.get_id().to_string())
+        .collect();
 
     // Phase 1, before `build()`: put each command's positionals in front of its
     // options.
@@ -489,7 +502,7 @@ fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
     // above, the globals clap propagated into the subcommands, and the
     // -h/--help / -V/--version args clap added itself.
     cmd.build();
-    localize_heading_level(cmd, &args_h, &opts_h)
+    localize_heading_level(cmd, &args_h, &opts_h, &global_opts_h, &global_ids)
 }
 
 /// Move every positional argument of every command in front of that command's
@@ -536,9 +549,16 @@ fn order_positionals_first(cmd: clap::Command) -> clap::Command {
 /// (`checkver` and `reset`) declare an argument of their own called `version` —
 /// matching on the id used to relabel those user args with clap's own
 /// "Print version" text (and, via `mut_arg`, corrupted the command outright).
-fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> clap::Command {
+fn localize_heading_level(
+    cmd: clap::Command,
+    args_h: &str,
+    opts_h: &str,
+    global_opts_h: &str,
+    global_ids: &std::collections::HashSet<String>,
+) -> clap::Command {
     let pos_h = args_h.to_string();
     let opt_h = opts_h.to_string();
+    let global_opt_h = global_opts_h.to_string();
     // Both short (-h/-V) and long (--help/--version) render paths must show the
     // localized text: `help` is used for the short view and `long_help` for the
     // long view, so set both.
@@ -547,14 +567,15 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
 
     let cmd = cmd.mut_args(move |a| match a.get_action() {
         ArgAction::Help => a
-            .help_heading(opt_h.clone())
+            .help_heading(global_opt_h.clone())
             .help(help_txt.clone())
             .long_help(help_txt.clone()),
         ArgAction::Version => a
-            .help_heading(opt_h.clone())
+            .help_heading(global_opt_h.clone())
             .help(version_txt.clone())
             .long_help(version_txt.clone()),
         _ if a.is_positional() => a.help_heading(pos_h.clone()),
+        _ if global_ids.contains(a.get_id().as_str()) => a.help_heading(global_opt_h.clone()),
         _ => a.help_heading(opt_h.clone()),
     });
 
@@ -565,7 +586,7 @@ fn localize_heading_level(cmd: clap::Command, args_h: &str, opts_h: &str) -> cla
             let about = hok_i18n::t!("cli_help.help.about").to_string();
             sub.about(about)
         } else {
-            localize_heading_level(sub, args_h, opts_h)
+            localize_heading_level(sub, args_h, opts_h, global_opts_h, global_ids)
         }
     })
 }

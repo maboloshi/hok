@@ -503,6 +503,7 @@ cli_help:
     subcommands: "Subcommands"
     options: "Options"
     arguments: "Arguments"
+    global_options: "Global Options"
   after_help: "Type 'hok help <command>' to get help for a specific command."
   help:
     about: "Print this message or the help of the given subcommand(s)"
