@@ -1,6 +1,7 @@
 # search 输出修改演示
 
 Status: active
+Archived: 2026-10-05
 Updated: 2026-10-05
 
 参考来源：`hok list` 表格布局（`src/cmd/list.rs:layout`）、`hyperscoop` 边框风格、`scoop-search.ps1` 原版行格式。
