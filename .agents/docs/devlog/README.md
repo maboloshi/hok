@@ -6,13 +6,15 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（61 条，自动生成）
+## 索引（63 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
-| 2026-10-05 | CLI 帮助：全局选项与命令选项分节显示 | `db896cc` `7bf67d4` | [`2026-10-05-cli-help-global-option-separation.md`](2026-10-05-cli-help-global-option-separation.md) |
+| 2026-10-06 | 清单历史索引落地：建表 / 种子与增量 / 读取三段，外加解析器 abort 前置修复 | `62261c5` `615a6bb` `61c3b7d` `27ce29e` `ab7c4c2` `9893616` | [`2026-10-06-manifest-history-index.md`](2026-10-06-manifest-history-index.md) |
+| 2026-10-05 | search 输出重做：无参数修正 + 表格布局参考 list/hp + 底部汇总 | `a1f580c` `44a56e0` | [`2026-10-05-search-output-redesign.md`](2026-10-05-search-output-redesign.md) |
 | 2026-10-05 | pending-tasks 逐条复核：关闭已落地项，开放项补今日证据 | `5f73d5f` | [`2026-10-05-pending-tasks-closure-sweep.md`](2026-10-05-pending-tasks-closure-sweep.md) |
 | 2026-10-05 | NSIS 上游提案全部闭环，记录从「待提交」改为「已合并」 | `2a8d91b` | [`2026-10-05-nsis-upstream-proposal-merged.md`](2026-10-05-nsis-upstream-proposal-merged.md) |
+| 2026-10-05 | CLI 帮助：全局选项与命令选项分节显示 | `0b4cd4c3` | [`2026-10-05-cli-help-global-option-separation.md`](2026-10-05-cli-help-global-option-separation.md) |
 | 2026-10-05 | hok checkver 输出重做：符号结果行 + 单行转圈 + 汇总 | `cb1fd39` | [`2026-10-05-checkver-report-rework.md`](2026-10-05-checkver-report-rework.md) |
 | 2026-10-04 | 全局工作区约定重排，并修掉两处会说反的规则 | `46be764` `754a56b` | [`2026-10-04-workspace-convention-readability-and-rule-fixes.md`](2026-10-04-workspace-convention-readability-and-rule-fixes.md) |
 | 2026-10-04 | 机器本地技能根迁到 ~/.agents/skills，并修掉仓内所有旧指针 | `9411488` | [`2026-10-04-machine-local-skill-root-repoint.md`](2026-10-04-machine-local-skill-root-repoint.md) |

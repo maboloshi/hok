@@ -28,6 +28,7 @@
 | `s6-cleanup-cache-investigation-2026-09.md` | S6 `cleanup`/`cache` 数据安全：`-k` 保留当前版本、`cache rm` 按 app 名锚定、`-g` 管理员门与 `-a -g` 两趟 | 已闭环（`1e6b929`/`33ba858`/`1c1311b`/`cc2c072`） |
 | `download-stack-overflow-2026-09-25.md` | `hok download <合法本地 manifest>` 主线程栈溢出（0xC00000FD）：判别式 + 调用链定位 + 栈预算分解 + 方案 A–E 对照 | 已闭环（`6620d69`：链接期预留 8 MiB + CLI 级回归测试） |
 | `archive-refactor-retrospective.md` | 复盘：`archive.rs` 反复修改的教训（同一函数 4 个提交改 550+ 行、"加-删-加"重复） | 纯历史复盘，教训已吸收（2026-09-26 归档） |
+| `search-output-design.md` | `search` 命令表格输出重设计（常驻/条件列、汇总行、无参数语义） | 设计已落地（`a1f580c` `44a56e0`），内容已落入 devlog `2026-10-05-search-output-redesign.md`（2026-10-05 归档；**2026-10-06 补登记**——归档时漏登索引） |
 | `duplicates_report.txt` | 工作区重复代码扫描产物（2026-07-27） | **机器生成产物，不入库**（本机保留）；结论已用，且行号锚定重构前的树 |
 | `large_duplicates.txt` | 大重复块扫描产物（2026-07-27） | **机器生成产物，不入库**（本机保留）；结论已用 |
 | `full_workspace_report.txt` | 工作区全量分析报告（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用，且引用已失效的 `crates/hok-shim-ref` |
