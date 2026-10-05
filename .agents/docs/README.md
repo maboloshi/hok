@@ -19,6 +19,7 @@
 |---|---|
 | [`pending-tasks.md`](active/plan/pending-tasks.md) | 跨主题待办总表（含已推迟项的复核结论） |
 | [`private-bucket-plan-2026-09.md`](active/plan/private-bucket-plan-2026-09.md) | 私有 bucket 方案与落地步骤 |
+| [`manifest-history-index-plan.md`](active/plan/manifest-history-index-plan.md) | 清单历史索引正式方案（表结构 / 种子与增量 / 读取与失效回落 / 提交拆分 / 验收标准；含成本实测归因与并行化理由） |
 
 ## active/audit — 随修复持续更新的审计基线
 
