@@ -90,7 +90,7 @@ Set-Content "$dir\hok.json" ('{"root_path":"' + $dir.Replace('\','\\') + '","cac
   新提交接在交接时的 9 条之上（7 条索引本体 ＋ 2 条本文件的交接提交），故本主题的代码提交是该分支第 10 条。
 - 建议顺序：先写「带记忆化的树 diff」原语 ＋ §5.2 语义单测 → 再切 `manifest_history` 的消费方式 → 最后跑 §5.1 等价与 §5.3 性能线。
 - 若等价做不到，或语义单测暴露无法在改动范围内解决的差异，**停下来报告**，不要降级验收。
-- 背景：索引本体方案 [`manifest-history-index-plan.md`](manifest-history-index-plan.md)（含 §2 成本更正）；本次实验记录见 devlog [`../devlog/2026-10-06-manifest-history-index.md`](../devlog/2026-10-06-manifest-history-index.md)。
+- 背景：索引本体方案 [`manifest-history-index-plan.md`](manifest-history-index-plan.md)（含 §2 成本更正）；本次实验记录见 devlog [`../../devlog/2026-10-06-manifest-history-index.md`](../../devlog/2026-10-06-manifest-history-index.md)。
 
 ## 8. 落地结果（2026-10-07）
 

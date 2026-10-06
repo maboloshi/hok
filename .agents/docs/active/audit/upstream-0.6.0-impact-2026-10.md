@@ -50,16 +50,23 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 ## 3. P2 — 新增能力/新键缺失（**不采纳，只记录差距**，2026-10-03 用户拍板）
 
+> **2026-10-07 更正**：`63cb8f84` 的历史清单链（含 `use_git_history`）**已改为落地**——同库新表
+> `hok_manifest_history`（只存 `(bucket,name,version) → blob_oid,path,committed_at`）＋ `hok update` 上的种子/增量，
+> 读路径接 `manifest_source::generate_user_manifest` 第 2 段；方案
+> [`../plan/manifest-history-index-plan.md`](../plan/manifest-history-index-plan.md)，成本优化
+> [`../plan/manifest-seed-tree-cost-plan.md`](../plan/manifest-seed-tree-cost-plan.md)。
+> `db8d554f` / `198818ae` 两条仍为「不采纳，只记录差距」，见下表与 §6。
+
 | 上游 | 官方行为 | hok 现状（2026-10-03 核对） | 影响 |
 |---|---|---|---|
-| `63cb8f84` | 新增 config 键 `use_git_history`（默认 `$true`）+ SQLite→git→autoupdate 的历史清单链（`lib/manifest.ps1:183-335`、`libexec/scoop-config.ps1:33-36`） | `use_git_history` 已登记为「官方键、hok 无实现」（`crates/libscoop/src/config.rs:1158-1176` 的 `OFFICIAL_ONLY_KEYS`，非报「未知键」）；**无任何调用点**。`@version` **本身是支持的**，只是唯一手段是 autoupdate（`package/manifest_source.rs:422-479` → `checkver.rs:1035-1131`） | 重建不出的版本无解：当前 autoupdate 模板套不出该版本的 URL、或 manifest 无 `autoupdate` 段（hok 报 `does not have autoupdate capability`） |
+| `63cb8f84` | 新增 config 键 `use_git_history`（默认 `$true`）+ SQLite→git→autoupdate 的历史清单链（`lib/manifest.ps1:183-335`、`libexec/scoop-config.ps1:33-36`） | **已落地（2026-10-07）**。原状：`use_git_history` 已登记为「官方键、hok 无实现」（`crates/libscoop/src/config.rs:1158-1176` 的 `OFFICIAL_ONLY_KEYS`，非报「未知键」）；**无任何调用点**。`@version` **本身是支持的**，只是唯一手段是 autoupdate（`package/manifest_source.rs:422-479` → `checkver.rs:1035-1131`） | 原缺口（重建不出的版本无解：当前 autoupdate 模板套不出该版本的 URL、或 manifest 无 `autoupdate` 段）**已由历史索引补上**：读路径命中即取回原文，未命中/失效才回落 autoupdate |
 | `db8d554f` | bucket pull 改为 `git pull --tags --force -q`（`libexec/scoop-update.ps1:139`） | libgit2 fetch，refspec 只含 heads（`internal/git.rs:146-172`），全文无 tag 处理 | **不构成互锁**（见 §3.1）：0.6.0 的历史查询不使用 tag，真正的互锁在 git 历史 provider 的缺失 |
 | `198818ae` | `scoop update -f` 把 `@version` pin 升到 bucket HEAD；`$pin_broken`、`Find-AppBucket` 重解析（`libexec/scoop-update.ps1:271-284,443-451`） | pin/URL 安装即 isolated；`-f` 在 installed 集上原地重装当期版本（`sync_install.rs:137-144,328`） | `hok update -f` 不会升到 bucket HEAD（**与上游同口径**：两者都不能"升级"一个 pin，上游的做法是 `-f` 时**丢掉 pin 重新解析**） |
 | `e02633c7` | 配置键 `aria2-fallback-disabled` 反转为 `aria2-fallback-enabled`（`libexec/scoop-config.ps1:142`） | **已登记**（`config.rs:1159`，随 `4168ba8`）⇒ 报「官方键、hok 无实现」而非「未知键」 | 仅"无法设置"（用户拍板接受），非能力缺口 |
 | `327040cf` | `scoop download` 任一失败即 `exit 1`（`libexec/scoop-download.ps1` 末尾 `exit [int]$download_failed`） | **已落地**：`download_apps.rs:106-148` 返回失败标志，`src/cmd/download.rs:53-60` 转非零退出码（`4168ba8`） | 无。附带**更正**：`scoop-gap-status.md` 里「download 失败按官方改为 0」的口径已过期（0.6.0 起官方为 1） |
 
 **登记去向**：前三条（`63cb8f84` / `db8d554f` / `198818ae`）转入
-[`pending-tasks.md`](../plan/pending-tasks.md) §3「对标差距里的暂缓 / 有意未做」；后两条已闭环，仅在本表留更正。
+[`pending-tasks.md`](../plan/pending-tasks.md) §3「对标差距里的暂缓 / 有意未做」（其中 `63cb8f84` 已于 2026-10-07 标为已落地）；后两条已闭环，仅在本表留更正。
 
 ### 3.1 上游意图（为什么这么改）
 
@@ -118,6 +125,7 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 | P0 | 元数据文件名（写新名 + 读新名优先回落旧名 + 版本解析/枚举双名） | worktree `.worktrees/p0-metadata-names`，分支 `feat/metadata-scoop-prefix`，base `22b9e68`；**遗留**：版本枚举（`install_state.rs:204-225`）仍只按 mtime，见 §1 |
 | P1 | checkver GitHub 模式整体移植（上表 7 条 + 改掉锁定旧行为的测试） | worktree `.worktrees/p1-checkver-github`，分支 `fix/checkver-github-mode`，base `22b9e68` |
 | P3 | `$bucket` 语义、环境变量输出、notes 分隔/高亮、两个新 config 键登记、`download` 退出码 | 父会话主树直接改（`locales/*` 是必冲突热点，不派分支）。**已落地**（`4168ba8` + `507aab2`）：两个 config 键已登记、`download` 退出码已非零；审计文档旧行已就地更正（§3、§4） |
-| 不采纳 | P2 的 `63cb8f84` / `db8d554f` / `198818ae` 三条（2026-10-03 用户拍板只记录差距） | 已登记进 [`pending-tasks.md`](../plan/pending-tasks.md) §3；设计与意图见 §3.1 |
+| 已改判 | P2 的 `63cb8f84`（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../plan/manifest-history-index-plan.md`](../plan/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) §3 |
+| 不采纳 | P2 的 `db8d554f`（`git pull --tags --force`）/ `198818ae`（`update -f` 丢 pin）两条（2026-10-03 用户拍板只记录差距） | 已登记进 [`pending-tasks.md`](../plan/pending-tasks.md) §3；设计与意图见 §3.1 |
 
 **门禁策略（用户 2026-10-02 选定）**：每条子分支自测一次（`cargo fmt --check` / `clippy -D warnings` / 目标测试），落地后父会话在最终树上跑一次完整门禁；不在每条分支重复跑完整套。
