@@ -4,9 +4,17 @@
 //! attempted but abandoned because gix's dependency tree is prohibitively
 //! large (aws-lc-rs, quinn-proto, h2, icu — causing 20+ min first build).
 
-use git2::{CredentialType, Delta, FetchOptions, Repository};
+use git2::{CredentialType, FetchOptions, Repository};
 use regex::Regex;
-use std::{collections::HashMap, path::Path, result::Result, sync::LazyLock};
+use std::{
+    cell::RefCell,
+    cmp::Ordering,
+    collections::{HashMap, VecDeque},
+    path::Path,
+    rc::Rc,
+    result::Result,
+    sync::LazyLock,
+};
 
 use crate::error::{Error, Fallible};
 
@@ -486,12 +494,16 @@ pub fn diff_manifest_changes<P: AsRef<Path>>(
 // ─── Manifest-history walk primitives ──────────────────────────────────────
 //
 // Backs the `hok_manifest_history` index (`package/manifest_history.rs`): one
-// pass down the first-parent chain, one `diff_tree_to_tree` per step, so the
-// seed scan never re-reads whole trees per app (the O(commits × apps) shape
-// that made the per-app pickaxe route infeasible). Rename detection is
-// deliberately off — a renamed manifest arrives as old-path deleted + new-path
-// added, exactly like `diff_manifest_changes`; the index keys on the file
-// name and keeps the old path in `path` so a row can be traced back.
+// pass down the first-parent chain, one tree diff per step, so the seed scan
+// never re-reads whole trees per app (the O(commits × apps) shape that made
+// the per-app pickaxe route infeasible). Rename detection is deliberately off —
+// a renamed manifest arrives as old-path deleted + new-path added, exactly like
+// `diff_manifest_changes`; the index keys on the file name and keeps the old
+// path in `path` so a row can be traced back.
+//
+// The per-step diff is [`HistoryRepo::diff_trees`], which compares parsed trees
+// and memoizes them by OID instead of calling `diff_tree_to_tree` — see
+// `manifest_deltas` for why that is what makes the walk affordable.
 //
 // The first-parent choice mirrors `last_commit_for_file`'s treesame
 // simplification: bucket histories are near-linear, and a merge that merely
@@ -511,6 +523,7 @@ const MAX_HISTORY_COMMITS: usize = 500_000;
 /// with libgit2 directly.
 pub struct HistoryRepo {
     repo: Repository,
+    trees: RefCell<TreeCache>,
 }
 
 impl HistoryRepo {
@@ -519,7 +532,29 @@ impl HistoryRepo {
     pub fn open<P: AsRef<Path>>(path: P) -> Option<HistoryRepo> {
         Repository::open(path.as_ref())
             .ok()
-            .map(|repo| HistoryRepo { repo })
+            .map(|repo| HistoryRepo {
+                repo,
+                trees: RefCell::new(TreeCache::new()),
+            })
+    }
+
+    /// The parsed entries of tree `oid`, memoized by OID (see [`TreeCache`]).
+    fn tree(&self, oid: git2::Oid) -> Option<Rc<TreeData>> {
+        if let Some(tree) = self.trees.borrow().trees.get(&oid) {
+            return Some(Rc::clone(tree));
+        }
+        // The cache borrow is released before the load: `find_tree` calls back
+        // into the repository, and the recursion below re-enters `tree`.
+        let tree = Rc::new(load_tree(&self.repo, oid)?);
+        self.trees.borrow_mut().insert(oid, Rc::clone(&tree));
+        Some(tree)
+    }
+
+    /// Whether tree `oid` is currently memoized. Test-only: production has no
+    /// reason to ask, it relies on the next step hitting the entry.
+    #[cfg(test)]
+    fn is_cached(&self, oid: &str) -> bool {
+        parse_oid(oid).is_some_and(|oid| self.trees.borrow().trees.contains_key(&oid))
     }
 
     /// The current HEAD commit as 40-hex, or `None` when the repository has
@@ -669,29 +704,198 @@ impl HistoryRepo {
     ///
     /// This is the expensive half of the walk — one full tree diff per commit
     /// — so it takes plain OIDs and does not borrow the chain walk: callers
-    /// run it across a thread pool, each worker with its own
-    /// [`HistoryRepo`].
+    /// run it across a thread pool, each worker with its own [`HistoryRepo`].
+    ///
+    /// The comparison is [`HistoryRepo::diff_trees`], not
+    /// `Repository::diff_tree_to_tree`: the seed diffs commit N against N+1
+    /// and then N+1 against N+2, so the same tree is the *new* side of one
+    /// step and the *old* side of the next. libgit2 loads both sides itself
+    /// and its object cache keeps trees of up to 4 KB, far below a real
+    /// bucket's ~100 KB `bucket/` subtree, so that read is always paid twice
+    /// (plan §2: 100.3 s against 57.1 s for one read, extras). Diffing parsed
+    /// trees from [`HistoryRepo::tree`] pays it once.
     pub fn manifest_deltas(&self, new_tree: &str, old_tree: Option<&str>) -> Vec<HistoryDelta> {
-        let Some(new_tree) = parse_oid(new_tree).and_then(|oid| self.repo.find_tree(oid).ok())
-        else {
+        let Some(new_tree) = parse_oid(new_tree).and_then(|oid| self.tree(oid)) else {
             return Vec::new();
         };
-        let old_tree = old_tree
-            .and_then(parse_oid)
-            .and_then(|oid| self.repo.find_tree(oid).ok());
+        let old_tree = old_tree.and_then(parse_oid).and_then(|oid| self.tree(oid));
 
-        // A directory-prefix glob like `bucket/*.json` cannot be used here:
-        // libgit2 feeds a literal pathspec to a plain fnmatch (`wildmatch`)
-        // that does NOT let `*` cross `/`, so it silently matches nothing and
-        // the diff yields empty deltas. The diff is built unfiltered and every
-        // delta is checked by path in `manifest_deltas_of` instead.
-        let diff = self
-            .repo
-            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None);
-        let Ok(diff) = diff else {
-            return Vec::new();
-        };
-        manifest_deltas_of(&diff)
+        let mut out = Vec::new();
+        self.diff_trees(old_tree.as_deref(), &new_tree, "", &mut out);
+        // libgit2 expands both trees before it compares them, so its deltas
+        // come out in path order (the merge of two path-sorted streams).
+        // Recursing per directory can order an entry differently — a file
+        // sorts before the directory it collides with, but the directory's
+        // name takes part in the tree comparison as `name/` — so the handful
+        // of deltas of one commit is re-sorted into path order. The sort is
+        // stable, which keeps a path that yields both a delete and an add (a
+        // type change) in libgit2's order.
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// Diff two parsed trees one directory at a time, appending the manifest
+    /// deltas of their leaves to `out`.
+    ///
+    /// This is the merged walk libgit2's diff engine performs over two fully
+    /// expanded trees: entries are matched by name in git's tree order, a
+    /// directory present on one side only contributes one delta per file, and
+    /// a subtree whose id matches on both sides is skipped without being read.
+    fn diff_trees(
+        &self,
+        old: Option<&TreeData>,
+        new: &TreeData,
+        prefix: &str,
+        out: &mut Vec<HistoryDelta>,
+    ) {
+        let old_len = old.map_or(0, |tree| tree.entries.len());
+        let mut oi = 0;
+        let mut ni = 0;
+
+        loop {
+            match (oi < old_len, ni < new.entries.len()) {
+                (false, false) => return,
+                (true, false) => {
+                    self.push_entry(old.expect("a tree with entries"), oi, prefix, true, out);
+                    oi += 1;
+                }
+                (false, true) => {
+                    self.push_entry(new, ni, prefix, false, out);
+                    ni += 1;
+                }
+                (true, true) => {
+                    let old_tree = old.expect("a tree with entries");
+                    match base_name_compare(old_tree, oi, new, ni) {
+                        Ordering::Less => {
+                            self.push_entry(old_tree, oi, prefix, true, out);
+                            oi += 1;
+                        }
+                        Ordering::Greater => {
+                            self.push_entry(new, ni, prefix, false, out);
+                            ni += 1;
+                        }
+                        Ordering::Equal => {
+                            self.push_matched(old_tree, oi, new, ni, prefix, out);
+                            oi += 1;
+                            ni += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Append one entry present on a single side: the entry itself when it is
+    /// a file, every manifest under it when it is a directory.
+    fn push_entry(
+        &self,
+        tree: &TreeData,
+        index: usize,
+        prefix: &str,
+        deleted: bool,
+        out: &mut Vec<HistoryDelta>,
+    ) {
+        let entry = &tree.entries[index];
+        if entry.mode & MODE_TYPE_MASK == MODE_TREE {
+            let Some(subtree) = self.tree(entry.oid) else {
+                // An unreadable subtree drops its deltas, like an unreadable
+                // blob: the index is derived data and a broken object must not
+                // fail the walk (`blob_text` answers `None` for the same
+                // reason).
+                return;
+            };
+            let child = child_prefix(prefix, tree.name(index));
+            for index in 0..subtree.entries.len() {
+                self.push_entry(&subtree, index, &child, deleted, out);
+            }
+        } else {
+            self.push_leaf(tree, index, prefix, deleted, out);
+        }
+    }
+
+    /// Append one manifest leaf, dropping it when the manifest filter does.
+    fn push_leaf(
+        &self,
+        tree: &TreeData,
+        index: usize,
+        prefix: &str,
+        deleted: bool,
+        out: &mut Vec<HistoryDelta>,
+    ) {
+        let entry = &tree.entries[index];
+        // The filter's two rules are both about the end of the path, so the
+        // entry name — the path's last component — decides them without
+        // building the path first. Only the few leaves that pass pay for one.
+        let name = String::from_utf8_lossy(tree.name(index));
+        if !is_manifest_path(&name) {
+            return;
+        }
+        out.push(HistoryDelta {
+            path: format!("{prefix}{name}"),
+            deleted,
+            blob_oid: (!deleted && entry.oid != git2::Oid::zero()).then(|| entry.oid.to_string()),
+        });
+    }
+
+    /// Append the deltas of an entry present on both sides under one name.
+    fn push_matched(
+        &self,
+        old: &TreeData,
+        oi: usize,
+        new: &TreeData,
+        ni: usize,
+        prefix: &str,
+        out: &mut Vec<HistoryDelta>,
+    ) {
+        let old_entry = &old.entries[oi];
+        let new_entry = &new.entries[ni];
+        let old_is_tree = old_entry.mode & MODE_TYPE_MASK == MODE_TREE;
+        let new_is_tree = new_entry.mode & MODE_TYPE_MASK == MODE_TREE;
+
+        match (old_is_tree, new_is_tree) {
+            (true, true) => {
+                // Two identical subtrees cannot differ, and looking at the id
+                // first is what keeps a commit that touched no manifest from
+                // reading `bucket/` at all.
+                if old_entry.oid != new_entry.oid
+                    && let (Some(old_tree), Some(new_tree)) =
+                        (self.tree(old_entry.oid), self.tree(new_entry.oid))
+                {
+                    let child = child_prefix(prefix, new.name(ni));
+                    self.diff_trees(Some(&old_tree), &new_tree, &child, out);
+                }
+            }
+            (false, false) => {
+                if old_entry.mode & MODE_TYPE_MASK != new_entry.mode & MODE_TYPE_MASK {
+                    // git splits a change of basic file type — a symlink
+                    // becoming a regular file, a submodule becoming a blob —
+                    // into a delete and an add, not into one type-change
+                    // delta.
+                    self.push_leaf(old, oi, prefix, true, out);
+                    self.push_leaf(new, ni, prefix, false, out);
+                } else if old_entry.oid == new_entry.oid
+                    && old_entry.mode == new_entry.mode
+                    && old_entry.oid != git2::Oid::zero()
+                {
+                    // Unchanged.
+                } else {
+                    // A content change, and a mode-only change
+                    // (100644 <-> 100755) alike: git reports both as modified.
+                    self.push_leaf(new, ni, prefix, false, out);
+                }
+            }
+            // A file on one side and a directory on the other. libgit2 sees
+            // the file's path first (it sorts before everything under the
+            // directory), so the file's delta is the delete or the add.
+            (false, true) => {
+                self.push_leaf(old, oi, prefix, true, out);
+                self.push_entry(new, ni, prefix, false, out);
+            }
+            (true, false) => {
+                self.push_leaf(new, ni, prefix, false, out);
+                self.push_entry(old, oi, prefix, true, out);
+            }
+        }
     }
 }
 
@@ -731,45 +935,161 @@ pub struct HistoryDelta {
     pub blob_oid: Option<String>,
 }
 
-/// The manifest deltas of one tree diff. Rename detection stays off; only
-/// `.json` manifests are reported, mirroring [`diff_manifest_changes`].
-fn manifest_deltas_of(diff: &git2::Diff<'_>) -> Vec<HistoryDelta> {
-    let mut out = Vec::new();
-    for delta in diff.deltas() {
-        let deleted = matches!(delta.status(), Delta::Deleted);
-        let candidate = if deleted {
-            delta.old_file().path()
-        } else {
-            delta.new_file().path()
-        };
-        let Some(p) = candidate else {
-            continue;
-        };
-        let path = p.to_string_lossy().into_owned();
-        // Exactly `diff_manifest_changes`' rule, which `manifest_walker`'s
-        // discovery agrees with: every `.json` except the repo-level
-        // `package.json`. A bucket may keep its manifests at the repository
-        // root or under a category directory — `Bucket::path_of_manifest`
-        // accepts both — so requiring a `bucket/` prefix here would silently
-        // index nothing for those buckets. A JSON that is not a manifest is
-        // dropped later, when its version fails to parse.
-        if !path.ends_with(".json") || path.ends_with("package.json") {
-            continue;
+/// The rule that decides which paths of a bucket tree are manifests, shared
+/// with [`diff_manifest_changes`] and `manifest_walker`'s discovery: every
+/// `.json` except `package.json`. A bucket may keep its manifests at the
+/// repository root or under a category directory — `Bucket::path_of_manifest`
+/// accepts both — so requiring a `bucket/` prefix would silently index nothing
+/// for those buckets. A JSON that is not a manifest is dropped later, when its
+/// version fails to parse.
+fn is_manifest_path(path: &str) -> bool {
+    path.ends_with(".json") && !path.ends_with("package.json")
+}
+
+/// Object-type bits of a git filemode (`S_IFMT`).
+const MODE_TYPE_MASK: i32 = 0o170000;
+/// The filemode of a subtree (git's `S_IFDIR`).
+const MODE_TREE: i32 = 0o040000;
+
+/// How many parsed trees one [`HistoryRepo`] keeps.
+///
+/// The walk needs exactly two at a time — the commit's tree and its first
+/// parent's — and the next step asks for the parent's again, so two entries
+/// would do; the slack absorbs a shared subtree and the odd re-read without
+/// ever holding much: a `bucket/` tree with its ~2,400 entries is about
+/// 110 KB.
+const TREE_CACHE_CAPACITY: usize = 8;
+
+/// Parsed trees, keyed by tree OID, most recently inserted last.
+///
+/// This is the memoization the seed walk runs on: without it every tree is
+/// read twice, once as each step's new side and once as the next step's old
+/// side, and reading a tree is what the walk mostly spends its time on
+/// (plan §2: ~0.57 ms for a `bucket/` subtree, ~5.5 µs per entry).
+struct TreeCache {
+    trees: HashMap<git2::Oid, Rc<TreeData>>,
+    order: VecDeque<git2::Oid>,
+}
+
+impl TreeCache {
+    fn new() -> TreeCache {
+        TreeCache {
+            trees: HashMap::new(),
+            order: VecDeque::new(),
         }
-        let blob_oid = if deleted {
-            None
-        } else {
-            // `Oid::nonzero` is git2 0.19+; `0000…0` marks an unavailable id.
-            let oid = delta.new_file().id();
-            (oid != git2::Oid::zero()).then(|| oid.to_string())
-        };
-        out.push(HistoryDelta {
-            path,
-            deleted,
-            blob_oid,
+    }
+
+    fn insert(&mut self, oid: git2::Oid, tree: Rc<TreeData>) {
+        if self.trees.insert(oid, tree).is_none() {
+            self.order.push_back(oid);
+        }
+        while self.order.len() > TREE_CACHE_CAPACITY {
+            if let Some(oldest) = self.order.pop_front() {
+                self.trees.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// A tree parsed into the shape the differ compares: every name in one buffer,
+/// and one fixed-size entry per name pointing into it.
+///
+/// The layout keeps a `bucket/` tree at two allocations instead of one per
+/// entry, which matters because the seed parses one tree per commit.
+struct TreeData {
+    names: Vec<u8>,
+    entries: Vec<TreeEntry>,
+}
+
+/// One entry of a [`TreeData`].
+struct TreeEntry {
+    /// Byte range of the name within `TreeData::names`.
+    name: std::ops::Range<u32>,
+    /// Git filemode: `0o100644`, `0o100755`, `0o120000`, `0o160000` or
+    /// `0o040000` for a subtree.
+    mode: i32,
+    oid: git2::Oid,
+}
+
+impl TreeData {
+    /// The name of entry `index`, as raw bytes (a tree entry name may be any
+    /// bytes but `/` and NUL).
+    fn name(&self, index: usize) -> &[u8] {
+        let name = &self.entries[index].name;
+        &self.names[name.start as usize..name.end as usize]
+    }
+
+    /// Whether entry `index` is a subtree.
+    fn is_tree(&self, index: usize) -> bool {
+        self.entries[index].mode & MODE_TYPE_MASK == MODE_TREE
+    }
+}
+
+/// Read one tree object into [`TreeData`], or `None` when it cannot be read —
+/// the same "skip this manifest, never fail" rule [`HistoryRepo::blob_text`]
+/// follows for a blob `gc --prune` took away.
+fn load_tree(repo: &Repository, oid: git2::Oid) -> Option<TreeData> {
+    let tree = repo.find_tree(oid).ok()?;
+    // Both buffers get their exact size up front. Growing them instead copies
+    // a whole subtree's worth of names again — a ~2,400-entry `bucket/` tree is
+    // ~110 KB — and the seed parses one tree per commit on every worker at
+    // once, so those copies are what its parallel half is most sensitive to.
+    let names_len = tree
+        .iter()
+        .map(|entry| entry.name_bytes().len())
+        .sum::<usize>();
+    let mut names = Vec::with_capacity(names_len);
+    let mut entries = Vec::with_capacity(tree.len());
+    for entry in tree.iter() {
+        let start = names.len() as u32;
+        names.extend_from_slice(entry.name_bytes());
+        entries.push(TreeEntry {
+            name: start..names.len() as u32,
+            mode: entry.filemode(),
+            oid: entry.id(),
         });
     }
-    out
+    Some(TreeData { names, entries })
+}
+
+/// Order two entries of a tree the way git does (`base_name_compare`): by name
+/// bytes, with a directory's name compared as if it ended in `/`.
+///
+/// This is not plain byte order. A file `foo.json` sorts *before* a directory
+/// `foo` (`.` is below `/`), while a naive byte comparison puts `foo` first
+/// and then misaligns the two sides at every descent into it — the prototype's
+/// merge-join counted 3.31 M deltas where the trees hold 97,929 (plan §4.4).
+fn base_name_compare(old: &TreeData, oi: usize, new: &TreeData, ni: usize) -> Ordering {
+    let a = old.name(oi);
+    let b = new.name(ni);
+    let len = a.len().min(b.len());
+
+    let ordering = a[..len].cmp(&b[..len]);
+    if ordering != Ordering::Equal {
+        return ordering;
+    }
+
+    // The first byte past the common prefix, with a directory's terminator
+    // standing in as `/` — exactly what git compares.
+    let tail = |name: &[u8], is_tree: bool| -> u8 {
+        match name.get(len) {
+            Some(byte) => *byte,
+            None if is_tree => b'/',
+            None => 0,
+        }
+    };
+    tail(a, old.is_tree(oi)).cmp(&tail(b, new.is_tree(ni)))
+}
+
+/// The path prefix of a directory's entries: `prefix`, the directory name, and
+/// a `/`.
+fn child_prefix(prefix: &str, name: &[u8]) -> String {
+    let name = String::from_utf8_lossy(name);
+    let mut child = String::with_capacity(prefix.len() + name.len() + 1);
+    child.push_str(prefix);
+    child.push_str(&name);
+    child.push('/');
+    child
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +1194,7 @@ impl Git for RealGit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git2::{Signature, Time};
+    use git2::{Delta, Signature, Time};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1700,5 +2020,437 @@ mod tests {
         assert!(remote_url_of(&nested, "origin").is_err());
 
         cleanup(&root);
+    }
+
+    // --- the memoized manifest diff ---------------------------------------
+
+    /// A blob object holding `content`.
+    fn blob_of(repo: &Repository, content: &str) -> git2::Oid {
+        repo.blob(content.as_bytes()).unwrap()
+    }
+
+    /// A tree object built from `(name, filemode, id)` entries.
+    ///
+    /// libgit2 sorts the builder's entries into git's tree order when it is
+    /// written, so a fixture built this way is as well-formed as a bucket's
+    /// own trees — which is what the differ's merge assumes.
+    fn tree_of(repo: &Repository, entries: &[(&str, i32, git2::Oid)]) -> git2::Oid {
+        let mut builder = repo.treebuilder(None).unwrap();
+        for (name, mode, oid) in entries {
+            builder.insert(*name, *oid, *mode).unwrap();
+        }
+        builder.write().unwrap()
+    }
+
+    /// Commit `tree` on HEAD, as the root commit when HEAD is unborn.
+    fn commit_tree(repo: &Repository, tree: git2::Oid, msg: &str) -> String {
+        let tree = repo.find_tree(tree).unwrap();
+        let parent = repo.head().ok().map(|head| head.peel_to_commit().unwrap());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        repo.commit(Some("HEAD"), &sig(), &sig(), msg, &tree, &parents)
+            .unwrap()
+            .to_string()
+    }
+
+    /// The deltas libgit2's own tree diff produces for one step — the oracle
+    /// [`HistoryRepo::manifest_deltas`] must agree with now that it compares
+    /// parsed trees itself.
+    ///
+    /// Deliberately independent of the production walk: it asks
+    /// `diff_tree_to_tree` for the deltas and applies the manifest filter.
+    fn libgit2_deltas(
+        repo: &Repository,
+        new_tree: &str,
+        old_tree: Option<&str>,
+    ) -> Vec<HistoryDelta> {
+        let new_tree = repo
+            .find_tree(git2::Oid::from_str(new_tree).unwrap())
+            .unwrap();
+        let old_tree =
+            old_tree.map(|oid| repo.find_tree(git2::Oid::from_str(oid).unwrap()).unwrap());
+        let diff = repo
+            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)
+            .unwrap();
+
+        let mut out = Vec::new();
+        for delta in diff.deltas() {
+            let deleted = matches!(delta.status(), Delta::Deleted);
+            let candidate = if deleted {
+                delta.old_file().path()
+            } else {
+                delta.new_file().path()
+            };
+            let Some(path) = candidate else {
+                continue;
+            };
+            let path = path.to_string_lossy().into_owned();
+            if !is_manifest_path(&path) {
+                continue;
+            }
+            let oid = delta.new_file().id();
+            out.push(HistoryDelta {
+                path,
+                deleted,
+                blob_oid: (!deleted && oid != git2::Oid::zero()).then(|| oid.to_string()),
+            });
+        }
+        out
+    }
+
+    /// A history that exercises every shape the memoized differ must
+    /// reproduce: a directory and a file colliding as `foo/` and `foo.json`,
+    /// a nested directory, additions, deletions, a mode-only change, a
+    /// file/directory swap whose sibling orders differently under git's tree
+    /// rule than by path, a submodule entry, a root commit, and the
+    /// `package.json` the filter drops.
+    fn rich_history_fixture(name: &str) -> (PathBuf, Repository) {
+        let dir = temp_dir(name);
+        let repo = Repository::init(&dir).unwrap();
+
+        let one = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let two = blob_of(&repo, r#"{"version": "2.0"}"#);
+        let bar = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let foo_json = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let deep = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let package = blob_of(&repo, r#"{"name": "not-a-manifest"}"#);
+        let plain = blob_of(&repo, "plain\n");
+
+        let foo_dir = tree_of(&repo, &[("bar.json", 0o100644, bar)]);
+        let sub_dir = tree_of(&repo, &[("deep.json", 0o100644, deep)]);
+
+        // The root commit carries everything the later steps delete or move.
+        let root = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[
+                    ("a.json", 0o100644, one),
+                    ("foo", 0o040000, foo_dir),
+                    ("foo.json", 0o100644, foo_json),
+                    ("package.json", 0o100644, package),
+                    ("sub", 0o040000, sub_dir),
+                ],
+            ),
+            "root",
+        );
+
+        // A bump, a deletion, a change inside the colliding directory and a
+        // filemode change, all in one step.
+        let bar2 = blob_of(&repo, r#"{"version": "2.0"}"#);
+        commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[
+                    ("a.json", 0o100755, two),
+                    (
+                        "foo",
+                        0o040000,
+                        tree_of(&repo, &[("bar.json", 0o100644, bar2)]),
+                    ),
+                    ("package.json", 0o100644, package),
+                    ("sub", 0o040000, sub_dir),
+                ],
+            ),
+            "bump a.json, drop foo.json, set the exec bit",
+        );
+
+        // `a.json` becomes a directory while its sibling `a.json.bak` appears:
+        // a directory's name takes part in the tree comparison as `a.json/`,
+        // which orders those two differently from their paths.
+        let backup = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let with_submodule = tree_of(
+            &repo,
+            &[
+                (
+                    "a.json",
+                    0o040000,
+                    tree_of(&repo, &[("inner.json", 0o100644, two)]),
+                ),
+                ("a.json.bak", 0o100644, backup),
+                (
+                    "foo",
+                    0o040000,
+                    tree_of(&repo, &[("bar.json", 0o100644, bar2)]),
+                ),
+                ("mod.json", 0o160000, git2::Oid::from_str(&root).unwrap()),
+                ("package.json", 0o100644, package),
+                ("sub", 0o040000, sub_dir),
+            ],
+        );
+        let swapped = commit_tree(&repo, with_submodule, "a.json becomes a directory");
+
+        // …and back: the directory is a plain file again, the submodule moves,
+        // `foo` becomes a file and `sub/` disappears.
+        commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[
+                    ("a.json", 0o100644, two),
+                    ("a.json.bak", 0o100644, backup),
+                    ("foo", 0o100644, plain),
+                    ("mod.json", 0o160000, git2::Oid::from_str(&swapped).unwrap()),
+                    ("package.json", 0o100644, package),
+                ],
+            ),
+            "swaps back and moves the submodule",
+        );
+
+        (dir, repo)
+    }
+
+    /// The memoized differ produces exactly what libgit2's tree diff produces
+    /// — the same deltas in the same order — on every step of a history that
+    /// covers the shapes a real bucket has.
+    #[test]
+    fn history_deltas_match_libgit2_on_every_commit() {
+        let (dir, repo) = rich_history_fixture("history-matches-libgit2");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+
+        let steps: Vec<HistoryCommit> = history.walk_chain(&head, None, None).collect();
+        assert_eq!(steps.len(), 4, "four commits, the root included");
+        for entry in &steps {
+            assert_eq!(
+                history.manifest_deltas(&entry.tree, entry.parent_tree.as_deref()),
+                libgit2_deltas(&repo, &entry.tree, entry.parent_tree.as_deref()),
+                "commit {}",
+                entry.commit
+            );
+        }
+
+        cleanup(&dir);
+    }
+
+    /// The seed diffs commit N against N+1 and then N+1 against N+2, so the
+    /// tree of N+1 is the old side of one step and the new side of the next:
+    /// the memo must hold it rather than read it again. (The timing gate is
+    /// what proves the saving; this pins that the entry is really there.)
+    #[test]
+    fn history_diff_keeps_the_parent_tree_memoized() {
+        let (dir, _repo) = rich_history_fixture("history-memo");
+        let history = HistoryRepo::open(&dir).unwrap();
+        let head = history.head().unwrap();
+        let steps: Vec<HistoryCommit> = history.walk_chain(&head, None, None).collect();
+
+        for pair in steps.windows(2) {
+            let shared = pair[1].tree.clone();
+            history.manifest_deltas(&pair[0].tree, pair[0].parent_tree.as_deref());
+            history.manifest_deltas(&pair[1].tree, pair[1].parent_tree.as_deref());
+            assert!(
+                history.is_cached(&shared),
+                "the tree shared by two steps must stay memoized: {shared}"
+            );
+        }
+
+        cleanup(&dir);
+    }
+
+    /// A directory's name takes part in the tree comparison as `name/`, so the
+    /// file `foo.json` sorts before the directory `foo`. Comparing raw bytes
+    /// instead puts `foo` first, misaligns every descent into it and reports
+    /// the untouched subtree as changed — the 34x delta count of plan §4.4.
+    #[test]
+    fn history_diff_orders_a_file_against_its_colliding_directory() {
+        let dir = temp_dir("history-base-name");
+        let repo = Repository::init(&dir).unwrap();
+        let one = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let two = blob_of(&repo, r#"{"version": "2.0"}"#);
+        let child = tree_of(&repo, &[("bar.json", 0o100644, one)]);
+
+        commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[("foo", 0o040000, child), ("foo.json", 0o100644, one)],
+            ),
+            "root",
+        );
+        // Only `foo.json` changes; the directory is untouched.
+        let head = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[("foo", 0o040000, child), ("foo.json", 0o100644, two)],
+            ),
+            "bump foo.json",
+        );
+
+        let history = HistoryRepo::open(&dir).unwrap();
+        let entry = history.walk_chain(&head, None, None).next().unwrap();
+        let deltas = history.manifest_deltas(&entry.tree, entry.parent_tree.as_deref());
+        assert_eq!(deltas.len(), 1, "only foo.json changed, got {deltas:?}");
+        assert_eq!(deltas[0].path, "foo.json");
+        assert_eq!(
+            deltas[0].blob_oid.as_deref(),
+            Some(two.to_string().as_str())
+        );
+
+        cleanup(&dir);
+    }
+
+    /// A change of a file's basic type is a delete and an add, exactly as
+    /// libgit2 splits it (it reports a type-change delta only when the caller
+    /// asks for one), while a mode-only change is a single modified delta that
+    /// still carries the blob.
+    #[test]
+    fn history_diff_splits_file_type_changes() {
+        let dir = temp_dir("history-typechange");
+        let repo = Repository::init(&dir).unwrap();
+        let one = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let target = blob_of(&repo, "x.json");
+
+        commit_tree(&repo, tree_of(&repo, &[("x.json", 0o100644, one)]), "root");
+        let mode = commit_tree(
+            &repo,
+            tree_of(&repo, &[("x.json", 0o100755, one)]),
+            "exec bit",
+        );
+        let symlink = commit_tree(
+            &repo,
+            tree_of(&repo, &[("x.json", 0o120000, target)]),
+            "symlink",
+        );
+
+        let history = HistoryRepo::open(&dir).unwrap();
+        let steps: Vec<HistoryCommit> = history.walk_chain(&symlink, None, None).collect();
+        let deltas_of = |commit: &str| {
+            let entry = steps
+                .iter()
+                .find(|entry| entry.commit == commit)
+                .expect("the commit is on the chain");
+            history.manifest_deltas(&entry.tree, entry.parent_tree.as_deref())
+        };
+
+        assert_eq!(
+            deltas_of(&mode),
+            [HistoryDelta {
+                path: "x.json".to_owned(),
+                deleted: false,
+                blob_oid: Some(one.to_string()),
+            }],
+            "a mode-only change keeps the blob"
+        );
+        assert_eq!(
+            deltas_of(&symlink),
+            [
+                HistoryDelta {
+                    path: "x.json".to_owned(),
+                    deleted: true,
+                    blob_oid: None,
+                },
+                HistoryDelta {
+                    path: "x.json".to_owned(),
+                    deleted: false,
+                    blob_oid: Some(target.to_string()),
+                },
+            ],
+            "a type change is a delete and an add"
+        );
+
+        cleanup(&dir);
+    }
+
+    /// A directory that appears or disappears on one side, and a file/directory
+    /// swap, are expanded to one delta per manifest under them — never to a
+    /// delta for the directory. A submodule (gitlink) entry is a leaf like any
+    /// other and its id is the commit it records.
+    #[test]
+    fn history_diff_expands_directories_and_submodule_entries() {
+        let dir = temp_dir("history-directories");
+        let repo = Repository::init(&dir).unwrap();
+        let x = blob_of(&repo, r#"{"version": "1.0"}"#);
+        let z = blob_of(&repo, r#"{"version": "2.0"}"#);
+
+        let root = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[("d", 0o040000, tree_of(&repo, &[("x.json", 0o100644, x)]))],
+            ),
+            "root",
+        );
+        // The directory gains a manifest and a file the filter drops, and a
+        // submodule entry appears beside it.
+        let grown_dir = tree_of(
+            &repo,
+            &[
+                ("x.json", 0o100644, x),
+                ("notes.txt", 0o100644, x),
+                ("z.json", 0o100644, z),
+            ],
+        );
+        let grown = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[
+                    ("d", 0o040000, grown_dir),
+                    ("m.json", 0o160000, git2::Oid::from_str(&root).unwrap()),
+                ],
+            ),
+            "grow the directory, add a submodule",
+        );
+        let moved = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[
+                    ("d", 0o040000, grown_dir),
+                    ("m.json", 0o160000, git2::Oid::from_str(&grown).unwrap()),
+                ],
+            ),
+            "move the submodule",
+        );
+        let gone = commit_tree(
+            &repo,
+            tree_of(
+                &repo,
+                &[("m.json", 0o160000, git2::Oid::from_str(&grown).unwrap())],
+            ),
+            "drop the directory",
+        );
+
+        let history = HistoryRepo::open(&dir).unwrap();
+        let steps: Vec<HistoryCommit> = history.walk_chain(&gone, None, None).collect();
+        let deltas_of = |commit: &str| {
+            let entry = steps
+                .iter()
+                .find(|entry| entry.commit == commit)
+                .expect("the commit is on the chain");
+            history.manifest_deltas(&entry.tree, entry.parent_tree.as_deref())
+        };
+        let added = |path: &str, oid: git2::Oid| HistoryDelta {
+            path: path.to_owned(),
+            deleted: false,
+            blob_oid: Some(oid.to_string()),
+        };
+        let deleted = |path: &str| HistoryDelta {
+            path: path.to_owned(),
+            deleted: true,
+            blob_oid: None,
+        };
+
+        assert_eq!(
+            deltas_of(&grown),
+            [
+                added("d/z.json", z),
+                added("m.json", git2::Oid::from_str(&root).unwrap()),
+            ],
+            "the new manifest and the submodule, not the directory"
+        );
+        assert_eq!(
+            deltas_of(&moved),
+            [added("m.json", git2::Oid::from_str(&grown).unwrap())],
+            "a moved submodule is one modified delta"
+        );
+        assert_eq!(
+            deltas_of(&gone),
+            [deleted("d/x.json"), deleted("d/z.json")],
+            "a dropped directory is one delete per manifest"
+        );
+
+        cleanup(&dir);
     }
 }

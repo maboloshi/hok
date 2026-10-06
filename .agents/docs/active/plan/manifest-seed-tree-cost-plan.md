@@ -1,7 +1,7 @@
 # 清单种子树 diff 成本：交接与实施方案
 
 Status: active
-Updated: 2026-10-06
+Updated: 2026-10-07
 
 > **给新对话（唯一入口）**：先读 §1 结论与 §7 交接提示，再按 §4 实现、§5 验收。
 > 相关工作区：worktree `.worktrees/mhi-history-index`、分支 `feat/manifest-history-index`；本主题是**当前 tip 之上**的一条新提交。
@@ -86,7 +86,58 @@ Set-Content "$dir\hok.json" ('{"root_path":"' + $dir.Replace('\','\\') + '","cac
 
 ## 7. 交接提示
 
-- 本主题请在**新对话**里开，沿用 worktree `.worktrees/mhi-history-index` 与分支 `feat/manifest-history-index`；新提交接在**当前 tip** 之上（先 `git log --oneline -1` 复核，交接时共 9 条：7 条索引本体 + 2 条本文件的交接提交）。
+- **已落地**（2026-10-07，见 §8/§9）：本文件所在的 worktree `.worktrees/mhi-history-index`、分支 `feat/manifest-history-index`，
+  新提交接在交接时的 9 条之上（7 条索引本体 ＋ 2 条本文件的交接提交），故本主题的代码提交是该分支第 10 条。
 - 建议顺序：先写「带记忆化的树 diff」原语 ＋ §5.2 语义单测 → 再切 `manifest_history` 的消费方式 → 最后跑 §5.1 等价与 §5.3 性能线。
 - 若等价做不到，或语义单测暴露无法在改动范围内解决的差异，**停下来报告**，不要降级验收。
 - 背景：索引本体方案 [`manifest-history-index-plan.md`](manifest-history-index-plan.md)（含 §2 成本更正）；本次实验记录见 devlog [`../devlog/2026-10-06-manifest-history-index.md`](../devlog/2026-10-06-manifest-history-index.md)。
+
+## 8. 落地结果（2026-10-07）
+
+**实现**（只动 §4 点名的两个文件）：
+
+- `internal/git.rs`：`HistoryRepo` 增加按树 OID 记忆化的 `TreeCache`（容量 8）与 `TreeData`（名字放单一缓冲、条目定长，
+  每次加载恰好两次分配且不增长重分配）；`manifest_deltas` 改为自研 `diff_trees` 递归比较——
+  `base_name_compare` 按 git 的树条目语义排序（目录名以 `name/` 参与）、OID 相同的子树直接跳过不读。
+  递归顺序与 libgit2 的逐叶路径合并只在「同名一方是文件、一方是目录」时不同，故每次提交的少量 delta 末尾按路径**稳定排序**，
+  恢复到 libgit2 的发射顺序。libgit2 版实现 `manifest_deltas_of` 删除。
+- `package/manifest_history.rs`：并行改为 `par_iter().with_min_len(16)`——一个任务是一段**连续**提交，
+  记忆化才能把「上一步的旧侧」交到「下一步的新侧」手上（散列分片会让缓存全 miss）。
+- 语义单测（全部在 `internal::git`）：`history_deltas_match_libgit2_on_every_commit` 对一个覆盖子目录、`foo/` 与 `foo.json`
+  名冲突、增删、模式位、file↔dir、submodule（gitlink）、根提交、`package.json` 的夹具**逐提交与 libgit2 的 delta 列表逐项比对**；
+  另有 `..._orders_a_file_against_its_colliding_directory`（§4.4 的 34× 计数回归）、`..._splits_file_type_changes`、
+  `..._expands_directories_and_submodule_entries`、`..._keeps_the_parent_tree_memoized`。
+
+**§5.1 逐行等价：通过**（§6 隔离副本；`hok_manifest_history` + 基线表 dump 成有序文本后逐字节相同）：
+
+| 桶 | first-parent 提交 | 索引行 | dump SHA256（新旧相同） |
+|---|---|---|---|
+| extras | 92,616 | 82,674 | `905c0a6e623d…` |
+| main | 81,453 | 75,913 | `a68a505dc22a…` |
+
+**§5.3 性能**（隔离副本，同一台 Ryzen 7 6800H / 8 物理核；`RAYON_NUM_THREADS`）：
+
+| extras 种子墙钟 | 1 线程 | 4 线程 | 8 线程 | 16 线程 |
+|---|---|---|---|---|
+| 现状（libgit2 diff） | 208.9 s | 72.1 s | 43.1 s | 34.3 s |
+| 本方案 | 97.4 s | 39.0 s | 26.0 s | 23.9 s |
+| 比值 | **0.47×** | **0.54×** | **0.60×** | 0.70× |
+
+main 16 线程：现状 21.0–23.0 s → 本方案 13.7–15.2 s（≈0.66×）。
+
+- **单线程 2.15×，与 §1 的原型（2.34×）一致**：省掉的正是「同一棵子树读两遍」这一笔。
+- **16 线程只有 ~1.4–1.5×**：本机基线在 16 线程已把 diff 引擎那部分（扫描）完全隐藏，剩下的 45% 是
+  **每提交一次的子树的 ODB 读取**（该笔在 16 线程实测 ≈10 s，闭掉记忆化即回到 33 s，可见记忆化确实生效）。
+  实测 `find_tree` 1.37 ms vs 裸 `odb.read` 1.52 ms（extras 当前 HEAD 的 `bucket/` 子树）说明这笔钱在
+  ODB 解压/解 delta，**不在** §2 归因的「逐条目分配＋复制名字」——自研裸解析该对象没有收益。
+  按此拆解，即使 merge-join 成本归零，16 线程的墙钟也只能到 ≈20 s（0.59×）——**§5.3 的 0.6× 线在本机 16 线程下近乎不可达**。
+- 结论：低核机器上越线（4/8 线程 0.54×/0.60×，与 §2「给低核机器留余量」的定位一致），
+  16 线程机器上按字面未过线（0.70×）；两个桶的**逐行等价**没有任何折扣。
+
+## 9. 本轮排除（补充 §3）
+
+- **自研裸解析 tree 对象**（`odb.read` + 手写解析，省掉 libgit2 的 entry 分配与我们的复制）：实测无收益，见 §8 的 1.37/1.52 ms。
+- **加大块与任务粒度**（`INDEX_CHUNK_COMMITS` 2000 ＋ `with_min_len` 32）：23.3/24.6 s，与 500/16 的 22.4/23.3 s 无差。
+- **预分配两个缓冲**（消除 `Vec` 增长重分配）：24.9/22.9 s，无差；保留（少一次全树拷贝，单线程口径只会更好）。
+- **升级 `git2` 0.19 → 0.21**：1.8.1 → 1.9.7 之间 tree 解析、缓存上限、diff 引擎零功能改动，真正的修复
+  （libgit2 PR #6863「跳过 oid 相同的子树」）至今未合并；且 0.20 起 `default = []` 需显式开 `ssh`/`https` 特性。**不升**。

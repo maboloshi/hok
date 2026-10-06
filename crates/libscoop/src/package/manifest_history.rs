@@ -47,6 +47,17 @@ const SEED_BATCH_COMMITS: usize = 2000;
 /// per-chunk barrier is noise.
 const INDEX_CHUNK_COMMITS: usize = 500;
 
+/// Commits per rayon task while indexing.
+///
+/// A task is always a **contiguous run** of the chain, never a scattered set:
+/// the tree diff memoizes trees by OID (`HistoryRepo::manifest_deltas`), and
+/// only a run of consecutive commits can hand the next step the tree the
+/// previous one read — commit N's old side *is* commit N-1's new side. One
+/// tree per run is read twice (its first step finds nothing cached); keeping
+/// runs short bounds that, keeping them long bounds the job count each chunk
+/// is split into.
+const INDEX_TASK_COMMITS: usize = 16;
+
 /// Bring every added bucket's history index up to its current HEAD.
 ///
 /// A bucket that cannot be indexed is warned about and skipped, so one broken
@@ -328,8 +339,14 @@ fn delta_rows(repo_path: &Path, chunk: &[HistoryCommit]) -> Vec<HistoryRow> {
     // insert order above depends on; the per-commit `Vec`s are concatenated in
     // chain order afterwards rather than with `flatten` (rayon's `flatten` is
     // not order-preserving).
+    //
+    // `with_min_len` is what keeps a worker's commits consecutive: rayon still
+    // splits the chunk to balance the pool, but never below
+    // [`INDEX_TASK_COMMITS`], so one job is one run of the chain and the tree
+    // diff's memo is warm for every step after the first.
     let per_commit: Vec<Vec<HistoryRow>> = chunk
         .par_iter()
+        .with_min_len(INDEX_TASK_COMMITS)
         .map(|entry| {
             with_worker_repo(repo_path, |history| match history {
                 Some(history) => delta_rows_of(history, entry),
