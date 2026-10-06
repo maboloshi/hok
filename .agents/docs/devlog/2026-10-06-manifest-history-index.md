@@ -31,8 +31,13 @@
 
 `cargo test -p libscoop --lib` 842 通过；`cargo test -p hok` 全绿；`cargo clippy --workspace --all-targets -D warnings` 干净；改动文件逐个 `rustfmt --edition 2024 --check` 干净。
 
+## 后续（同会话追加实验）
+
+树 diff 成本另做了一轮拆解实验（纯 git2 原型）：现状**每提交把同一棵 `bucket/` 树读两遍**，且 libgit2 的 diff 引擎还要逐条目扫两棵树，两笔各占约一半；「父树记忆化 ＋ 自研 merge-join」原型把 extras 181.3→**77.4 s**、main 107.1→**44.8 s**（2.3–2.4×）。同时排除：跳过未变更 tree（实测 0%）、子树 OID 短路（6–9%）、块大小（无差）、libgit2 对象缓存（两次实测都更慢）、按物理核降线程（16→4 掉出 60 s 线）。该主题**另开对话**处理，交接见 [`../active/plan/manifest-seed-tree-cost-plan.md`](../active/plan/manifest-seed-tree-cost-plan.md)。
+
 ## 未落地 / 去向
 
+- 种子树 diff 成本优化（上节）：**已交接到新对话**，方案与验收在 `active/plan/manifest-seed-tree-cost-plan.md`。
 - `pending-tasks.md` §3「上游 0.6.0 历史清单链」行待回填 ✅ —— 该文件是汇总型热点，只允许在主树改，落地时处理。
 - 第一父链看不到 merge 中被丢掉的分支版本（上游 pickaxe 能查到）：已记入方案 §2 为已知取舍，触发信号是真实用户报告。
 - 本方案文件落在 `active/plan/`；全部条目已落地，按 R4.4 可在落地后归档。
