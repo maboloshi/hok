@@ -1,7 +1,8 @@
 //! Installed package health checker.
 //!
 //! Scan the installed packages directory, check whether the file structure of each package is complete (`current` symlink,
-//! install record, installed manifest), and return a list of discovered issues.
+//! install record, installed manifest), check the package-owned shims for a missing target, and return a list of discovered
+//! issues.
 //!
 //! This is hok's own diagnostic (the `health` command); upstream's `checkup`
 //! command inspects the *environment* instead — see
@@ -32,7 +33,8 @@ use super::install_state;
 /// A single health issue found for an installed package.
 #[derive(Debug, Clone)]
 pub struct HealthIssue {
-    /// Package name (directory name under `apps/`).
+    /// Package name (directory name under `apps/`), or the shim name for a
+    /// broken-shim issue.
     pub name: String,
     /// Human-readable description of the issue.
     pub message: String,
@@ -41,9 +43,13 @@ pub struct HealthIssue {
 /// Scan all installed packages and return a list of health issues.
 ///
 /// Each installed package directory under `<root>/apps/` is checked for:
-/// - A `current` symlink or directory that exists.
+/// - A `current` symlink or directory that exists (a link whose target is gone
+///   is reported separately from a link that is missing entirely).
 /// - Presence of an install record (`scoop-install.json` or `install.json`).
 /// - Presence of an installed manifest (`scoop-manifest.json` or `manifest.json`).
+///
+/// The session's shims directory is then scanned for shims whose target no
+/// longer exists (see [`super::shim::broken_shims`]).
 ///
 /// # Returns
 ///
@@ -90,9 +96,21 @@ pub fn check_installed(session: &Session) -> Vec<HealthIssue> {
         } else {
             let current = app_dir.join("current");
             if !current.exists() {
+                // `exists()` follows the link, so a missing junction and a
+                // dangling one both read as `false`. `read_link` tells them
+                // apart: it still reads reparse point data when the target is
+                // gone, and fails when there is no link at all.
+                let message = match std::fs::read_link(&current) {
+                    Ok(target) => hok_i18n::t!(
+                        "cmd.health_current_dangling",
+                        target = target.display().to_string()
+                    )
+                    .to_string(),
+                    Err(_) => hok_i18n::t!("cmd.no_current_symlink").to_string(),
+                };
                 issues.push(HealthIssue {
                     name: name.to_string(),
-                    message: hok_i18n::t!("cmd.no_current_symlink").to_string(),
+                    message,
                 });
                 continue;
             }
@@ -116,6 +134,30 @@ pub fn check_installed(session: &Session) -> Vec<HealthIssue> {
                 message: hok_i18n::t!("cmd.missing_manifest_json").to_string(),
             });
         }
+    }
+
+    // Shims are package-owned artifacts, so a shim whose target is gone belongs
+    // to `health` (upstream has no such check and `checkup` covers the
+    // environment only). A scan failure is reported rather than swallowed — an
+    // unreadable shim directory must not read as "no broken shims".
+    match super::shim::broken_shims(session) {
+        Ok(broken) => {
+            for shim in broken {
+                let target = shim
+                    .target
+                    .as_ref()
+                    .map(|target| target.display().to_string())
+                    .unwrap_or_else(|| shim.shim.display().to_string());
+                issues.push(HealthIssue {
+                    name: shim.name,
+                    message: hok_i18n::t!("cmd.health_shim_broken", target = target).to_string(),
+                });
+            }
+        }
+        Err(err) => issues.push(HealthIssue {
+            name: session.shims_dir().display().to_string(),
+            message: hok_i18n::t!("cmd.health_shims_unreadable", e = err.to_string()).to_string(),
+        }),
     }
 
     issues
@@ -256,6 +298,82 @@ mod tests {
         assert!(
             issues[0].message.contains("current"),
             "unexpected message: {}",
+            issues[0].message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A `current` link whose target is gone is a different problem from a
+    /// missing link: report the dangling target so `reset` is the obvious fix,
+    /// and do not confuse it with "never linked".
+    #[test]
+    fn check_installed_reports_a_dangling_current_link() {
+        let root = crate::test_utils::tmpdir("checkup_dangling_current");
+        let session = session_with_no_junction(&root, false);
+        let version = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&version).unwrap();
+        crate::internal::fs::symlink_dir(&version, root.join("apps").join("app").join("current"))
+            .unwrap();
+        // Removing the target leaves the link in place, pointing nowhere.
+        std::fs::remove_dir_all(&version).unwrap();
+
+        let issues = check_installed(&session);
+        assert_eq!(issues.len(), 1, "issues: {:?}", issues);
+        assert_eq!(issues[0].name, "app");
+        assert!(
+            issues[0].message.contains("1.0.0"),
+            "the missing target should be named: {}",
+            issues[0].message
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A live `current` link is healthy — the dangling branch must not fire.
+    #[test]
+    fn check_installed_accepts_a_live_current_link() {
+        let root = crate::test_utils::tmpdir("checkup_live_current");
+        let session = session_with_no_junction(&root, false);
+        let version = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&version).unwrap();
+        std::fs::write(version.join("manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+        std::fs::write(version.join("install.json"), r#"{"architecture": "64bit"}"#).unwrap();
+        crate::internal::fs::symlink_dir(&version, root.join("apps").join("app").join("current"))
+            .unwrap();
+
+        let issues = check_installed(&session);
+        assert!(issues.is_empty(), "healthy install flagged: {:?}", issues);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Broken shims are reported by the installed-package scan.
+    #[test]
+    fn check_installed_reports_a_broken_shim() {
+        let root = crate::test_utils::tmpdir("checkup_broken_shim");
+        let session = session_with_no_junction(&root, true);
+        let vdir = root.join("apps").join("app").join("1.0.0");
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("manifest.json"), r#"{"version": "1.0.0"}"#).unwrap();
+        std::fs::write(vdir.join("install.json"), r#"{"architecture": "64bit"}"#).unwrap();
+
+        let shims = session.shims_dir();
+        std::fs::create_dir_all(&shims).unwrap();
+        let ghost = root
+            .join("apps")
+            .join("app")
+            .join("current")
+            .join("ghost.exe");
+        std::fs::write(
+            shims.join("gone.shim"),
+            format!("path = \"{}\"\r\n", ghost.display()),
+        )
+        .unwrap();
+
+        let issues = check_installed(&session);
+        assert_eq!(issues.len(), 1, "issues: {:?}", issues);
+        assert_eq!(issues[0].name, "gone");
+        assert!(
+            issues[0].message.contains("ghost.exe"),
+            "the missing target should be named: {}",
             issues[0].message
         );
         let _ = std::fs::remove_dir_all(&root);

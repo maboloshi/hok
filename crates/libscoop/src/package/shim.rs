@@ -92,17 +92,17 @@ fn comparable(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-/// The real target a shim points at — upstream `Get-ShimTarget`
-/// (`lib/core.ps1:854-866`).
+/// The target a shim *declares*, whether or not it still exists.
 ///
 /// - a `.shim` metadata file: the `path = "..."` value on its first line;
 /// - anything else (`.cmd`, `.ps1`, extension-less): the first `@rem` / `#`
 ///   comment line, falling back to the last quoted string.
 ///
-/// The target is returned only when it exists — upstream applies
-/// `Convert-Path -ErrorAction SilentlyContinue`, so a shim whose target is
-/// gone resolves to nothing (and `which` then reports "not found").
-pub fn shim_target(shim_path: &Path) -> Option<PathBuf> {
+/// This is upstream's `Get-ShimTarget` without the `Convert-Path` probe, which
+/// [`shim_target`] adds back. The health check needs the declared target to
+/// name it in the report, and a `.exe` shim (the launcher itself, not a text
+/// pointer) has none — it is not a failure, just nothing to read.
+pub fn shim_target_raw(shim_path: &Path) -> Option<PathBuf> {
     let content = std::fs::read_to_string(shim_path).ok()?;
 
     let target = if shim_path
@@ -125,8 +125,79 @@ pub fn shim_target(shim_path: &Path) -> Option<PathBuf> {
     if target.is_empty() {
         return None;
     }
-    let target = PathBuf::from(target);
+    Some(PathBuf::from(target))
+}
+
+/// The real target a shim points at — upstream `Get-ShimTarget`
+/// (`lib/core.ps1:854-866`).
+///
+/// The target is returned only when it exists — upstream applies
+/// `Convert-Path -ErrorAction SilentlyContinue`, so a shim whose target is
+/// gone resolves to nothing (and `which` then reports "not found").
+pub fn shim_target(shim_path: &Path) -> Option<PathBuf> {
+    let target = shim_target_raw(shim_path)?;
     target.exists().then_some(target)
+}
+
+/// A shim whose declared target no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenShim {
+    /// Shim name (the file stem, without its extension).
+    pub name: String,
+    /// The shim file that declares the missing target.
+    pub shim: PathBuf,
+    /// The declared target, or `None` when the shim file is unreadable or
+    /// carries no target at all.
+    pub target: Option<PathBuf>,
+}
+
+/// Collect the shims under the session's shim directory whose target is gone.
+///
+/// A name is broken only when **every** text variant it has (`.shim`, `.cmd`,
+/// extension-less, `.ps1`) fails to resolve — the rule errs towards silence, so
+/// a shim the user can still run is never reported. The `.exe` variant is the
+/// launcher itself and is never read, and `scoop-<name>.ps1` alias scripts are
+/// skipped (upstream reserves that prefix for aliases, which point at no
+/// package file).
+///
+/// Known limitation: when an `.exe` launcher is present, `PATH` lookup resolves
+/// the name through its `.shim` metadata, so a `.ps1` sibling with a live
+/// target can mask a dead `.shim`. That combination is not something the shim
+/// writer produces today.
+pub fn broken_shims(session: &Session) -> Fallible<Vec<BrokenShim>> {
+    let shims_dir = session.shims_dir();
+    let mut broken = Vec::new();
+    if !shims_dir.is_dir() {
+        return Ok(broken);
+    }
+
+    for name in list_shims(session)? {
+        // The last text variant seen, with its declared target: `None` means
+        // this name has no text variant at all (e.g. only an alias script).
+        let mut missing: Option<(PathBuf, Option<PathBuf>)> = None;
+        let mut resolved = false;
+        for ext in [".shim", "", ".cmd", ".ps1"] {
+            let path = shims_dir.join(format!("{name}{ext}"));
+            if !path.is_file() || is_alias_script(&path) {
+                continue;
+            }
+            let raw = shim_target_raw(&path);
+            if raw.as_ref().is_some_and(|target| target.exists()) {
+                resolved = true;
+                break;
+            }
+            missing = Some((path, raw));
+        }
+
+        let Some((shim, target)) = missing else {
+            continue;
+        };
+        if !resolved {
+            broken.push(BrokenShim { name, shim, target });
+        }
+    }
+
+    Ok(broken)
 }
 
 /// The text after a leading `@rem` / `#` on the first matching line
@@ -270,6 +341,47 @@ mod tests {
             &format!("path = \"{}\"\r\n", ghost.display()),
         );
         assert_eq!(shim_target(&shims.join("ghost.shim")), None);
+    }
+
+    /// The healthy variant next to a broken one must not be reported: the scan
+    /// is name-scoped, and a paired `.cmd`/`.shim` names the same target.
+    #[test]
+    fn broken_shims_reports_only_unresolved_names() {
+        let (session, shims) = setup("broken-shims");
+        let target = session.app_dir("app").join("current/tool.exe");
+        write(&target, "stub");
+        write(
+            &shims.join("ok.shim"),
+            &format!("path = \"{}\"\r\n", target.display()),
+        );
+
+        let ghost = session.app_dir("app").join("current/ghost.exe");
+        write(
+            &shims.join("gone.shim"),
+            &format!("path = \"{}\"\r\n", ghost.display()),
+        );
+        write(
+            &shims.join("gone.cmd"),
+            &format!("@rem {}\r\n", ghost.display()),
+        );
+
+        // An alias script declares no package file — never a broken shim.
+        write(&shims.join("scoop-hello.ps1"), "Write-Host 'hi'\n");
+
+        let broken = broken_shims(&session).unwrap();
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].name, "gone");
+        assert_eq!(broken[0].target.as_deref(), Some(ghost.as_path()));
+        assert!(broken[0].shim.is_file(), "reported shim must exist");
+    }
+
+    /// A name with no text variant the scan can read (only the `.exe` launcher)
+    /// is left alone rather than reported.
+    #[test]
+    fn broken_shims_ignores_the_launcher_only_name() {
+        let (session, shims) = setup("broken-shims-launcher");
+        write(&shims.join("only.exe"), "stub");
+        assert!(broken_shims(&session).unwrap().is_empty());
     }
 
     #[test]

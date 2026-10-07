@@ -23,15 +23,15 @@ Updated: 2026-10-07
 
 ## 总表（顺序 = 落地顺序，按性价比）
 
-| # | 项 | 命令面变化 | 主要文件 | 成本 |
-|---|---|---|---|---|
-| 1 | `health` 补两项检查 | 无（同名命令，属 hok 独有命令的加固） | `crates/libscoop/src/package/health.rs`、`package/shim.rs` | 小 |
-| 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 |
-| 3 | `--dry-run` | 新增开关（uninstall/cleanup → install） | `package/sync_remove.rs`、`package/cleanup.rs`、`package/sync.rs`、`src/cmd/*` | 中 |
-| 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（调 `package::cleanup::cleanup`） | 小 |
-| 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs` | 中 |
-| 6 | `service` 原生 | 新增命令 | `crates/libscoop/src/internal/os.rs`、`package/service.rs`、`src/cmd/service.rs` | 大 |
-| 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 |
+| # | 项 | 命令面变化 | 主要文件 | 成本 | 状态 |
+|---|---|---|---|---|---|
+| 1 | `health` 补两项检查 | 无（同名命令，属 hok 独有命令的加固） | `crates/libscoop/src/package/health.rs`、`package/shim.rs` | 小 | **✅ 已完成（2026-10-07）** |
+| 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 | 待做 |
+| 3 | `--dry-run` | 新增开关（uninstall/cleanup → install） | `package/sync_remove.rs`、`package/cleanup.rs`、`package/sync.rs`、`src/cmd/*` | 中 | 待做 |
+| 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（调 `package::cleanup::cleanup`） | 小 | 待做 |
+| 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs` | 中 | 待做 |
+| 6 | `service` 原生 | 新增命令 | `crates/libscoop/src/internal/os.rs`、`package/service.rs`、`src/cmd/service.rs` | 大 | **⏸ 暂缓（2026-10-07）** |
+| 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 | 待做 |
 
 ---
 
@@ -50,6 +50,15 @@ Updated: 2026-10-07
 - **测试**：`health.rs` 现有 `#[cfg(test)]`（junction/no-junction 两态）扩两条——悬空 current、失效 shim；
   含"目标存在时不报"的反例。
 - **验收**：`hok health` 在健康环境输出不变（回归）；构造一个悬空 current 与一个假 shim，两条都能报出。
+
+**落地记录（2026-10-07）**：已实现。`shim.rs` 把 `shim_target` 拆成 `shim_target_raw`（只解析声明目标，
+`which` 语义不变：`shim_target = raw.filter(exists)`）+ 新增 `broken_shims(session)`（`BrokenShim { name, shim, target }`）；
+`health.rs` 用 `read_link` 区分"链接缺失"与"链接悬空"（`health_current_dangling`），并在包扫描后追加断面 shim 问题；
+shim 目录读失败**不吞错**（`health_shims_unreadable`，与 `check_not_running` 的 fail-closed 一致）。
+判定规则取保守侧：**所有文本变体（`.shim`/无扩展名/`.cmd`/`.ps1`）都解析失败**才算断裂（`.exe` 是启动器不读，
+`scoop-*.ps1` 别名脚本跳过）；已知局限（`.exe` 启动器 + 活 `.ps1` 兄弟可掩盖死 `.shim`）写在函数文档里。
+实现中修掉一个自查发现的 bug：变体列表漏了 `.shim` 本身。测试 21 项通过（新增 5 项：悬空 current、活 current 不误报、
+断面 shim、健康 shim 不误报、仅 `.exe` 不误报）。
 
 ## 2. `edit <app>`
 
@@ -112,7 +121,9 @@ hok 现状（`src/cmd/reset.rs:10-18,71-75`）：`<app> [version]` 位置参数�
 - **验收**：`reset app@1.2.3`、`reset bucket/app`、`reset a b c`、全局已装自动识别四条各有测试；
   `-a` 行为与官方一致（失败继续）。
 
-## 6. `service`（原生 SCM）
+## 6. `service`（原生 SCM）——⏸ 暂缓（2026-10-07 用户决定）
+
+**暂缓，不在本轮落地**。设计与证据已备齐，随时可单独立案（本节的 hok 侧可复用面经本轮核对，仍然有效）：
 
 - **原生，不用 `sc.exe`**：`internal/os.rs:554-611` 已有 `#[link(name = "advapi32")]` +
   `OpenSCManagerW/OpenServiceW/QueryServiceStatus/CloseServiceHandle`；补齐
