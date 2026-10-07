@@ -10,7 +10,7 @@
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
-| 2026-10-07 | health 补两项检查：悬空 current 链接 + 断面 shim | `dd52a4f` | [`2026-10-07-health-dangling-current-and-broken-shims.md`](2026-10-07-health-dangling-current-and-broken-shims.md) |
+| 2026-10-07 | health 补两项检查：悬空 current 链接 + 断面 shim | `dd52a4f` `7f7cf3c` `fa7402c` | [`2026-10-07-health-dangling-current-and-broken-shims.md`](2026-10-07-health-dangling-current-and-broken-shims.md) |
 | 2026-10-07 | 0.6.0 P0 收尾核实：版本枚举行早已覆盖 | `0582b16` | [`2026-10-07-0.6.0-p0-enumeration-closure.md`](2026-10-07-0.6.0-p0-enumeration-closure.md) |
 | 2026-10-07 | 指令层本机路径清零（全局规则同步收口） | `7ce1f7e` | [`2026-10-07-instruction-layer-portable-paths.md`](2026-10-07-instruction-layer-portable-paths.md) |
 | 2026-10-07 | 全局技能拆分 + hok 技能去史 | `ec9c139` `1341dd2` | [`2026-10-07-skills-split-and-strip.md`](2026-10-07-skills-split-and-strip.md) |

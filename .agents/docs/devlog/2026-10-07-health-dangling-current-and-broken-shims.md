@@ -1,6 +1,15 @@
 # health 补两项检查：悬空 current 链接 + 断面 shim
 
-> 2026-10-07 ｜ 提交 `dd52a4f` ｜ worktree `.` （主线 `refactor/edition-2024`）｜ 分支 `refactor/edition-2024`
+> 2026-10-07 ｜ 提交 `dd52a4f` `7f7cf3c` `fa7402c` ｜ worktree `.` （主线 `refactor/edition-2024`）｜ 分支 `refactor/edition-2024`
+
+## 同会话收口（`7f7cf3c` + `fa7402c`）
+
+用户在本会话末收缩范围：**`edit` 暂缓**（它打开的是 bucket 仓库里的 manifest ⇒ 会**修改他人仓库**，价值未评估；
+被编辑脏了的 bucket 还会阻塞 fast-forward 同步）、**原生 `service` 暂缓**、**`update -q` 暂缓**（只是默认输出的简洁版）。
+`7f7cf3c` 把三项标为 ⏸ 并写明理由；本表回填 = 计划文档状态列 + `.agents/docs/README.md` 索引行 +
+[`pending-tasks.md`](../active/plan/pending-tasks.md) §5 新增该专题（剩余 3 项：`--dry-run` / `update -c` / `reset` 对齐官方）。
+`command-deviation-audit-2026-09.md` **无需改动**：本次落地的是 hok 独有命令 `health`（官方无同名命令），
+不改变任何官方对标项的状态。
 
 ## 落地项（本次提交内容）
 
