@@ -30,7 +30,7 @@ Updated: 2026-10-04
 | 会话跑偏：强提醒另开对话 | 全局 `session-scope-guard` | Session hygiene | ✅ |
 | 开 worktree：base 取主线当前 tip / 独立 target / 只信自建副本 / 禁 merge commit | 全局 `worktree-parallel` + `hok-worktree-parallel` | Parallel work → Worktrees | ✅ |
 | 新 worktree：先 `cargo build -p hok-shim`，否则 `crates/libscoop/build.rs:204` panic | `hok-worktree-parallel` | Parallel work → Worktrees（本次补） | ✅ |
-| 派活前：文件+语义重叠矩阵、并发 2–3、prompt 契约 | 全局 `worktree-parallel` + `hok-agent-orchestration` | Parallel work → Orchestration | ✅ |
+| 派活前：文件+语义重叠矩阵、并发 2–3、prompt 契约 | 全局 `agent-orchestration` + `hok-agent-orchestration` | Parallel work → Orchestration | ✅ |
 | 暂存：按主题显式列文件、禁 `git add -A` / `.`、禁 `git clean -fd` | 全局 `git-commit-practice` + `.agents/AGENTS.md` | Gates → Before staging + Parallel work | ✅ |
 | 改码前读专题技能（nsis / time / junction / shim / jsonpath / git pull / …） | 各技能自身 | 无 | **接受**：这是"知识"，不是"闸门"，靠 `description` 命中即可 |
 

@@ -134,7 +134,7 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   grow the new topic before they confirm.
 
 ### Parallel work
-- **Orchestration** — global `worktree-parallel` §9, repo specifics
+- **Orchestration** — global `agent-orchestration`, repo specifics
   `.agents/skills/hok-agent-orchestration`. Before fanning work out to subagents: build a
   **file + semantic overlap matrix** (one owner per hot file, shared entry point or shared predicate),
   cap concurrency at 2–3, and make every prompt self-contained with hard prohibitions, known
