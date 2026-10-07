@@ -10,7 +10,7 @@
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
-| 2026-10-07 | 调研：姊妹项目 hyperscoop（`hp`）值得参考的功能 | `89b7aca` | [`2026-10-07-hyperscoop-feature-survey.md`](2026-10-07-hyperscoop-feature-survey.md) |
+| 2026-10-07 | 调研：姊妹项目 hyperscoop（`hp`）值得参考的功能 | `89b7aca` `def7895` | [`2026-10-07-hyperscoop-feature-survey.md`](2026-10-07-hyperscoop-feature-survey.md) |
 | 2026-10-07 | devlog 索引同日顺序改按入库时间 | `02222f9` | [`2026-10-07-devlog-index-same-day-order.md`](2026-10-07-devlog-index-same-day-order.md) |
 | 2026-10-07 | 清单历史索引补进度圈：管道已实测、TTY 交用户自测；外加一次「打真环境」的事故记录 | `7441be7` | [`2026-10-07-manifest-history-index-spinner.md`](2026-10-07-manifest-history-index-spinner.md) |
 | 2026-10-07 | 种子树 diff 记忆化：等价逐字节通过，性能线在 16 线程机器上按字面未过 | `6a93ecc` | [`2026-10-07-manifest-seed-tree-cost.md`](2026-10-07-manifest-seed-tree-cost.md) |

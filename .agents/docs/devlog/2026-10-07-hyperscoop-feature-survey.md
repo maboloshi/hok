@@ -1,11 +1,12 @@
 # 调研：姊妹项目 hyperscoop（`hp`）值得参考的功能
 
-> 2026-10-07 ｜ 提交 `89b7aca` ｜ worktree `.` （主线 `refactor/edition-2024`）｜ 分支 `refactor/edition-2024`
+> 2026-10-07 ｜ 提交 `89b7aca` `def7895` ｜ worktree `.` （主线 `refactor/edition-2024`）｜ 分支 `refactor/edition-2024`
 
 ## 落地项（本次提交内容）
 
 - 新增 `.agents/docs/research/hyperscoop-feature-survey-2026-10.md`：静态读码盘点 `../hyperscoop`（`Cargo.toml` = 4.5.1）的功能候选池，全部带 file:line。
 - `.agents/docs/README.md`：登记该调研（R6）。
+- `def7895` 补 §2「命令面差异的四种性质」：把「差异大」拆成保留同名 / 官方名降级为别名 / 真改名（`depends`→`deps`，且 `hp help` 被 `disable_help_subcommand` 关掉）/ 纯新增四类，并定下「只借纯新增命令，不改同名语义、不引别名、不开 `infer_subcommands`」的口径。
 
 ## 结论要点
 
@@ -15,7 +16,7 @@
 
 ## 处置
 
-**本会话不立项**（用户选择只保留调研结论）；需要时按文档 §4 的顺序逐项立案。
+**本会话不立项**（用户选择只保留调研结论）；需要时按文档 §5 的顺序逐项立案。
 
 ## 门禁状态
 
