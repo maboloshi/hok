@@ -53,3 +53,27 @@
 **退出码口径（2026-09-13 已更新）**：官方源码里 libexec 的 `exit N` 只有经 **`.ps1` shim 的 `exit $LASTEXITCODE`** 才成为进程码（cmd 路径丢码），`abort` 默认 1；hok 现按官方口径逐命令对齐，详见 devlog [`2026-09-13-s1-s13-exit-code-batch-policy.md`](../../devlog/2026-09-13-s1-s13-exit-code-batch-policy.md)。
 **已知真 bug 候选** → **2026-09-13 已核实并修复（S4，`38ecfa9`）**：`53e35f3` 只把 getter 默认改成 `false`，默认列/locale 长帮助/两份 README 漏改；现全部为 `false`，并新增守卫测试（新配置下每个 bool 行的默认列必须等于 getter）。
 **修复入口**：`.agents/docs/reports/command-deviation-fix-plan-2026-09.md`（已归档）= 新会话拆分计划 S1–S14（每条含范围/决策门/影响面/提交拆分/验收）；一条会话只做一个主题，开工引用「按该计划 S<n> 执行」。
+## manifest 解析专题（现状）
+
+方法与单入口架构见技能 [[scoop-gap-audit]]，逐次落地见 devlog。
+
+- ✅ **P0-1 hash 前缀 × 长度强绑定**：非标准长度不再拒收（宽容）。
+- ✅ **P0-2 `checkver.sourceforge` 对象强制 `path` 必填**：`path` 改为可选。
+- ✅ **P0-4 `autoupdate.hash.mode: github`**：官方 `schema.json:51-62` 只列 8 个枚举值，但官方运行时不校验 schema，
+  `lib/autoupdate.ps1:271-302` 的 `switch` 还接受 `github`（`:298-301` 取 Releases API asset `digest`）。
+  hok 用严格 serde 枚举（`manifest.rs:586`）⇒ `unknown variant` ⇒ `parse_file` 整条 Err；
+  又因 `package/query.rs:270,275` 的 `filter_map` 静默丢弃，表现为「找不到软件包」。
+  修法 = 加 `#[serde(rename = "github")] Github` + 离线夹具（`crates/libscoop/tests/fixtures/0x7eTeamTools.json`）。
+  验收：命中文件全部可解析、`search` 无查询包数恰好 +220、其余 bucket 零变化。
+- ⏸ **清单解析失败不得在查询/安装路径静默消失**（`package/query.rs:270,275`；`:285-313` 解析失败落 `None`）：
+  P0 级可见性；改它等于改单入口的错误传播策略，影响全部清单扫描语义，需单独立项。
+- ✅ **`mode: github` 取 digest 失败/为 null 的回落**：`checkver_hash.rs:172-187` 返回 `None` 后走
+  `download_and_compute_sha256`（下载落 Scoop 缓存 + 本地 SHA-256），不再 Err 中断该清单。
+- ✅ **`serving_a_stale_cache_warns_once` 假 flaky**：根因是闩锁放错层——`STALE_WARNED` / `MISMATCH_WARNED`
+  曾是进程级 static，而告警发往**每会话**的 `session.output()`；两处已搬进 `Session`
+  （`mark_stale_warned` / `mark_mismatch_warned`，key 为 `bucket/name`）。
+- ✅ **P1 autoupdate 缺字段**：官方 13 字段 vs hok 5 → 已补 architecture/extract_dir/hash/notes/url + autoupdateArch。
+- ⏸ **P2 无影响不动**：`hashExtraction.type`（deprecated）、`installer._comment`、shortcuts 长度、version pattern。
+- ✅ **已验证兼容**：license / psmodule / checkver 全键 / mode 8 枚举 / installer / uninstaller / architecture /
+  autoupdate.hash 三形式 / bin 对象 / hook script。
+

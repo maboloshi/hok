@@ -6,13 +6,13 @@ metadata:
   type: feedback
 ---
 
-hok 已从 jiff 0.2 迁移到 time 0.3（两个 Cargo.toml 的 jiff 依赖已移除，Cargo.lock 里 jiff / jiff-static / jiff-tzdb / jiff-tzdb-platform 全部 0 命中）。
+hok 的时间处理用 **time 0.3**，不是 jiff（Cargo.toml / Cargo.lock 里不应再出现 jiff 系列）。
 
 **Why：** jiff 内嵌 IANA tzdb 全量时区数据（编译成本高 + 一个 proc-macro）；time 0.3 已在依赖树（ureq→cookie 引入），零新增编译成本；Windows 下取本地偏移与官方 Scoop（.NET）同源。时区获取靠系统查询（`UtcOffset::local_offset_at`），对"展示/冷却/last_update"场景无行为差异。
 
 **How to apply：**
-- 时间逻辑全在 `libscoop/src/internal/time.rs`（P1-22 产物，见 [[hok-code-organization]] 工具层）：`format_last_update`（Scoop ISO 串 7 位小数+偏移）、`parse_last_update`（Rfc3339 → 裸无偏移两级回退）。
-- time 0.3 关键 API/坑（Cargo.lock 当前 0.3.55）：
+- 时间逻辑全在 `libscoop/src/internal/time.rs`（见 [[hok-code-organization]] 工具层）：`format_last_update`（Scoop ISO 串 7 位小数+偏移）、`parse_last_update`（Rfc3339 → 裸无偏移两级回退）。
+- time 0.3 关键 API/坑（版本以 Cargo.lock 为准）：
   - `time::util::local_offset` 函数已删（0.3.37+ 改为 deprecated module），本地偏移用 `UtcOffset::local_offset_at(t)`（feature `local-offset`）；`OffsetDateTime::now_local()` 同 gate。
   - format_description **无 `offset_sign` 组件**，正偏移带符号用 `[offset_hour sign:mandatory]`（automatic 默认省略正号）；`%z` 等价 `[offset_hour sign:mandatory][offset_minute]`；strftime `%-m` 等价 `[month padding:none]`。
   - `[subsecond digits:N]` 是截断语义（与 jiff `subsec/100` 一致，有测试锁定）。

@@ -6,7 +6,7 @@ metadata:
   type: project
 ---
 
-hok shim/shortcut 专题（合并自 dual-variant + shortcut-handoff）。
+hok shim / shortcut 专题。
 
 ## shim 双变体架构（console/GUI 按目标 PE subsystem 选择）
 - `hok-shim`（console subsystem 显式声明）→ console 目标（git/python/reasonix）：shell 等待、交互 stdin 正常

@@ -6,7 +6,7 @@ metadata:
   type: project
 ---
 
-hok 的 bucket 更新已从"仅 fast-forward"改为**对标官方 Scoop `git pull -q`（merge 语义）**。
+hok 的 bucket 更新**对标官方 Scoop `git pull -q`（merge 语义）**，不是"仅 fast-forward"。
 
 **实现（`crates/libscoop/src/internal/git.rs`）**：`pull`：fetch（单分支 refspec 保持）→ `merge_analysis` 分流：
 - `is_fast_forward()` → `repo.reset(&obj, ResetType::Hard, None)` 一步更新 ref/index/workdir；
@@ -23,8 +23,8 @@ hok 的 bucket 更新已从"仅 fast-forward"改为**对标官方 Scoop `git pul
 
 **测试**：`crates/libscoop/src/internal/git.rs` 末尾 `mod tests`，5 个用例 `pull_fast_forward` / `pull_fast_forward_dirty`（拦截不覆盖）/ `pull_merge_commit`（双 parent）/ `pull_merge_conflict`（留 `<<<<<<<` 标记）/ `pull_fast_forward_new_files`（远端新增文件，坑 3 回归）。测试用 git2 本地构造 origin+clone（`commit_file` helper，clone 需 `cfg.set_str("user.name/email")` 供 merge commit）。
 
-**错误变体**：`BucketUpdateMergeConflict(String)`、`BucketUpdateLocalChanges(String)`（error.rs error_key + locales en/zh 已补，含原缺失的 `bucket_update_not_fast_forward`）。
+**错误变体**：`BucketUpdateMergeConflict(String)`、`BucketUpdateLocalChanges(String)`（error.rs error_key + locales en/zh 均有，含 `bucket_update_not_fast_forward`）。
 
 **Why:** 用户要求 bucket 更新对标官方；官方 Scoop `scoop-update.ps1` Sync-Bucket 就是 `git pull -q`（merge 语义，非 rebase/autostash；`autostash_on_conflict` 配置只作用于 Scoop 自身更新且 stash 后不 pop）。hyperscoop 的 `run_pull` 同思路但 fast-forward 用 `.force()` 会覆盖本地修改（其注释自认待改进）。
 
-**How to apply:** 改 bucket 更新逻辑看 `internal::git::pull`；碰 libgit2 checkout/merge 先读坑 1/2；用 status API 查「文件是否有本地修改」先读坑 3（勿用 status_file 逐文件）；对比行为读官方 `$env:SCOOP\apps\scoop\current\libexec\scoop-update.ps1` 与 hp `crates\command\src\utils\pull.rs`。
+**How to apply:** 改 bucket 更新逻辑看 `internal::git::pull`；碰 libgit2 checkout/merge 先读坑 1/2；用 status API 查「文件是否有本地修改」先读坑 3（勿用 status_file 逐文件）；对比行为读官方 `$env:SCOOP\apps\scoop\current\libexec\scoop-update.ps1` 与 hyperscoop 的 `utils/pull.rs`。
