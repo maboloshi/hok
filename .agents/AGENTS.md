@@ -69,6 +69,7 @@ DSH 只保证**常驻**文件在需要时已被注入：仓库根 `AGENTS.md` �
 4. **临时产物不落项目**：一次性日志、构建输出、下载中间物一律用系统临时目录
    （DSH 自身的溢出文件落在 `%TEMP%\dsh-spill-*`，从不落项目）。本目录下不得新建 `tmp/` 或散落 `.log`。
 5. **路径要可移植**：本目录入库 ⇒ **指令层不得出现本机绝对路径**，用仓库相对路径。
+   环境变量形式（`$SCOOP`、`%ProgramData%`）与占位式写法（`<repo>`、`<home>`）可移植，允许。
    指令层 = 本文件、`skills/**`、`docs/AGENTS.md`、`docs/README.md`、`docs/active/**`（除 `prompts/` 子树）。
    历史记录 = `docs/reports/**`、`docs/devlog/**`、`docs/legacy/**`、`docs/research/**`、`archive/**`、
    以及任何 `prompts/` 子树 —— **保留原文**，那是当时的原始记录，不要"修正"。

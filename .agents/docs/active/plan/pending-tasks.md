@@ -239,7 +239,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 - **根因（S2 复核后更正，2026-09-13）**：清空 `USERPROFILE`/`HOME` → `Session::new:182` → `config::init_default:780` → `config::write:790` → `fs::write_json:63` `path.parent().unwrap()` on `None`。写链上的空路径来自 **`hok_config_path()`**（`config.rs:889-891`，经 `Config::default` 的 `path:` 字段 `config.rs:758`），**不是** `scoop_config_path()`（后者只喂 `ConfigBuilder::scoop_path`，只读、从不写）。`hok_config_path` 走 `home_dir()`（仅 `USERPROFILE`/`HOME`）⇒ 与 `APPDATA` 无关（实测：保留 `HOME`、去掉 `APPDATA` **不炸**）。**影响面**：panic 在 `Session::new` ⇒ 所有建 session 的命令都炸（`list`/`info`/`config -a`/`cache`/`status`/`health`），仅 `--version` 不炸。**第二个可达入口**：`config.rs:110`（迁移写）在 exe 旁有 portable `config.json` 且无 home 时同样 panic
 - **S2 交付（第一版，2026-09-13）**：tip **`3bf7203`**（→ 完整 sha `3bf72035d50ab077008fe3b2e5be347090926cbb`），提交 ① `82969d7 fix(config,fs): degrade instead of panicking without a home directory` ② `3bf7203 test(fs): pin the empty-path write`；均签名；门禁 libscoop lib **745 passed / 2 failed**（= 基线 741 + 4 新测试，失败仍是那两条 ACL 噪声）、clippy/rfmt 干净；改前 panic → 改后 `list`/`info`/`config -a` 均不 panic，正常环境 4 命令**逐字节相同**
 - **用户 2026-09-13 拍板（4 条全答）**：①**采用 (a)+(b)**；②`fs.rs:115` **一并纳入**；③**`root_path` 空 → CWD 相对路径的相邻坑「本主题一并处理」**（比 S2 建议范围更大，须"明确报错而非静默落 CWD"）；④错误文案**英文**、复用 `Error::Io`/`error.io`，不新增 i18n 键
-- **S2 抛回的开放问题 + 用户追加决策**：官方 `lib/core.ps1:1291-1301` 把空串 `SCOOP`/`SCOOP_GLOBAL` 当**未设置**并回落默认（`$HOME\scoop` / `C:\ProgramData\scoop`），而 S2 首版把空串当"根=空"报错 ⇒ **用户选「方案 A：对齐官方」**，已转达 S2 在同一分支追加 commit（并**按证据**删除因此变多余的 `require_global_path`/`ensure_global` 守卫；(a)/(b) 必须保留）
+- **S2 抛回的开放问题 + 用户追加决策**：官方 `lib/core.ps1:1291-1301` 把空串 `SCOOP`/`SCOOP_GLOBAL` 当**未设置**并回落默认（`$HOME\scoop` / `%ProgramData%\scoop`），而 S2 首版把空串当"根=空"报错 ⇒ **用户选「方案 A：对齐官方」**，已转达 S2 在同一分支追加 commit（并**按证据**删除因此变多余的 `require_global_path`/`ensure_global` 守卫；(a)/(b) 必须保留）
 - **最终交付 + 已收口（2026-09-13）**：最终 tip **`9b672207ae6fd160fc59bd6d446db0bbe9005799`**（三提交全签名）→ 父会话 `worktree-merge.ps1 -VerifiedRef 9b672207…` **`--ff-only` 落地**，主线 tip = **`9b672207`**，无 merge commit，漂移校验"逐字节相同"，`git ls-files .dsh` = 0。
   - 方案 A 实现：`config::default::env_path(name)` = `var_os(name).filter(|v| !v.is_empty())`（复用 `home_dir`/`config_dir` 既有约定），用于 `SCOOP`/`SCOOP_GLOBAL`/`SCOOP_CACHE`/`ProgramData`；实测 `SCOOP=""→<USERPROFILE>\scoop`、`SCOOP_GLOBAL=""→<ProgramData>\scoop`、`SCOOP_CACHE=""→<root>\cache`。
   - **按证据删掉**变不可达的守卫（`require_global_path`、`require_known_root`、`Session::require_effective_root_path`、`ensure_global` 守卫）；**保留** (a) `fs.rs:63/115` 降级、(b) `init_default` 跳过空路径、`require_root_path` + CLI 启动守卫（`SCOOP` 未设且无 home 时仍可达，且全局 `buckets` 也按用户级 root 解析）。
@@ -364,7 +364,7 @@ S1 只动 checkver 执行流，S2 只动路径/写盘，S3 只动查询层错误
 
 **Wave 1 现场快照（更新 2026-09-13 24:00：✅ S1 与 S2 均已收口落地）**
 - **主线 `refactor/edition-2024`：`4748ae1` → `9b672207`（S2，3 提交）→ `43795484`（S1，5 提交）**，共 **8 个提交全部线性落地、零 merge commit**。
-- **S2：✅ 已收口**。落地后门禁 **747 passed / 0 failed**；父会话独立行为复验：①无 `USERPROFILE`/`HOME` 且 `SCOOP` 已设 → `hok list` 打印「尚未安装任何应用。」exit 1、**无 panic**（改前 panic + `exit -1073740791`）；②无 `SCOOP` 且无 home → 明确英文报错 exit 1；③`SCOOP=""` + 有 home → 回落 `C:\Users\<user>\scoop`（对齐官方）。
+- **S2：✅ 已收口**。落地后门禁 **747 passed / 0 failed**；父会话独立行为复验：①无 `USERPROFILE`/`HOME` 且 `SCOOP` 已设 → `hok list` 打印「尚未安装任何应用。」exit 1、**无 panic**（改前 panic + `exit -1073740791`）；②无 `SCOOP` 且无 home → 明确英文报错 exit 1；③`SCOOP=""` + 有 home → 回落 `$HOME\scoop`（对齐官方）。
 - **S1：✅ 已收口**（重放到 `9b67220` 后 5/5 零冲突；漂移校验逐字节相同）。落地后门禁 **752 passed / 0 failed**（`cargo_test_exit=0`）。
   - **父会话独立复验**（新树二进制 + 15s 硬超时守卫，隔离 `SCOOP`）：空目录 exit 0（2.9s，含启动）/ 无 checkver 目录 exit 0（86ms）/ glob 不匹配 exit 0（77ms）/ `-V 2.0.0` exit 0 且打印 `app (1.0.0 -> 2.0.0)`（83ms）/ `-V 1.0.0 -s` exit 0（80ms）/ 有 checkver 且连接被拒 exit 0 且报错文案不变（`ERROR app: 下载失败: HTTP status server error (502 …)`，111ms）。**六项全部由"永不退出"变为秒级正常结束**。
 - **收口工具与流程均已实跑验证**：`worktree-merge.ps1` 自测 15/15，两条分支各走一遍完整链路（漂移校验 + 落地不变量 + `git ls-files .dsh` = 0）。
@@ -471,7 +471,7 @@ P2 token 注入 / P3 README），配合 .agents/docs/active/plan/pending-tasks.m
 - **⚠️ 口径更新（2026-09-13 收口时实测）**：沙箱切到 `danger-full-access` 后，那两条 ACL 测试**真的通过了** —— 落地后新树 `cargo test --workspace` = libscoop lib **747 passed / 0 failed / 8 ignored**（= 741 + 4 条新测试 + 2 条 ACL 转绿），其余 target 全绿。**判据改为"0 failed"**；若将来再现这 2 条失败，先怀疑沙箱策略退回了 `workspace-write`，而不是当作回归。
 
 **⚠️ 沙箱发现：签名提交在本会话被文件沙箱挡住（2026-09-13 实测）**
-- 现象：`git commit`（本机 `commit.gpgsign=true`）失败 —— `gpg: can't create 'C:\Users\...\.gnupg\pubring.kbx.lock': 拒绝访问` + `can't connect to the gpg-agent: Operation not permitted`。
+- 现象：`git commit`（本机 `commit.gpgsign=true`）失败 —— `gpg: can't create '<home>\.gnupg\pubring.kbx.lock': 拒绝访问` + `can't connect to the gpg-agent: Operation not permitted`。
 - 定性：**沙箱策略问题，不是 gpg/git 配置问题**。同一条 `git commit-tree -S` 命令改用 `danger-full-access` 重试即成功（`sig=G`，signer `maboloshi`）。根因是 file sandbox = `workspace-write`，而 gpg 需写 workspace 之外的 `~/.gnupg`。
 - 已通告两条子代理：**不得**用 `--no-gpg-sign` / `-c commit.gpgsign=false` 绕过（破坏本仓"签名提交"不变量）。
 - ✅ **已解除（2026-09-13，随后本次会话的策略被切到 `danger-full-access` 且审批关闭）**：复测 `git commit-tree -S` 直接成功（`exit=0`，`sig=G`，signer `maboloshi`），**无需任何提权**。给子代理的指令已同步更正为"直接正常提交；**不要**再设 `sandbox_permissions`（审批已关闭，会被自动拒绝）；若 gpg 仍失败则停下如实上报"。

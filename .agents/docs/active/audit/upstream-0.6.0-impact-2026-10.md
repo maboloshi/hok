@@ -28,7 +28,7 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 **遗留（2026-10-03 核，P0 落地后仍未动）**：版本枚举行未随 P0 修改——`install_state.rs:204-225` 的 `newest_version_dir` 仍只按 `install.json` 的 mtime 排序，而官方是两名皆 glob（`lib/versions.ps1:99-100`）。后果局限在 **NO_JUNCTION 且元数据已改新名**的目录上：mtime 排序可能指向错误的版本目录，从而解析出错误的 current。它是 P0 的尾巴而非独立项。
 
-**实测（2026-10-02，本机 `D:\App\Scoop` 已升级到 v0.6.0）**：74 个已装应用的 `current\` **仍全是 `install.json,manifest.json`** ⇒ 官方**不做存量迁移**，只在新增/升级/重装时写新名。所以现在还没爆，但**任何应用被 0.6.0 重装/升级后**即触发。
+**实测（2026-10-02，本机 `$SCOOP` 已升级到 v0.6.0）**：74 个已装应用的 `current\` **仍全是 `install.json,manifest.json`** ⇒ 官方**不做存量迁移**，只在新增/升级/重装时写新名。所以现在还没爆，但**任何应用被 0.6.0 重装/升级后**即触发。
 
 **处置（用户 2026-10-02 拍板）**：hok **写新名 + 读新名优先回落旧名**，与官方落盘一致。代价：旧版 Scoop（< 0.6.0）会读不到 hok 新装的包——上游自己也接受这个取舍。
 
@@ -87,7 +87,7 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 ### 3.2 缓存与 git 的两点实测（2026-10-03）
 
 **① 缓存层不是"另存的历史"，是"扫过的当前版本"——优先它只因为快。**
-`database.ps1:93-104` 的表是 `app(name, description, version, bucket, manifest JSON, …)`，主键 `(name, version, bucket)` ⇒ **同一 app 的多版本是并列多行**，`manifest` 存整份清单文本，所以它**确实能**充当"按版本取原文"的提供层。但内容来源只有两处：`Sync-Bucket` 的差分导入（`libexec/scoop-update.ps1:202-258`，仅 `use_sqlite_cache` 开时）与首次构建时的整桶扫描（只扫 HEAD 一次，每 app 一行）。本机实测（`D:\App\Scoop\scoop.db`，51 MB、22311 行）与这一判断吻合：7zip 只有 `26.03` 一行，多数 app 也只有 1–2 版；**只有长期开缓存并持续差分同步，旧版本才会自然沉积下来**。结论：先查缓存是为了快（本地索引点查），权威性属于 git；缓存关了或没积到那一版，仍会落到 git。
+`database.ps1:93-104` 的表是 `app(name, description, version, bucket, manifest JSON, …)`，主键 `(name, version, bucket)` ⇒ **同一 app 的多版本是并列多行**，`manifest` 存整份清单文本，所以它**确实能**充当"按版本取原文"的提供层。但内容来源只有两处：`Sync-Bucket` 的差分导入（`libexec/scoop-update.ps1:202-258`，仅 `use_sqlite_cache` 开时）与首次构建时的整桶扫描（只扫 HEAD 一次，每 app 一行）。本机实测（`$SCOOP\scoop.db`，51 MB、22311 行）与这一判断吻合：7zip 只有 `26.03` 一行，多数 app 也只有 1–2 版；**只有长期开缓存并持续差分同步，旧版本才会自然沉积下来**。结论：先查缓存是为了快（本地索引点查），权威性属于 git；缓存关了或没积到那一版，仍会落到 git。
 （hok 侧的对称事实：hok 也写**同一个** `scoop.db`，`app` 表 schema 与上游兼容、另有 hok 专属的 `hok_manifest_sync(bucket, synced_commit)` 同步基线表，见 `package/manifest_cache.rs:48-79`；其 `INSERT OR REPLACE` 同样按 `(name, version, bucket)` 键——**结构上能并留多版本**，但 `populate()` 只在 HEAD 扫当前版本，所以它不是历史来源。）
 
 **② 提交名约束帮不到查询；"git2 有问题"的说法要收窄。**

@@ -135,7 +135,7 @@ $ cargo package -p hok-i18n --list
 ```
 $ cargo build -p libscoop          # 把 target/ 移走，模拟全新 clone
 thread 'main' panicked at crates\libscoop\build.rs:204:
-  hok-shim binary not found at D:\App\github项目\Scoop\hok\target\release\hok-shim.exe
+  hok-shim binary not found at <repo>\target\release\hok-shim.exe
     Run `cargo build -p hok-shim` first.
 exit=101
 ```

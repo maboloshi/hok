@@ -163,9 +163,9 @@ Scoop `Test-7zipRequirement` 与 hok `detect_format`（含 `#/rename` 片段语�
 
 ## 附：复现方式
 
-- 7z.exe 基线：`7z x <cache 文件> -o<dest> -y -bso0 -bsp0`（脚本 `D:\hok-bench\bench7z.ps1`）。
-- hok 原生路径：临时 crate `D:\hok-bench\extract-bench`，只用公开 API
+- 7z.exe 基线：`7z x <cache 文件> -o<dest> -y -bso0 -bsp0`（一次性基线探针，未入库）。
+- hok 原生路径：临时 crate（未入库），只用公开 API
   `Session::new().archive().extract(...)`，`CARGO_TARGET_DIR=<hok>/target` 复用产物；
-  树比对脚本 `D:\hok-bench\compare.ps1`（路径 + 大小集合差集）。
-- 覆盖差距统计：`D:\hok-bench\gap.ps1`（Scoop 正则 vs hok `detect_format`，含 `#` 片段语义）。
+  树比对脚本（一次性，未入库；路径 + 大小集合差集）。
+- 覆盖差距统计：一次性脚本（未入库；Scoop 正则 vs hok `detect_format`，含 `#` 片段语义）。
 - 以上临时目录均已清理解压产物；脚本保留可复跑。
