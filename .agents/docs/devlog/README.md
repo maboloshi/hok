@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（69 条，自动生成）
+## 索引（70 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-07 | 0.6.0 P0 收尾核实：版本枚举行早已覆盖 | `0582b16` | [`2026-10-07-0.6.0-p0-enumeration-closure.md`](2026-10-07-0.6.0-p0-enumeration-closure.md) |
 | 2026-10-07 | 指令层本机路径清零（全局规则同步收口） | `7ce1f7e` | [`2026-10-07-instruction-layer-portable-paths.md`](2026-10-07-instruction-layer-portable-paths.md) |
 | 2026-10-07 | 全局技能拆分 + hok 技能去史 | `ec9c139` `1341dd2` | [`2026-10-07-skills-split-and-strip.md`](2026-10-07-skills-split-and-strip.md) |
 | 2026-10-07 | 调研：姊妹项目 hyperscoop（`hp`）值得参考的功能 | `89b7aca` `def7895` | [`2026-10-07-hyperscoop-feature-survey.md`](2026-10-07-hyperscoop-feature-survey.md) |
