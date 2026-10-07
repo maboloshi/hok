@@ -140,6 +140,18 @@
 
 ---
 
+**从 hyperscoop（`hp`）借鉴的 CLI 增补** —— [`.agents/docs/active/plan/cli-additions-plan.md`](cli-additions-plan.md)
+（状态：计划定稿；来源调研 [`../../research/hyperscoop-feature-survey-2026-10.md`](../../research/hyperscoop-feature-survey-2026-10.md)）：
+
+- ✅ **已落地**：`health` 补「悬空 `current` 链接 + 断面 shim」两项检查（`dd52a4f`）。
+- ⏳ **剩余 3 项（待各自开会话）**：`--dry-run`（uninstall → cleanup → install，验收=零副作用）、
+  `update/upgrade -c`（升级成功后调既有 `package::cleanup::cleanup`，**不做** hyperscoop 的"先删后装"）、
+  `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别；不加 `switch` 命令）。
+- ⏸ **暂缓 3 项**（理由写在各小节）：`edit <app>`（会修改他人 bucket 仓库，价值未评估）、
+  原生 `service`（含新增 FFI，需登记 unsafe 审计）、`update -q/--quiet`（只是默认输出的简洁版）。
+
+---
+
 ## 6. 代码内 TODO（4 处，已核实）
 
 | 位置 | 内容 | 处置 |
