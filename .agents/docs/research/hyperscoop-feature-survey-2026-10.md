@@ -106,9 +106,13 @@ hyperscoop 把 `uses` / `leaves` / `autoremove` 当成招牌（其 README「Kill
     与 hok 不 vendor 第三方二进制的方向相反（见
     [`7zip-switch-investigation-2026-09.md`](../active/audit/7zip-switch-investigation-2026-09.md)）；
   - `CHANGELOG.md` 停在 1.0.4 而 Cargo 是 4.5.1 ⇒ 文档不可当事实源。
-- **已有等价物、不必抄**：`switch` ≈ `reset`（hyperscoop 侧也只是列目录 + 调 `reset_specific_version`）；
-  `log` ≈ `info` 的 git 历史；`fetch` ≈ `download`；`tap` / `untap` ≈ `bucket add` / `rm`；
-  `desc` ≈ `info`；`doctor` ≈ `checkup` 别名；i18n 与并行搜索 hok 已具备。
+- **`hp update -c/--cleanup` 的实现是反模式**：它删掉 `current` 指向的那个版本目录**再**安装
+  （`../hyperscoop/crates/command/src/update.rs:81-102`，调用点 `:195-201`）⇒ 安装期间 `current` 悬空、
+  `remove_old_version` 无锁，且若 `current` 已被 `switch` 切到最新版就会**把最新版删掉**。
+  正确形态是升级**成功后**调既有 `cleanup`（保留 current、删旧版本）。
+- **已有等价物、不必抄**：`switch` ≈ `reset <app> <ver>` + `hok list -V/--versions`（后者已用 `is_current`
+  标出当前版本），再加一个动词就是同一件事的第三个名字；`log` ≈ `info` 的 git 历史；`fetch` ≈ `download`；
+  `tap` / `untap` ≈ `bucket add` / `rm`；`desc` ≈ `info`；`doctor` ≈ `checkup` 别名；i18n 与并行搜索 hok 已具备。
 - **`autoremove` / `leaves`（原 B1）：不建议**（§0）——需要官方没有的 `installed_as_dependency` 标记
   （`../hyperscoop/crates/command/src/depends.rs:377-435`），却几乎无孤儿可回收：依赖面 3%、
   深度 1，本机 66 个已装应用里只有 2 个带 `depends`。为它改共享状态文件（`install.json`）的收益
