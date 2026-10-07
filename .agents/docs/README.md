@@ -48,7 +48,7 @@
 | [`cleanup-delete-perf.md`](research/cleanup-delete-perf.md) | `cleanup --delete` 性能分析与并行化依据 |
 | [`manifest-history-index.md`](research/manifest-history-index.md) | 「git 库 → 索引库」清单历史索引调研草稿（存什么/放哪里/怎么建/能否并行，成本实测） |
 | [`manifest-scan-output-2026-10.md`](research/manifest-scan-output-2026-10.md) | 桶扫描类命令（checkver + 4 兄弟）输出盘点与差距基线；方向见 `output-system-design.md` §十一 |
-| [`hyperscoop-feature-survey-2026-10.md`](research/hyperscoop-feature-survey-2026-10.md) | 姊妹项目 `hp` 的功能盘点：值得参考项（dry-run / uses / status --json / size / checkup 补检 / 跨进程锁）、需单独立案项与反例（service / merge / README 夸大）；**本会话不立项** |
+| [`hyperscoop-feature-survey-2026-10.md`](research/hyperscoop-feature-survey-2026-10.md) | 姊妹项目 `hp` 的功能盘点：值得参考项（dry-run / uses / status --json / size / checkup 补检 / 跨进程锁）、需单独立案项与反例（service / merge / README 夸大）；命令面差异的四种性质与「只借纯新增命令」口径；**本会话不立项** |
 
 ## 历史与冻结
 
