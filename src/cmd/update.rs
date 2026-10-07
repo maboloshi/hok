@@ -175,13 +175,10 @@ async fn update_buckets(session: &Session) -> Result<()> {
     refresh_manifest_cache(session, &changes)?;
 
     // The manifest history index is maintained next to the cache but not by
-    // it. It is deliberately un-gated from `use_sqlite_cache` (it backs
-    // `app@<old version>` resolution, not cache serving), and it is derived
-    // data: a failure keeps the previous baseline for the next update to retry
-    // and is logged, never surfaced as a failed `hok update`.
-    if let Err(e) = package::manifest_history::refresh(session) {
-        tracing::warn!("manifest history index refresh failed: {e}");
-    }
+    // it: it is deliberately un-gated from `use_sqlite_cache` (it backs
+    // `app@<old version>` resolution, not cache serving) and it spins on its
+    // own row (see `refresh_manifest_history`).
+    refresh_manifest_history(session);
 
     // Buckets that were never fetched are named once, at the end: by now their
     // rows are settled, and this is the line that survives a scrollback or a CI
@@ -261,5 +258,42 @@ fn cache_refresh_message(outcome: &package::manifest_cache::RefreshOutcome) -> S
         }
         // Incremental, or a `Disabled` outcome the caller already filtered out.
         _ => hok_i18n::t!("cmd.cache_done"),
+    }
+}
+
+/// Maintain the manifest history index with a single-step spinner.
+///
+/// Same shape as [`refresh_manifest_cache`] — a `cui::RowUI` spinner row on a
+/// terminal, the plain `status`/`done` line pair in a pipe, where indicatif
+/// draws nothing. The row is the step's only feedback, and it earns its place:
+/// a cold seed of a large bucket takes tens of seconds against milliseconds
+/// once the index is warm (measured on isolated copies: extras 92,616 commits
+/// 22 s on 16 threads and 97 s on one; main 81,453 commits 14 s on 16).
+///
+/// A failure is *not* rendered the way the cache's is. The index is derived
+/// data — it backs `app@<old version>` resolution and keeps its previous
+/// baseline so the next update retries — so the row ends with a dim note and
+/// no `✓`, `hok update` still succeeds, and only the log records the error.
+fn refresh_manifest_history(session: &Session) {
+    if std::io::stdout().is_terminal() {
+        let mut ui = cui::RowUI::new();
+        ui.set_spin("manifest-history", hok_i18n::t!("cmd.history_index"));
+        match package::manifest_history::refresh(session) {
+            Ok(()) => ui.done_with("manifest-history", hok_i18n::t!("cmd.history_index_done")),
+            Err(e) => {
+                tracing::warn!("manifest history index refresh failed: {e}");
+                ui.note(hok_i18n::t!("cmd.history_index_skipped", e = e));
+                ui.finish_all();
+            }
+        }
+    } else {
+        output::status(hok_i18n::t!("cmd.history_index"));
+        match package::manifest_history::refresh(session) {
+            Ok(()) => output::done(hok_i18n::t!("cmd.history_index_done")),
+            Err(e) => {
+                tracing::warn!("manifest history index refresh failed: {e}");
+                output::warn(hok_i18n::t!("cmd.history_index_skipped", e = e));
+            }
+        }
     }
 }
