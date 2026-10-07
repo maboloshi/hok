@@ -26,12 +26,15 @@ Updated: 2026-10-07
 | # | 项 | 命令面变化 | 主要文件 | 成本 | 状态 |
 |---|---|---|---|---|---|
 | 1 | `health` 补两项检查 | 无（同名命令，属 hok 独有命令的加固） | `crates/libscoop/src/package/health.rs`、`package/shim.rs` | 小 | **✅ 已完成（2026-10-07）** |
-| 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 | 待做 |
+| 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
 | 3 | `--dry-run` | 新增开关（uninstall/cleanup → install） | `package/sync_remove.rs`、`package/cleanup.rs`、`package/sync.rs`、`src/cmd/*` | 中 | 待做 |
 | 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（调 `package::cleanup::cleanup`） | 小 | 待做 |
 | 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs` | 中 | 待做 |
 | 6 | `service` 原生 | 新增命令 | `crates/libscoop/src/internal/os.rs`、`package/service.rs`、`src/cmd/service.rs` | 大 | **⏸ 暂缓（2026-10-07）** |
-| 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 | 待做 |
+| 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
+
+**当前状态（2026-10-07 收口）**：第 1 项已落地（`dd52a4f`）；**剩余待做 = 3（`--dry-run`）、4（`update -c`）、5（`reset` 对齐官方）**；
+第 2、6、7 项暂缓，理由见各自小节。
 
 ---
 
@@ -60,7 +63,12 @@ shim 目录读失败**不吞错**（`health_shims_unreadable`，与 `check_not_r
 实现中修掉一个自查发现的 bug：变体列表漏了 `.shim` 本身。测试 21 项通过（新增 5 项：悬空 current、活 current 不误报、
 断面 shim、健康 shim 不误报、仅 `.exe` 不误报）。
 
-## 2. `edit <app>`
+## 2. `edit <app>` ——⏸ 暂缓（2026-10-07 用户决定）
+
+**暂缓理由**：它打开的是 **bucket 仓库里的 manifest**，也就是说会**直接修改他人仓库**（bucket 是第三方 git 仓），
+而"编辑别人的清单"这件事的**价值尚未评估**。附带的现实风险：hok 的 bucket 同步走 fast-forward
+（见 [[hok-git-pull-official-alignment]]），被编辑脏了的 bucket 工作树会阻塞后续 `git pull`。
+设计与可复用面已核对完毕，若将来要恢复，按下面执行即可：
 
 - **复用**：`libscoop::config::edit(session)`（`config.rs:1462-1491`）已实现"config `editor` → `$EDITOR` +
   `cmd /c` 回退（`.cmd`/`.bat`/带参数编辑器）"，但硬编码打开 config 文件 ⇒ 抽出
@@ -144,7 +152,10 @@ hok 现状（`src/cmd/reset.rs:10-18,71-75`）：`<app> [version]` 位置参数�
   `ToDesk_Service`（`apps\todesk\current\ToDesk.exe --runservice`）；非管理员下 start/stop 给出明确错误；
   枚举不依赖 `sc.exe`（断言无子进程）。
 
-## 7. `update -q/--quiet`（官方锚点缺口）
+## 7. `update -q/--quiet`（官方锚点缺口）——⏸ 暂缓（2026-10-07 用户决定）
+
+**暂缓理由**：它本质上只是**默认输出的简洁版**（抑制"已是最新"等提示），对官方锚点的价值不足，
+不值得占用一个主题。官方语义留档如下，需要时再捡：
 
 官方：`scoop-update.ps1:8-15,38,261,288,293` ⇒ `-q/--quiet` 抑制**包升级路径**的信息输出
 （如"latest version already installed"警告、nightly 版本获取提示），错误仍照常输出。
