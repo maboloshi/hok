@@ -1,7 +1,7 @@
 # 上游 Scoop 0.5.3 → 0.6.0 影响评估与本仓处置
 
-Status: active（P0/P1/P3 已落地；P2 三条不采纳，只留差距记录）
-Updated: 2026-10-03
+Status: active（P0/P1/P3 已落地；P2 中 `63cb8f84` 已于 2026-10-07 落地，余两条只留差距记录）
+Updated: 2026-10-07
 
 > **是什么**：本地官方源码 `../Scoop` 于 2026-10-02 从 v0.5.3（`b588a06e`，2025-08-12）快进到 v0.6.0（`e6aa3b36`，2026-09-30），共 **76 个提交**。本文是这些改动对 hok 的影响逐项评估与本会话的处置记录。
 > **口径**：官方侧一律引用 `../Scoop` 的 file:line（v0.6.0）；hok 侧引用本仓 file:line。**本节为静态读码 + 少量实测**，未做端到端复现的条目标注为「未实测」。
@@ -26,7 +26,9 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 **方向性**：官方能读 hok 写的旧名（兼容），**hok 读不到官方 0.6.0 写的新名** ⇒ `list` / `status` / `update` / `hold` / `uninstall` 会把该应用当作未安装或损坏。
 
-**遗留（2026-10-03 核，P0 落地后仍未动）**：版本枚举行未随 P0 修改——`install_state.rs:204-225` 的 `newest_version_dir` 仍只按 `install.json` 的 mtime 排序，而官方是两名皆 glob（`lib/versions.ps1:99-100`）。后果局限在 **NO_JUNCTION 且元数据已改新名**的目录上：mtime 排序可能指向错误的版本目录，从而解析出错误的 current。它是 P0 的尾巴而非独立项。
+**更正（2026-10-07，实测）**：上表「版本枚举」行原记的「P0 落地后仍未动」**不成立**——`newest_version_dir`（`install_state.rs:210-225`）的排序键是 `install_info_mtime`（`:93`），它经 `install_info_path`（`:73`）→ `metadata_path`（`:61`）**新名优先、旧名回落**，所以只带 `scoop-install.json` 的版本目录一直是候选；`resolve_current_version_reads_scoop_names_only`（`:597`）钉着这条，`cargo test -p libscoop --lib install_state::` 14 条实测全绿。当时的误判源自把表内「hok 改前」列当成了 P0 之后的状态。
+
+**唯一残留（有意偏离，不照抄）**：**同一版本目录两名并存**时取哪条记录的 mtime。官方是双 glob 后 `Sort-Object | Select-Object -Unique`（`lib/versions.ps1:99-100`），该目录按**较早**的那条记录排位；hok 按解析出的（新名优先）文件排位。前者是上游管道顺序的副产品而非设计语义——它会把刚写过新记录、历史上有旧记录的目录往旧位置排。`install_info_mtime` 的文档注释已登记该偏离。并存形态只可能由「0.6.0 前后各写一次同一版本目录」产生。
 
 **实测（2026-10-02，本机 `$SCOOP` 已升级到 v0.6.0）**：74 个已装应用的 `current\` **仍全是 `install.json,manifest.json`** ⇒ 官方**不做存量迁移**，只在新增/升级/重装时写新名。所以现在还没爆，但**任何应用被 0.6.0 重装/升级后**即触发。
 
@@ -34,17 +36,17 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 ## 2. P1 — checkver GitHub 模式（一个整体移植）
 
-上游四个提交是**一次行为变更**，必须一起移植；hok 现有测试恰好锁定被删掉的旧行为。
+上游四个提交是**一次行为变更**，必须一起移植；hok 现有测试恰好锁定被删掉的旧行为。**已落地**（2026-10-02 随 `baf4c53` `507aab2`，2026-10-07 逐条复核）。下表「hok 改前」列是 2026-10-03 的快照，「判定」列已按落地结果更新。
 
 | 上游 | 官方行为 | hok 改前 | 判定 |
 |---|---|---|---|
-| `cbd7c64b!` | API 模式默认 `$jsonpath='$.tag_name'` + 正则 `(?:v\|V)?([\d.-]+)`；HTML 模式默认正则 `/releases/tag/(?:v\|V)?([\d.-]+)`（`bin/checkver.ps1:180-191`） | `checkver.rs:139` 默认正则为 `([\d.]+)`（无 `-`）；`resolve_checkver_source` 从不注入默认 jsonpath、无 API/HTML 分流（`:530-600`） | **偏离**；带 token 时 hok 会拿 HTML 正则解析 API JSON ⇒ 取不到版本 |
-| `35334422` | 校验 `$inputGithubUrl`（homepage 或 `checkver.github`）对 `^https://((www\.)?github\.com/…\|api\.github\.com/repos/…)$`，不匹配则报错并**跳过该 manifest**；非 api 才追加 `/releases/latest`；token 重写不再受 `$useGithubAPI` 门控（`bin/checkver.ps1:155-191`） | `checkver.rs:549-556` 只查 `starts_with("https://github.com/")` 且只出非致命 `pre_message`；map 形式完全不校验；`:589-593` 重写仍被 `use_github_api` 门控 | **偏离** |
-| `bdf63444` | `checkver.github` 的 `$useGithubAPI` 改为无条件（删掉 `PSObject.Properties.Count -eq 1` 门） | `checkver.rs:560-563` 仍有 `if cv.github_solo` 门；测试 `:1899-1918`、`:3090-3118` 断言这个已被删除的行为 | **偏离（旧门残留）** |
-| `d452e8f6` | `$.tag_name` 默认仅在**没有** `checkver.script` 时注入（`bin/checkver.ps1:182-184`） | `checkver.rs:278` `jsonpath = cv.jsonpath.clone()`，本就无默认 | **偏离（与首条同根）** |
-| `20a178b1` | fetch 失败但存在 `checkver.script` 时，警告后**仍执行脚本**（`bin/checkver.ps1:307-321`） | `checkver.rs:336-339` 直接返回 `CheckverFetch::DownloadError`，脚本分支（`:340-364`）永远到不了 | **偏离 / 待做** |
-| `c9f0728f` | `$originurl = strip_fragment $url` 同时喂 5 个版本变量与 github 模式的 jsonpath 字面量（`lib/autoupdate.ps1:214-218,303`） | `Substitution::with_url`（`checkver.rs:1165-1181`）已去 fragment；但 `checkver_hash.rs` 的 github jsonpath 用**原始 url** | **偏离**（`#/dl.7z` 永不匹配 asset，静默回落下载） |
-| `bd2e93df` | `find_hash_in_json` 仅在 URL 匹配 `^https?://api\.github\.com/.*` 且有 token 时加 `Authorization: Bearer` + `X-GitHub-Api-Version: 2022-11-28`（`lib/autoupdate.ps1:121-124`；实际条件以源码为准，CHANGELOG 还提到 HTTPS 要求） | 对**任意** json hash URL 都传 token（`internal/network.rs` 的 opts 覆盖）；从不发 `X-GitHub-Api-Version` | **偏离**（token 可能泄露给非 GitHub 主机） |
+| `cbd7c64b!` | API 模式默认 `$jsonpath='$.tag_name'` + 正则 `(?:v\|V)?([\d.-]+)`；HTML 模式默认正则 `/releases/tag/(?:v\|V)?([\d.-]+)`（`bin/checkver.ps1:180-191`） | `checkver.rs:139` 默认正则为 `([\d.]+)`（无 `-`）；`resolve_checkver_source` 从不注入默认 jsonpath、无 API/HTML 分流（`:530-600`） | **已对齐**：API 模式默认 jsonpath + API 正则、HTML 模式默认正则（`checkver.rs:804-817`，常量 `:228-232`；测试 `github_api_mode_defaults_to_tag_name_and_the_api_regex`） |
+| `35334422` | 校验 `$inputGithubUrl`（homepage 或 `checkver.github`）对 `^https://((www\.)?github\.com/…\|api\.github\.com/repos/…)$`，不匹配则报错并**跳过该 manifest**；非 api 才追加 `/releases/latest`；token 重写不再受 `$useGithubAPI` 门控（`bin/checkver.ps1:155-191`） | `checkver.rs:549-556` 只查 `starts_with("https://github.com/")` 且只出非致命 `pre_message`；map 形式完全不校验；`:589-593` 重写仍被 `use_github_api` 门控 | **已对齐**：`GITHUB_URL_PATTERN` 校验并给出 `skip_reason`（`checkver.rs:778-787`）；非 api 才追加 `/releases/latest`（`:789-794`）；token 重写不再受 `use_github_api` 门控（`:795-801`） |
+| `bdf63444` | `checkver.github` 的 `$useGithubAPI` 改为无条件（删掉 `PSObject.Properties.Count -eq 1` 门） | `checkver.rs:560-563` 仍有 `if cv.github_solo` 门；测试 `:1899-1918`、`:3090-3118` 断言这个已被删除的行为 | **已对齐**：`github_solo` 门已删（2026-10-07 全仓无该符号），map 形式无条件走 GitHub 分流 |
+| `d452e8f6` | `$.tag_name` 默认仅在**没有** `checkver.script` 时注入（`bin/checkver.ps1:182-184`） | `checkver.rs:278` `jsonpath = cv.jsonpath.clone()`，本就无默认 | **已对齐**：默认 jsonpath 注入以 `cv.script.is_none()` 为前提（`checkver.rs:808`） |
+| `20a178b1` | fetch 失败但存在 `checkver.script` 时，警告后**仍执行脚本**（`bin/checkver.ps1:307-321`） | `checkver.rs:336-339` 直接返回 `CheckverFetch::DownloadError`，脚本分支（`:340-364`）永远到不了 | **已对齐**：下载失败且有脚本时返回 `CheckverFetch::ScriptFallback`（`checkver.rs:494-519`），上层先出警告再跑脚本（`:589-622`） |
+| `c9f0728f` | `$originurl = strip_fragment $url` 同时喂 5 个版本变量与 github 模式的 jsonpath 字面量（`lib/autoupdate.ps1:214-218,303`） | `Substitution::with_url`（`checkver.rs:1165-1181`）已去 fragment；但 `checkver_hash.rs` 的 github jsonpath 用**原始 url** | **已对齐**：github 模式的 jsonpath 走 fragment 剥离后的 url（`checkver_hash.rs:160,174-176`，测试 `github_digest_jsonpath_uses_the_fragment_stripped_url`、`github_hash_lookup_strips_the_url_fragment`） |
+| `bd2e93df` | `find_hash_in_json` 仅在 URL 匹配 `^https?://api\.github\.com/.*` 且有 token 时加 `Authorization: Bearer` + `X-GitHub-Api-Version: 2022-11-28`（`lib/autoupdate.ps1:121-124`；实际条件以源码为准，CHANGELOG 还提到 HTTPS 要求） | 对**任意** json hash URL 都传 token（`internal/network.rs` 的 opts 覆盖）；从不发 `X-GitHub-Api-Version` | **已对齐**：`HeaderProfile::uses_github_token` 按 host 门控（`network.rs:136-176`），`X-GitHub-Api-Version` 按 profile 与 URL 发（`:232`，测试 `github_token_never_leaks_to_other_hosts`、`github_api_version_…`） |
 
 **已对齐（无需动）**：`3bee8159`（substitute 最长键优先，`checkver.rs:1107-1121` 已按长度倒序）、`3a79532d`（`$page` 跨迭代；hok 每次取出都是新值，结构上免疫）、`874e8e6f`（脚本无输出时的返回；hok 空页即报错、不返回旧版本）、`79669717`（`hash.mode: github`；`checkver_hash.rs:172` 早已分发，且 hok 不随仓带 `schema.json`）。
 
@@ -122,7 +124,7 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 
 | 优先级 | 内容 | 落点 |
 |---|---|---|
-| P0 | 元数据文件名（写新名 + 读新名优先回落旧名 + 版本解析/枚举双名） | worktree `.worktrees/p0-metadata-names`，分支 `feat/metadata-scoop-prefix`，base `22b9e68`；**遗留**：版本枚举（`install_state.rs:204-225`）仍只按 mtime，见 §1 |
+| P0 | 元数据文件名（写新名 + 读新名优先回落旧名 + 版本解析/枚举双名） | worktree `.worktrees/p0-metadata-names`，分支 `feat/metadata-scoop-prefix`，base `22b9e68`；**枚举行同属本次落地**（`install_info_mtime` 新名优先，测试 `resolve_current_version_reads_scoop_names_only`），原「遗留」已更正，见 §1 |
 | P1 | checkver GitHub 模式整体移植（上表 7 条 + 改掉锁定旧行为的测试） | worktree `.worktrees/p1-checkver-github`，分支 `fix/checkver-github-mode`，base `22b9e68` |
 | P3 | `$bucket` 语义、环境变量输出、notes 分隔/高亮、两个新 config 键登记、`download` 退出码 | 父会话主树直接改（`locales/*` 是必冲突热点，不派分支）。**已落地**（`4168ba8` + `507aab2`）：两个 config 键已登记、`download` 退出码已非零；审计文档旧行已就地更正（§3、§4） |
 | 已改判 | P2 的 `63cb8f84`（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../plan/manifest-history-index-plan.md`](../plan/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) §3 |
