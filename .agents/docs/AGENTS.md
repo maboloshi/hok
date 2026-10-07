@@ -103,8 +103,10 @@ Updated: YYYY-MM-DD
   常驻闸门见根 `AGENTS.md` → `### Gates (non-trivial changes)` → **Before landing**。
 - **落在哪条提交**：**自成一条收尾提交**（`docs(agents): log …`），不与代码同提交——第 3 行要引用
   本次主题的代码提交 sha，同提交就无法自引。
-- 位置：`docs/devlog/YYYY-MM-DD-<english-slug>.md`（**扁平**，按文件名排序即时间序）。
-  索引 `docs/devlog/README.md` 由 `scripts/devlog-index.mjs` 生成，**禁手改**。
+- 位置：`docs/devlog/YYYY-MM-DD-<english-slug>.md`（**扁平**）。
+  索引 `docs/devlog/README.md` 由 `scripts/devlog-index.mjs` 生成，**禁手改**：日期降序，同日按入库时间
+  （新增该文件的提交的 committer date，脚本向 git 取；尚未提交的新条目视为最新）降序——文件名只精确到日，
+  同日若只按 slug 排，新条目会被插到旧条目下面。
 - 条目格式（脚本按此解析）：
 
   ```markdown
