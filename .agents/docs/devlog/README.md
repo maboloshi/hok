@@ -6,11 +6,12 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（64 条，自动生成）
+## 索引（65 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
 | 2026-10-07 | 种子树 diff 记忆化：等价逐字节通过，性能线在 16 线程机器上按字面未过 | `6a93ecc` | [`2026-10-07-manifest-seed-tree-cost.md`](2026-10-07-manifest-seed-tree-cost.md) |
+| 2026-10-07 | 清单历史索引补进度圈：管道已实测、TTY 交用户自测；外加一次「打真环境」的事故记录 | `7441be7` | [`2026-10-07-manifest-history-index-spinner.md`](2026-10-07-manifest-history-index-spinner.md) |
 | 2026-10-06 | 清单历史索引落地：建表 / 种子与增量 / 读取三段，外加解析器 abort 前置修复 | `62261c5` `615a6bb` `61c3b7d` `27ce29e` `ab7c4c2` `9893616` | [`2026-10-06-manifest-history-index.md`](2026-10-06-manifest-history-index.md) |
 | 2026-10-05 | search 输出重做：无参数修正 + 表格布局参考 list/hp + 底部汇总 | `a1f580c` `44a56e0` | [`2026-10-05-search-output-redesign.md`](2026-10-05-search-output-redesign.md) |
 | 2026-10-05 | pending-tasks 逐条复核：关闭已落地项，开放项补今日证据 | `5f73d5f` | [`2026-10-05-pending-tasks-closure-sweep.md`](2026-10-05-pending-tasks-closure-sweep.md) |
