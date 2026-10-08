@@ -98,7 +98,7 @@
 ## 5. 推荐
 
 1. **先做 B**（压缩分发）：这是唯一「用户可感知体积」的改动；7z 已在本机可用（`7z a -t7z -mx=9`），zip 无外部依赖（`Compress-Archive`/`ZipArchive`）。需要先定 zip/7z 与是否保留裸 exe。
-2. **归因结论入档**（本文）并更新 `.agents/docs/active/plan/pending-tasks.md` §4.2：原记录「`cargo bloat` 实测 40 分钟未完成已中止」的方法已废弃，改为 PDB 归因；结论是**体积结构性、profile 不再调**。
+2. **归因结论入档**（本文）并更新 `.agents/docs/active/plan/pending-tasks.md` 的 EN5 行：原记录「`cargo bloat` 实测 40 分钟未完成已中止」的方法已废弃，改为 PDB 归因；结论是**体积结构性、profile 不再调**。
 3. **代码级瘦身暂不动**（C1–C5 收益/风险比差，C2 需上游）。
 4. 若以后还要压体积，唯一有量级空间的方向是**砍功能面**（SSH bucket / RAR 平价 / checkver xpath），那属于产品决策，不属于「构建优化」。
 

@@ -706,7 +706,7 @@
 
 | 位置 | 处置 |
 |---|---|
-| §4.1/§4.2 缓存文件名匹配 | **已修（`ff05b80`）**：`REGEX_CACHE_FILE` 的 name/version 字符类 `[0-9a-zA-Z._-]+` 使含 `+`/`_` 的版本号（`1.9.11_2007`、`1.4.3-canary.1+29d9638da`；官方 buckets 里 250+ 个 manifest）与 CJK 包名的缓存文件**不可表示** ⇒ `cache`（列表，总账也少算）、`cleanup -k`、`cache rm <app>` 三处都跳过，只有 `cache rm *`（直接遍历目录的分支）能删。改为 `^[^#]+#[^#]+#`：对齐官方 `Remove-Item "$cachedir\$app#*` 的 glob 语义（`scoop-cache.ps1:28,45`/`scoop-cleanup.ps1:33`），并用整名锚定替换掉原先的"子串也能命中"。CJK 名挂账见 `.agents/docs/active/plan/pending-tasks.md`（已勾掉） |
+| §4.1/§4.2 缓存文件名匹配 | **已修（`ff05b80`）**：`REGEX_CACHE_FILE` 的 name/version 字符类 `[0-9a-zA-Z._-]+` 使含 `+`/`_` 的版本号（`1.9.11_2007`、`1.4.3-canary.1+29d9638da`；官方 buckets 里 250+ 个 manifest）与 CJK 包名的缓存文件**不可表示** ⇒ `cache`（列表，总账也少算）、`cleanup -k`、`cache rm <app>` 三处都跳过，只有 `cache rm *`（直接遍历目录的分支）能删。改为 `^[^#]+#[^#]+#`：对齐官方 `Remove-Item "$cachedir\$app#*` 的 glob 语义（`scoop-cache.ps1:28,45`/`scoop-cleanup.ps1:33`），并用整名锚定替换掉原先的"子串也能命中"。CJK 名挂账见 `.agents/docs/active/plan/pending-tasks.md`（该项已随落地出清） |
 | §4.2 `cleanup -k` 的 broken app | **已修（`cb75ba4`）**：current 版本解析不出的 app 原先整包跳过 ⇒ 缓存也不删。官方此时仍执行同一行 `Remove-Item`，而 `-Exclude "$app#$null#*"` 匹配不到任何文件 ⇒ 该 app 缓存**全删**。hok 对齐缓存部分（`cache::remove_all_for_app`），**版本目录仍不动**：官方 `Where-Object { $current_version -ne $_ }` 在 `$null` 下恒真、会连版本目录一起删，hok 保留"判不出当前版本就不删目录"的安全侧行为（**有意偏离，继续登记**） |
 | §4.2 `cleanup -k` 的输出 | **hok 扩展（登记）**：`-k` 原先对缓存零输出（官方同样静默），"只删了缓存"与"什么都没做"在屏幕上无法区分。现在收尾打一行 `过期下载缓存已删除：共 %{count} 个文件，%{size}`（`cmd.cleanup_cache_removed`）——**零删除也打**，于是静默只可能意味着没加 `-k`。官方无此行 |
 | §4.1 `cache rm <app>` 的覆盖面 | **随 `ff05b80` 一并扩大**：`*.download` 残留与含 `+`/`_` 的版本名现在同 `remove_outdated` 一起被 `cache rm <app>` 与 `cleanup -k` 看见并删除（官方 `^$app#` 本就能命中它们）。aria2 sidecar `<app>.txt` 的归属不变：只有 `cache rm` 删，`cleanup -k` 不碰 |

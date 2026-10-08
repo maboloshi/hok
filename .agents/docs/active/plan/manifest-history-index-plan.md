@@ -249,8 +249,8 @@ rayon 线程池，每个 worker 自开一个 `Repository`（libgit2 句柄既非
 > 与本次主题无关，但它是种子的前置条件：不修就永远扫不完 scoop-app。故单独成一条、排在提交 1 之前，
 > 提交 1/2 通过 `rebase --onto` 重放到它之上。
 
-收尾：一条 devlog（`docs(agents): log …` 自成一条，引用上述 sha）+ 回填 `pending-tasks.md`（§3
-「上游 0.6.0 历史清单链」行从 ⏸ 改为 ✅ 或部分 ✅）。
+收尾：一条 devlog（`docs(agents): log …` 自成一条，引用上述 sha）+ 回填 `pending-tasks.md`
+（「上游 0.6.0 历史清单链」行已随落地出清；残余的已知取舍登记为 EN6）。
 
 ## 6. 验收标准
 

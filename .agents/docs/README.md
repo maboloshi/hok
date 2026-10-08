@@ -17,7 +17,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [`pending-tasks.md`](active/plan/pending-tasks.md) | 跨主题待办总表（含已推迟项的复核结论） |
+| [`pending-tasks.md`](active/plan/pending-tasks.md) | 跨主题**未完成项**总表：按状态分节（待拍板 / 未开工 / 进行中 / 暂缓 / 已定不做），每条一行 + 来源链接 |
 | [`private-bucket-plan-2026-09.md`](active/plan/private-bucket-plan-2026-09.md) | 私有 bucket 方案与落地步骤 |
 | [`manifest-history-index-plan.md`](active/plan/manifest-history-index-plan.md) | 清单历史索引正式方案（表结构 / 种子与增量 / 读取与失效回落 / 提交拆分 / 验收标准；含成本实测归因与并行化理由） |
 | [`manifest-seed-tree-cost-plan.md`](active/plan/manifest-seed-tree-cost-plan.md) | **待新对话执行**：种子树 diff 成本拆解与 2.3× 优化方案（记忆化父树 ＋ 自研 merge-join；含已排除项与测量配方） |

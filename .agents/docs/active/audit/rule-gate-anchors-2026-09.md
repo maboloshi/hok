@@ -49,7 +49,7 @@ Updated: 2026-10-04
    - **热点文件清单**（5 处：`.agents/AGENTS.md` 硬约束 1 与「提交约定」5、根 Parallel work、
      `hok-worktree-parallel`、`hok-agent-orchestration`）→ 本体 = `.agents/AGENTS.md` 硬约束 1（唯一带理由）；
      `hok-worktree-parallel` 保留本域特有的「子代理禁止写、回填由父会话做」。
-   - **主线名来源**（3 处：根 Parallel work、`pending-tasks.md` §0 基线、`hok-worktree-parallel`）
+   - **主线名来源**（3 处：根 Parallel work、`pending-tasks.md` 头块的「基线」行、`hok-worktree-parallel`）
      → 本体 = `hok-worktree-parallel`「本仓事实」（本机值 + 重设命令）；根不再把主线写成 `main`。
    - **收尾四件套**（根 Before landing、`.agents/AGENTS.md`「提交约定」2、`hok-agent-orchestration` §7、
      `hok-worktree-parallel`）→ 本体 = `hok-worktree-parallel` §收尾四件套（本域内容是「回填哪一行」）。
@@ -73,10 +73,11 @@ Updated: 2026-10-04
 
 **刻意不动的**（复述判据的边界，供下次参照）：
 
-- `pending-tasks.md` §8.5 收口检查单 / §8.8 开工卡片、`hok-agent-orchestration` §2 的 prompt 契约：
+- [`reports/prompts/open-items-session-cards.md`](../../reports/prompts/open-items-session-cards.md) 的「共同前置」、
+  `hok-agent-orchestration` §2 的 prompt 契约、`hok-worktree-parallel` 的收口检查单：
   它们是**自包含**的派活与检查清单；其中的 `git rev-parse --short $(git config …)` 是**使用**，
   不是**规则陈述**（后者才是要收敛的复述）。
-- `pending-tasks.md` §8.4/§8.7 与历史文档里的 tip 数字：快照，已被正文标注为「别当待办」。
+- 会话卡片与历史文档里的 tip 数字（旧 `pending-tasks.md` 的 §8.4/§8.7 已随重排迁出）：快照，别当待办。
 - 冻结区（`reports/**`、`devlog/**`、`archive/**`）里的同名文字：历史原文，R5 禁止"修正"。
 
 ## 4. 已否决 / 不改（附理由）

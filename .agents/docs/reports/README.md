@@ -18,7 +18,7 @@
 | `analysis-report.md` | 项目重构分析报告（大文件拆分方案） | 被取代（重构已落地，方案已执行） |
 | `manifest-parse-audit.md` | Manifest 解析对比审计（官方 schema.json vs ManifestSpec） | 结论已合并入 `scoop-gap-audit` 技能记忆 |
 | `status-gap-analysis.md` | `hok status` 对标官方 `scoop status`（app_status / ScoopTypes 格式） | 结论已并入 `scoop-gap-audit`（2026-09-26 补登记） |
-| `h3-parse-visibility-design-2026-09.md` | H3 设计报告：清单解析失败的可见性策略 | 设计调研已闭环、报告冻结；**代码未落地**——`pending-tasks.md` §1 H3 仍挂着待拍板的 D1–D5（2026-10-05 复核，2026-09-26 补登记） |
+| `h3-parse-visibility-design-2026-09.md` | H3 设计报告：清单解析失败的可见性策略 | 设计调研已闭环、报告冻结；**代码未落地**——`pending-tasks.md` 的 H3 行仍挂着待拍板的 D1–D5（2026-10-05 复核，2026-09-26 补登记） |
 | `manifest-runtime-tolerance-scoping-2026-09.md` | hok 解析"过严"的性质 / 范围 / 选型专项 | 已闭环（2026-09-26 补登记） |
 | `rars-winsqlite3-handover-2026-09.md` | rars / winsqlite3 依赖替换换会话交接（标记**未完成**） | 交接已消费，任务转入后续会话（2026-09-26 补登记） |
 | `s2-alias-investigation-2026-09.md` | S2 `alias` 可用性调研 + 决策与落地记录（方案 A：官方式 `shims\scoop-<name>.ps1` 脚本别名） | 已闭环（`3c90095`），结论已同步 `scoop-gap-audit` |
@@ -33,7 +33,7 @@
 | `large_duplicates.txt` | 大重复块扫描产物（2026-07-27） | **机器生成产物，不入库**（本机保留）；结论已用 |
 | `full_workspace_report.txt` | 工作区全量分析报告（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用，且引用已失效的 `crates/hok-shim-ref` |
 | `full_workspace_drywall.txt` | 工作区 drywall 扫描产物（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用 |
-| `prompts/`（7 篇） | 交给子代理 / 会话的 prompt 原文（base64 单编解码、clap 参数解析损坏、当前版本解析统一、i18n 自研替换、阶段 3b 源头发射门控、单步 spinner、宽松 JSON 单入口） | **非文档**：会话输入，2026-09-26 从 `docs/prompts/` 与 `docs/refactor/prompts/` 分离后归此 |
+| `prompts/`（8 篇） | 交给子代理 / 会话的 prompt 原文（base64 单编解码、clap 参数解析损坏、当前版本解析统一、i18n 自研替换、阶段 3b 源头发射门控、单步 spinner、宽松 JSON 单入口，以及 `open-items-session-cards.md` = 待办总表现存未开工项的派活卡片） | **非文档**：会话输入，2026-09-26 从 `docs/prompts/` 与 `docs/refactor/prompts/` 分离后归此 |
 
 ## 2026-09-26 移出本目录（判定当时就错）
 

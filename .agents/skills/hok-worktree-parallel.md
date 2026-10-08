@@ -20,6 +20,9 @@ metadata:
   本域特有的一条：**子代理禁止写，回填由父会话做**（它们收尾都会写，并行会话必撞）。
 - 仍未跟踪的本机物：`reasonix.toml`（父目录）、`.agents/tmp/`。
 - worktree 放 `.worktrees/<会话>-<slug>`；忽略规则在根 `.gitignore`（`/.worktrees`）。各 worktree 用自己的 `target/`。
+- **受限沙箱下出站 HTTPS 不可用**：`workspace-write` 模式下 TLS 报 schannel `SEC_E_NO_CREDENTIALS`
+  （同一条请求在 `danger-full-access` 下正常；Node 自带 CA 不受影响）⇒ 真实源冒烟只能用本地夹具/回环，
+  或先放宽沙箱；**拉新 crate 版本要先在放宽的沙箱里跑一次 `cargo fetch`**，缓存落盘后普通构建回到受限沙箱即可。
 
 ## 合并工具（全局技能包）
 脚本在**全局技能包**里（主仓库与主线均自动推导），**单一实体，本仓不保留副本**：

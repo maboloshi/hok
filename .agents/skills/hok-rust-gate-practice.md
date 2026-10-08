@@ -33,5 +33,8 @@ metadata:
 
 ## 门禁命令
 - 整包可直接跑：`cargo clippy --workspace --all-targets -- -D warnings`（`--no-deps` 可选，仅提速）。
+- **测试基线的 ACL 环境噪声**：`cargo test --workspace` 里 `permission::grant_users_write_inherit_{sets_dacl,is_idempotent}`
+  两条在 `workspace-write` 沙箱下因 ACL `error 5` 失败，切到 `danger-full-access` 即通过
+  ⇒ 判据写"0 failed"；这两条再现时先怀疑沙箱策略退回，不要当成回归。
 - ⚠️ 若在**旧记录**里看到 `--exclude innospect`：那是已退役的 vendored fork 时代的写法，现在不该再出现
   （该依赖已改用 registry 版，见 `crates/libscoop/Cargo.toml`）；旧审计/报告里的这类命令行属历史记录，别照抄。
