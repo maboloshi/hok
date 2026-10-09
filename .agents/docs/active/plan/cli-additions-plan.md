@@ -29,12 +29,12 @@ Updated: 2026-10-07
 | 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
 | 3 | `--dry-run` | 新增开关（uninstall/cleanup → install） | `package/sync_remove.rs`、`package/cleanup.rs`、`package/sync.rs`、`src/cmd/*` | 中 | 待做 |
 | 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（共享 `src/cmd/cleanup.rs::sweep`）、`tests/update_cleanup_cli.rs`、`locales/{en,zh}.yml` | 小 | **✅ 已完成（2026-10-09）** |
-| 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs` | 中 | 待做 |
+| 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs`、`tests/exit_codes.rs`、`locales/{en,zh}.yml` | 中 | **✅ 已完成（2026-10-09）** |
 | 6 | `service` 原生 | 新增命令 | `crates/libscoop/src/internal/os.rs`、`package/service.rs`、`src/cmd/service.rs` | 大 | **⏸ 暂缓（2026-10-07）** |
 | 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
 
-**当前状态（2026-10-09）**：第 1 项已落地（`dd52a4f`）、第 4 项已落地（`60e7acd`）；
-**剩余待做 = 3（`--dry-run`）、5（`reset` 对齐官方）**；第 2、6、7 项暂缓，理由见各自小节。
+**当前状态（2026-10-09）**：第 1 项已落地（`dd52a4f`）、第 4 项已落地（`60e7acd`）、第 5 项已落地（`eddc682`）；
+**剩余待做 = 3（`--dry-run`）**；第 2、6、7 项暂缓，理由见各自小节。
 
 ---
 
@@ -119,6 +119,9 @@ shim 目录读失败**不吞错**（`health_shims_unreadable`，与 `check_not_r
 
 ## 5. `reset` 对齐官方（"switch 需求"的正解）
 
+**状态：✅ 已完成（2026-10-09，`eddc682`）** —— 位置参数全为 app；整条官方循环（含 `-a`）下沉
+`package::sync::reset(session, &queries, all)`，CLI 只剩参数与 drain（−58 行）。
+
 官方 `scoop reset`（`libexec/scoop-reset.ps1:16,28,31,33-36,48-50` + `lib/core.ps1:1234`）：
 
 - 支持 `bucket/app` 与 `app@version`（`parse_app` 正则）；
@@ -140,17 +143,16 @@ hok 现状（`src/cmd/reset.rs:10-18,71-75`）：`<app> [version]` 位置参数�
 - **不做**：不加 `switch` 命令 —— 它的两个能力已分别由 `app@version` 与 `hok list -V/--versions`
   （`list.rs:40,142-163`，`is_current` 标出当前版本）覆盖，再加就是同一件事的第三个名字（调研 §2 的 (b) 类）。
 - **验收**：`reset app@1.2.3`、`reset bucket/app`、`reset a b c`、全局已装自动识别四条各有测试；
-  `-a` 行为与官方一致（失败继续）；`hok reset <app> <ver>`（旧形态）报用法错而非误当多应用。
-- **同批要一起改的引用点（2026-10-09 清点，别漏）**：
-  - `crates/libscoop/src/package/sync_remove.rs` 的编号注释（现写「single-package `hok reset <app>` passes
-    `(1, 1)`」）——多应用后编号语义变了；
-  - [`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) 的 `reset` 行
-    （分类表把 `reset` 记在 "A 语义不同" 下，明细行写「不自动识别全局安装；单应用无 admin 检查；
-    不接受 `app@version`/`bucket/app`；多跑 `post_install`」）；
-  - [`scoop-gap-status.md`](../audit/scoop-gap-status.md) 的 ⑩「`reset` 不识别全局安装 / 不接受 `app@version`」。
-  - `README*` **只在命令清单里写 `reset  Reset an app…`**，没有用法行；`README-zh.md` 的 `hok reset <app>`
-    仍然成立，除非 `about` 文案本身要改。
-  - 上述两份审计是**汇总型热点文件，只在主树改**（见 [`.agents/AGENTS.md`](../../../AGENTS.md) → 硬约束 1）。
+  `-a` 行为与官方一致（失败继续）。
+  **更正（2026-10-09 落地时）**：原文写的「`hok reset <app> <ver>`（旧形态）报用法错而非误当多应用」不成立——
+  官方语义下两个 token 都是 app，第二个会按官方报 `'…' isn't installed`（exit 0），并不是 clap 用法错。
+  已由 `tests/exit_codes.rs::reset_positionals_are_all_apps` 用「isn't installed 出现次数」钉住。
+- **落地记录（2026-10-09，`eddc682`）**：上表清点的引用点逐一处理——`sync_remove.rs` 的 `(1, 1)` 注释随新签名重写；
+  `command-deviation-audit-2026-09.md` 与 `scoop-gap-status.md` 的对应行已在主树回填；`README*` 实测**无需改**
+  （只有命令清单摘要与 `post_install` 说明，无用法行）。另：`reset_eligible` 被新管线自身的资格判定取代并转为私有；
+  新键 `cmd.not_installed_version` 对齐官方 `'$app ($version)' isn't installed`（`scoop-reset.ps1:56`）；
+  `post_install` 有意偏离保留未动。**本机跑不到的**：非管理员分支（`Session::is_admin()` 读真实进程令牌、无注入缝，
+  本机即非管理员，故实际走的是 warn+skip 那支；admin 支代码已写但未被测试覆盖）。
 
 
 ## 6. `service`（原生 SCM）——⏸ 暂缓（2026-10-07 用户决定）

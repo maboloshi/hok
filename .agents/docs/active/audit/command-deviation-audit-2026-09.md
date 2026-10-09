@@ -13,7 +13,7 @@
 
 | 类别 | 含义 | 代表命令 |
 |---|---|---|
-| **A 语义不同** | 同一个命令名，做的事情不同（等同 checkup 级别） | `alias`、`export`/`import`、`config`、`which`、`cleanup`、`cache`、`download`(aria2)、`virustotal`、`missing-checkver`、`reset`、`uninstall`/`update` 批量失败策略、`install`/`update` 的 `-i` 冲突 |
+| **A 语义不同** | 同一个命令名，做的事情不同（等同 checkup 级别） | `alias`、`export`/`import`、`config`、`which`、`cleanup`、`cache`、`download`(aria2)、`virustotal`、`missing-checkver`、`uninstall`/`update` 批量失败策略、`install`/`update` 的 `-i` 冲突 |
 | **B 行为缺失 / 默认值 / 边界** | 命令主功能一致，但缺分支、缺参数、默认值不同 | `search`、`list`、`status`、`bucket`、`create`、`shim`、`hold`/`unhold`、`prefix`、`cat`、`home`、`depends`、`checkver`(变量替换/hash 兜底) |
 | **C 有意偏离（已登记）** | 代码注释或文档已写明理由，**不建议改** | `info` ×4、`checkver` Digest 解码、`formatjson` JSON5、`checkhashes` 对象回写、`parse_json` 严格报错、`reset` 多跑 `post_install`、单二进制无自更新 |
 | **D hok 独有命令** | 官方无同名命令，只能与官方 `bin/*.ps1` 辅助脚本比 | `checkver`、`checkhashes`、`checkurls`、`formatjson`、`missing-checkver`、`completions`、`reinstall`、`upgrade` |
@@ -45,7 +45,7 @@
 | `update` | A/B | ~~bucket 同步被 15 分钟 cooldown 门控~~ **✅ update-align（冷却整体删除）**；无 scoop 自更新；`-f` 不留 `_<v>.old` 备份；无 `-q`；未安装 exit 1 vs 0 | §4 |
 | `upgrade` | A/D | 官方无此命令（只是建议别名 `upgrade = scoop update *`）；~~`-f` 在 hok=ignore-failure~~ **✅ S7 起 = force**；~~flag 集比 `update` 少 4 个~~ **✅ update-align 补 `-i`/`-k`** | §4 |
 | `reinstall` | D | 官方无此命令 | §4 |
-| `reset` | A | 不自动识别全局安装；单应用无 admin 检查；不接受 `app@version`/`bucket/app`；多跑 `post_install` | §4 |
+| `reset` | C | 已对齐官方（2026-10-09：`app@version`/`bucket/app`/多应用/全局自动识别/单应用 admin 门）；**仅剩**多跑 `post_install`（保留的有意偏离） | §4 |
 | `cleanup` | A | 无参=清全部（官方报错）；`-k` 清空整个下载缓存；`-g` 无 admin 检查；`-a -g` 只清全局 | §4 |
 | `cache` | A | 必须带子命令；`rm` 单查询 + 子串匹配（`zip` 命中 `7zip`）；不删 aria2 sidecar | §4 |
 | `list` | B | 不列全局安装；无 `Updated` 列/`Global install`；无匹配退出码 0 vs 1；多查询 OR（官方只看第一个） | §5 |
@@ -170,6 +170,11 @@
 | hok 用第二个位置参数表示版本，不解析 `app@version` / `bucket/app`；官方经 `parse_app` 拆分 | `src/cmd/reset.rs:11-14`、`sync_remove.rs:687-701` | `libexec/scoop-reset.ps1:31`、`lib/core.ps1:1150-1156` | 语义不同 |
 | `reset <未安装>`：hok 返回 PackageNotFound（exit 1）；官方文案 + exit 0 | `sync_remove.rs:527-539` | `libexec/scoop-reset.ps1:43-46` | 退出码不同 |
 | 官方无本地/全局自动判定（同上），hok 亦无 → 组合影响：`hok reset --all` 之外无法重置全局应用 | `src/cmd/reset.rs:82-84` | `libexec/scoop-reset.ps1:33-36,60-70` | 行为缺失 |
+
+> **2026-10-09 更新**：本表 `reset` 的六条里，全局自动识别、单应用 admin 门、`app@version`/`bucket/app` 解析、
+> 组合影响这四条已随「`reset` 对齐官方」落地（`eddc682`）消解；`reset <未安装>` 的退出码更早已修（见本文档后段）。
+> **仅剩**「多跑 `post_install`」，是**保留的有意偏离**（分类表已把 `reset` 从 A 类移入 C 类）。
+> 表内证据列的行号是写作当日快照，现 `sync_remove.rs` 的该段实现已随新管线重写。
 
 ## 5. 明细：查询 / 报表
 
