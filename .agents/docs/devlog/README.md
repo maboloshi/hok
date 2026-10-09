@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（75 条，自动生成）
+## 索引（76 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-09 | autostash_on_conflict：官方键在 hok 落到 bucket 同步 | `954ff56` | [`2026-10-09-autostash-on-conflict-bucket-sync.md`](2026-10-09-autostash-on-conflict-bucket-sync.md) |
 | 2026-10-09 | update/upgrade -c：只清理本次真的升级过的包 | `60e7acd` | [`2026-10-09-update-upgrade-cleanup-flag.md`](2026-10-09-update-upgrade-cleanup-flag.md) |
 | 2026-10-09 | nsis 升到 0.6：0.5.0 的 breaking API 与 hok 无关，真正的理由是 LZMA 字典上限 | `8a93027` | [`2026-10-09-nsis-0-6-upgrade.md`](2026-10-09-nsis-0-6-upgrade.md) |
 | 2026-10-09 | 归档已完成文档并注销 Wave 1 备份分支 | `a95415e` | [`2026-10-09-archive-finished-docs-and-retire-backup-branch.md`](2026-10-09-archive-finished-docs-and-retire-backup-branch.md) |
