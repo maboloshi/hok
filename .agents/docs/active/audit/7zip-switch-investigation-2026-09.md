@@ -11,7 +11,7 @@
 > **装了** Scoop 的机器上，脚本随后 dot-source `apps\scoop\current\lib\*.ps1` 把真实现盖回来，
 > 走 Scoop 语义、**hok 的 `[[HOK_EXTRACT]]` marker 路径整体不执行**。
 > ⇒ 本文列的三条「偏离」（`-Switches` / `-ExtractDir` / `-Removal`）在 7z 路径上**今天都不可达**；
-> §6 的方案对照与 §7 的四个待确认问题据此降级，处置见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 X3。
+> **已按用户拍板做「最小正确修复」（2026-10-09，`750a51e`）**，见 §2；§6 的方案对照与 §7 的四个待确认问题据此降级。
 > 上文保留原文以存经过。
 
 ## 0. 一句话结论
@@ -43,12 +43,20 @@
   `innosetup` manifest 仍会装 `innounp`。本机 `$env:SCOOP\apps\{7zip,innounp,lessmsi}` 全部在位，
   而 Rust 侧 **innounp 从未被调用**、`7zip` 只在 `iso/lzh` 与兜底路径使用。
   ⇒ **"外部 7z"的依赖成本今天已经付过了，只是没用上。**
-- PS 脚本兼容层 `asset_scripts/decompress.ps1`：`Expand-7zipArchive` 不调 7z.exe，只写
-  `[[HOK_EXTRACT]]` 标记、由 Rust 在**整段脚本跑完后**统一解压（`:15-20` + `operations/script.rs:323`
-  + `operations/extract.rs:160-187`）。已知偏离：`-Switches` 被忽略；`-ExtractDir` 被实现成
-  `extract_to`（落 `dest\subdir`）而非 Scoop 的「只取该子树并上提」；`-Removal` 会在 Rust 读标记前
-  把源文件删掉（`Test-Path` 失败即静默跳过）。本机 4 个 bucket 静态统计：1295 个 manifest 调用
-  `Expand-7zipArchive`，其中 535 处同行带 `-Removal`、154 处带 `-ExtractDir`（**待端到端复现影响面**）。
+- PS 脚本兼容层 `asset_scripts/decompress.ps1`：`Expand-*Archive` 不调 7z.exe，只写
+  `[[HOK_EXTRACT]]` 标记、由 Rust 在**整段脚本跑完后**统一解压（`operations/script.rs` 的 preamble
+  + `operations/extract.rs::extract_markers`）。**2026-10-09 已做最小正确修复（`750a51e`）**：
+  删掉自递归别名（函数名大小写不敏感，`function Expand-7ZipArchive { … }` 把真实现覆盖成了自递归，见文首更正）；
+  marker 改为五段 `format|source|dest|extract_dir|removal`，由 Rust 侧应用 `extract_dir`（只取该子树再上提，
+  对齐 Scoop `lib/decompress.ps1:96-99,187-214`）并**仅在解压成功后**删源；读取端补 `[[HOK_EXTRACT]]`
+  前缀与 PS 5.1 BOM 处理（此前 `format` 是带前缀的整串 ⇒ `innosetup` 分支从未命中、非 ASCII 路径被写成 `?`）；
+  四个函数补齐官方默认值 `$DestinationPath = (Split-Path $Path)`（此前只给 `-Path` 的调用会把 dest 留空，
+  而空 dest 经 `dest.join(name)` 变成**相对路径** ⇒ 解到用户运行 hok 时的 CWD）。
+  **仍存**：`-Switches` 被忽略（本机 4 bucket 1748 行里 74 行带它）、`-Overwrite` 被
+  `ValueFromRemainingArguments` 吞进 `$Switches` 后一并丢弃（24 行）；见
+  [`pending-tasks.md`](../plan/pending-tasks.md) 的 X5。
+  **有意不跟**：官方 `:93` 的 `$DestinationPath.TrimEnd('\')`——官方是为了交给 `7z -o`，hok 的值只当路径用；
+  `C:\pkg.7z` 经 `Split-Path` 得 `C:\`，TrimEnd 会把它变成盘符相对路径 `C:`。这属"hok 更正确"的一处。
 - 保真度：全部落盘走 `std::fs::write`（`:414`/`:639`/`:825`），全仓无 `set_modified`/属性处理
   ⇒ **mtime、只读/隐藏属性不保留**（7z.exe 会保留）。
 

@@ -32,12 +32,12 @@ Updated: 2026-10-09
 | **CA3** | `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别） | 下一批 | 不加 `switch` 命令 | 同上 |
 | **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已于 2026-10-09 单独落地，键一旦拆出即按用户拍板只做这一键） | 以后 | 各需单独立案：`use_external_7zip` 与 X3/X5 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
+| **X5** | PS 兼容层 `decompress.ps1` 的剩余偏离（X3 修复后才真正可达）：`-Switches` 与 `-Overwrite` 仍被忽略 | 下一批 | ①marker 协议加 switches/overwrite 字段，或按方案 C 改调 `7z.exe`；②`-Overwrite` 现在是被 `ValueFromRemainingArguments` 吞进 `$Switches`（实测）⇒ 两者要一起处理。本机 4 bucket 静态统计（2026-10-09）：`Expand-7zipArchive` 1748 调用行中 74 行带 `-Switches`、24 行带 `-Overwrite`，`Expand-InnoArchive` 87 行中 2 行带 `-Switches` | [`7zip-switch-investigation-2026-09.md`](../audit/7zip-switch-investigation-2026-09.md) |
 
 ## 3. 进行中
 
 | ID | 主题 | owner（worktree + 分支） |
 |---|---|---|
-| **X3** | PS 兼容层 `Expand-7zipArchive`：自递归别名 P0 + `-Removal` 标记空转 + `-ExtractDir` 语义（用户 2026-10-09 拍板做「最小正确修复」） | `.worktrees/x3-ps-decompress-fix` @ `fix/ps-decompress-layer` |
 | **CA3** | `reset` 对齐官方（位置参数全为 app，删 `[version]`，改用 `app@version`） | `.worktrees/ca3-reset-alignment` @ `feat/reset-official-alignment` |
 
 ## 4. 暂缓（必须写理由与重启条件）
