@@ -221,6 +221,7 @@ cmd:
   no_pkgs_found: "No packages found."
   update_latest: "%{name}: %{version} (latest version)"
   update_all_latest: "Latest versions for all apps are installed! For more information try 'hok status'"
+  update_cleanup_no_upgrade: "Nothing was upgraded, so there is nothing to clean up here. Run 'hok cleanup -a' to remove the old versions of every app."
   prefix_not_found: "Could not find app path for '%{pkg}'."
   refresh_cache: "Refreshing manifest cache..."
   cache_done: "Manifest cache refreshed."
@@ -907,10 +908,12 @@ cli_help:
       package: The package(s) to be upgraded (omit to only update buckets)
       global: Install globally (to $SCOOP_GLOBAL)
       all: Update all installed packages (alternative to '*')
+      cleanup: "Remove the old versions of the package(s) this run upgrades; only packages whose installed version changed are cleaned, and nothing is removed when no package was upgraded (use 'hok cleanup -a' to sweep every app)"
   upgrade:
     about: Upgrade installed package(s)
     args:
       all: Update all installed packages (alternative to '*')
+      cleanup: "Remove the old versions of the package(s) this run upgrades; only packages whose installed version changed are cleaned, and nothing is removed when no package was upgraded (use 'hok cleanup -a' to sweep every app)"
       assume_yes: Assume yes to all prompts and run non-interactively
       force: "Force upgrade: reinstall apps that are already at the requested version"
       global: Install globally (to $SCOOP_GLOBAL)

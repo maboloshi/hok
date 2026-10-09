@@ -64,6 +64,11 @@ pub struct Args {
     /// Update all installed packages (alternative to '*')
     #[arg(short = 'a', long, action = ArgAction::SetTrue)]
     all: bool,
+
+    /// Remove the old versions of the package(s) this run upgrades; nothing is
+    /// removed when no package was upgraded
+    #[arg(short = 'c', long, action = ArgAction::SetTrue)]
+    cleanup: bool,
 }
 
 impl SyncFlags for Args {
@@ -92,6 +97,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             &[String::from("*")],
             &args.sync_args(),
             args.force,
+            args.cleanup,
         )
         .await;
     }
@@ -102,6 +108,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
             &args.package,
             &args.sync_args(),
             args.force,
+            args.cleanup,
         )
         .await;
     }
@@ -117,7 +124,15 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     if args.no_cache {
         return Err(anyhow::anyhow!(hok_i18n::t!("cmd.update_no_cache_no_app")));
     }
-    update_buckets(session).await
+    update_buckets(session).await?;
+
+    // A bucket-only run upgrades nothing, so `-c` is a documented no-op here
+    // rather than an error: it says what it did (nothing) and where to go.
+    if args.cleanup {
+        super::upgrade::cleanup_hint();
+    }
+
+    Ok(())
 }
 
 /// Update all buckets with simple inline status.
@@ -295,5 +310,26 @@ fn refresh_manifest_history(session: &Session) {
                 output::warn(hok_i18n::t!("cmd.history_index_skipped", e = e));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `-c/--cleanup` parses on `update` too, without stealing an existing
+    /// short flag (`-o`, `-y`, `-s`, `-f`, `-i`, `-U`, `-R`, `-k`, `-g`, `-a`).
+    #[test]
+    fn cleanup_flag_parses_on_update() {
+        assert!(!Args::try_parse_from(["update"]).unwrap().cleanup);
+        assert!(Args::try_parse_from(["update", "-c"]).unwrap().cleanup);
+        assert!(
+            Args::try_parse_from(["update", "--cleanup"])
+                .unwrap()
+                .cleanup
+        );
+        // Still parses alongside the flags it shares a run with.
+        let args = Args::try_parse_from(["update", "myapp", "-c", "-U", "-y"]).unwrap();
+        assert!(args.cleanup && args.no_upgrade && args.assume_yes);
     }
 }

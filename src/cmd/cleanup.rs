@@ -96,6 +96,44 @@ fn row_label(name: &str, version: &str) -> String {
     hok_i18n::t!("cmd.cleanup_row", name = name, ver = version).to_string()
 }
 
+/// Run one cleanup sweep with the standard per-version rendering.
+///
+/// Shared by `hok cleanup` and the `-c/--cleanup` phase of `hok update` /
+/// `hok upgrade`: both get the same rows (a spinner per version on a terminal,
+/// the settled lines in a pipe) and the same fail-soft options, so the two
+/// entry points cannot drift apart. Individual removal failures never abort the
+/// sweep — cleanup is a maintenance operation.
+pub(crate) fn sweep(
+    session: &Session,
+    names: &[String],
+    cache: bool,
+) -> Result<package::cleanup::CleanupOutcome> {
+    let options = CleanupOptions {
+        ignore_failures: true,
+        cache,
+    };
+
+    // The sweep removes version directories in parallel and reports each one as
+    // it goes; its rows are settled even when the sweep itself fails.
+    let terminal = std::io::stdout().is_terminal();
+    let progress = Mutex::new(Progress::new(terminal));
+    let observer = |event: CleanupProgress| progress.lock().unwrap().render(&event);
+
+    let outcome = package::cleanup::cleanup(session, names, &options, &observer);
+    progress.lock().unwrap().finish();
+    let outcome = outcome?;
+
+    // The settled lines. A terminal already rendered them as rows; a pipe has
+    // no rows, so every line is rendered here, in the requested order.
+    if !terminal {
+        for result in &outcome.apps {
+            render_settled(result);
+        }
+    }
+
+    Ok(outcome)
+}
+
 /// Render one settled result as plain lines: the piped counterpart of the
 /// terminal rows.
 fn render_settled(result: &CleanupResult) {
@@ -326,18 +364,6 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // sweep-all form (`scoop-cleanup.ps1:26-28`).
     ensure_global(session, args.global, "cleanup")?;
 
-    // Cleanup is a maintenance operation; individual failures should not abort it.
-    let options = CleanupOptions {
-        ignore_failures: true,
-        cache: args.cache,
-    };
-
-    // The sweep removes version directories in parallel and reports each one as
-    // it goes; its rows are settled even when the sweep itself fails.
-    let terminal = std::io::stdout().is_terminal();
-    let progress = Mutex::new(Progress::new(terminal));
-    let observer = |event: CleanupProgress| progress.lock().unwrap().render(&event);
-
     let mut results = Vec::new();
     // The cache entries `-k` dropped, across both scopes: upstream prints
     // nothing about them, which made a `-k` sweep that only removed cache look
@@ -347,48 +373,33 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // "nothing to clean" line would then contradict the per-app errors.
     let mut named_targets = None;
 
-    let sweep = (|| -> Result<()> {
-        if all {
-            // Local first, then global — upstream appends the global apps to the
-            // local list (`scoop-cleanup.ps1:67-70`). The app list is always
-            // explicit, so a named cleanup that resolved to nothing cannot fall
-            // back to a full sweep.
-            session.set_global(false);
+    if all {
+        // Local first, then global — upstream appends the global apps to the
+        // local list (`scoop-cleanup.ps1:67-70`). The app list is always
+        // explicit, so a named cleanup that resolved to nothing cannot fall
+        // back to a full sweep.
+        session.set_global(false);
+        let names = package::cleanup::installed_app_names(session);
+        let outcome = sweep(session, &names, args.cache)?;
+        results.extend(outcome.apps);
+        cache_removed.extend(outcome.cache_removed);
+        if args.global {
+            session.set_global(true);
             let names = package::cleanup::installed_app_names(session);
-            let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
-            results.extend(outcome.apps);
-            cache_removed.extend(outcome.cache_removed);
-            if args.global {
-                session.set_global(true);
-                let names = package::cleanup::installed_app_names(session);
-                let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
-                results.extend(outcome.apps);
-                cache_removed.extend(outcome.cache_removed);
-            }
-        } else {
-            // Named apps go through upstream's `Confirm-InstallationStatus`
-            // (`lib/core.ps1:1084-1121`): unusable names are reported and
-            // dropped, the rest are cleaned in the requested scope.
-            let names =
-                package::cleanup::confirm_installation_status(session, &args.app, args.global);
-            named_targets = Some(names.len());
-            session.set_global(args.global);
-            let outcome = package::cleanup::cleanup(session, &names, &options, &observer)?;
+            let outcome = sweep(session, &names, args.cache)?;
             results.extend(outcome.apps);
             cache_removed.extend(outcome.cache_removed);
         }
-        Ok(())
-    })();
-
-    progress.lock().unwrap().finish();
-    sweep?;
-
-    // The settled lines. A terminal already rendered them as rows; a pipe has
-    // no rows, so every line is rendered here, in the requested order.
-    if !terminal {
-        for result in &results {
-            render_settled(result);
-        }
+    } else {
+        // Named apps go through upstream's `Confirm-InstallationStatus`
+        // (`lib/core.ps1:1084-1121`): unusable names are reported and
+        // dropped, the rest are cleaned in the requested scope.
+        let names = package::cleanup::confirm_installation_status(session, &args.app, args.global);
+        named_targets = Some(names.len());
+        session.set_global(args.global);
+        let outcome = sweep(session, &names, args.cache)?;
+        results.extend(outcome.apps);
+        cache_removed.extend(outcome.cache_removed);
     }
 
     // Versions that survived are the one thing worth repeating at the end: the

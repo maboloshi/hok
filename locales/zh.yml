@@ -221,6 +221,7 @@ cmd:
   no_pkgs_found: "没有找到包。"
   update_latest: "%{name}: %{version}（已是最新版本）"
   update_all_latest: "所有应用都已是安装的最新版本！更多信息请运行 'hok status'"
+  update_cleanup_no_upgrade: "本次没有升级任何包，无需清理。可用 'hok cleanup -a' 清理所有应用的旧版本。"
   prefix_not_found: "找不到应用 '%{pkg}' 的路径。"
   refresh_cache: "正在刷新清单缓存..."
   cache_done: "清单缓存已刷新。"
@@ -900,10 +901,12 @@ cli_help:
       package: 要升级的包（省略则仅更新仓库）
       global: 全局安装（到 $SCOOP_GLOBAL）
       all: 升级所有已安装的包（相当于 '*'）
+      cleanup: "删除本次实际升级过的包的旧版本；只有已安装版本发生变化的包会被清理，没有包被升级时不执行清理（清理全部应用请用 'hok cleanup -a'）"
   upgrade:
     about: 升级已安装的包
     args:
       all: 升级所有已安装的包（相当于 '*'）
+      cleanup: "删除本次实际升级过的包的旧版本；只有已安装版本发生变化的包会被清理，没有包被升级时不执行清理（清理全部应用请用 'hok cleanup -a'）"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       force: "强制升级：对已达请求版本的包重新安装"
       global: 全局安装（到 $SCOOP_GLOBAL）
