@@ -22,9 +22,10 @@ metadata:
 
 ## 2. 必须写进子代理 prompt 的本仓坑
 
-- 沙箱四条（细节见 [[hok-worktree-parallel]]）：`rebase --continue` 的编辑器走不通 / 提交信息一律
+- 沙箱坑（本体见 [[hok-worktree-parallel]] → 本仓事实）：`rebase --continue` 的编辑器走不通 / 提交信息一律
   `-F <文件>` / 有未提交改动时禁 `reset --hard` / `-VerifiedRef` 要求"与被测树逐字节相同"。
-- 新 worktree 先 `cargo build -p hok-shim`，否则 `crates/libscoop/build.rs:204` panic。
+- 新 worktree 先 `cargo build -p hok-shim`，否则 `crates/libscoop/build.rs:204` panic；
+  且 cargo 要设 `$env:RUSTC_WRAPPER=''`（sccache 在全新 worktree 里编不了 C 依赖）。
 - 子代理**不写汇总型热点文件**（写了也白写，并行会话必撞）、**不合主线**（只报"可合并 tip"）、
   **不派生下一级子代理**。
 

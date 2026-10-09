@@ -10,6 +10,7 @@ metadata:
 
 ## 本仓事实
 - **全新 worktree 先建 shim 再构建**：`cargo build -p hok-shim`。否则第一次 `cargo test`/`cargo build` 会在 `crates/libscoop/build.rs:204` panic（`hok-shim binary not found … Run \`cargo build -p hok-shim\` first.`）——该 worktree 自己的 `target/` 里还没有 `hok-shim{,-gui}.exe`。
+- **全新 worktree 的 cargo 还要绕开 sccache wrapper**：本机 `$CARGO_HOME/config.toml` 用 `rustc-wrapper` 指向 sccache，它在**全新** worktree 里编译 C 依赖（`libsqlite3-sys` / `zstd-sys` / `libz-sys`）时报 `Compiler not supported: Failed to detect showIncludes prefix`（clang-cl）。跑 cargo 前设 `$env:RUSTC_WRAPPER=''`；若看到 `could not parse TOML configuration`，先查那份 config 的值里有没有未转义的反斜杠路径（Windows 路径要正斜杠）。
 - 主线是**线性历史**；只接受 `--ff-only` 前进，**禁 merge commit**（后落地者 rebase + 解冲突，保留双方语义）。
   `main` 是最终目标线（当前落后于开发线很多；"合并到 main / push / 版本号"是独立主题）。
 - 主线分支名由 `git config worktree-merge.mainbranch` 决定（脚本据此解析主线，无需每次传 `-MainBranch`）。
