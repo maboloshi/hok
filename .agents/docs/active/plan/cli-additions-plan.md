@@ -129,12 +129,18 @@ shim 目录读失败**不吞错**（`health_shims_unreadable`，与 `check_not_r
 hok 现状（`src/cmd/reset.rs:10-18,71-75`）：`<app> [version]` 位置参数、`-a`；**不支持** `app@version`/`bucket/app`、
 多应用、全局自动识别（既有登记差异）。
 
+> **用户决策（2026-10-09）：位置参数全对齐官方。** 官方 `scoop-reset.ps1:16,31` 把**所有**位置参数都当 app
+> 交给 `parse_app`，**没有**单独的位置版本参数；hok 的 `[version]` 与「多应用」不可共存
+> （`reset a b c` 在两种语义下含义不同），故**删掉** `[version]` 位置参数，版本切换改用 `app@version`。
+> **这是破坏性改动**：`hok reset <app> <ver>` 不再有效，帮助文案、`cli_help.reset.*` 键名（键取自 Rust 字段名）
+> 与 `README` 需同批同步；下文原「`reset <app> <ver>` 覆盖 switch 的版本切换能力」一句据此更正为 `app@version`。
+
 - **做**：`app@version` / `bucket/app` 解析（复用 `manifest_source::resolve_isolated_query` 的既有分派，
   **不要**再写一套），多应用循环（失败继续、编号连续），全局自动识别。
-- **不做**：不加 `switch` 命令 —— 它的两个能力已分别由 `reset <app> <ver>` 与 `hok list -V/--versions`
+- **不做**：不加 `switch` 命令 —— 它的两个能力已分别由 `app@version` 与 `hok list -V/--versions`
   （`list.rs:40,142-163`，`is_current` 标出当前版本）覆盖，再加就是同一件事的第三个名字（调研 §2 的 (b) 类）。
 - **验收**：`reset app@1.2.3`、`reset bucket/app`、`reset a b c`、全局已装自动识别四条各有测试；
-  `-a` 行为与官方一致（失败继续）。
+  `-a` 行为与官方一致（失败继续）；`hok reset <app> <ver>`（旧形态）报用法错而非误当多应用。
 
 ## 6. `service`（原生 SCM）——⏸ 暂缓（2026-10-07 用户决定）
 
