@@ -141,6 +141,17 @@ hok 现状（`src/cmd/reset.rs:10-18,71-75`）：`<app> [version]` 位置参数�
   （`list.rs:40,142-163`，`is_current` 标出当前版本）覆盖，再加就是同一件事的第三个名字（调研 §2 的 (b) 类）。
 - **验收**：`reset app@1.2.3`、`reset bucket/app`、`reset a b c`、全局已装自动识别四条各有测试；
   `-a` 行为与官方一致（失败继续）；`hok reset <app> <ver>`（旧形态）报用法错而非误当多应用。
+- **同批要一起改的引用点（2026-10-09 清点，别漏）**：
+  - `crates/libscoop/src/package/sync_remove.rs` 的编号注释（现写「single-package `hok reset <app>` passes
+    `(1, 1)`」）——多应用后编号语义变了；
+  - [`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) 的 `reset` 行
+    （分类表把 `reset` 记在 "A 语义不同" 下，明细行写「不自动识别全局安装；单应用无 admin 检查；
+    不接受 `app@version`/`bucket/app`；多跑 `post_install`」）；
+  - [`scoop-gap-status.md`](../audit/scoop-gap-status.md) 的 ⑩「`reset` 不识别全局安装 / 不接受 `app@version`」。
+  - `README*` **只在命令清单里写 `reset  Reset an app…`**，没有用法行；`README-zh.md` 的 `hok reset <app>`
+    仍然成立，除非 `about` 文案本身要改。
+  - 上述两份审计是**汇总型热点文件，只在主树改**（见 [`.agents/AGENTS.md`](../../../AGENTS.md) → 硬约束 1）。
+
 
 ## 6. `service`（原生 SCM）——⏸ 暂缓（2026-10-07 用户决定）
 
