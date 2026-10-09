@@ -20,7 +20,6 @@ Updated: 2026-10-09
 | **R5** | 恢复 `-c/--cascade`（`SyncOption::Cascade` 无构造者 ⇒ 级联卸载在生产不可达） | 用户 | ①flag 形态 ②held 依赖恒报错政策（要求先 `hok unhold`，无 bypass）③登记为有意偏离 | [`command-deviation-fix-plan-2026-09.md`](../../reports/command-deviation-fix-plan-2026-09.md) |
 | **R6** | `PRIVATE_HOSTS` 同名头由 append 改 replace（官方 `$wreq.Headers[$key] = $value`）；**同题合并**：`HeaderProfile::CheckUrls` 不再发 Referer | 用户 | ①统一替换比官方更干净，确认为有意偏离 ②`checkurls` 在反盗链 CDN 上由"假坏链"转正常属行为变化 ③**硬禁区**：请求头唯一入口仍是 `ScoopRequest`/`HeaderProfile`，别新开第二条注入路径；`Checkver`/`Autoupdate` 保持官方口径 | [`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) |
 | **X2** | 7z：原生解析失败时单次 `7z.exe` 兜底；未知格式按官方 `Test-7zipRequirement` 兜底 | 用户 | 兜底范围与语义（现状：zip/tar/rar/msi 解析失败即整包失败；`.7z.001` 分卷与 `.img` 类 URL 被静默当普通文件拷走） | [`7zip-switch-investigation-2026-09.md`](../audit/7zip-switch-investigation-2026-09.md) |
-| **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 Scoop 语义（`-Switches` 被忽略、`-ExtractDir` 语义不同、`-Removal` 使标记空转） | 用户 | 动前必须先端到端复现现状影响面；候选方案 C④ = PS 层直接调 `7z.exe`/`lessmsi` | 同上 |
 
 ## 2. 未开工（无待决问题，随时可开工）
 
@@ -31,16 +30,16 @@ Updated: 2026-10-09
 | **RF1** | 超长函数拆分（`checkver.rs` 的 `execute` + `apply_autoupdate` 收益最高） | 有条件 | **前置**：先给出具体问题陈述（性能或维护痛点）；`commit_one_install` / `commit_one_remove` 结构对称，先核对是否真能抽公共管线，别用开关掩盖 install/remove 语义差异 | 同上 |
 | **CA1** | `--dry-run`（uninstall → cleanup → install） | 下一批 | 验收 = 零副作用 | [`cli-additions-plan.md`](cli-additions-plan.md) |
 | **CA3** | `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别） | 下一批 | 不加 `switch` 命令 | 同上 |
-| **C1** | 官方独有 config 键的真缺口 3 个：`use_external_7zip` / `show_manifest` / `autostash_on_conflict` | 以后 | 入口 = `ConfigInner` 加字段 + `set()` match + `list_all`，单文件闭环 | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
+| **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已按用户 2026-10-09 的拍板单独落地，见 §3） | 以后 | 各需单独立案：`use_external_7zip` 与 X3 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
 
 ## 3. 进行中
 
 | ID | 主题 | owner（worktree + 分支） |
 |---|---|---|
-| **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 | `.worktrees/x3-ps-decompress-fix` @ `fix/ps-decompress-layer` |
-| **C1** | `autostash_on_conflict` | `.worktrees/c1-autostash` @ `feat/autostash-on-conflict` |
-| **CA3** | `reset` 对齐官方 | 同批，排队等 C1 落地（`locales/*` 共享热点，串行） |
+| **X3** | PS 兼容层 `Expand-7zipArchive`：自递归别名 P0 + `-Removal` 标记空转 + `-ExtractDir` 语义（用户 2026-10-09 拍板做「最小正确修复」） | `.worktrees/x3-ps-decompress-fix` @ `fix/ps-decompress-layer` |
+| **C1** | `autostash_on_conflict`（键 true 时 bucket 同步 stash 后继续，默认 false 中止） | `.worktrees/c1-autostash` @ `feat/autostash-on-conflict` |
+| **CA3** | `reset` 对齐官方（位置参数全为 app，删 `[version]`，改用 `app@version`） | 同批，排队等 C1 落地（`locales/*` 共享热点，串行） |
 
 ## 4. 暂缓（必须写理由与重启条件）
 
