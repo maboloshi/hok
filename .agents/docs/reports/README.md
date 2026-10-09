@@ -34,6 +34,9 @@
 | `full_workspace_report.txt` | 工作区全量分析报告（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用，且引用已失效的 `crates/hok-shim-ref` |
 | `full_workspace_drywall.txt` | 工作区 drywall 扫描产物（2026-07-31） | **机器生成产物，不入库**（本机保留）；结论已用 |
 | `prompts/`（8 篇） | 交给子代理 / 会话的 prompt 原文（base64 单编解码、clap 参数解析损坏、当前版本解析统一、i18n 自研替换、阶段 3b 源头发射门控、单步 spinner、宽松 JSON 单入口，以及 `open-items-session-cards.md` = 待办总表现存未开工项的派活卡片） | **非文档**：会话输入，2026-09-26 从 `docs/prompts/` 与 `docs/refactor/prompts/` 分离后归此 |
+| `task-help-i18n.md` | `--help` 结构性表头中英混杂 + 重复选项段的统一任务（交接提示词原文） | 已闭环（分节与标题本地化，`tests/cli_help_i18n.rs::cli_help_is_fully_localized` 钉住）；会话性任务完成使命（2026-10-09 归档） |
+| `manifest-history-index-plan.md` | 清单历史索引正式方案（表结构 / 种子与增量 / 读取与失效回落 / 提交拆分 / 验收标准；含成本实测归因与并行化理由） | R4 判定 4：提交 0–5 全部落地（`62261c5` `615a6bb` `61c3b7d` `27ce29e` `ab7c4c2` `9893616`）；归档时更正了 §5 表中过期的 ⏳ 状态行（2026-10-09 归档） |
+| `manifest-seed-tree-cost-plan.md` | 种子树 diff 成本拆解与 2.3× 优化方案（记忆化父树 ＋ 自研 merge-join；含已排除项与测量配方） | R4 判定 4：已落地（`6a93ecc`，结果见该文 §8/§9；2026-10-09 归档） |
 
 ## 2026-09-26 移出本目录（判定当时就错）
 

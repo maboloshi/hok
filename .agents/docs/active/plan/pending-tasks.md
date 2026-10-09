@@ -1,7 +1,7 @@
 # hok 待办总表
 
 Status: active
-Updated: 2026-10-08
+Updated: 2026-10-09
 维护者：用户（拍板）/ 各会话（回填）
 
 > **这是什么**：散在审计、专题计划与代码里的**未完成项**索引。已完成项不在本表——见 `devlog/` 与 `reports/`。
@@ -35,13 +35,16 @@ Updated: 2026-10-08
 | **C1** | 官方独有 config 键的真缺口 3 个：`use_external_7zip` / `show_manifest` / `autostash_on_conflict` | 以后 | 入口 = `ConfigInner` 加字段 + `set()` match + `list_all`，单文件闭环 | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **N1** | `nsis` 升级评估（上游 0.5.0 含 breaking API，hok 仍钉 `0.4`） | 以后 | 评估后升级，或登记不升级的理由 | [`nsis-issue.md`](../../legacy/nsis-issue.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
-| **T1** | 归档 `task-help-i18n.md`（已完成使命） | 现在 | 按 `hok-report-archive` 走，同批修 inbound link | [`task-help-i18n.md`](../spec/task-help-i18n.md) |
-| **T2** | 归档已落地的专题计划（`manifest-history-index-plan.md`、`manifest-seed-tree-cost-plan.md`） | 现在 | R4 判定 4：全部条目已落地 | [`manifest-history-index-plan.md`](manifest-history-index-plan.md) |
-| **T3** | 清理 Wave 1 的备份分支（现只剩 `r1-checkver-hang-backup`；`refs/worktree-backup/*` 保留） | 以后 | 确认不再需要该回滚点时删除 | — |
 
 ## 3. 进行中
 
-无。开工中的条目在此登记 owner（worktree + 分支），同一时刻只应有一个 owner。
+| ID | 主题 | owner（worktree + 分支） |
+|---|---|---|
+| **CA2** | `update` / `upgrade -c` | `.worktrees/ca2-update-cleanup` @ `feat/update-upgrade-cleanup` |
+| **N1** | `nsis` 0.4 → 0.5.0 升级评估 | 主树（只读评估，未改代码） |
+| **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 | 主树（端到端复现影响面，未改代码） |
+| **CA3** | `reset` 对齐官方 | 同批，排在 CA2 落地后（`locales/*` 是共享热点，串行） |
+| **C1** | `autostash_on_conflict` | 同批，等语义拍板（`locales/*` 共享热点，串行） |
 
 ## 4. 暂缓（必须写理由与重启条件）
 
@@ -76,7 +79,7 @@ Updated: 2026-10-08
 | **EN3** checkver：xpath 命名空间、`checkver.url` 变量替换；Digest base64 失败回落 `.meta4` | 登记不动 | 有意偏离；[`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) |
 | **EN4** upstream 0.6.0 的两条行为差：`git pull --tags --force`（只作用于桶同步）、`update -f` 丢 pin 重解析到桶 HEAD（hok 是原地重装） | 只记录差距 | 用户 2026-10-03 拍板；[`upstream-0.6.0-impact-2026-10.md`](../audit/upstream-0.6.0-impact-2026-10.md) |
 | **EN5** 二进制体积的 profile 调优 | 不改 | 实测体积是结构性的，杠杆在分发压缩；[`binary-size-analysis-2026-09.md`](../audit/binary-size-analysis-2026-09.md) |
-| **EN6** 清单历史索引的已知取舍：只走第一父链、不跟随重命名（`--follow`）、`gc --prune` 后按行失效回落 autoupdate | 登记不动 | 有意取舍；[`manifest-history-index-plan.md`](manifest-history-index-plan.md) |
+| **EN6** 清单历史索引的已知取舍：只走第一父链、不跟随重命名（`--follow`）、`gc --prune` 后按行失效回落 autoupdate | 登记不动 | 有意取舍；[`manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md) |
 
 ## 6. 专题计划（细节在各自文档，本表只留指针）
 

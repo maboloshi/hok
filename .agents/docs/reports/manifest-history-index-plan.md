@@ -1,13 +1,14 @@
 # 清单历史索引正式方案
 
 Status: active
+Archived: 2026-10-09
 Updated: 2026-10-06
 
 > **这是什么**：「hok 能在 bucket HEAD 已无该版本时，按版本号取回原文清单」这条能力的正式方案，
-> 承接调研草稿 [`.agents/docs/research/manifest-history-index.md`](../../research/manifest-history-index.md)。
+> 承接调研草稿 [`.agents/docs/research/manifest-history-index.md`](../research/manifest-history-index.md)。
 > 调研已定的三条结论（只存 OID 不存文本、同库新表、git2 驱动不走 pickaxe）在本方案里被继承，
 > 本文补齐草稿 §4 列出的六件事：索引表 schema、种子与增量构建、失效回落、`manifest_source` 接入点、
-> 提交拆分、验收标准。**状态：实现中——提交 1–2 已落地（§5），提交 3–5 待做**。
+> 提交拆分、验收标准。**状态：已全部落地（2026-10-07，§5 的提交 0–5 全部落地，sha 见该表）**。
 >
 > **2026-10-06 修订**（实现反馈）：§1/§2/§3 各有一处原设计会在实现里出错，已按下文更正
 > （基线列语义、增量路线、入口门控），并把两条**原方案未登记**的已知弱化写进 §1/§2.1。
@@ -227,12 +228,12 @@ rayon 线程池，每个 worker 自开一个 `Repository`（libgit2 句柄既非
 
 | # | 提交 | 内容 | 依赖 | 状态 |
 |---|---|---|---|---|
-| 0 | `fix(libscoop): stop eating the following member after an unknown license/sourceforge key` | 前置修复：`License`/`Sourceforge` 两个 `visit_map` 在 `next_entry`（已消费 key+value）之后又补一次 `next_value`。未知键在**末尾**时严格 `serde_json` 先失败（`ExpectedColon`）⇒ 落到 json5 兜底 ⇒ json5 的 `Map::next_value_seed` 对空队列 `unwrap`（`json5-0.4.1/src/de.rs:469`）⇒ 两个 profile 都是 `panic = "abort"` ⇒ **整个进程 abort**；未知键在中间则先吞掉下一个成员。回归测试两条（未知键在末尾/在开头/值为非字符串） | — | ✅ 待落地 |
-| 1 | `feat(libscoop): add the manifest history index tables` | 建表 DDL（`open()` 里 `CREATE TABLE IF NOT EXISTS`，含两列表基线表）+ DDL 行为测试（NOCASE 参与主键、`WITHOUT ROWID` 真生效、`seeded` 非空且有默认值） | 0 | ✅ 待落地 |
-| 2 | `feat(libscoop): seed and incrementally maintain the manifest history index` | `internal/git.rs` 的 `HistoryRepo` 原语（句柄、`head`/`walk_chain`/`manifest_deltas`/`is_ancestor`/`blob_text`，OID 走 40 位 hex，`package/` 不碰 git2 类型）+ §2 种子（断点续跑，版本走窄探针，**rayon 分块并行**：走链串行、每 500 提交一块并行 diff，worker 自持 `Repository`）+ §3 增量 + §1 的桶移除清理 + 幂等/续跑/多版本/同版本覆盖/扁平与分类布局/窄探针测试 + `hok update` 接入（失败只 warn） | 1 | ✅ 待落地 |
-| 3 | `feat(libscoop): resolve @version from the history index` | §4 读路径（`generate_user_manifest` 第 2 段 + blob 失效删除回落）、`config.rs` `use_git_history` 迁移（决策项 B） | 2 | ⏳ |
-| 4 | `test(libscoop): pin the historical manifest resolution chain` | 端到端：夹具桶三个提交三版本 → 旧版本取回原文；失效（删 blob）回落 autoupdate；`use_git_history=false` 跳过 | 3 | ⏳ |
-| 5 | `docs(agents): land the manifest history index plan` | 本方案文件 + `.agents/docs/README.md` 索引行 + 调研草稿头部状态（`active → superseded-by` 本方案）——首次入库该主题的 `.agents/**` 走独立提交（`.agents/AGENTS.md` → 提交约定 1 的同理：让主题 diff 不被文档淹没）。根 `docs/README.md` **不改**：它是面向仓库外读者的英文文档，且明确声明不作为 `.agents/**` 的索引 | 0–4 | ✅ |
+| 0 | `fix(libscoop): stop eating the following member after an unknown license/sourceforge key` | 前置修复：`License`/`Sourceforge` 两个 `visit_map` 在 `next_entry`（已消费 key+value）之后又补一次 `next_value`。未知键在**末尾**时严格 `serde_json` 先失败（`ExpectedColon`）⇒ 落到 json5 兜底 ⇒ json5 的 `Map::next_value_seed` 对空队列 `unwrap`（`json5-0.4.1/src/de.rs:469`）⇒ 两个 profile 都是 `panic = "abort"` ⇒ **整个进程 abort**；未知键在中间则先吞掉下一个成员。回归测试两条（未知键在末尾/在开头/值为非字符串） | — | ✅ `62261c5` |
+| 1 | `feat(libscoop): add the manifest history index tables` | 建表 DDL（`open()` 里 `CREATE TABLE IF NOT EXISTS`，含两列表基线表）+ DDL 行为测试（NOCASE 参与主键、`WITHOUT ROWID` 真生效、`seeded` 非空且有默认值） | 0 | ✅ `615a6bb` |
+| 2 | `feat(libscoop): seed and incrementally maintain the manifest history index` | `internal/git.rs` 的 `HistoryRepo` 原语（句柄、`head`/`walk_chain`/`manifest_deltas`/`is_ancestor`/`blob_text`，OID 走 40 位 hex，`package/` 不碰 git2 类型）+ §2 种子（断点续跑，版本走窄探针，**rayon 分块并行**：走链串行、每 500 提交一块并行 diff，worker 自持 `Repository`）+ §3 增量 + §1 的桶移除清理 + 幂等/续跑/多版本/同版本覆盖/扁平与分类布局/窄探针测试 + `hok update` 接入（失败只 warn） | 1 | ✅ `61c3b7d` |
+| 3 | `feat(libscoop): resolve @version from the history index` | §4 读路径（`generate_user_manifest` 第 2 段 + blob 失效删除回落）、`config.rs` `use_git_history` 迁移（决策项 B） | 2 | ✅ `27ce29e` |
+| 4 | `test(libscoop): pin the historical manifest resolution chain` | 端到端：夹具桶三个提交三版本 → 旧版本取回原文；失效（删 blob）回落 autoupdate；`use_git_history=false` 跳过 | 3 | ✅ `ab7c4c2` |
+| 5 | `docs(agents): land the manifest history index plan` | 本方案文件 + `.agents/docs/README.md` 索引行 + 调研草稿头部状态（`active → superseded-by` 本方案）——首次入库该主题的 `.agents/**` 走独立提交（`.agents/AGENTS.md` → 提交约定 1 的同理：让主题 diff 不被文档淹没）。根 `docs/README.md` **不改**：它是面向仓库外读者的英文文档，且明确声明不作为 `.agents/**` 的索引 | 0–4 | ✅ `9893616` |
 
 > 提交 1/2 在 2026-10-06 被**重建**过一次，两点原因：
 > ① 原提交 1 里三处实现缺陷（路径过滤、可达性判定的方向、基线列语义）是提交 2 才修的，

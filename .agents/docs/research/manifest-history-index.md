@@ -1,6 +1,6 @@
 # 清单历史索引（git 库 → 索引库）调研草稿
 
-Status: superseded-by [清单历史索引正式方案](../active/plan/manifest-history-index-plan.md)
+Status: superseded-by [清单历史索引正式方案](../reports/manifest-history-index-plan.md)
 Updated: 2026-10-06
 
 > **这是什么**：为「hok 能在 bucket HEAD 已无该版本时，按版本号取回**原文清单**」这条能力做的调研与决策记录。

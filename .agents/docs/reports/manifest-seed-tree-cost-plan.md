@@ -1,9 +1,10 @@
 # 清单种子树 diff 成本：交接与实施方案
 
 Status: active
+Archived: 2026-10-09
 Updated: 2026-10-07
 
-> **给新对话（唯一入口）**：先读 §1 结论与 §7 交接提示，再按 §4 实现、§5 验收。
+> **已落地（2026-10-07，结果见 §8/§9）**：下面的 §4/§5/§6/§7 保留方案与交接当时的原文。
 > 相关工作区：worktree `.worktrees/mhi-history-index`、分支 `feat/manifest-history-index`；本主题是**当前 tip 之上**的一条新提交。
 > 本主题只动 `crates/libscoop/src/internal/git.rs` 的树 diff 原语与 `package/manifest_history.rs` 的分块消费方式，
 > **应当是那 7 条提交之上的一条新提交**——不要改动已落地提交的语义，也不要混进它们的历史。
@@ -90,7 +91,7 @@ Set-Content "$dir\hok.json" ('{"root_path":"' + $dir.Replace('\','\\') + '","cac
   新提交接在交接时的 9 条之上（7 条索引本体 ＋ 2 条本文件的交接提交），故本主题的代码提交是该分支第 10 条。
 - 建议顺序：先写「带记忆化的树 diff」原语 ＋ §5.2 语义单测 → 再切 `manifest_history` 的消费方式 → 最后跑 §5.1 等价与 §5.3 性能线。
 - 若等价做不到，或语义单测暴露无法在改动范围内解决的差异，**停下来报告**，不要降级验收。
-- 背景：索引本体方案 [`manifest-history-index-plan.md`](manifest-history-index-plan.md)（含 §2 成本更正）；本次实验记录见 devlog [`../../devlog/2026-10-06-manifest-history-index.md`](../../devlog/2026-10-06-manifest-history-index.md)。
+- 背景：索引本体方案 [`manifest-history-index-plan.md`](manifest-history-index-plan.md)（含 §2 成本更正）；本次实验记录见 devlog [`../devlog/2026-10-06-manifest-history-index.md`](../devlog/2026-10-06-manifest-history-index.md)。
 
 ## 8. 落地结果（2026-10-07）
 

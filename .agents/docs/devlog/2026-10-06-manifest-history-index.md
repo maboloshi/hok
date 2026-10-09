@@ -33,7 +33,7 @@
 
 ## 后续（同会话追加实验）
 
-树 diff 成本另做了一轮拆解实验（纯 git2 原型）：现状**每提交把同一棵 `bucket/` 树读两遍**，且 libgit2 的 diff 引擎还要逐条目扫两棵树，两笔各占约一半；「父树记忆化 ＋ 自研 merge-join」原型把 extras 181.3→**77.4 s**、main 107.1→**44.8 s**（2.3–2.4×）。同时排除：跳过未变更 tree（实测 0%）、子树 OID 短路（6–9%）、块大小（无差）、libgit2 对象缓存（两次实测都更慢）、按物理核降线程（16→4 掉出 60 s 线）。该主题**另开对话**处理，交接见 [`../active/plan/manifest-seed-tree-cost-plan.md`](../active/plan/manifest-seed-tree-cost-plan.md)。
+树 diff 成本另做了一轮拆解实验（纯 git2 原型）：现状**每提交把同一棵 `bucket/` 树读两遍**，且 libgit2 的 diff 引擎还要逐条目扫两棵树，两笔各占约一半；「父树记忆化 ＋ 自研 merge-join」原型把 extras 181.3→**77.4 s**、main 107.1→**44.8 s**（2.3–2.4×）。同时排除：跳过未变更 tree（实测 0%）、子树 OID 短路（6–9%）、块大小（无差）、libgit2 对象缓存（两次实测都更慢）、按物理核降线程（16→4 掉出 60 s 线）。该主题**另开对话**处理，交接见 [`../reports/manifest-seed-tree-cost-plan.md`](../reports/manifest-seed-tree-cost-plan.md)。
 
 ## 未落地 / 去向
 

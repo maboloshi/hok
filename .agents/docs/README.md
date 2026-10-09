@@ -11,7 +11,6 @@
 | [`cleanup-parallel-spec.md`](active/spec/cleanup-parallel-spec.md) | `cleanup` 并行化 + 逐版本进度的行为规格 |
 | [`search-output-design.md`](reports/search-output-design.md) | `search` 命令表格输出重设计（已归档；内容已落入 `devlog/` 条目） |
 | [`output-system-design.md`](active/spec/output-system-design.md) | 输出系统分层设计（Output sink / 事件 / 样式 / 阶段进度）；§十一 为桶扫描类命令的结果行规范 |
-| [`task-help-i18n.md`](active/spec/task-help-i18n.md) | 命令帮助文本的 i18n 方案 |
 
 ## active/plan — 会被执行掉的计划
 
@@ -19,8 +18,6 @@
 |---|---|
 | [`pending-tasks.md`](active/plan/pending-tasks.md) | 跨主题**未完成项**总表：按状态分节（待拍板 / 未开工 / 进行中 / 暂缓 / 已定不做），每条一行 + 来源链接 |
 | [`private-bucket-plan-2026-09.md`](active/plan/private-bucket-plan-2026-09.md) | 私有 bucket 方案与落地步骤 |
-| [`manifest-history-index-plan.md`](active/plan/manifest-history-index-plan.md) | 清单历史索引正式方案（表结构 / 种子与增量 / 读取与失效回落 / 提交拆分 / 验收标准；含成本实测归因与并行化理由） |
-| [`manifest-seed-tree-cost-plan.md`](active/plan/manifest-seed-tree-cost-plan.md) | **待新对话执行**：种子树 diff 成本拆解与 2.3× 优化方案（记忆化父树 ＋ 自研 merge-join；含已排除项与测量配方） |
 | [`cli-additions-plan.md`](active/plan/cli-additions-plan.md) | **执行中**：从 hyperscoop 借鉴的 6+1 项的命令契约、边界与验收；health 补检测已落地（`dd52a4f`），**剩余待做 = `--dry-run` / `update -c` / `reset` 对齐官方**；`edit`、原生 `service`、`update -q` 已暂缓（理由见文档） |
 
 ## active/audit — 随修复持续更新的审计基线

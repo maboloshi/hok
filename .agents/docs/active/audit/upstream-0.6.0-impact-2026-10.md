@@ -55,8 +55,8 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 > **2026-10-07 更正**：`63cb8f84` 的历史清单链（含 `use_git_history`）**已改为落地**——同库新表
 > `hok_manifest_history`（只存 `(bucket,name,version) → blob_oid,path,committed_at`）＋ `hok update` 上的种子/增量，
 > 读路径接 `manifest_source::generate_user_manifest` 第 2 段；方案
-> [`../plan/manifest-history-index-plan.md`](../plan/manifest-history-index-plan.md)，成本优化
-> [`../plan/manifest-seed-tree-cost-plan.md`](../plan/manifest-seed-tree-cost-plan.md)。
+> [`../reports/manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md)，成本优化
+> [`../reports/manifest-seed-tree-cost-plan.md`](../../reports/manifest-seed-tree-cost-plan.md)。
 > `db8d554f` / `198818ae` 两条仍为「不采纳，只记录差距」，见下表与 §6。
 
 | 上游 | 官方行为 | hok 现状（2026-10-03 核对） | 影响 |
@@ -127,7 +127,7 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 | P0 | 元数据文件名（写新名 + 读新名优先回落旧名 + 版本解析/枚举双名） | worktree `.worktrees/p0-metadata-names`，分支 `feat/metadata-scoop-prefix`，base `22b9e68`；**枚举行同属本次落地**（`install_info_mtime` 新名优先，测试 `resolve_current_version_reads_scoop_names_only`），原「遗留」已更正，见 §1 |
 | P1 | checkver GitHub 模式整体移植（上表 7 条 + 改掉锁定旧行为的测试） | worktree `.worktrees/p1-checkver-github`，分支 `fix/checkver-github-mode`，base `22b9e68` |
 | P3 | `$bucket` 语义、环境变量输出、notes 分隔/高亮、两个新 config 键登记、`download` 退出码 | 父会话主树直接改（`locales/*` 是必冲突热点，不派分支）。**已落地**（`4168ba8` + `507aab2`）：两个 config 键已登记、`download` 退出码已非零；审计文档旧行已就地更正（§3、§4） |
-| 已改判 | P2 的 `63cb8f84`（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../plan/manifest-history-index-plan.md`](../plan/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN6 |
+| 已改判 | P2 的 `63cb8f84`（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../reports/manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN6 |
 | 不采纳 | P2 的 `db8d554f`（`git pull --tags --force`）/ `198818ae`（`update -f` 丢 pin）两条（2026-10-03 用户拍板只记录差距） | 已登记进 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN4；设计与意图见 §3.1 |
 
 **门禁策略（用户 2026-10-02 选定）**：每条子分支自测一次（`cargo fmt --check` / `clippy -D warnings` / 目标测试），落地后父会话在最终树上跑一次完整门禁；不在每条分支重复跑完整套。
