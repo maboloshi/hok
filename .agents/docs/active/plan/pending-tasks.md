@@ -30,7 +30,7 @@ Updated: 2026-10-09
 | **RF1** | 超长函数拆分（`checkver.rs` 的 `execute` + `apply_autoupdate` 收益最高） | 有条件 | **前置**：先给出具体问题陈述（性能或维护痛点）；`commit_one_install` / `commit_one_remove` 结构对称，先核对是否真能抽公共管线，别用开关掩盖 install/remove 语义差异 | 同上 |
 | **CA1** | `--dry-run`（uninstall → cleanup → install） | 下一批 | 验收 = 零副作用 | [`cli-additions-plan.md`](cli-additions-plan.md) |
 | **CA3** | `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别） | 下一批 | 不加 `switch` 命令 | 同上 |
-| **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已按用户 2026-10-09 的拍板单独落地，见 §3） | 以后 | 各需单独立案：`use_external_7zip` 与 X3 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
+| **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已于 2026-10-09 单独落地，键一旦拆出即按用户拍板只做这一键） | 以后 | 各需单独立案：`use_external_7zip` 与 X3/X5 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
 
 ## 3. 进行中
@@ -38,8 +38,7 @@ Updated: 2026-10-09
 | ID | 主题 | owner（worktree + 分支） |
 |---|---|---|
 | **X3** | PS 兼容层 `Expand-7zipArchive`：自递归别名 P0 + `-Removal` 标记空转 + `-ExtractDir` 语义（用户 2026-10-09 拍板做「最小正确修复」） | `.worktrees/x3-ps-decompress-fix` @ `fix/ps-decompress-layer` |
-| **C1** | `autostash_on_conflict`（键 true 时 bucket 同步 stash 后继续，默认 false 中止） | `.worktrees/c1-autostash` @ `feat/autostash-on-conflict` |
-| **CA3** | `reset` 对齐官方（位置参数全为 app，删 `[version]`，改用 `app@version`） | 同批，排队等 C1 落地（`locales/*` 共享热点，串行） |
+| **CA3** | `reset` 对齐官方（位置参数全为 app，删 `[version]`，改用 `app@version`） | `.worktrees/ca3-reset-alignment` @ `feat/reset-official-alignment` |
 
 ## 4. 暂缓（必须写理由与重启条件）
 

@@ -382,6 +382,7 @@ cmd:
   config_desc_confirm: "Ask before running an operation"
   config_desc_script_engine: "Reuse the resident pwsh engine"
   config_desc_no_junction: "Skip the 'current' junction"
+  config_desc_autostash_on_conflict: "Stash uncommitted changes that block a repo pull during update (hok: every bucket pull; upstream: only Scoop's own repo)"
   config_desc_private_hosts: "Private hosts needing auth"
   config_desc_proxy: "Proxy settings"
   config_desc_root_path: "Scoop root directory"

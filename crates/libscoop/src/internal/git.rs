@@ -150,14 +150,17 @@ where
 // - merge conflict               -> leave conflict markers, return an error
 // - unrelated histories          -> error
 // Local modifications that would be overwritten by the update abort it
-// (matching `git pull`); otherwise they are preserved.
-pub fn pull<P, S>(path: P, proxy: Option<S>) -> Fallible<()>
+// (matching `git pull`); otherwise they are preserved. With `autostash` set
+// (the `autostash_on_conflict` config, upstream `libexec/scoop-update.ps1:113`)
+// those modifications are stashed and the update proceeds; the stash is left
+// in place, so the user recovers it with `git stash pop`.
+pub fn pull<P, S>(path: P, proxy: Option<S>, autostash: bool) -> Fallible<()>
 where
     P: AsRef<Path>,
     S: AsRef<str>,
 {
     let proxy = proxy.as_ref().map(|s| s.as_ref());
-    let repo = Repository::open(path.as_ref())?;
+    let mut repo = Repository::open(path.as_ref())?;
     let mut origin = repo.find_remote("origin")?;
 
     // Capture old HEAD before fetch. The symmetrical refspec would update the
@@ -178,19 +181,42 @@ where
         Some(&mut fetch_options(proxy)),
         None,
     )?;
+    // The remote handle borrows `repo`; release it now so the autostash below
+    // can take the mutable borrow it needs.
+    drop(origin);
 
-    let fetch_commit = repo.find_reference("FETCH_HEAD")?.peel_to_commit()?;
+    let fetch_id = repo.find_reference("FETCH_HEAD")?.peel_to_commit()?.id();
 
-    if fetch_commit.id() == head_id {
+    if fetch_id == head_id {
         return Ok(()); // already up to date
     }
 
-    let fetch_annotated = repo.find_annotated_commit(fetch_commit.id())?;
-    let (analysis, _preference) = repo.merge_analysis(&[&fetch_annotated])?;
+    let (analysis, _preference) = {
+        let fetch_annotated = repo.find_annotated_commit(fetch_id)?;
+        repo.merge_analysis(&[&fetch_annotated])?
+    };
 
     // `git pull` refuses to overwrite local changes: fail before touching the
     // working tree if any file the update would change is locally modified.
-    ensure_updateable(&repo, head_id, &fetch_commit)?;
+    // With `autostash` on, those changes are stashed (and left stashed)
+    // instead, so the update can proceed. Only a genuine local-changes verdict
+    // may take that branch — every other `ensure_updateable` failure (an
+    // unreadable object, a status query error) is returned as-is rather than
+    // masked by a stash that would only report "nothing to stash".
+    match ensure_updateable(&repo, head_id, fetch_id) {
+        Ok(()) => {}
+        Err(Error::BucketUpdateLocalChanges(_)) if autostash => {
+            let stash_message = stash_local_changes(&mut repo)?;
+            // The stash is deliberately not re-applied (upstream leaves it
+            // too), so say how to get the work back.
+            tracing::warn!(
+                "uncommitted changes blocked the bucket update; stashed as '{stash_message}'. \
+                 Recover them with `git stash pop` in {}",
+                path.as_ref().display()
+            );
+        }
+        Err(err) => return Err(err),
+    }
 
     if analysis.is_fast_forward() {
         // Fast-forward: hard-reset the branch to the fetched commit (updates
@@ -198,13 +224,14 @@ where
         // ensure_updateable() above guarantees no local modification would
         // be overwritten.
         let reset_target: git2::Object =
-            repo.find_object(fetch_commit.id(), Some(git2::ObjectType::Commit))?;
+            repo.find_object(fetch_id, Some(git2::ObjectType::Commit))?;
         repo.reset(&reset_target, git2::ResetType::Hard, None)?;
 
         Ok(())
     } else if analysis.is_normal() {
         // Diverged: perform a 3-way merge like `git pull` (merge mode).
         // SAFE checkout aborts if the merge would overwrite local changes.
+        let fetch_annotated = repo.find_annotated_commit(fetch_id)?;
         let mut merge_opts = git2::MergeOptions::new();
         let mut co = git2::build::CheckoutBuilder::new();
         repo.merge(&[&fetch_annotated], Some(&mut merge_opts), Some(&mut co))?;
@@ -225,7 +252,7 @@ where
         // `signature` reads user.name / user.email from git config and fails
         // like `git commit` when they are unset.
         let head_commit = repo.head()?.peel_to_commit()?;
-        let remote_commit = repo.find_commit(fetch_commit.id())?;
+        let remote_commit = repo.find_commit(fetch_id)?;
         let sig = repo.signature()?;
         let tree_id = index.write_tree_to(&repo)?;
         let tree = repo.find_tree(tree_id)?;
@@ -250,9 +277,14 @@ where
 /// Fail (like `git pull`) if the update would overwrite local changes:
 /// every file whose content differs between `head_id` and `target` must be
 /// clean in both the index and the working tree.
-fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commit) -> Fallible<()> {
+///
+/// `target` is the fetched commit id rather than a [`git2::Commit`]: the caller
+/// stashes the blocking changes (which needs a mutable borrow of the
+/// repository) between this check and the integration, and a live `Commit`
+/// would keep the repository immutably borrowed across it.
+fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: git2::Oid) -> Fallible<()> {
     let old_tree = repo.find_commit(head_id)?.tree()?;
-    let new_tree = target.tree()?;
+    let new_tree = repo.find_commit(target)?.tree()?;
     let diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
 
     let mut status_by_path: HashMap<String, git2::Status> = HashMap::new();
@@ -285,6 +317,37 @@ fn ensure_updateable(repo: &Repository, head_id: git2::Oid, target: &git2::Commi
     } else {
         Err(Error::BucketUpdateLocalChanges(local.join(", ")))
     }
+}
+
+/// Stash the local changes that block an update, leaving the stash in place.
+///
+/// Mirrors upstream's `autostash_on_conflict` branch
+/// (`libexec/scoop-update.ps1:113-121`): untracked files are included (`-u`)
+/// and the message is `WIP at <round-trip timestamp>` — the same shape
+/// `[System.DateTime]::Now.ToString('o')` produces.
+///
+/// Returns the stash message so the caller can tell the user how to recover
+/// the changes. A stash that cannot be created is an error: the update must
+/// never proceed after failing to save the user's work.
+fn stash_local_changes(repo: &mut Repository) -> Fallible<String> {
+    let stasher = repo.signature()?;
+    let message = format!(
+        "WIP at {}",
+        crate::internal::time::format_last_update(time::OffsetDateTime::now_utc())
+    );
+
+    repo.stash_save(
+        &stasher,
+        &message,
+        Some(git2::StashFlags::INCLUDE_UNTRACKED),
+    )
+    .map_err(|e| {
+        Error::Custom(format!(
+            "failed to stash the local changes blocking the bucket update: {e}"
+        ))
+    })?;
+
+    Ok(message)
 }
 
 /// Get the URL of `remote` in the repository rooted exactly at `repo_path`.
@@ -1111,8 +1174,10 @@ pub trait Git: Send + Sync {
     /// without cloning it (see [`ls_remote`]).
     async fn ls_remote(&self, remote_url: &str, proxy: Option<&str>) -> Fallible<()>;
 
-    /// Update a bucket repo with `git pull` semantics.
-    async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()>;
+    /// Update a bucket repo with `git pull` semantics. With `autostash` set,
+    /// local changes that would block the update are stashed instead of
+    /// aborting it (see [`pull`]).
+    async fn pull(&self, path: &Path, proxy: Option<&str>, autostash: bool) -> Fallible<()>;
 
     /// Get the URL of a remote in a repository.
     fn remote_url_of(&self, repo_path: &Path, remote: &str) -> Fallible<Option<String>>;
@@ -1152,12 +1217,12 @@ impl Git for RealGit {
             .map_err(|e| Error::Custom(format!("git clone task panicked: {}", e)))?
     }
 
-    async fn pull(&self, path: &Path, proxy: Option<&str>) -> Fallible<()> {
+    async fn pull(&self, path: &Path, proxy: Option<&str>, autostash: bool) -> Fallible<()> {
         // Same blocking-pool offload as clone_repo: git2 pull (fetch + merge)
         // is blocking I/O. Each bucket pull runs on the blocking pool.
         let path = path.to_owned();
         let proxy = proxy.map(|s| s.to_owned());
-        tokio::task::spawn_blocking(move || pull(path, proxy))
+        tokio::task::spawn_blocking(move || pull(path, proxy, autostash))
             .await
             .map_err(|e| Error::Custom(format!("git pull task panicked: {}", e)))?
     }
@@ -1337,7 +1402,7 @@ mod tests {
         let (origin_dir, origin, clone_dir, _) = setup();
         commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
 
-        pull(&clone_dir, None::<&str>).unwrap();
+        pull(&clone_dir, None::<&str>, false).unwrap();
 
         let repo = Repository::open(&clone_dir).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
@@ -1370,7 +1435,7 @@ mod tests {
         commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
         commit_file(&origin, "new.json", "{\"new\": true}\n", "add new file");
 
-        pull(&clone_dir, None::<&str>).unwrap();
+        pull(&clone_dir, None::<&str>, false).unwrap();
 
         let repo = Repository::open(&clone_dir).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
@@ -1390,13 +1455,103 @@ mod tests {
         // local modification on a file the update would change
         std::fs::write(clone_dir.join("a.txt"), "base\nlocal\n").unwrap();
 
-        let err = pull(&clone_dir, None::<&str>).unwrap_err();
+        let err = pull(&clone_dir, None::<&str>, false).unwrap_err();
         assert!(matches!(err, Error::BucketUpdateLocalChanges(_)));
 
         // the update must NOT have overwritten the local change
         assert_eq!(
             std::fs::read_to_string(clone_dir.join("a.txt")).unwrap(),
             "base\nlocal\n"
+        );
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    /// With `autostash_on_conflict` on, a local modification that would block
+    /// the fast-forward is stashed and the update proceeds. The stash is left
+    /// in place — not popped — like upstream; the saved change is intact in it.
+    #[test]
+    fn pull_fast_forward_dirty_autostash() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "a.txt", "base\nremote\n", "remote update");
+        std::fs::write(clone_dir.join("a.txt"), "base\nlocal\n").unwrap();
+
+        pull(&clone_dir, None::<&str>, true).unwrap();
+
+        // the update went through instead of aborting
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("a.txt")).unwrap(),
+            "base\nremote\n"
+        );
+
+        let mut repo = Repository::open(&clone_dir).unwrap();
+        let mut stash: Vec<(usize, String, git2::Oid)> = Vec::new();
+        repo.stash_foreach(|index, message, oid| {
+            stash.push((index, message.to_owned(), *oid));
+            true
+        })
+        .unwrap();
+        assert_eq!(stash.len(), 1, "stashes: {stash:?}");
+        // upstream's message shape: `WIP at <round-trip timestamp>`. git (and
+        // libgit2) prefix the recorded message with `On <branch>: `.
+        assert!(
+            stash[0].1.contains("WIP at "),
+            "unexpected stash message: {}",
+            stash[0].1
+        );
+
+        // the local change is preserved inside the stash (it would be lost if
+        // the stash had been popped or dropped)
+        let stash_commit = repo.find_commit(stash[0].2).unwrap();
+        let stash_tree = stash_commit.tree().unwrap();
+        let entry = stash_tree.get_name("a.txt").unwrap();
+        let blob = repo.find_blob(entry.id()).unwrap();
+        assert_eq!(
+            std::str::from_utf8(blob.content()).unwrap(),
+            "base\nlocal\n"
+        );
+
+        cleanup(&origin_dir);
+        cleanup(&clone_dir);
+    }
+
+    /// The stash includes untracked files (`-u`): a locally created file on a
+    /// path the remote adds would otherwise abort the update.
+    #[test]
+    fn pull_autostash_includes_untracked() {
+        let (origin_dir, origin, clone_dir, _) = setup();
+        commit_file(&origin, "new.json", "{\"remote\": true}\n", "add new file");
+        std::fs::write(clone_dir.join("new.json"), "{\"local\": true}\n").unwrap();
+
+        // without the stash the untracked file blocks the update
+        let err = pull(&clone_dir, None::<&str>, false).unwrap_err();
+        assert!(matches!(err, Error::BucketUpdateLocalChanges(_)));
+
+        pull(&clone_dir, None::<&str>, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join("new.json")).unwrap(),
+            "{\"remote\": true}\n"
+        );
+
+        let mut repo = Repository::open(&clone_dir).unwrap();
+        let mut stash: Vec<git2::Oid> = Vec::new();
+        repo.stash_foreach(|_, _, oid| {
+            stash.push(*oid);
+            true
+        })
+        .unwrap();
+        assert_eq!(stash.len(), 1, "stashes: {stash:?}");
+        let stash_commit = repo.find_commit(stash[0]).unwrap();
+        // `-u` parks untracked files in the stash's third parent, not in the
+        // stash commit's own tree (which holds the tracked changes).
+        assert_eq!(stash_commit.parent_count(), 3, "untracked parent missing");
+        let untracked_tree = stash_commit.parent(2).unwrap().tree().unwrap();
+        let entry = untracked_tree.get_name("new.json").unwrap();
+        let blob = repo.find_blob(entry.id()).unwrap();
+        assert_eq!(
+            std::str::from_utf8(blob.content()).unwrap(),
+            "{\"local\": true}\n"
         );
 
         cleanup(&origin_dir);
@@ -1411,7 +1566,7 @@ mod tests {
         // remote commit on a different file
         commit_file(&origin, "a.txt", "base\nremote\n", "remote work");
 
-        pull(&clone_dir, None::<&str>).unwrap();
+        pull(&clone_dir, None::<&str>, false).unwrap();
 
         let repo = Repository::open(&clone_dir).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
@@ -1437,7 +1592,7 @@ mod tests {
         commit_file(&clone, "a.txt", "local\n", "local edit");
         commit_file(&origin, "a.txt", "remote\n", "remote edit");
 
-        let err = pull(&clone_dir, None::<&str>).unwrap_err();
+        let err = pull(&clone_dir, None::<&str>, false).unwrap_err();
         assert!(matches!(err, Error::BucketUpdateMergeConflict(_)));
 
         // conflict markers are left in the working tree, like `git merge`
@@ -1483,7 +1638,7 @@ mod tests {
         co.force();
         repo.checkout_head(Some(&mut co)).unwrap();
 
-        let (r1, r2) = tokio::join!(git.pull(&d1, None), git.pull(&d2, None));
+        let (r1, r2) = tokio::join!(git.pull(&d1, None, false), git.pull(&d2, None, false));
         r1.unwrap();
         r2.unwrap();
 
@@ -1513,7 +1668,7 @@ mod tests {
 
         let pull_task = {
             let dir = clone_dir.clone();
-            tokio::spawn(async move { git.pull(&dir, None).await.unwrap() })
+            tokio::spawn(async move { git.pull(&dir, None, false).await.unwrap() })
         };
 
         let start = std::time::Instant::now();

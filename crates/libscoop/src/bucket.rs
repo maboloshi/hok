@@ -676,6 +676,10 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
         let config = session.config();
         config.proxy().map(|s| s.to_owned())
     };
+    // With `autostash_on_conflict` the pull stashes the local changes that
+    // would block a bucket update instead of aborting it (the config's
+    // upstream site is Scoop's own update; hok's equivalent is bucket sync).
+    let autostash = session.config().autostash_on_conflict();
     let emitter = session.emitter();
     // The git capability is shareable across update tasks; tests inject an
     // in-memory fake here.
@@ -757,7 +761,7 @@ pub async fn update(session: &Session) -> Fallible<UpdateChanges> {
                 // Diff from the last successfully synced commit (see above). A
                 // bucket that was never synced has no baseline, so it cannot be
                 // diffed and is re-scanned instead.
-                let outcome = match git.pull(&repo, proxy.as_deref()).await {
+                let outcome = match git.pull(&repo, proxy.as_deref(), autostash).await {
                     Ok(_) => {
                         if let Some(tx) = emitter {
                             ctx.set_succeeded();
@@ -1101,6 +1105,45 @@ mod tests {
         let pulls = fake.pulls.lock().unwrap();
         assert_eq!(pulls.len(), 1, "pulls: {:?}", *pulls);
         assert_eq!(pulls[0], bucket_dir);
+    }
+
+    /// `autostash_on_conflict` reaches the git layer: the bucket update reads
+    /// the config once and forwards it to every `Git::pull`. The default stays
+    /// `false`, preserving the abort behaviour.
+    #[tokio::test]
+    async fn bucket_update_threads_autostash_on_conflict() {
+        use crate::test_utils::{FakeGit, test_session, tmpdir};
+        use std::sync::Arc;
+
+        let root = tmpdir("bucket_update_autostash");
+        let session = test_session(&root);
+
+        let bucket_dir = root.join("buckets").join("extras");
+        std::fs::create_dir_all(&bucket_dir).unwrap();
+        let repo = git2::Repository::init(&bucket_dir).unwrap();
+        repo.remote("origin", "https://example.com/extras.git")
+            .unwrap();
+
+        let fake = Arc::new(FakeGit::default());
+        session.set_git(fake.clone()).unwrap();
+
+        crate::bucket::update(&session).await.unwrap();
+        assert_eq!(
+            fake.pull_autostash.lock().unwrap().as_slice(),
+            [false],
+            "the config default must reach the git layer as false"
+        );
+
+        fake.pulls.lock().unwrap().clear();
+        fake.pull_autostash.lock().unwrap().clear();
+        session
+            .config_mut()
+            .unwrap()
+            .set("autostash_on_conflict", "true")
+            .unwrap();
+
+        crate::bucket::update(&session).await.unwrap();
+        assert_eq!(fake.pull_autostash.lock().unwrap().as_slice(), [true]);
     }
 
     #[tokio::test]

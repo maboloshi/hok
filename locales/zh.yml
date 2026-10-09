@@ -382,6 +382,7 @@ cmd:
   config_desc_confirm: "操作前询问确认"
   config_desc_script_engine: "常驻 pwsh 脚本引擎"
   config_desc_no_junction: "不使用 current 联接"
+  config_desc_autostash_on_conflict: "更新时暂存阻塞仓库 pull 的未提交改动（hok 作用于每次 bucket pull；上游仅 Scoop 自身仓库）"
   config_desc_private_hosts: "需认证的私有主机"
   config_desc_proxy: "代理设置"
   config_desc_root_path: "Scoop 根目录"

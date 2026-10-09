@@ -320,7 +320,7 @@
 | 偏离 | hok 证据 | Scoop 证据 | 类别 |
 |---|---|---|---|
 | **键白名单化**：任何未建模键 → `ConfigKeyInvalid`；官方 `set_config` 无校验、任意键都写 | `crates/libscoop/src/config.rs:743` | `lib/core.ps1:105-138` | 语义不同 |
-| hok 不支持官方这些键：`use_lessmsi`/`use_external_7zip`/`show_manifest`/`show_update_log`/`update_nightly`/`hold_update_until`/`autostash_on_conflict`/`debug`/`force_update`/`scoop_repo`/`scoop_branch`/`shim`/`aria2-retry-wait`/`aria2-warning-enabled`/`aria2-options` | `config.rs:154-301` | `libexec/scoop-config.ps1:24-153` | 行为缺失 |
+| hok 不支持官方这些键：`use_lessmsi`/`use_external_7zip`/`show_manifest`/`show_update_log`/`update_nightly`/`hold_update_until`/`debug`/`force_update`/`scoop_repo`/`scoop_branch`/`shim`/`aria2-retry-wait`/`aria2-warning-enabled`/`aria2-options`（`autostash_on_conflict` 已于 2026-10-09 实现，见 [`scoop-gap-status.md`](scoop-gap-status.md)） | `config.rs:154-301` | `libexec/scoop-config.ps1:24-153` | 行为缺失 |
 | `aria2-min-split-size` 默认值 hok 20M，官方 5M | `config.rs:554-555,1079` | `lib/download.ps1:350` | 默认值不同 |
 | 删除子命令：hok `unset`，官方 `scoop config rm <name>` | `src/cmd/config.rs:37-42` | `libexec/scoop-config.ps1:161-163` | 语义不同 |
 | hok 无单键读取；官方 `scoop config <name>` 输出值或 `'<name>' is not set` | `src/cmd/config.rs:18-43` | `libexec/scoop-config.ps1:167-177` | 行为缺失 |

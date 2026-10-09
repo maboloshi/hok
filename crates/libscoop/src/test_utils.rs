@@ -377,6 +377,9 @@ pub struct FakeGit {
     pub ls_remotes: Mutex<Vec<String>>,
     /// Record of pulled repository paths.
     pub pulls: Mutex<Vec<std::path::PathBuf>>,
+    /// Record of the `autostash` flag each `pull` was called with, so a test
+    /// can assert the config reaches the git layer.
+    pub pull_autostash: Mutex<Vec<bool>>,
     /// When set, `ls_remote` returns an error.
     pub fail_ls_remote: AtomicBool,
     /// When set, `pull` returns an error.
@@ -413,11 +416,12 @@ impl Git for FakeGit {
         Ok(())
     }
 
-    async fn pull(&self, path: &Path, _proxy: Option<&str>) -> Fallible<()> {
+    async fn pull(&self, path: &Path, _proxy: Option<&str>, autostash: bool) -> Fallible<()> {
         if self.fail_pull.load(Ordering::SeqCst) {
             return Err(Error::Custom("fake pull failed".to_string()));
         }
         self.pulls.lock().unwrap().push(path.to_owned());
+        self.pull_autostash.lock().unwrap().push(autostash);
         Ok(())
     }
 

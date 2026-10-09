@@ -258,6 +258,17 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     no_junction: Option<bool>,
 
+    /// Stash the local changes that block a bucket update instead of aborting
+    /// it (upstream's `autostash_on_conflict`; default `false`).
+    ///
+    /// Upstream applies this key to its *own* repository update
+    /// (`libexec/scoop-update.ps1:113-121`); hok is a single binary with no
+    /// self-update, so hok gates the equivalent site instead: the bucket sync
+    /// (`internal::git::pull`). The stash is left in place, exactly like
+    /// upstream — recovering the changes is `git stash pop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autostash_on_conflict: Option<bool>,
+
     /// Continue multi-package operations despite individual package failures.
     #[serde(skip_serializing_if = "Option::is_none")]
     ignore_failures: Option<bool>,
@@ -391,6 +402,15 @@ impl Config {
     #[inline]
     pub fn no_junction(&self) -> bool {
         self.no_junction.unwrap_or_default()
+    }
+
+    /// Get the `autostash_on_conflict` config. Defaults to `false` (matching
+    /// upstream Scoop): a bucket update blocked by local changes aborts. When
+    /// `true`, those changes are stashed (and left stashed) so the update can
+    /// proceed.
+    #[inline]
+    pub fn autostash_on_conflict(&self) -> bool {
+        self.autostash_on_conflict.unwrap_or(false)
     }
 
     /// Get the `ignore_failures` config. Defaults to `false` (matching
@@ -683,6 +703,13 @@ impl Config {
                     Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
                 },
             },
+            "autostash_on_conflict" => match is_unset {
+                true => self.inner.autostash_on_conflict = None,
+                false => match value.parse::<bool>() {
+                    Ok(v) => self.inner.autostash_on_conflict = Some(v),
+                    Err(_) => return Err(Error::ConfigValueInvalid(value.to_owned())),
+                },
+            },
             "no_color" => match is_unset {
                 true => self.inner.no_color = None,
                 false => match value.parse::<bool>() {
@@ -791,6 +818,7 @@ impl Default for Config {
             use_sqlite_cache: Default::default(),
             use_git_history: Default::default(),
             no_junction: Default::default(),
+            autostash_on_conflict: Default::default(),
             language: Default::default(),
             no_color: Default::default(),
             private_hosts: Default::default(),
@@ -1051,6 +1079,7 @@ const SETTINGS: &[&str] = &[
     "aria2-min-split-size",
     "aria2-split",
     // Shared with upstream, under upstream's spelling.
+    "autostash_on_conflict",
     "cache_path",
     "cat_style",
     "default_architecture",
@@ -1114,6 +1143,7 @@ const SHARED_KEYS: &[&str] = &[
     "aria2-max-connection-per-server",
     "aria2-min-split-size",
     "aria2-split",
+    "autostash_on_conflict",
     "cat_style",
     "default_architecture",
     "gh_token",
@@ -1186,7 +1216,6 @@ const OFFICIAL_ONLY_KEYS: &[&str] = &[
     "aria2-options",
     "aria2-retry-wait",
     "aria2-warning-enabled",
-    "autostash_on_conflict",
     "debug",
     "force_update",
     "hold_update_until",
@@ -1368,6 +1397,11 @@ pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
         ConfigCell::text("false"),
     ));
     rows.push(row(
+        "autostash_on_conflict",
+        ConfigCell::text(fmt_bool(config.autostash_on_conflict())),
+        ConfigCell::text("false"),
+    ));
+    rows.push(row(
         "private_hosts",
         // The host *match patterns* only: `headers` carries the auth tokens
         // these hosts need, and this listing must never print them.
@@ -1527,6 +1561,7 @@ mod tests {
     fn bool_field(config: &ConfigInner, key: &str) -> Option<bool> {
         match key {
             "no_junction" => config.no_junction,
+            "autostash_on_conflict" => config.autostash_on_conflict,
             "no_color" => config.no_color,
             "ignore_running_processes" => config.ignore_running_processes,
             "script_engine" => config.script_engine,
@@ -1562,6 +1597,7 @@ mod tests {
         // bool keys
         for key in [
             "no_junction",
+            "autostash_on_conflict",
             "no_color",
             "ignore_running_processes",
             "script_engine",
@@ -1640,6 +1676,7 @@ mod tests {
             ("script_engine", "true", json!(true)),
             ("ignore_failures", "true", json!(true)),
             ("no_junction", "true", json!(true)),
+            ("autostash_on_conflict", "true", json!(true)),
             ("no_color", "true", json!(true)),
         ];
         for (key, value, expected) in cases {
@@ -1724,6 +1761,7 @@ mod tests {
             "last_update",
             "no_color",
             "no_junction",
+            "autostash_on_conflict",
             "private_hosts",
             "proxy",
             "root_path",
@@ -1781,6 +1819,7 @@ mod tests {
             ("confirm", config.confirm()),
             ("script_engine", config.script_engine()),
             ("no_junction", config.no_junction()),
+            ("autostash_on_conflict", config.autostash_on_conflict()),
             ("use_sqlite_cache", config.use_sqlite_cache()),
         ] {
             assert_eq!(
@@ -1789,6 +1828,50 @@ mod tests {
                 "{key}: the default column disagrees with the runtime default"
             );
         }
+    }
+
+    /// `autostash_on_conflict` is a supported setting now: it round-trips
+    /// through `set`, `value` and the `list_all_rows` table, defaults to
+    /// `false`, and is no longer answered as an upstream-only key.
+    #[test]
+    fn autostash_on_conflict_is_supported_and_round_trips() {
+        use serde_json::json;
+        let session = test_session("config_autostash");
+
+        // The key left the "upstream setting hok has no equivalent for" list,
+        // so an import from Scoop maps it instead of refusing it.
+        assert_eq!(
+            crate::config::map_official_key("autostash_on_conflict"),
+            OfficialKey::Supported("autostash_on_conflict")
+        );
+
+        // Default is `false`: `set` accepts the key and the runtime getter
+        // starts out off.
+        assert!(!session.config().autostash_on_conflict());
+        let rows = crate::config::list_all_rows(&session).unwrap();
+        assert_eq!(
+            default_of(&rows, "autostash_on_conflict"),
+            ConfigCell::Text("false".to_owned())
+        );
+
+        crate::config::set(&session, "autostash_on_conflict", "true").unwrap();
+        assert_eq!(
+            crate::config::value(&session, "autostash_on_conflict").unwrap(),
+            Some(json!(true))
+        );
+        assert!(session.config().autostash_on_conflict());
+        let rows = crate::config::list_all_rows(&session).unwrap();
+        assert_eq!(
+            value_of(&rows, "autostash_on_conflict"),
+            ConfigCell::Text("true".to_owned())
+        );
+
+        crate::config::set(&session, "autostash_on_conflict", "").unwrap();
+        assert_eq!(
+            crate::config::value(&session, "autostash_on_conflict").unwrap(),
+            None
+        );
+        assert!(!session.config().autostash_on_conflict());
     }
 
     fn value_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
