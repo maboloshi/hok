@@ -149,6 +149,13 @@ fn script_bucket(package: &Package) -> &str {
     }
 }
 
+/// Embedded core helpers (available to every package script).
+const CORE_PS1: &str = include_str!("../../../../../asset_scripts/core.ps1");
+
+/// Embedded decompress helpers. These only emit `[[HOK_EXTRACT]]` markers;
+/// Rust performs the extraction (see `super::extract_markers`).
+const DECOMPRESS_PS1: &str = include_str!("../../../../../asset_scripts/decompress.ps1");
+
 /// Execute a PowerShell script defined in a package manifest.
 ///
 /// `script_lines` is an array of PowerShell command lines that will be joined
@@ -215,8 +222,6 @@ pub async fn run_script(
 
     // Embed PS helper scripts so package scripts can use functions
     // like Expand-InnoArchive, Expand-7zipArchive, Get-HelperPath, etc.
-    const CORE_PS1: &str = include_str!("../../../../../asset_scripts/core.ps1");
-    const DECOMPRESS_PS1: &str = include_str!("../../../../../asset_scripts/decompress.ps1");
     let preamble = format!(
         r#"
 # Force UTF-8 so the captured stdout/stderr (re-emitted by run_script)
@@ -801,6 +806,201 @@ impl Drop for TempFileGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dot-sources the embedded `decompress.ps1` and checks each helper name is
+    /// bound to the intended body (see the test below). Exits non-zero if any
+    /// name is missing or bound to the wrong definition.
+    const DECOMPRESS_PROBE_PS1: &str = r#"
+. "$PSScriptRoot\decompress.ps1"
+$script:fail = 0
+function Assert-Def($Name, $Needle) {
+    $d = (Get-Command $Name -CommandType Function -ErrorAction SilentlyContinue).Definition
+    if (-not $d) { Write-Host "MISSING:$Name"; $script:fail = 1; return }
+    if ($d -notlike "*$Needle*") { Write-Host "BAD:$Name=$d"; $script:fail = 1; return }
+    Write-Host "OK:$Name"
+}
+Assert-Def 'Expand-7zipArchive' 'Write-ExtractMarker "7z"'
+Assert-Def 'Expand-MsiArchive' 'Write-ExtractMarker "msi"'
+Assert-Def 'Expand-InnoArchive' 'Write-ExtractMarker "innosetup"'
+Assert-Def 'Expand-Msi' 'Expand-MsiArchive'
+Assert-Def 'Expand-ZipArchive' 'Expand-7zipArchive'
+if ($fail) { exit 1 }
+Write-Host 'ALIAS-OK'
+"#;
+
+    /// Create a small real zip archive containing `app/hello.txt` and
+    /// `app/sub/deep.txt`.
+    fn create_zip(path: &std::path::Path) {
+        use std::io::Write;
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+        use zip::write::FileOptions;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> =
+            FileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("app/hello.txt", opts).unwrap();
+        zip.write_all(b"Hello, World!").unwrap();
+        zip.start_file("app/sub/deep.txt", opts).unwrap();
+        zip.write_all(b"Deep content").unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// Regression guard for the deleted
+    /// `function Expand-7ZipArchive { Expand-7zipArchive @args }`.
+    ///
+    /// PowerShell names are case-insensitive, so that line did not alias
+    /// `Expand-7zipArchive` — it replaced it with a body calling itself, and
+    /// every 7z-family script stage died with "call depth overflow". This test
+    /// binds the names for real (dot-source + `Get-Command ….Definition`), so a
+    /// case-variant collision introduced by any future edit fails it; a
+    /// substring check on the embedded text would not.
+    #[test]
+    fn embedded_decompress_helpers_are_not_self_recursive() {
+        if !pwsh_available() {
+            return;
+        }
+        let root = crate::test_utils::tmpdir("decompress_alias_binding");
+        std::fs::write(root.join("decompress.ps1"), DECOMPRESS_PS1).unwrap();
+        std::fs::write(root.join("probe.ps1"), DECOMPRESS_PROBE_PS1).unwrap();
+
+        let mut cmd = crate::internal::os::ps_command();
+        cmd.arg("-File").arg(root.join("probe.ps1"));
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "decompress helper binding probe failed (exit {:?}):\n{stdout}\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("ALIAS-OK"), "probe output:\n{stdout}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `Expand-7zipArchive -ExtractDir` must produce Scoop's layout: only the
+    /// `ExtractDir` subtree is extracted, then hoisted into the destination.
+    /// For an archive containing `app/hello.txt`, `-ExtractDir app` therefore
+    /// yields `hello.txt` directly in the destination rather than
+    /// `app/app/hello.txt` (the old pre-joined destination bug). Also covers
+    /// `-Removal`: the source archive is gone afterwards.
+    #[tokio::test]
+    async fn expand_7zip_archive_extract_dir_matches_scoop_layout() {
+        if !pwsh_available() {
+            return;
+        }
+        let root = crate::test_utils::tmpdir("decompress_extract_dir_e2e");
+        let session = crate::test_utils::test_session(&root);
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        create_zip(&working_dir.join("payload.zip"));
+
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec![
+                "Expand-7zipArchive \"$dir\\payload.zip\" \"$dir\" -ExtractDir 'app' -Removal",
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            working_dir.join("hello.txt").exists(),
+            "extract_dir subtree must be hoisted into the destination"
+        );
+        assert!(working_dir.join("sub").join("deep.txt").exists());
+        assert!(
+            !working_dir.join("app").exists(),
+            "the extract_dir subtree must not remain nested under the destination"
+        );
+        assert!(
+            !working_dir.join("payload.zip").exists(),
+            "-Removal must delete the source archive after a successful extraction"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A call that omits `-DestinationPath` must extract next to the archive
+    /// (official Scoop default `(Split-Path $Path)`), not relative to hok's
+    /// own current directory. `run_script` does not set a `current_dir` on the
+    /// child, so an empty destination would fall through to the process CWD.
+    #[tokio::test]
+    async fn expand_7zip_archive_defaults_destination_to_archive_dir() {
+        if !pwsh_available() {
+            return;
+        }
+        let root = crate::test_utils::tmpdir("decompress_default_dest");
+        let session = crate::test_utils::test_session(&root);
+        let pkg = crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        );
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        create_zip(&working_dir.join("payload.zip"));
+
+        // Record whether the host CWD already holds the leaked tree, so the
+        // assertion detects leakage without depending on the machine's
+        // starting state. An empty destination makes the archive's own members
+        // (`app/hello.txt`) land relative to the CWD, so probe that path.
+        let cwd_leak = std::env::current_dir()
+            .unwrap()
+            .join("app")
+            .join("hello.txt");
+        let leaked_before = cwd_leak.exists();
+
+        run_script(
+            &session,
+            &pkg,
+            &working_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec!["Expand-7zipArchive -Path \"$dir\\payload.zip\""]),
+        )
+        .await
+        .unwrap();
+
+        // No extract_dir, so the whole archive lands in the archive's dir.
+        assert!(
+            working_dir.join("app").join("hello.txt").exists(),
+            "an omitted -DestinationPath must default to the archive's directory"
+        );
+        assert!(
+            working_dir
+                .join("app")
+                .join("sub")
+                .join("deep.txt")
+                .exists()
+        );
+        assert_eq!(
+            cwd_leak.exists(),
+            leaked_before,
+            "extraction must not leak into the process CWD: {}",
+            cwd_leak.display()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A script's stdout (here a Chinese Write-Host line) is captured and
     /// re-emitted as ScriptStdout events, so the frontend renders it with

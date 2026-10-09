@@ -151,37 +151,67 @@ pub fn copy_downloaded_files(
     Ok(())
 }
 
-/// Process P2 extraction marker files left behind by package scripts.
+/// Process `[[HOK_EXTRACT]]` marker lines left behind by package scripts.
 ///
-/// Package PowerShell scripts may write `<format>|<source>|<dest>` lines into
-/// `hok_extract_markers.txt` inside `working_dir`; each marker is extracted
-/// natively by Rust. Extraction failures are logged but do not abort, matching
-/// the original behaviour (the PS script has its own error handling).
+/// `asset_scripts/decompress.ps1`'s `Expand-*Archive` helpers do not extract
+/// anything themselves; they emit one marker line per call into
+/// `hok_extract_markers.txt` inside `working_dir`, using the five-field
+/// protocol `format|source|dest|extract_dir|removal`. Each marker is extracted
+/// natively by Rust. Extraction failures are logged but do not abort.
+///
+/// This side owns the two semantics PowerShell cannot express correctly here:
+/// * `dest` is the *base* destination; `extract_dir` is applied here, giving
+///   Scoop's layout (extract only that subtree, then hoist it into `dest`).
+/// * `removal` deletes `source` only after a *successful* extraction, so a
+///   failed extraction never loses the archive.
 pub async fn extract_markers(session: &Session, working_dir: &Path) {
     let marker_path = working_dir.join("hok_extract_markers.txt");
-    if let Ok(markers) = std::fs::read_to_string(&marker_path) {
-        for line in markers.lines() {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() < 3 {
-                continue;
-            }
-            let format = parts[0];
-            let source = Path::new(parts[1]);
-            let dest = Path::new(parts[2]);
-            let innosetup = format == "innosetup";
+    let Ok(markers) = std::fs::read_to_string(&marker_path) else {
+        return;
+    };
+    for raw in markers.lines() {
+        // PowerShell 5.1 creates the marker file as UTF-8 with a BOM.
+        let line = internal::string::strip_bom(raw).trim();
+        let Some(line) = line.strip_prefix("[[HOK_EXTRACT]]") else {
+            continue;
+        };
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let format = parts[0];
+        let source = Path::new(parts[1]);
+        let dest = Path::new(parts[2]);
+        let extract_dir = parts.get(3).copied().filter(|d| !d.is_empty());
+        let removal = parts.get(4).is_some_and(|r| *r == "removal");
+        let innosetup = format == "innosetup";
 
-            if source.exists() {
-                let emit = session.emitter();
-                if let Err(e) = session
-                    .archive()
-                    .extract(source, dest, None, None, innosetup, &emit)
-                    .await
-                {
-                    // Log but don't abort — extraction errors may be handled
-                    // by the PS script's own error handling
-                    debug!("P2 extract failed for {}: {}", source.display(), e);
+        if !source.exists() {
+            continue;
+        }
+
+        let extract_dirs = extract_dir.map(|d| [d]);
+        let emit = session.emitter();
+        match session
+            .archive()
+            .extract(
+                source,
+                dest,
+                extract_dirs.as_ref().map(|d| d.as_slice()),
+                None,
+                innosetup,
+                &emit,
+            )
+            .await
+        {
+            Ok(()) => {
+                if removal && let Err(e) = std::fs::remove_file(source) {
+                    debug!("P2 removal failed for {}: {}", source.display(), e);
                 }
             }
+            // Log but don't abort — extraction errors may be handled
+            // by the PS script's own error handling. The source is kept.
+            Err(e) => debug!("P2 extract failed for {}: {}", source.display(), e),
         }
     }
 }
@@ -628,7 +658,12 @@ mod tests {
 
     fn write_markers(working_dir: &Path, lines: &[&str]) {
         let marker_path = working_dir.join("hok_extract_markers.txt");
-        std::fs::write(&marker_path, lines.join("\n")).unwrap();
+        let body = lines
+            .iter()
+            .map(|l| format!("[[HOK_EXTRACT]]{l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&marker_path, body).unwrap();
     }
 
     #[tokio::test]
@@ -716,6 +751,113 @@ mod tests {
         // A failing marker must not abort processing of the remaining lines.
         extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
+    }
+
+    /// `extract_dir` in the marker (4th field) restricts the extraction to
+    /// that subtree and hoists it into `dest` — Scoop's `Expand-7zipArchive`
+    /// layout. The old PS-side bug pre-joined the dir onto the destination and
+    /// produced `dest/app/app/hello.txt` instead.
+    #[tokio::test]
+    async fn test_extract_markers_extract_dir_hoists_into_dest() {
+        let root = tmpdir("markers_extract_dir");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}|app|",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("hello.txt").exists());
+        assert!(dest.join("sub/deep.txt").exists());
+        assert!(
+            !dest.join("app").exists(),
+            "extract_dir subtree must be hoisted, not nested under dest"
+        );
+    }
+
+    /// `removal` (5th field) deletes the source only after a successful
+    /// extraction.
+    #[tokio::test]
+    async fn test_extract_markers_removal_deletes_source_after_success() {
+        let root = tmpdir("markers_removal_ok");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}||removal",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(!archive.exists(), "source must be removed on success");
+    }
+
+    /// `removal` must NOT delete the source when extraction fails — the
+    /// archive is the only copy and the failure is logged, not fatal.
+    #[tokio::test]
+    async fn test_extract_markers_removal_keeps_source_on_failure() {
+        let root = tmpdir("markers_removal_fail");
+        let session = test_session(&root);
+        let bad = root.join("bad.zip");
+        std::fs::write(&bad, b"this is not a zip").unwrap();
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}||removal",
+                bad.display(),
+                root.join("dest").display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(bad.exists(), "a failed extraction must keep the source");
+    }
+
+    /// PowerShell 5.1 writes the marker file as UTF-8 with a BOM; the reader
+    /// must strip it, or the first `format` field becomes
+    /// `\u{feff}[[HOK_EXTRACT]]...` and the marker is ignored.
+    #[tokio::test]
+    async fn test_extract_markers_strips_utf8_bom() {
+        let root = tmpdir("markers_bom");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let line = format!(
+            "\u{feff}[[HOK_EXTRACT]]zip|{}|{}||removal",
+            archive.display(),
+            dest.display()
+        );
+        std::fs::write(working_dir.join("hok_extract_markers.txt"), line).unwrap();
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(!archive.exists());
     }
 
     // --- spawn_blocking concurrency guardrail ------------------------
