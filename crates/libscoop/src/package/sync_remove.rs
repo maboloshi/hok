@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::constant::ISOLATED_PACKAGE_BUCKET;
 use crate::package::{
-    InstallState, InstallStateInstalled, Package, install_state,
+    InstallState, InstallStateInstalled, Package, identity, install_state,
     manifest::parse_file,
     operations::{self, run_script},
     query, resolve,
@@ -489,7 +489,211 @@ async fn commit_one_remove(
     Ok(())
 }
 
-/// Reset a package: re-link current version, re-create shims/shortcuts,
+/// One app named on the `reset` command line, resolved to the install scope and
+/// the version the reset will act on.
+struct ResetRequest {
+    /// App name, with `bucket/` and `@version` already split off (`parse_app`).
+    name: String,
+    /// The `@version` part, if given. This is **not** a separate positional
+    /// argument: every positional argument is an app (`scoop-reset.ps1:16,31`).
+    version: Option<String>,
+    /// Scope the reset runs in. Official has no `-g/--global`: the flag is set
+    /// when the app is installed globally (`:33-36`), and `-a` fixes it per app
+    /// by enumerating the two scopes itself (`:23-25`).
+    global: bool,
+}
+
+/// Why a named `reset` app will not be attempted.
+enum ResetUnavailable {
+    /// The app — or the requested `@version` of it — is not installed
+    /// (`scoop-reset.ps1:43-46` / `:55-58`). `Some` carries the requested
+    /// version so the report can name it.
+    NotInstalled(Option<String>),
+    /// `apps/<name>` exists but no usable current version resolves.
+    Broken,
+}
+
+/// Reset one or more installed apps, mirroring official `scoop reset`
+/// (`libexec/scoop-reset.ps1`).
+///
+/// `queries` are the positional app arguments — `app`, `bucket/app`,
+/// `app@version` and any mix of them, all parsed by `parse_app` exactly as
+/// upstream does (`:31`). `all` is the `-a/--all` (or `*`) switch, which
+/// replaces the app list with every installed app, local first then global
+/// (`:22-26`).
+///
+/// Each app is handled independently: a failing app is reported and the
+/// remaining ones still reset (upstream's `ForEach-Object` + `return`), and the
+/// command itself still succeeds. The `(k/N)` commit counter spans only the
+/// apps that will actually be attempted, so a reported-and-skipped app leaves
+/// no gap behind.
+pub async fn reset(session: &Session, queries: &[&str], all: bool) -> Fallible<()> {
+    let mut attempts: Vec<ResetRequest> = Vec::new();
+
+    if all {
+        // Reset every installed app — local first, then global (mirrors
+        // scoop-reset.ps1 `installed_apps $false` + `installed_apps $true`).
+        for global in [false, true] {
+            session.set_global(global);
+            // `Broken` is included so a partial install shows up and is
+            // either repaired (if a version resolves) or reported as broken,
+            // mirroring Scoop's `installed_apps` (which lists every app dir).
+            let pkgs = query::query_installed(session, &["*"], &[QueryOption::Broken])?;
+            for pkg in &pkgs {
+                if pkg.name() == "scoop" {
+                    // Official scoop-reset.ps1 skips 'scoop' itself.
+                    continue;
+                }
+                // Official warns and skips global apps without admin rights.
+                if global && !session.is_admin() {
+                    session
+                        .output()
+                        .warn(hok_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
+                    continue;
+                }
+                let request = ResetRequest {
+                    name: pkg.name().to_owned(),
+                    version: None,
+                    global,
+                };
+                // A genuinely not-installed-correctly app (no usable current
+                // version) can't be reset: report it and leave it out of the
+                // (k/N) count so the numbering stays contiguous. Repairable
+                // partial installs still resolve here and remain in the batch.
+                if reset_unavailable(session, &request).is_some() {
+                    session
+                        .output()
+                        .warn(hok_i18n::t!("cmd.reset_broken_skip", name = pkg.name()));
+                    continue;
+                }
+                attempts.push(request);
+            }
+        }
+    } else {
+        for query in queries {
+            // Official `parse_app`s every positional argument; `scoop` itself
+            // is skipped silently (`:38-41`).
+            let Some((name, version)) = parse_reset_query(query) else {
+                continue;
+            };
+            // Official has no `-g`: an app that is installed globally resets
+            // globally (`:33-36`), and only then must the caller be an admin
+            // (`:60-63`).
+            let global = reset_installed_globally(session, &name);
+            session.set_global(global);
+            let request = ResetRequest {
+                name,
+                version,
+                global,
+            };
+            match reset_unavailable(session, &request) {
+                // Upstream reports the app and moves on; the run still exits 0
+                // (`exit 0` at `:94`).
+                Some(ResetUnavailable::NotInstalled(version)) => {
+                    let message = match version.as_deref() {
+                        Some(version) => hok_i18n::t!(
+                            "cmd.not_installed_version",
+                            name = request.name.as_str(),
+                            version = version
+                        ),
+                        None => hok_i18n::t!("cmd.not_installed", name = request.name.as_str()),
+                    };
+                    session.output().error(message);
+                    continue;
+                }
+                Some(ResetUnavailable::Broken) => {
+                    session.output().warn(hok_i18n::t!(
+                        "cmd.not_installed_correctly",
+                        name = request.name.as_str()
+                    ));
+                    continue;
+                }
+                None => {}
+            }
+            if request.global && !session.is_admin() {
+                session.output().warn(hok_i18n::t!(
+                    "cmd.reset_admin_skip",
+                    name = request.name.as_str()
+                ));
+                continue;
+            }
+            attempts.push(request);
+        }
+    }
+
+    let total = attempts.len();
+    for (k, request) in attempts.iter().enumerate() {
+        // Restore the scope this app was resolved under before resetting it
+        // (paths resolve against the session's scope).
+        session.set_global(request.global);
+        // Official scoop-reset.ps1 iterates apps independently
+        // (ForEach-Object with `return`): a failing app is reported
+        // and skipped, the remaining apps keep resetting.
+        if let Err(e) = reset_one(session, request, k + 1, total).await {
+            session.output().error(hok_i18n::t!(
+                "cmd.reset_failed",
+                name = request.name.as_str(),
+                e = e
+            ));
+        }
+    }
+    // Leave the session back in the default (user-level) state.
+    session.set_global(false);
+
+    Ok(())
+}
+
+/// Split one positional `reset` argument the way upstream `parse_app`
+/// (`lib/core.ps1`) does, dropping the bucket part: `scoop-reset.ps1` never
+/// forwards `$bucket` to `installed` / `Select-CurrentVersion`.
+///
+/// Returns `None` for `scoop` itself, which upstream skips silently (`:38-41`).
+fn parse_reset_query(query: &str) -> Option<(String, Option<String>)> {
+    // [`identity::parse_app`] mirrors upstream's regex; like upstream it falls
+    // back to the raw string when nothing matches (`return $app, $null, $null`).
+    let (name, version) = match identity::parse_app(query) {
+        Some(parsed) => (parsed.app, parsed.version),
+        None => (query.to_owned(), None),
+    };
+    (name != "scoop").then_some((name, version))
+}
+
+/// Whether `name` has a resolvable install under the global root — upstream's
+/// `installed $app $true` (`lib/core.ps1`), which `scoop reset` uses to set the
+/// global flag when no scope was named explicitly (`:33-36`).
+fn reset_installed_globally(session: &Session, name: &str) -> bool {
+    let scope = session.is_global();
+    session.set_global(true);
+    let installed = install_state::resolve_current_version(
+        &session.app_dir(name),
+        session.config().no_junction(),
+    )
+    .is_some();
+    session.set_global(scope);
+    installed
+}
+
+/// Whether `request` resolves to a version `reset` can act on, and why not when
+/// it does not — the guards upstream checks in order (`scoop-reset.ps1:43-46`,
+/// then `:55-58`).
+fn reset_unavailable(session: &Session, request: &ResetRequest) -> Option<ResetUnavailable> {
+    if !session.app_dir(&request.name).exists() {
+        // `installed $app` is false: upstream reports it and moves on.
+        return Some(ResetUnavailable::NotInstalled(None));
+    }
+    match resolve_reset_target(session, &request.name, request.version.as_deref()) {
+        Ok(_) => None,
+        // An explicit `@version` with no version directory or manifest —
+        // upstream's `installed_manifest` is $null.
+        Err(_) if request.version.is_some() => {
+            Some(ResetUnavailable::NotInstalled(request.version.clone()))
+        }
+        // The app dir is there, but no usable current version resolves.
+        Err(_) => Some(ResetUnavailable::Broken),
+    }
+}
+
+/// Reset one package: re-link current version, re-create shims/shortcuts,
 /// and run post_install. Unlike Scoop's original reset, this runs
 /// post_install to reapply localization settings.
 ///
@@ -504,30 +708,31 @@ async fn commit_one_remove(
 /// the manifest and the install record to exist, so a
 /// half-broken install (e.g. missing install record) can still be reset.
 ///
-/// `index` / `total` position the package's `(k/N)` commit anchor. A
-/// single-package `hok reset <app>` passes `(1, 1)`; `reset --all` numbers
-/// each attempted package across its whole batch.
-pub async fn reset(
+/// `index` / `total` position the package's `(k/N)` commit anchor. The batch
+/// entry point [`reset`] numbers every app it will attempt across the whole
+/// run — one app or many — so the counter never restarts at `(1, 1)`.
+async fn reset_one(
     session: &Session,
-    name: &str,
-    target_version: Option<&str>,
+    request: &ResetRequest,
     index: usize,
     total: usize,
 ) -> Fallible<()> {
-    let (pkg, pkg_dir, version_dir) = match resolve_reset_target(session, name, target_version) {
-        Ok(r) => r,
-        // A broken/partial install (app dir exists but no usable current
-        // version) can't be reset — mirror Scoop (`scoop-reset.ps1` reports
-        // it as "isn't installed" and moves on). Warn so the user knows how
-        // to recover instead of hard-erroring.
-        Err(Error::PackageNotFound(_)) if session.app_dir(name).exists() => {
-            session
-                .output()
-                .warn(hok_i18n::t!("cmd.not_installed_correctly", name = name));
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    };
+    let name = request.name.as_str();
+    let (pkg, pkg_dir, version_dir) =
+        match resolve_reset_target(session, name, request.version.as_deref()) {
+            Ok(r) => r,
+            // A broken/partial install (app dir exists but no usable current
+            // version) can't be reset — mirror Scoop (`scoop-reset.ps1` reports
+            // it as "isn't installed" and moves on). Warn so the user knows how
+            // to recover instead of hard-erroring.
+            Err(Error::PackageNotFound(_)) if session.app_dir(name).exists() => {
+                session
+                    .output()
+                    .warn(hok_i18n::t!("cmd.not_installed_correctly", name = name));
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
     let version = pkg.installed_version().unwrap_or(pkg.version());
 
     // Check if the app is currently running before resetting (mirrors
@@ -638,19 +843,6 @@ pub async fn reset(
     Ok(())
 }
 
-/// Whether `reset` can actually act on `name` — i.e. a usable current (or
-/// versioned) install resolves, so `reset` will anchor and do work rather than
-/// warn "isn't installed correctly" and skip.
-///
-/// `reset --all` uses this to keep its `(k/N)` counter contiguous: genuinely
-/// not-installed-correctly apps are reported and excluded *before* counting,
-/// while repairable partial installs (a broken `current` junction but a valid
-/// versioned install, or a current manifest without an install record) still
-/// resolve and stay in the batch.
-pub fn reset_eligible(session: &Session, name: &str) -> bool {
-    resolve_reset_target(session, name, None).is_ok()
-}
-
 /// Resolve the package and version directory a `reset` should operate on,
 /// tolerating broken installs the same way upstream Scoop does.
 ///
@@ -747,6 +939,62 @@ mod tests {
         use std::fs::{File, FileTimes};
         let f = File::options().write(true).open(path).unwrap();
         f.set_times(FileTimes::new().set_modified(time)).unwrap();
+    }
+
+    /// Create `apps/<name>/<version>/{manifest.json, install.json}` under
+    /// `root`, so `resolve_current_version` can fall back to that version dir.
+    fn install_version(root: &Path, name: &str, version: &str) {
+        let dir = root.join("apps").join(name).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), mini_manifest(version)).unwrap();
+        std::fs::write(
+            dir.join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "main"}"#,
+        )
+        .unwrap();
+    }
+
+    /// Expose `apps/<name>/current/manifest.json` as a plain directory — how a
+    /// current version resolves before `link_current` turns it into a junction.
+    fn set_current_manifest(root: &Path, name: &str, version: &str) {
+        let current = root.join("apps").join(name).join("current");
+        let _ = std::fs::remove_dir_all(&current);
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("manifest.json"), mini_manifest(version)).unwrap();
+    }
+
+    /// A session whose global root lives inside the test directory: the real
+    /// `global_path` is `$SCOOP_GLOBAL` or `%ProgramData%\scoop`, which a test
+    /// must never read or write.
+    fn test_session_with_global(root: &Path, global: &Path) -> Session {
+        let config_path = root.join("hok.json");
+        let escaped = |path: &Path| path.to_string_lossy().replace('\\', "\\\\");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{"root_path": "{}", "cache_path": "{}", "global_path": "{}"}}"#,
+                escaped(root),
+                escaped(&root.join("cache")),
+                escaped(global)
+            ),
+        )
+        .unwrap();
+        Session::new_with(&config_path).unwrap()
+    }
+
+    /// Capture every `Output::Warn` / `Output::Error` the session emits.
+    fn capture_messages(session: &Session) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = {
+            let seen = seen.clone();
+            std::sync::Arc::new(move |out: crate::output::Output| {
+                if let crate::output::Output::Warn(msg) | crate::output::Output::Error(msg) = out {
+                    seen.lock().unwrap().push(msg);
+                }
+            })
+        };
+        session.set_output(sink).unwrap();
+        seen
     }
 
     #[test]
@@ -941,6 +1189,7 @@ mod tests {
     async fn reset_broken_install_warns_and_returns_ok() {
         let root = tmpdir("reset_broken_warn");
         let session = test_session(&root);
+        let messages = capture_messages(&session);
         let pkg_dir = root.join("apps").join("doubao");
         // Version dir with a manifest but no install.json and no `current`:
         // a broken install whose version cannot be resolved.
@@ -952,20 +1201,207 @@ mod tests {
         .unwrap();
 
         // Must not hard-error: a broken install is reported and skipped.
-        reset(&session, "doubao", None, 1, 1).await.unwrap();
+        reset(&session, &["doubao"], false).await.unwrap();
 
         // reset must not remove the app dir.
         assert!(pkg_dir.exists(), "reset must not remove the broken app dir");
+        assert!(
+            messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains("doubao")),
+            "the broken install must be reported: {:?}",
+            messages.lock().unwrap()
+        );
     }
 
-    /// `reset_eligible` reports a truly broken install (version dir + manifest
-    /// but no usable current version) as ineligible, but a repairable partial
-    /// (usable `current` manifest) as eligible.
+    /// Every positional argument goes through upstream's `parse_app`
+    /// (`scoop-reset.ps1:31`): `bucket/app`, `app@version`, both together — and
+    /// `scoop` itself, which upstream skips silently (`:38-41`).
     #[test]
-    fn reset_eligible_distinguishes_broken_from_repairable() {
+    fn parse_reset_query_mirrors_parse_app() {
+        assert_eq!(parse_reset_query("app"), Some(("app".to_owned(), None)));
+        assert_eq!(
+            parse_reset_query("app@1.2.3"),
+            Some(("app".to_owned(), Some("1.2.3".to_owned())))
+        );
+        assert_eq!(
+            parse_reset_query("extras/app"),
+            Some(("app".to_owned(), None))
+        );
+        assert_eq!(
+            parse_reset_query("extras/app@2.0"),
+            Some(("app".to_owned(), Some("2.0".to_owned())))
+        );
+        assert_eq!(parse_reset_query("scoop"), None);
+    }
+
+    /// `hok reset app@1.0.0` switches the current link to an already-installed
+    /// version — the form that replaced hok's old separate `<version>`
+    /// positional (`scoop-reset.ps1:16,31`).
+    #[tokio::test]
+    async fn reset_app_at_version_switches_the_current_link() {
+        let root = tmpdir("reset_app_at_version");
+        let session = test_session(&root);
+        install_version(&root, "app", "1.0.0");
+        install_version(&root, "app", "2.0.0");
+        set_current_manifest(&root, "app", "2.0.0");
+
+        reset(&session, &["app@1.0.0"], false).await.unwrap();
+
+        assert_eq!(
+            resolve_current_version(&root.join("apps").join("app"), false).map(|r| r.version),
+            Some("1.0.0".to_owned()),
+            "`app@1.0.0` must re-link `current` to the installed 1.0.0"
+        );
+    }
+
+    /// A `bucket/app` query is parsed and the bucket part dropped, exactly like
+    /// upstream (`scoop-reset.ps1` never forwards `$bucket` to `installed`).
+    #[tokio::test]
+    async fn reset_accepts_a_bucket_qualified_query() {
+        let root = tmpdir("reset_bucket_qualified");
+        let session = test_session(&root);
+        install_version(&root, "app", "1.0.0");
+        let pkg_dir = root.join("apps").join("app");
+        // No `current`: the reset has to create the link for the assertion to
+        // mean anything.
+        assert!(!pkg_dir.join("current").exists());
+
+        reset(&session, &["extras/app"], false).await.unwrap();
+
+        assert!(
+            pkg_dir.join("current").exists(),
+            "reset must create `current`"
+        );
+        assert_eq!(
+            resolve_current_version(&pkg_dir, false).map(|r| r.version),
+            Some("1.0.0".to_owned())
+        );
+    }
+
+    /// `reset a b c`: a failing app is reported, the rest keep resetting, and
+    /// the `(k/N)` counter is contiguous — the skipped app is not counted
+    /// (upstream's `ForEach-Object` + `return`, `scoop-reset.ps1:28-46`).
+    #[tokio::test]
+    async fn reset_multi_app_continues_and_numbers_contiguously() {
+        let root = tmpdir("reset_multi_app");
+        let session = test_session(&root);
+        install_version(&root, "alpha", "1.0.0");
+        install_version(&root, "beta", "1.0.0");
+        let messages = capture_messages(&session);
+        let mut rx = session.event_bus().receiver().expect("event bus receiver");
+
+        reset(&session, &["alpha", "ghost", "beta"], false)
+            .await
+            .unwrap();
+
+        let mut commits = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::PackageCommitStart {
+                name, index, total, ..
+            } = event
+            {
+                commits.push((name, index, total));
+            }
+        }
+        assert_eq!(
+            commits,
+            vec![("alpha".to_owned(), 1, 2), ("beta".to_owned(), 2, 2)],
+            "the missing app must be dropped from the count, not leave a gap"
+        );
+        assert!(
+            messages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains("ghost") && m.contains("isn't installed")),
+            "the missing app must be reported: {:?}",
+            messages.lock().unwrap()
+        );
+        for name in ["alpha", "beta"] {
+            assert!(
+                root.join("apps").join(name).join("current").exists(),
+                "`{name}` must still have been reset"
+            );
+        }
+    }
+
+    /// Official `scoop reset` has no `-g/--global`: an app that is installed
+    /// globally resets globally without a flag (`scoop-reset.ps1:33-36`).
+    ///
+    /// The scope predicate is asserted directly (deterministic), and the batch
+    /// below proves which app dir the reset actually targeted.
+    #[tokio::test]
+    async fn reset_auto_detects_a_global_install() {
+        let root = tmpdir("reset_global_detect");
+        let global = root.join("global");
+        let session = test_session_with_global(&root, &global);
+        // Local install of the same name whose `current` cannot resolve.
+        std::fs::create_dir_all(root.join("apps").join("app").join("current")).unwrap();
+        // Global install, resolvable through its version dir, with no
+        // `current` link yet — so "was reset" is observable as "link created".
+        install_version(&global, "app", "2.0.0");
+        let global_pkg_dir = global.join("apps").join("app");
+        assert!(!global_pkg_dir.join("current").exists());
+
+        assert!(
+            reset_installed_globally(&session, "app"),
+            "a global install must be auto-detected"
+        );
+        assert!(
+            !reset_installed_globally(&session, "only-local"),
+            "an app with no global install must not be detected"
+        );
+
+        let messages = capture_messages(&session);
+        reset(&session, &["app"], false).await.unwrap();
+
+        let local = root.join("apps").join("app");
+        assert_eq!(
+            resolve_current_version(&local, false).map(|r| r.version),
+            None,
+            "the local (unresolvable) install must not be the one reset"
+        );
+        if session.is_admin() {
+            assert_eq!(
+                resolve_current_version(&global_pkg_dir, false).map(|r| r.version),
+                Some("2.0.0".to_owned()),
+                "the auto-detected global install must have been reset"
+            );
+        } else {
+            // `Session::is_admin()` reads the real process token and has no
+            // test seam, so this arm is the one that runs on a non-elevated
+            // host; it still proves the *scope* was global, because a local
+            // attempt would never emit the admin warning.
+            assert!(
+                messages.lock().unwrap().iter().any(|m| m.contains("admin")),
+                "a non-admin reset of a global app must warn and skip: {:?}",
+                messages.lock().unwrap()
+            );
+            assert!(
+                !global_pkg_dir.join("current").exists(),
+                "the non-admin global reset must have been skipped"
+            );
+        }
+    }
+
+    /// `reset_unavailable` reports a truly broken install (version dir +
+    /// manifest but no usable current version) as `Broken`, a repairable
+    /// partial (usable `current` manifest) as resolvable, and a missing app as
+    /// not installed at all — the three guards of `scoop-reset.ps1:43-58`.
+    #[test]
+    fn reset_unavailable_distinguishes_broken_from_repairable() {
+        let request = |name: &str| ResetRequest {
+            name: name.to_owned(),
+            version: None,
+            global: false,
+        };
+
         // Not installed correctly: version dir + manifest, no install.json,
-        // no `current` junction — reset would warn and skip.
-        let root = tmpdir("reset_eligible_broken");
+        // no `current` — reset would warn and skip.
+        let root = tmpdir("reset_unavailable_broken");
         let session = test_session(&root);
         let broken = root.join("apps").join("broken");
         std::fs::create_dir_all(broken.join("1.0.0")).unwrap();
@@ -975,12 +1411,15 @@ mod tests {
         )
         .unwrap();
         assert!(
-            !reset_eligible(&session, "broken"),
-            "truly broken must be ineligible"
+            matches!(
+                reset_unavailable(&session, &request("broken")),
+                Some(ResetUnavailable::Broken)
+            ),
+            "truly broken must not be resettable"
         );
 
-        // Repairable partial: `current` junction exposes a manifest, so reset
-        // can resolve a version and should remain in the batch.
+        // Repairable partial: `current` exposes a manifest, so reset can
+        // resolve a version and the app stays in the batch.
         let repairable = root.join("apps").join("repairable");
         std::fs::create_dir_all(repairable.join("2.0.0")).unwrap();
         std::fs::write(
@@ -988,15 +1427,16 @@ mod tests {
             mini_manifest("2.0.0"),
         )
         .unwrap();
-        std::fs::create_dir_all(repairable.join("current")).unwrap();
-        std::fs::write(
-            repairable.join("current").join("manifest.json"),
-            mini_manifest("2.0.0"),
-        )
-        .unwrap();
+        set_current_manifest(&root, "repairable", "2.0.0");
         assert!(
-            reset_eligible(&session, "repairable"),
-            "repairable partial must be eligible"
+            reset_unavailable(&session, &request("repairable")).is_none(),
+            "repairable partial must stay in the batch"
         );
+
+        // Not installed at all: reported as such, not as broken.
+        assert!(matches!(
+            reset_unavailable(&session, &request("ghost")),
+            Some(ResetUnavailable::NotInstalled(None))
+        ));
     }
 }

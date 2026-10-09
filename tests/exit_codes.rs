@@ -200,6 +200,49 @@ fn sync_exit_codes_on_an_empty_root() {
     assert_eq!(env.code(&["update", "ghost"]), 0);
 }
 
+/// `reset` treats **every** positional argument as an app, exactly like
+/// official `parse_app` (`libexec/scoop-reset.ps1:16,31`). The old
+/// `hok reset <app> <version>` shape is deliberately gone: the second token is
+/// reported as an app that is not installed instead of being read as a version.
+///
+/// The final `exit 0` is upstream's (`:94`) — a missing app only prints an
+/// error, and one bad app does not stop the rest of the batch.
+#[test]
+fn reset_positionals_are_all_apps() {
+    let env = Env::new("reset_positionals");
+
+    // Both tokens are apps: two independent "isn't installed" reports.
+    let (code, text) = env.run_in(&env.cwd, &["--lang", "en", "reset", "app", "1.0.0"]);
+    assert_eq!(code, 0, "a missing app must not fail the run: {text}");
+    assert_eq!(
+        text.matches("isn't installed").count(),
+        2,
+        "`reset app 1.0.0` must report both tokens as apps, not read `1.0.0` \
+         as a version: {text}"
+    );
+    assert!(
+        text.contains("'1.0.0' isn't installed"),
+        "the second positional must be reported as an app: {text}"
+    );
+
+    // `app@version` is the version form: the app is reported once and the
+    // version part is not a positional of its own.
+    let (code, text) = env.run_in(&env.cwd, &["--lang", "en", "reset", "app@1.0.0"]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(text.matches("isn't installed").count(), 1, "{text}");
+    assert!(text.contains("'app' isn't installed"), "{text}");
+
+    // A failing app mid-batch does not stop the remaining ones, and the run
+    // still exits 0.
+    let (code, text) = env.run_in(&env.cwd, &["--lang", "en", "reset", "a", "b", "c"]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(
+        text.matches("isn't installed").count(),
+        3,
+        "every app must be attempted: {text}"
+    );
+}
+
 /// The per-command codes that are not 0/1.
 #[test]
 fn dedicated_exit_codes() {

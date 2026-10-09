@@ -406,6 +406,7 @@ cmd:
   running_process_reset: "检测到进程正在运行，跳过重置 '%{name}'。"
   running_process_ignored: "'%{name}' 正在运行，已按配置忽略。\n     继续操作可能导致数据丢失或应用不稳定，建议先关闭再重试。"
   not_installed: "'%{name}' 未安装。"
+  not_installed_version: "'%{name} (%{version})' 未安装。"
   not_installed_correctly: "'%{name}' 未正确安装。请重新安装或修复其 manifest。"
   failed_resolve: "无法解析 '%{query}': %{error}"
   failed_resolve_dependency: "无法解析 '%{pkg}' 的依赖 '%{query}': %{error}"
@@ -826,8 +827,7 @@ cli_help:
       package: 要重新安装的包
   reset:
     args:
-      app: 应用名称
-      version: 要重置到的特定版本
+      app: "要重置的应用（名称、bucket/名称或 名称@版本）"
       all: 重置所有已安装的应用
     about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
   search:

@@ -3,93 +3,35 @@
 use clap::Parser;
 use libscoop::{EventHandler, Session, package};
 
-use crate::{Result, output};
+use crate::Result;
 
 /// Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)
 #[derive(Debug, Parser)]
 pub struct Args {
-    /// The app name
-    app: Option<String>,
-    /// A specific version to reset to
-    version: Option<String>,
+    /// The app(s) to reset: `app`, `bucket/app` or `app@version`
+    app: Vec<String>,
     /// Reset all installed apps (equivalent to `hok reset *`)
     #[arg(short = 'a', long, action = clap::ArgAction::SetTrue)]
     all: bool,
 }
 
 pub async fn execute(args: Args, session: &Session) -> Result<()> {
-    // `*` is a shorthand for `-a/--all` (Scoop: `$apps -eq '*' -or $all`)
-    let all = args.all || args.app.as_deref() == Some("*");
-    if args.app.is_none() && !all {
+    // `*` is a shorthand for `-a/--all` (Scoop: `$apps -eq '*' -or $all`), and
+    // like upstream it replaces the app list instead of adding to it.
+    let all = args.all || args.app.iter().any(|app| app == "*");
+    if args.app.is_empty() && !all {
         return Err(anyhow::anyhow!(hok_i18n::t!("cmd.reset_app_missing")));
     }
 
-    if all {
-        // Reset every installed app — local first, then global (mirrors
-        // scoop-reset.ps1 `installed_apps $false` + `installed_apps $true`).
-        //
-        // First collect the ordered attempts (skipping 'scoop' and non-admin
-        // globals, which warn), so the `(k/N)` commit counter spans the whole
-        // batch instead of restarting at `(1/1)` per package.
-        let mut attempts: Vec<(bool, String)> = Vec::new();
-        for global in [false, true] {
-            session.set_global(global);
-            // `Broken` is included so a partial install shows up and is
-            // either repaired (if a version resolves) or reported as broken,
-            // mirroring Scoop's `installed_apps` (which lists every app dir).
-            let pkgs =
-                package::query::query_installed(session, &["*"], &[libscoop::QueryOption::Broken])?;
-            for pkg in &pkgs {
-                if pkg.name() == "scoop" {
-                    // Official scoop-reset.ps1 skips 'scoop' itself.
-                    continue;
-                }
-                // Official warns and skips global apps without admin rights.
-                if global && !session.is_admin() {
-                    output::warn(hok_i18n::t!("cmd.reset_admin_skip", name = pkg.name()));
-                    continue;
-                }
-                // A genuinely not-installed-correctly app (no usable current
-                // version) can't be reset: report it and leave it out of the
-                // (k/N) count so the numbering stays contiguous. Repairable
-                // partial installs still resolve here and remain in the batch.
-                if !package::sync::reset_eligible(session, pkg.name()) {
-                    output::warn(hok_i18n::t!("cmd.reset_broken_skip", name = pkg.name()));
-                    continue;
-                }
-                attempts.push((global, pkg.name().to_owned()));
-            }
-        }
-        let total = attempts.len();
-        for (k, (global, name)) in attempts.into_iter().enumerate() {
-            // Restore the scope this package was collected under before
-            // resetting it (paths resolve against the session's scope).
-            session.set_global(global);
-            // Official scoop-reset.ps1 iterates apps independently
-            // (ForEach-Object with `return`): a failing app is reported
-            // and skipped, the remaining apps keep resetting.
-            if let Err(e) = package::sync::reset(session, &name, None, k + 1, total).await {
-                output::err(hok_i18n::t!("cmd.reset_failed", name = name, e = e));
-                continue;
-            }
-        }
-        // Leave the session back in the default (user-level) state.
-        session.set_global(false);
-        drain_steps(session);
-        return Ok(());
-    }
-
-    let name = args.app.unwrap();
-    let version = args.version.as_deref();
-    match package::sync::reset(session, &name, version, 1, 1).await {
-        Ok(()) => {}
-        // Upstream reports a missing app and still exits 0
-        // (`libexec/scoop-reset.ps1:44`, final `exit 0` at :94).
-        Err(libscoop::Error::PackageNotFound(_)) => {
-            output::err(hok_i18n::t!("cmd.not_installed", name = name));
-        }
-        Err(e) => return Err(e.into()),
-    }
+    // Every positional argument is an app (`scoop-reset.ps1:16,31`); parsing,
+    // multi-app error+continue, global auto-detection and the `(k/N)` counter
+    // live in the pipeline, shared with the `-a` path.
+    let queries: Vec<&str> = if all {
+        Vec::new()
+    } else {
+        args.app.iter().map(String::as_str).collect()
+    };
+    package::sync::reset(session, &queries, all).await?;
     drain_steps(session);
     Ok(())
 }

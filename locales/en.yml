@@ -406,6 +406,7 @@ cmd:
   running_process_reset: "Running process detected, skip resetting '%{name}'."
   running_process_ignored: "'%{name}' is still running; hok is configured to ignore it (ignore_running_processes).\n     Continuing may cause data loss or instability; close it and retry."
   not_installed: "'%{name}' isn't installed."
+  not_installed_version: "'%{name} (%{version})' isn't installed."
   not_installed_correctly: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
   failed_resolve: "failed to resolve '%{query}': %{error}"
   failed_resolve_dependency: "failed to resolve dependency '%{query}' of '%{pkg}': %{error}"
@@ -830,8 +831,7 @@ cli_help:
       package: The package(s) to reinstall
   reset:
     args:
-      app: The app name
-      version: A specific version to reset to
+      app: "The app(s) to reset (name, bucket/name, or name@version)"
       all: Reset all installed apps
     about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
   search:
