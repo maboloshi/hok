@@ -3,6 +3,16 @@
 > 触发：用户提问「对比 scoop，分析一下我们解压模块适度切换到外部 7zip 的收益」，
 > 随后追加「或者可以考虑 7z.dll 作为解压后端 而且是可以共用线程?」。
 > 本文只做调研与选项对照，**未改任何仓库代码**；实施范围待用户确认（`investigate-first`）。
+>
+> **更正（2026-10-09，端到端复现后）：§2 对 PS 兼容层的描述不成立。**
+> `asset_scripts/decompress.ps1:37` 的「别名」`function Expand-7ZipArchive { Expand-7zipArchive @args }`
+> 因 **PowerShell 函数名大小写不敏感**而**覆盖**了 `:15` 的真实实现（自 `c3250d6` 起），结果是：
+> **没有** Scoop lib 时，7z 家族脚本阶段一律 call-depth overflow（约 1332 个清单受影响）；
+> **装了** Scoop 的机器上，脚本随后 dot-source `apps\scoop\current\lib\*.ps1` 把真实现盖回来，
+> 走 Scoop 语义、**hok 的 `[[HOK_EXTRACT]]` marker 路径整体不执行**。
+> ⇒ 本文列的三条「偏离」（`-Switches` / `-ExtractDir` / `-Removal`）在 7z 路径上**今天都不可达**；
+> §6 的方案对照与 §7 的四个待确认问题据此降级，处置见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 X3。
+> 上文保留原文以存经过。
 
 ## 0. 一句话结论
 
