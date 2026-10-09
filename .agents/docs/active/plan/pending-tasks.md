@@ -33,7 +33,6 @@ Updated: 2026-10-09
 | **CA2** | `update` / `upgrade -c`（升级成功后调既有 `package::cleanup::cleanup`） | 下一批 | **不做** hyperscoop 的"先删后装" | 同上 |
 | **CA3** | `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别） | 下一批 | 不加 `switch` 命令 | 同上 |
 | **C1** | 官方独有 config 键的真缺口 3 个：`use_external_7zip` / `show_manifest` / `autostash_on_conflict` | 以后 | 入口 = `ConfigInner` 加字段 + `set()` match + `list_all`，单文件闭环 | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
-| **N1** | `nsis` 升级评估（上游 0.5.0 含 breaking API，hok 仍钉 `0.4`） | 以后 | 评估后升级，或登记不升级的理由 | [`nsis-issue.md`](../../legacy/nsis-issue.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
 
 ## 3. 进行中
@@ -41,7 +40,6 @@ Updated: 2026-10-09
 | ID | 主题 | owner（worktree + 分支） |
 |---|---|---|
 | **CA2** | `update` / `upgrade -c` | `.worktrees/ca2-update-cleanup` @ `feat/update-upgrade-cleanup` |
-| **N1** | `nsis` 0.4 → 0.5.0 升级评估 | 主树（只读评估，未改代码） |
 | **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 | 主树（端到端复现影响面，未改代码） |
 | **CA3** | `reset` 对齐官方 | 同批，排在 CA2 落地后（`locales/*` 是共享热点，串行） |
 | **C1** | `autostash_on_conflict` | 同批，等语义拍板（`locales/*` 共享热点，串行） |

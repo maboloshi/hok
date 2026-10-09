@@ -51,11 +51,11 @@ sha1 = { workspace = true }
 sha2 = { workspace = true }
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
-sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
 # flate2 unified on the pure-Rust zlib-rs backend across the workspace
-# (libscoop, upstream nsis 0.4, upstream innospect 0.1.4, zip), so miniz_oxide
+# (libscoop, upstream nsis, upstream innospect, zip), so miniz_oxide
 # is not pulled in by any of them.
 flate2 = { workspace = true }
 lzma-rust2 = { workspace = true, features = ["xz"] }
@@ -80,15 +80,18 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
 ] }
-# Upstream innospect 0.1.4 (registry): adopted our lzma-rust2 + flate2/zlib-rs
-# PR (#3) and additionally takes the LZMA2 dictionary size from Inno's property
-# byte, so the vendored fork (crates/innospect) is retired.
+# Upstream innospect 0.2.0 (registry): our lzma-rust2 + flate2/zlib-rs PR (#3)
+# landed in 0.1.4, and it additionally takes the LZMA2 dictionary size from
+# Inno's property byte, so the vendored fork (crates/innospect) is retired.
 # Upstream: https://github.com/ATRAPSLLC/innospect
-innospect = "0.1.4"
-# Upstream nsis-rs 0.4.0 (registry): adopted our lzma-rust2/zlib-rs PR
+innospect = "0.2"
+# Upstream nsis-rs 0.6.0 (registry): 0.4.0 adopted our lzma-rust2/zlib-rs PR
 # (upstream commit 201df25) plus dest_path/solid-truncation fixes, so the
-# vendored fork (crates/nsis) is retired. Upstream: https://github.com/ATRAPSLLC/nsis-rs
-nsis = "0.4"
+# vendored fork (crates/nsis) is retired. 0.5/0.6 only touch the disassembly and
+# opcode-analysis surface hok never imports, and 0.6.0 caps the LZMA dictionary
+# a stream may declare — hok parses downloaded, untrusted installers under a
+# 512 MiB budget. Upstream: https://github.com/ATRAPSLLC/nsis-rs
+nsis = "0.6"
 shortcuts-rs = "1.1.1"
 
 [build-dependencies]

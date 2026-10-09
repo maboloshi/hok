@@ -28,7 +28,7 @@ hok-i18n = { path = "./crates/hok-i18n" }
 # manifest order and rewrites must keep it (already in the tree via
 # serde_json/preserve_order).
 indexmap = { version = "2", features = ["serde"] }
-lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization"] }
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "optimization"] }
 md-5 = "0.11"
 regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
 serde_json = "1.0.120"
