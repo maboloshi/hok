@@ -28,13 +28,13 @@ Updated: 2026-10-07
 | 1 | `health` 补两项检查 | 无（同名命令，属 hok 独有命令的加固） | `crates/libscoop/src/package/health.rs`、`package/shim.rs` | 小 | **✅ 已完成（2026-10-07）** |
 | 2 | `edit <app>` | 新增命令 | `crates/libscoop/src/config.rs`、`package/manifest_source.rs`、`src/cmd/edit.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
 | 3 | `--dry-run` | 新增开关（uninstall/cleanup → install） | `package/sync_remove.rs`、`package/cleanup.rs`、`package/sync.rs`、`src/cmd/*` | 中 | 待做 |
-| 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（调 `package::cleanup::cleanup`） | 小 | 待做 |
+| 4 | `update/upgrade -c` | 新增开关 | `src/cmd/update.rs`、`src/cmd/upgrade.rs`（共享 `src/cmd/cleanup.rs::sweep`）、`tests/update_cleanup_cli.rs`、`locales/{en,zh}.yml` | 小 | **✅ 已完成（2026-10-09）** |
 | 5 | `reset` 对齐官方 | 同名命令补分支（**官方锚点项**） | `src/cmd/reset.rs`、`package/sync_remove.rs` | 中 | 待做 |
 | 6 | `service` 原生 | 新增命令 | `crates/libscoop/src/internal/os.rs`、`package/service.rs`、`src/cmd/service.rs` | 大 | **⏸ 暂缓（2026-10-07）** |
 | 7 | `update -q/--quiet` | 新增开关（**官方锚点项**） | `src/cmd/update.rs`、`src/cmd/upgrade.rs` | 小 | **⏸ 暂缓（2026-10-07）** |
 
-**当前状态（2026-10-07 收口）**：第 1 项已落地（`dd52a4f`）；**剩余待做 = 3（`--dry-run`）、4（`update -c`）、5（`reset` 对齐官方）**；
-第 2、6、7 项暂缓，理由见各自小节。
+**当前状态（2026-10-09）**：第 1 项已落地（`dd52a4f`）、第 4 项已落地（`60e7acd`）；
+**剩余待做 = 3（`--dry-run`）、5（`reset` 对齐官方）**；第 2、6、7 项暂缓，理由见各自小节。
 
 ---
 
@@ -100,6 +100,13 @@ shim 目录读失败**不吞错**（`health_shims_unreadable`，与 `check_not_r
 - **验收**：`hok uninstall -n <app>` / `hok cleanup -n` / `hok install -n <app>` 输出计划；用文件快照断言零写入。
 
 ## 4. `update/upgrade -c/--cleanup`
+
+**状态：✅ 已完成（2026-10-09，`60e7acd`）** —— 升级成功后只清理**本次版本发生变化的包**（升级前后快照差集），
+无升级（`-U`、全为最新、仅更新 bucket）则空操作并提示 `hok cleanup -a`；不碰缓存。
+
+**官方锚点更正**：官方 v0.6.0 的 `scoop-update.ps1` **没有** `-c/--cleanup`（`getopt 'gfiksqa'` 里没有 `c`），
+且 `libexec/scoop-upgrade.ps1` 已并入 `update`，故本项**没有官方锚点**、属纯新增，短名跟随 hyperscoop
+（`crates/command_args/update.rs` 的 `-c/--cleanup`）。下文原写的「对齐官方锚点」不成立，保留原文以存经过。
 
 - **不做 hyperscoop 那种实现**：它删掉 `current` 指向的版本**再安装**（`crates/command/src/update.rs:81-102,195-201`）
   ⇒ 安装期间 `current` 悬空、无锁、且 `current` 已被 `switch` 到最新版时会**删掉最新版**。

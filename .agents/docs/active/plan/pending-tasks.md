@@ -30,7 +30,6 @@ Updated: 2026-10-09
 | **D1** | 衰减资产收敛（5 项：架构固定顺序 / hash 表 / nightly 判定 / 元数据目录解析 / 测试入口） | 下一批 | 只做"副本 → 单入口"，不引入新抽象层、零行为变更、每项独立提交；判据与验收见该审计的「使用规则」小节 | 同上 |
 | **RF1** | 超长函数拆分（`checkver.rs` 的 `execute` + `apply_autoupdate` 收益最高） | 有条件 | **前置**：先给出具体问题陈述（性能或维护痛点）；`commit_one_install` / `commit_one_remove` 结构对称，先核对是否真能抽公共管线，别用开关掩盖 install/remove 语义差异 | 同上 |
 | **CA1** | `--dry-run`（uninstall → cleanup → install） | 下一批 | 验收 = 零副作用 | [`cli-additions-plan.md`](cli-additions-plan.md) |
-| **CA2** | `update` / `upgrade -c`（升级成功后调既有 `package::cleanup::cleanup`） | 下一批 | **不做** hyperscoop 的"先删后装" | 同上 |
 | **CA3** | `reset` 对齐官方（`app@version` / `bucket/app` / 多应用 / 全局自动识别） | 下一批 | 不加 `switch` 命令 | 同上 |
 | **C1** | 官方独有 config 键的真缺口 3 个：`use_external_7zip` / `show_manifest` / `autostash_on_conflict` | 以后 | 入口 = `ConfigInner` 加字段 + `set()` match + `list_all`，单文件闭环 | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
@@ -39,10 +38,9 @@ Updated: 2026-10-09
 
 | ID | 主题 | owner（worktree + 分支） |
 |---|---|---|
-| **CA2** | `update` / `upgrade -c` | `.worktrees/ca2-update-cleanup` @ `feat/update-upgrade-cleanup` |
-| **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 | 主树（端到端复现影响面，未改代码） |
-| **CA3** | `reset` 对齐官方 | 同批，排在 CA2 落地后（`locales/*` 是共享热点，串行） |
-| **C1** | `autostash_on_conflict` | 同批，等语义拍板（`locales/*` 共享热点，串行） |
+| **X3** | PS 兼容层 `Expand-7zipArchive` 偏离 | `.worktrees/x3-ps-decompress-fix` @ `fix/ps-decompress-layer` |
+| **C1** | `autostash_on_conflict` | `.worktrees/c1-autostash` @ `feat/autostash-on-conflict` |
+| **CA3** | `reset` 对齐官方 | 同批，排队等 C1 落地（`locales/*` 共享热点，串行） |
 
 ## 4. 暂缓（必须写理由与重启条件）
 
