@@ -214,6 +214,7 @@ fn layout(aliases: &[alias::Alias], verbose: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::plain_lines;
 
     fn alias(name: &str, command: &str, summary: &str) -> alias::Alias {
         alias::Alias {
@@ -224,34 +225,11 @@ mod tests {
         }
     }
 
-    /// Strip ANSI styling so the table can be asserted as plain text.
-    fn plain(lines: &[String]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| {
-                let mut out = String::new();
-                let mut in_escape = false;
-                for c in l.chars() {
-                    if in_escape {
-                        if c == 'm' {
-                            in_escape = false;
-                        }
-                    } else if c == '\u{1b}' {
-                        in_escape = true;
-                    } else {
-                        out.push(c);
-                    }
-                }
-                out
-            })
-            .collect()
-    }
-
     #[test]
     fn table_columns_line_up_and_carry_no_trailing_spaces() {
         crate::output::set_color_enabled(false);
         let rows = [alias("rm", "scoop uninstall $args[0]", "Uninstall")];
-        let lines = plain(&layout(&rows, false));
+        let lines = plain_lines(&layout(&rows, false));
         // Name column widens to the header, Command is the last column.
         assert_eq!(lines[0], "  Name  Command");
         assert_eq!(lines[1], "  ----  -------");
@@ -270,7 +248,7 @@ mod tests {
             // trailing spaces behind.
             alias("zz", "scoop status", ""),
         ];
-        let lines = plain(&layout(&rows, true));
+        let lines = plain_lines(&layout(&rows, true));
         assert_eq!(lines[0], "  Name  Command          Summary");
         assert_eq!(lines[1], "  ----  ---------------  -------");
         assert_eq!(lines[2], "  rm    scoop uninstall  Uninstall");
@@ -286,7 +264,7 @@ mod tests {
         let mut row = alias("gone", "scoop list", "");
         row.command = "<BROKEN>".to_owned();
         row.broken = true;
-        let lines = plain(&layout(&[row], false));
+        let lines = plain_lines(&layout(&[row], false));
         assert_eq!(lines[2], "  gone  <BROKEN>");
     }
 }

@@ -12,7 +12,11 @@
 //! `Session::new` (`internal::fs::write_json`).
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Command;
+
+mod common;
+
+use common::{hok, isolate, text};
 
 /// An isolated installation: temp home, user root, and `%ProgramData%`.
 struct Fixture {
@@ -24,8 +28,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let base = std::env::temp_dir().join(format!("hok_root_env_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("root_env", name);
         let fixture = Fixture {
             root: base.join("scoop"),
             home: base.join("home"),
@@ -39,29 +42,19 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hok"));
+        let mut cmd = hok();
         cmd.args(args)
             .current_dir(&self.base)
             .env("SCOOP", &self.root)
             .env("SCOOP_GLOBAL", self.root.join("global"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env("ProgramData", &self.program_data)
-            .env_remove("HOK_LOG_LEVEL");
+            .env("ProgramData", &self.program_data);
+        isolate(&mut cmd, &self.home);
         cmd
     }
 
     fn run(&self, args: &[&str]) -> (i32, String) {
         text(self.command(args).output().expect("run hok"))
     }
-}
-
-fn text(out: Output) -> (i32, String) {
-    let mut all = String::from_utf8_lossy(&out.stdout).into_owned();
-    all.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.code().unwrap_or(-1), all)
 }
 
 /// An empty `$SCOOP` counts as unset: the root falls back to `$HOME/scoop`,

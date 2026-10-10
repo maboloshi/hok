@@ -30,22 +30,22 @@
 //! Chinese rendering. `en -h` is kept for the English description check 3
 //! compares against.
 
-use std::process::Command;
+mod common;
+
+use common::{hok, text};
 
 /// Run `<path...> <flag> --lang <lang>` and return the exit code together with
 /// the help text from stdout *and* stderr (clap writes some help/errors to
 /// stderr).
 fn help_status(path: &[String], flag: &str, lang: &str) -> (i32, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_hok"))
+    let out = hok()
         .args(path)
         .arg(flag)
         .arg("--lang")
         .arg(lang)
         .output()
         .expect("run hok");
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.code().unwrap_or(-1), text)
+    text(out)
 }
 
 /// Run `<path...> <flag> --lang <lang>` and return help from stdout *and*
@@ -283,7 +283,7 @@ fn argument_routing_is_not_shifted() {
 
     let mut failures: Vec<String> = Vec::new();
     for probe in &probes {
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
+        let out = hok()
             .arg("--lang")
             .arg("en")
             .args(probe.argv)

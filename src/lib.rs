@@ -50,6 +50,11 @@ mod output;
 mod i18n;
 mod scoop_handler;
 
+// ─── Test support ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod test_support;
+
 type Result<T> = anyhow::Result<T>;
 
 /// A nonzero process exit code a command handler may request.

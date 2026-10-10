@@ -352,6 +352,7 @@ fn layout(rows: &[ConfigRow], headers: [String; 4]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::plain;
 
     fn row(key: &str, value: ConfigCell, default: ConfigCell) -> ConfigRow {
         ConfigRow {
@@ -359,21 +360,6 @@ mod tests {
             value,
             default,
         }
-    }
-
-    /// `line` without its ANSI SGR sequences, so widths can be measured.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut escaping = false;
-        for ch in line.chars() {
-            match ch {
-                '\x1b' => escaping = true,
-                'm' if escaping => escaping = false,
-                _ if !escaping => out.push(ch),
-                _ => {}
-            }
-        }
-        out
     }
 
     fn value_column(line: &str, value: &str) -> usize {

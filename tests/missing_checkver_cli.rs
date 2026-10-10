@@ -6,7 +6,10 @@
 //! the two properties. The old `-s/--supported` had the inverse meaning.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+mod common;
+
+use common::{hok, isolate, text};
 
 /// A throwaway Scoop root plus an isolated home, so the binary never reads the
 /// real installation or the user's `config.json`.
@@ -17,8 +20,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("hok_missing_checkver_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("missing_checkver", name);
         let bucket = base.join("bucket");
         let home = base.join("home");
         std::fs::create_dir_all(&bucket).expect("create bucket dir");
@@ -38,25 +40,17 @@ impl Env {
     /// `(code, stdout+stderr)` with colour disabled.
     fn run(&self, args: &[&str]) -> (i32, String) {
         let dir = self.bucket.to_str().expect("utf-8 bucket path");
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-            .arg("missing-checkver")
+        let mut cmd = hok();
+        cmd.arg("missing-checkver")
             .args(args)
             .arg("-d")
             .arg(dir)
             .arg("--lang")
             .arg("en")
             .arg("--no-color")
-            .env("SCOOP", self.bucket.parent().expect("scoop root"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL")
-            .output()
-            .expect("run hok");
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        (out.status.code().unwrap_or(-1), text)
+            .env("SCOOP", self.bucket.parent().expect("scoop root"));
+        isolate(&mut cmd, &self.home);
+        text(cmd.output().expect("run hok"))
     }
 }
 
@@ -208,17 +202,12 @@ fn the_app_filter_is_positional_not_a_flag() {
 fn a_missing_directory_is_an_error() {
     let env = Env::new("nodir");
     let missing = env.dir().join("nope");
-    let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-        .args(["missing-checkver", "-d"])
+    let mut cmd = hok();
+    cmd.args(["missing-checkver", "-d"])
         .arg(&missing)
         .args(["--lang", "en", "--no-color"])
-        .env("SCOOP", env.bucket.parent().expect("scoop root"))
-        .env("USERPROFILE", &env.home)
-        .env("HOME", &env.home)
-        .env("APPDATA", env.home.join("AppData"))
-        .env("XDG_CONFIG_HOME", env.home.join(".config"))
-        .env_remove("HOK_LOG_LEVEL")
-        .output()
-        .expect("run hok");
+        .env("SCOOP", env.bucket.parent().expect("scoop root"));
+    isolate(&mut cmd, &env.home);
+    let out = cmd.output().expect("run hok");
     assert_ne!(out.status.code().unwrap_or(-1), 0);
 }

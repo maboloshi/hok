@@ -221,6 +221,7 @@ fn render(rows: &[Row]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::plain;
 
     fn row(name: &str, version: &str, size: &str) -> Row {
         Row {
@@ -228,21 +229,6 @@ mod tests {
             version: version.to_owned(),
             size: size.to_owned(),
         }
-    }
-
-    /// `line` without its ANSI SGR sequences, so widths can be measured.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut escaping = false;
-        for ch in line.chars() {
-            match ch {
-                '\x1b' => escaping = true,
-                'm' if escaping => escaping = false,
-                _ if !escaping => out.push(ch),
-                _ => {}
-            }
-        }
-        out
     }
 
     /// The visual column at which `value` starts in a rendered `line`.

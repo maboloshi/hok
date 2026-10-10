@@ -220,6 +220,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::plain;
 
     #[allow(clippy::too_many_arguments)]
     fn row(
@@ -238,21 +239,6 @@ mod tests {
             missing: missing.to_owned(),
             info: info.to_owned(),
         }
-    }
-
-    /// `line` without its ANSI SGR sequences, so widths can be measured.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut escaping = false;
-        for ch in line.chars() {
-            match ch {
-                '\x1b' => escaping = true,
-                'm' if escaping => escaping = false,
-                _ if !escaping => out.push(ch),
-                _ => {}
-            }
-        }
-        out
     }
 
     fn value_column(line: &str, value: &str) -> usize {

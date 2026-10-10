@@ -14,10 +14,13 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+mod common;
+
+use common::{hok, isolate, text};
 
 /// Body served by the loopback server. Small on purpose: the fragmentation
 /// threshold defaults to 20 MiB, so the transfer is a single GET.
@@ -42,8 +45,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("hok_download_stack_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("download_stack", name);
         let root = base.join("scoop");
         let home = base.join("home");
         let cwd = base.join("cwd");
@@ -56,21 +58,13 @@ impl Env {
     /// Run `hok <args>` against this environment; returns the exit code and
     /// everything the process printed.
     fn run(&self, args: &[&str]) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-            .args(args)
+        let mut cmd = hok();
+        cmd.args(args)
             .current_dir(&self.cwd)
             .env("SCOOP", &self.root)
-            .env("SCOOP_GLOBAL", self.root.join("global"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL")
-            .output()
-            .expect("run hok");
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        (out.status.code().unwrap_or(-1), text)
+            .env("SCOOP_GLOBAL", self.root.join("global"));
+        isolate(&mut cmd, &self.home);
+        text(cmd.output().expect("run hok"))
     }
 }
 

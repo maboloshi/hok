@@ -15,6 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
+use common::{hok, isolate, text};
+
 /// A throwaway Scoop root plus the environment overrides that keep the test
 /// away from the real installation and the user's `config.json`.
 struct Env {
@@ -28,8 +32,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("hok_exit_codes_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("exit_codes", name);
         let root = base.join("scoop");
         let home = base.join("home");
         let cwd = base.join("cwd");
@@ -61,21 +64,15 @@ impl Env {
             .current_dir(cwd)
             .output()
             .expect("run hok");
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        (out.status.code().unwrap_or(-1), text)
+        text(out)
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hok"));
+        let mut cmd = hok();
         cmd.args(args)
             .env("SCOOP", &self.root)
-            .env("SCOOP_GLOBAL", self.root.join("global"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL");
+            .env("SCOOP_GLOBAL", self.root.join("global"));
+        isolate(&mut cmd, &self.home);
         cmd
     }
 }

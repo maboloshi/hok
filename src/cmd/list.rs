@@ -346,6 +346,7 @@ fn render(rows: &[Row]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::plain;
 
     fn row(name: &str, version: &str, source: &str, updated: &str, info: &str) -> Row {
         Row {
@@ -356,21 +357,6 @@ mod tests {
             info: info.to_owned(),
             dimmed: false,
         }
-    }
-
-    /// `line` without its ANSI SGR sequences, so widths can be measured.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut escaping = false;
-        for ch in line.chars() {
-            match ch {
-                '\x1b' => escaping = true,
-                'm' if escaping => escaping = false,
-                _ if !escaping => out.push(ch),
-                _ => {}
-            }
-        }
-        out
     }
 
     fn value_column(line: &str, value: &str) -> usize {

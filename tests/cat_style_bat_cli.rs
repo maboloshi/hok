@@ -15,6 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod common;
+
+use common::{hok, isolate};
+
 /// A minimal manifest; `cat` prints it as pretty JSON.
 const MANIFEST: &str = r#"{
     "version": "1.0",
@@ -39,8 +43,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("hok_cat_style_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("cat_style", name);
         let root = base.join("scoop");
         let home = base.join("home");
         let stub = base.join("stub");
@@ -74,18 +77,13 @@ impl Env {
 
     /// Run `hok <args>` with `path` replacing the inherited `PATH`.
     fn run_with_path(&self, args: &[&str], path: &str) -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-            .args(args)
+        let mut cmd = hok();
+        cmd.args(args)
             .env("PATH", path)
             .env("SCOOP", &self.root)
-            .env("SCOOP_GLOBAL", self.root.join("global"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL")
-            .output()
-            .expect("run hok");
+            .env("SCOOP_GLOBAL", self.root.join("global"));
+        isolate(&mut cmd, &self.home);
+        let out = cmd.output().expect("run hok");
         (
             out.status.code().unwrap_or(-1),
             String::from_utf8_lossy(&out.stdout).into_owned(),

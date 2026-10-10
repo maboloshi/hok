@@ -329,21 +329,7 @@ pub async fn execute(args: Args, session: &Session) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `line` without its ANSI SGR sequences, so widths can be measured.
-    fn plain(line: &str) -> String {
-        let mut out = String::new();
-        let mut escaping = false;
-        for ch in line.chars() {
-            match ch {
-                '\x1b' => escaping = true,
-                'm' if escaping => escaping = false,
-                _ if !escaping => out.push(ch),
-                _ => {}
-            }
-        }
-        out
-    }
+    use crate::test_support::plain;
 
     /// The visual column at which `value` starts in a rendered `line`.
     fn value_column(line: &str, value: &str) -> usize {

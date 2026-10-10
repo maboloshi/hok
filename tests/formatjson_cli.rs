@@ -11,7 +11,10 @@
 //! exactly as it was, reported instead of destroyed.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+mod common;
+
+use common::{hok, isolate, text};
 
 /// A throwaway Scoop root plus an isolated home, so the binary never reads the
 /// real installation or the user's `config.json`.
@@ -22,8 +25,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let base = std::env::temp_dir().join(format!("hok_formatjson_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("formatjson", name);
         let bucket = base.join("bucket");
         let home = base.join("home");
         std::fs::create_dir_all(&bucket).expect("create bucket dir");
@@ -41,22 +43,14 @@ impl Env {
 
     /// Run `hok <args...>` in this environment; returns `(code, stdout+stderr)`.
     fn run(&self, args: &[&str]) -> (i32, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hok"))
-            .args(args)
+        let mut cmd = hok();
+        cmd.args(args)
             .arg("--lang")
             .arg("en")
             .arg("--no-color")
-            .env("SCOOP", self.bucket.parent().expect("scoop root"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("HOK_LOG_LEVEL")
-            .output()
-            .expect("run hok");
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        (out.status.code().unwrap_or(-1), text)
+            .env("SCOOP", self.bucket.parent().expect("scoop root"));
+        isolate(&mut cmd, &self.home);
+        text(cmd.output().expect("run hok"))
     }
 
     fn dir(&self) -> &Path {

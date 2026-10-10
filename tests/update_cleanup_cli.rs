@@ -10,7 +10,10 @@
 //! newer version, commit it, then sweep — and nothing else.
 
 use std::path::PathBuf;
-use std::process::{Command, Output};
+
+mod common;
+
+use common::{hok, isolate, text};
 
 /// An isolated installation: temp home, user root, and `%ProgramData%`.
 struct Fixture {
@@ -22,8 +25,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Fixture {
-        let base = std::env::temp_dir().join(format!("hok_update_cleanup_{name}"));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = common::base("update_cleanup", name);
         let fixture = Fixture {
             root: base.join("scoop"),
             home: base.join("home"),
@@ -78,7 +80,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hok"));
+        let mut cmd = hok();
         cmd.args(args)
             .arg("--lang")
             .arg("en")
@@ -86,17 +88,9 @@ impl Fixture {
             .current_dir(&self.base)
             .env("SCOOP", &self.root)
             .env("SCOOP_GLOBAL", self.root.join("global"))
-            .env("SCOOP_CACHE", self.root.join("cache"))
-            .env("USERPROFILE", &self.home)
-            .env("HOME", &self.home)
-            .env("APPDATA", self.home.join("AppData"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env("ProgramData", &self.program_data)
-            .env_remove("HOK_LOG_LEVEL");
-        let out: Output = cmd.output().expect("run hok");
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&out.stderr));
-        (out.status.code().unwrap_or(-1), text)
+            .env("SCOOP_CACHE", self.root.join("cache"));
+        isolate(&mut cmd, &self.home);
+        text(cmd.output().expect("run hok"))
     }
 }
 
