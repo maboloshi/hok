@@ -32,7 +32,7 @@ CLI (hok crate) → 门面 (libscoop/src/lib.rs) → 领域服务 (libscoop/src/
 - **internal/ 已收口 pub(crate)**：lib.rs 仅 `pub use` 转发 `Arch`、`compare_versions` 及薄门面 fs/os/string/url/hash；CLI 不再直用 `libscoop::internal::*`（--arch 走 `Session::set_default_architecture`）
 - **archive→event 是工具层唯一例外**：`internal/archive.rs` 依赖 `crate::event::Event` 发提取进度——功能合理（进度上报），保留，勿扩增同类依赖
 - **领域服务↔package 双向依赖（无环）已接受**：shim/shortcut/persist/psmodule/env 用 `package::Package` 数据类型；package/operations 调服务入口函数（shim::add 等）。单向表述是理想，实际无环即可
-- **config::edit 保留在库层**（供未来 `config edit` 子命令复用）；cmd/config.rs 只做调用方
+- **config 的呈现逻辑归 CLI，类型化读写归库**：lib 只留 `list`/`value`/`set`（对配置文件的类型化读写）；行表（键/值/默认值）与编辑器启动属命令逻辑，放 `src/cmd/config.rs`。**教训**：曾以"供未来子命令复用"为由把 `edit` 留在库层，但那个子命令当时已存在且是唯一调用方——**没有第二个调用方的"将来复用"不是理由**，按现有调用方判归属
 - **checkver 用 `CheckverOptions`（非 clap）**：CLI 持有 clap Args，构造 options 有编译期双向保护，消除镜像漂移
 
 

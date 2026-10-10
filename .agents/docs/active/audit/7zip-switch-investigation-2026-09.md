@@ -52,11 +52,20 @@
   前缀与 PS 5.1 BOM 处理（此前 `format` 是带前缀的整串 ⇒ `innosetup` 分支从未命中、非 ASCII 路径被写成 `?`）；
   四个函数补齐官方默认值 `$DestinationPath = (Split-Path $Path)`（此前只给 `-Path` 的调用会把 dest 留空，
   而空 dest 经 `dest.join(name)` 变成**相对路径** ⇒ 解到用户运行 hok 时的 CWD）。
-  **仍存**：`-Switches` 被忽略（本机 4 bucket 1748 行里 74 行带它）、`-Overwrite` 被
-  `ValueFromRemainingArguments` 吞进 `$Switches` 后一并丢弃（24 行）；见
-  [`pending-tasks.md`](../plan/pending-tasks.md) 的 X5。
+  **2026-10-11 已修（`caa1ba6`）**：`-Switches` 与 `-Overwrite` 不再是"忽略/被吞"——marker 增补两个字段，
+  PS 侧把 `-Switches` 原样交给对应 CLI（7z.exe / innounp.exe / lessmsi.exe）、`-Overwrite`
+  （`All|Skip|Rename`）映射为 `-aoa/-aos/-aou`，**仅带这两个字段的 marker** 改走外部 CLI，其余走原样原生路径。
+  对齐官方 `lib/decompress.ps1:99-106` 与 `:199-201,244-254`；本机 4 bucket 语料 76 行 `-Switches` + 24 行
+  `-Overwrite` 全覆盖，且 1904 条可求值调用的绑定经对拍确认零变更（差异仅那 24 行）。
+  参数声明形状随后**按官方对齐到底**（`Path`/`DestinationPath` 显式 `Position`，其余只按名绑定），
+  代价是 3 行真实调用的位置参数语义变化（属修复而非回归）。
+  **另已修（`9f59e58`）**：marker 的 `format` 现在**决定 extractor**，不再重嗅文件名 ⇒
+  `#/dl.7z_`/`#/dl.zip_` 之类的官方改名下载在 marker 路径上不再以 `unknown archive format` 静默失败
+  （未知 format 走 7z.exe 而非静默拷文件）；非 marker 路径保持按名嗅探不变。
   **有意不跟**：官方 `:93` 的 `$DestinationPath.TrimEnd('\')`——官方是为了交给 `7z -o`，hok 的值只当路径用；
   `C:\pkg.7z` 经 `Split-Path` 得 `C:\`，TrimEnd 会把它变成盘符相对路径 `C:`。这属"hok 更正确"的一处。
+  > 注意本节上方"五段 marker"的措辞已被 X5 扩为七段（`format|source|dest|extract_dir|removal|switches|overwrite`）；
+  > `:55-57` 原记的两条"仍存"已由上段出清。
 - 保真度：全部落盘走 `std::fs::write`（`:414`/`:639`/`:825`），全仓无 `set_modified`/属性处理
   ⇒ **mtime、只读/隐藏属性不保留**（7z.exe 会保留）。
 

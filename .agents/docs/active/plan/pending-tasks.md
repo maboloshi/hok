@@ -1,7 +1,7 @@
 # hok 待办总表
 
 Status: active
-Updated: 2026-10-09
+Updated: 2026-10-11
 维护者：用户（拍板）/ 各会话（回填）
 
 > **这是什么**：散在审计、专题计划与代码里的**未完成项**索引。已完成项不在本表——见 `devlog/` 与 `reports/`。
@@ -15,7 +15,6 @@ Updated: 2026-10-09
 
 | ID | 主题 | 等谁拍板 | 待决问题 | 来源 |
 |---|---|---|---|---|
-| **H3** | 清单解析失败在查询／安装路径静默消失（P0-4 难定位的根因） | 用户 | D1–D5：输出形态／退出码／缓存侧／被拒清单是否另立专题／文案；推荐 O2a+O3 | [`h3-parse-visibility-design-2026-09.md`](../../reports/h3-parse-visibility-design-2026-09.md) |
 | **H4** | `ci-auto-pr` 对齐（它写盘并提交，受 `-d` 写盘护栏约束） | 用户 | ①`-d` 是否改为"写盘时必须显式目标"（破坏性）②变更判定是否对齐官方 `hub diff` | [`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) |
 | **R5** | 恢复 `-c/--cascade`（`SyncOption::Cascade` 无构造者 ⇒ 级联卸载在生产不可达） | 用户 | ①flag 形态 ②held 依赖恒报错政策（要求先 `hok unhold`，无 bypass）③登记为有意偏离 | [`command-deviation-fix-plan-2026-09.md`](../../reports/command-deviation-fix-plan-2026-09.md) |
 | **R6** | `PRIVATE_HOSTS` 同名头由 append 改 replace（官方 `$wreq.Headers[$key] = $value`）；**同题合并**：`HeaderProfile::CheckUrls` 不再发 Referer | 用户 | ①统一替换比官方更干净，确认为有意偏离 ②`checkurls` 在反盗链 CDN 上由"假坏链"转正常属行为变化 ③**硬禁区**：请求头唯一入口仍是 `ScoopRequest`/`HeaderProfile`，别新开第二条注入路径；`Checkver`/`Autoupdate` 保持官方口径 | [`command-deviation-audit-2026-09.md`](../audit/command-deviation-audit-2026-09.md) |
@@ -25,17 +24,20 @@ Updated: 2026-10-09
 
 | ID | 主题 | 优先级 | 做什么（触发 + 验收要点） | 来源 |
 |---|---|---|---|---|
-| **A1** | `config.rs` 混入命令逻辑（framework P1-5：`list_all_rows` / `edit` 仍在 lib 层） | 下一批 | 命令逻辑上移 CLI；验收 = 分层恢复、行为不变 | [`systemic-optimization-audit-2026-09.md`](../audit/systemic-optimization-audit-2026-09.md) |
-| **D1** | 衰减资产收敛（5 项：架构固定顺序 / hash 表 / nightly 判定 / 元数据目录解析 / 测试入口） | 下一批 | 只做"副本 → 单入口"，不引入新抽象层、零行为变更、每项独立提交；判据与验收见该审计的「使用规则」小节 | 同上 |
 | **RF1** | 超长函数拆分（`checkver.rs` 的 `execute` + `apply_autoupdate` 收益最高） | 有条件 | **前置**：先给出具体问题陈述（性能或维护痛点）；`commit_one_install` / `commit_one_remove` 结构对称，先核对是否真能抽公共管线，别用开关掩盖 install/remove 语义差异 | 同上 |
 | **CA1** | `--dry-run`（uninstall → cleanup → install） | 下一批 | 验收 = 零副作用 | [`cli-additions-plan.md`](cli-additions-plan.md) |
 | **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已于 2026-10-09 单独落地，键一旦拆出即按用户拍板只做这一键） | 以后 | 各需单独立案：`use_external_7zip` 与 X3/X5 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
 | **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
-| **X5** | PS 兼容层 `decompress.ps1` 的剩余偏离（X3 修复后才真正可达）：`-Switches` 与 `-Overwrite` 仍被忽略 | 下一批 | ①marker 协议加 switches/overwrite 字段，或按方案 C 改调 `7z.exe`；②`-Overwrite` 现在是被 `ValueFromRemainingArguments` 吞进 `$Switches`（实测）⇒ 两者要一起处理。本机 4 bucket 静态统计（2026-10-09）：`Expand-7zipArchive` 1748 调用行中 74 行带 `-Switches`、24 行带 `-Overwrite`，`Expand-InnoArchive` 87 行中 2 行带 `-Switches` | [`7zip-switch-investigation-2026-09.md`](../audit/7zip-switch-investigation-2026-09.md) |
+| **X6** | 清单 hash 大小写：官方 `get_hash` 用 `-notcontains`（不区分大小写）接受 `SHA256:xxx`，hok 的 `REGEX_HASH` 大小写敏感 ⇒ 判无效 | 待拍板 | 对齐会扩大对既有清单的接受面，属行为变更；先判是否列为有意偏离 | [`systemic-optimization-audit-2026-09.md`](../audit/systemic-optimization-audit-2026-09.md) + D1 会话记录 |
+| **C2** | `Package::is_nightly` 大小写：官方三处 nightly 判定均不区分大小写（`-eq`），hok 精确比较而 `checkhashes` 走 `eq_ignore_ascii_case` ⇒ 同一语义两种口径 | 待拍板 | 对齐会让 download/verify 对 `Nightly` 变体从"不跳过校验"变"跳过校验"；决定后单独提交并更新偏离登记 | 同上 |
+| **MS1** | 安装态解析失败仍静默（H3 未覆盖的三个点）：`resolve_current_version` 坏清单**静默回落**到 `newest_version_dir`（可能给出**另一个版本**）、`load_install_state` 把坏清单当"未安装"、`maybe_fill_upgradable` 把坏清单当"不可升级" | 以后 | 需要给共享解析器加失败通道并贯穿 `Session`，调用点跨 7+ 模块（cleanup/health/info/list/session/manifest_source/sync_remove/query）⇒ 单独一条工作流；判据与已覆盖部分见 H3 devlog | H3 会话记录（2026-10-11） |
 
 ## 3. 进行中
 
 无。开工中的条目在此登记 owner（worktree + 分支），同一时刻只应有一个 owner。
+
+> 编号是**按落地顺序发号**：`X6` 曾被 X5 会话用于「marker 的 `format` 未被当作格式判定」，该缺陷已于
+> 2026-10-11 修掉（`9f59e58`），编号归还待办池后由「清单 hash 大小写」接管。历史记录里出现的 X6 指前者。
 
 ## 4. 暂缓（必须写理由与重启条件）
 

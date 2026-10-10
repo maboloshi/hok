@@ -589,6 +589,15 @@ checkout 打开复核；官方语义锚点取自 `../Scoop/lib/install.ps1:235-2
 ③ 每项独立提交、可单独 revert；④ 若某处发现两个副本**语义确实不同**，登记为"有意偏离"并停止合并
 （判例见本文 §3.4）。
 
+**A 表落地进度（2026-10-11）**：架构固定顺序、hash 算法/前缀表、nightly 判定、测试入口 **四项已收敛**
+（判据仍照上一条：单入口 + 零行为变更）；**元数据目录解析不合并** —— `install_state.rs::current_meta_dir`
+只按 `no_junction` 分派（与官方 `lib/core.ps1:373-383 currentdir()` 逐字对应），`query.rs` 多一支
+"junction 模式下 `current` 损坏（source = `VersionDirs`）时回退版本目录"，这是 hok 有意的损坏安装识别，
+两侧各有测试钉住，**合并任一侧都是行为变更**。本条是对 §3.4 措辞的补充（那里只说"保留 source 返回值"，
+但 source 还决定目录选择）。附带两条未收敛项：`is_nightly` 的大小写（官方 `-eq` 不区分大小写）、
+清单 `SHA256:` 大写前缀（官方 `get_hash` 的 `-notcontains` 接受，hok 拒绝）——两者均属行为变更，
+已登记在 [`pending-tasks.md`](../plan/pending-tasks.md)，不随纯搬移处理。
+
 **B｜投机性重构的触发条件（不是"以后再说"，而是写明什么时候该动）**
 
 | 项 | 触发条件 |
