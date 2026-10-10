@@ -74,21 +74,23 @@ function Write-ExtractMarker($format, $source, $dest, $extractDir, $removal, $sw
 }
 
 function Expand-7zipArchive {
-    # The explicit positions are load-bearing. PowerShell makes a parameter
-    # positional only while *no* parameter of the function declares a
-    # `Position`; once one does, the unpositioned ones become named-only.
-    # Official Scoop positions only `Path`/`DestinationPath`, so its
-    # `-Switches` (which is `ValueFromRemainingArguments`) swallows every
-    # leftover positional argument. hok keeps `ExtractDir` positional at 2 —
-    # its pre-X5 shape, so existing calls bind exactly as before — and the
-    # explicit positions newly make `-Overwrite` named-only. Without that,
-    # adding the parameter would let a stray positional argument (e.g.
-    # `'-psordum'` in dControl) bind to `-Overwrite` and be rejected by the
-    # ValidateSet instead of reaching `$Switches`.
+    # The explicit positions are load-bearing, and `ExtractDir` deliberately has
+    # none. PowerShell makes a parameter positional only while *no* parameter of
+    # the function declares a `Position`; once one does, every unpositioned
+    # parameter is named-only and the leftovers go to the
+    # `ValueFromRemainingArguments` parameter. Official Scoop positions exactly
+    # `Path`/`DestinationPath` (`lib/decompress.ps1:66-71`), so in
+    # `Expand-7zipArchive a b c` the `c` binds to `$Switches` — 7-Zip's own
+    # option, which official then passes on with `-split $Switches`
+    # (`lib/decompress.ps1:99-101`). Keeping `ExtractDir` positional at 2 (hok's
+    # pre-X5b shape) instead swallowed `'-bsp1'`-style switches into a subtree
+    # name that never exists, so the extraction silently produced an empty
+    # directory. `-Overwrite` stays named-only for the same reason: a stray
+    # positional must reach `$Switches`, not hit the ValidateSet.
     param(
         [Parameter(Position = 0)][String]$Path,
         [Parameter(Position = 1)][String]$DestinationPath = (Split-Path $Path),
-        [Parameter(Position = 2)][String]$ExtractDir,
+        [String]$ExtractDir,
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [ValidateSet('All', 'Skip', 'Rename')][String]$Overwrite,
         [Switch]$Removal
@@ -97,9 +99,11 @@ function Expand-7zipArchive {
 }
 
 function Expand-InnoArchive {
+    # Same declaration shape as official `Expand-InnoArchive`
+    # (`lib/decompress.ps1:229-242`).
     param(
-        [String]$Path,
-        [String]$DestinationPath = (Split-Path $Path),
+        [Parameter(Position = 0)][String]$Path,
+        [Parameter(Position = 1)][String]$DestinationPath = (Split-Path $Path),
         [String]$ExtractDir,
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [Switch]$Removal
@@ -108,9 +112,12 @@ function Expand-InnoArchive {
 }
 
 function Expand-MsiArchive {
+    # Same declaration shape as official `Expand-MsiArchive`
+    # (`lib/decompress.ps1:172-185`); the remaining arguments reach lessmsi /
+    # msiexec verbatim (`lib/decompress.ps1:199-201`).
     param(
-        [String]$Path,
-        [String]$DestinationPath = (Split-Path $Path),
+        [Parameter(Position = 0)][String]$Path,
+        [Parameter(Position = 1)][String]$DestinationPath = (Split-Path $Path),
         [String]$ExtractDir,
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [Switch]$Removal
@@ -123,9 +130,11 @@ function Expand-Msi { Expand-MsiArchive @args }
 function Expand-ZipArchive { Expand-7zipArchive @args }
 
 function Expand-DarkArchive {
+    # Same declaration shape as official `Expand-DarkArchive`
+    # (`lib/decompress.ps1:306-316`).
     param(
-        [String]$Path,
-        [String]$DestinationPath = (Split-Path $Path),
+        [Parameter(Position = 0)][String]$Path,
+        [Parameter(Position = 1)][String]$DestinationPath = (Split-Path $Path),
         [String]$ExtractDir,
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [Switch]$Removal

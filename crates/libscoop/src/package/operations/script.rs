@@ -839,6 +839,64 @@ Assert-Param 'Expand-7zipArchive' 'Overwrite'
 Assert-Param 'Expand-7zipArchive' 'Removal'
 Assert-Param 'Expand-InnoArchive' 'Switches'
 Assert-Param 'Expand-MsiArchive' 'Switches'
+# X5b: only `Path`/`DestinationPath` may be positional, exactly like official
+# Scoop (`lib/decompress.ps1:66-71,172-185,229-242,306-316`). PowerShell makes a
+# parameter positional only while no parameter declares a `Position`, so once
+# `ExtractDir` lost its `Position = 2` the leftovers must flow to `$Switches`.
+function Assert-NamedOnly($Name, $Param) {
+    $p = (Get-Command $Name -CommandType Function -ErrorAction SilentlyContinue).Parameters
+    if (-not $p -or -not $p.ContainsKey($Param)) {
+        Write-Host "MISSINGPARAM:${Name}:${Param}"; $script:fail = 1; return
+    }
+    $positional = $p[$Param].Attributes |
+        Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Position -ge 0 }
+    if ($positional) {
+        Write-Host "BAD:PositionalParam:${Name}:${Param}=$($positional.Position -join ',')"
+        $script:fail = 1
+        return
+    }
+    Write-Host "PARAM-OK:${Name}:${Param}:named-only"
+}
+function Assert-Position($Name, $Param, $Expected) {
+    $p = (Get-Command $Name -CommandType Function -ErrorAction SilentlyContinue).Parameters
+    $positional = @($p[$Param].Attributes |
+        Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Position -ge 0 })
+    if ($positional.Count -ne 1 -or $positional[0].Position -ne $Expected) {
+        Write-Host "BAD:Position:${Name}:${Param}"
+        $script:fail = 1
+        return
+    }
+    Write-Host "PARAM-OK:${Name}:${Param}:Position=$Expected"
+}
+foreach ($fn in 'Expand-7zipArchive', 'Expand-InnoArchive', 'Expand-MsiArchive', 'Expand-DarkArchive') {
+    Assert-Position $fn 'Path' 0
+    Assert-Position $fn 'DestinationPath' 1
+    Assert-NamedOnly $fn 'ExtractDir'
+    Assert-NamedOnly $fn 'Switches'
+}
+Assert-NamedOnly 'Expand-7zipArchive' 'Overwrite'
+# Behavioral proof of the same rule: a third positional argument must be
+# recorded as `switches`, not as `extract_dir`.
+$env:HOK_EXTRACT_FILE = Join-Path $PSScriptRoot 'marker.txt'
+function Assert-Marker($Command, $Expected) {
+    Remove-Item $env:HOK_EXTRACT_FILE -Force -ErrorAction SilentlyContinue
+    Invoke-Expression $Command
+    $line = if (Test-Path $env:HOK_EXTRACT_FILE) { (Get-Content $env:HOK_EXTRACT_FILE -Raw).Trim() } else { '' }
+    if ($line -ne $Expected) {
+        Write-Host "BAD:Marker:$Command -> $line"
+        $script:fail = 1
+        return
+    }
+    Write-Host "PARAM-OK:Marker:$Command"
+}
+Assert-Marker "Expand-7zipArchive 'a' 'b' 'c'" '[[HOK_EXTRACT]]7z|a|b|||c|'
+Assert-Marker "Expand-7zipArchive 'a' 'b' 'c' 'd'" '[[HOK_EXTRACT]]7z|a|b|||c d|'
+Assert-Marker "Expand-7zipArchive 'a' 'b' -ExtractDir 'x'" '[[HOK_EXTRACT]]7z|a|b|x|||'
+Assert-Marker "Expand-MsiArchive 'a' 'b' '-s'" '[[HOK_EXTRACT]]msi|a|b|||-s|'
+Assert-Marker "Expand-ZipArchive 'a' 'b' 'c'" '[[HOK_EXTRACT]]7z|a|b|||c|'
+Remove-Item $env:HOK_EXTRACT_FILE -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $PSScriptRoot 'marker.txt') -Force -ErrorAction SilentlyContinue
+$env:HOK_EXTRACT_FILE = $null
 # `-Overwrite` is a validated set, like official (lib/decompress.ps1:77-79).
 $ov = (Get-Command 'Expand-7zipArchive').Parameters['Overwrite'].Attributes |
     Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
@@ -980,6 +1038,26 @@ Write-Host 'ALIAS-OK'
             .is_ok()
     }
 
+    /// `lessmsi.exe` availability for the `-Switches` MSI end-to-end test
+    /// (Scoop's shim, then `PATH`). `false` skips the test, like
+    /// [`seven_zip_available`] does when 7-Zip is absent.
+    fn less_msi_available() -> bool {
+        let scoop = std::env::var("SCOOP").unwrap_or_default();
+        if std::path::Path::new(&scoop)
+            .join("shims")
+            .join("lessmsi.exe")
+            .is_file()
+        {
+            return true;
+        }
+        std::process::Command::new("lessmsi.exe")
+            .arg("h")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
     /// A manifest package with a trivial body, for the script tests.
     fn test_pkg() -> crate::package::Package {
         crate::package::Package::from(
@@ -1080,6 +1158,91 @@ Write-Host 'ALIAS-OK'
                 .join("deep.txt")
                 .exists(),
             "the non-conflicting member must still be extracted"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// X5b end-to-end against a **real MSI**: `Expand-MsiArchive -Switches`
+    /// must survive PS → marker → Rust and reach the `lessmsi.exe` command
+    /// line. lessmsi treats a trailing bare argument as a file-name filter
+    /// (`lessmsi <command> [options] <msi_name> [<path_to_extract\>]
+    /// [file_names]`), so `-Switches 'other.txt'` is observable on disk: only
+    /// `other.txt` comes out of an archive that also contains `hello.txt`.
+    /// The no-switch control in the same test extracts both, so the assertion
+    /// cannot pass if the switch was dropped — nor if the fixture stopped
+    /// carrying both files.
+    ///
+    /// The fixture is generated by
+    /// `tests/fixtures/msi/gen-fixture.ps1` (WindowsInstaller COM +
+    /// in-box `makecab.exe`, no network); see the README next to it.
+    #[tokio::test]
+    async fn expand_msi_archive_switches_reach_lessmsi() {
+        if !pwsh_available() || !less_msi_available() {
+            eprintln!("skipping: needs pwsh + lessmsi.exe");
+            return;
+        }
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("msi")
+            .join("x5b-fixture.msi");
+        assert!(
+            fixture.is_file(),
+            "missing MSI fixture: {}",
+            fixture.display()
+        );
+
+        let root = crate::test_utils::tmpdir("decompress_msi_switches_e2e");
+        let session = crate::test_utils::test_session(&root);
+
+        // Control: no `-Switches`, so lessmsi extracts everything.
+        let full_dir = root.join("full");
+        std::fs::create_dir_all(&full_dir).unwrap();
+        std::fs::copy(&fixture, full_dir.join("x5b-fixture.msi")).unwrap();
+        run_script(
+            &session,
+            &test_pkg(),
+            &full_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec!["Expand-MsiArchive \"$dir\\x5b-fixture.msi\" \"$dir\""]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            full_dir.join("X5bFixture").join("hello.txt").exists(),
+            "the fixture must extract hello.txt when no -Switches is given"
+        );
+        assert!(
+            full_dir.join("X5bFixture").join("other.txt").exists(),
+            "the fixture must extract other.txt when no -Switches is given"
+        );
+
+        // `-Switches 'other.txt'` must reach lessmsi and filter hello.txt out.
+        let filtered_dir = root.join("filtered");
+        std::fs::create_dir_all(&filtered_dir).unwrap();
+        std::fs::copy(&fixture, filtered_dir.join("x5b-fixture.msi")).unwrap();
+        run_script(
+            &session,
+            &test_pkg(),
+            &filtered_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec![
+                "Expand-MsiArchive \"$dir\\x5b-fixture.msi\" \"$dir\" -Switches 'other.txt'",
+            ]),
+        )
+        .await
+        .unwrap();
+        assert!(
+            filtered_dir.join("X5bFixture").join("other.txt").exists(),
+            "the selected member must still be extracted"
+        );
+        assert!(
+            !filtered_dir.join("X5bFixture").join("hello.txt").exists(),
+            "-Switches 'other.txt' must reach lessmsi's file-name filter"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
