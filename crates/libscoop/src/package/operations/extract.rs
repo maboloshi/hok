@@ -166,6 +166,16 @@ pub fn copy_downloaded_files(
 /// * `removal` deletes `source` only after a *successful* extraction, so a
 ///   failed extraction never loses the archive.
 ///
+/// The marker's `format` field selects the extractor: it names the Scoop
+/// `Expand-*Archive` function the script called, and official never derives a
+/// format from the download's name (`lib/decompress.ps1:94,193,245`). A marker
+/// therefore extracts a renamed download (`#/dl.7z_`, `#/dl.zip_`) or a
+/// suffix-less archive, which a filename-based [`detect_format`] would reject.
+/// An unrecognised `format` falls back to official's `7z.exe` route rather
+/// than silently copying the file.
+///
+/// [`detect_format`]: crate::internal::archive::detect_format
+///
 /// `switches` / `overwrite` are the CLI options of the helper tools
 /// (`-Switches`, `-Overwrite All|Skip|Rename`). When either is present the
 /// marker goes to [`Archive::extract_script_cli`], which hands them to the
@@ -194,7 +204,6 @@ pub async fn extract_markers(session: &Session, working_dir: &Path) {
         let dest = Path::new(parts[2]);
         let extract_dir = parts.get(3).copied().filter(|d| !d.is_empty());
         let removal = parts.get(4).is_some_and(|r| *r == "removal");
-        let innosetup = format == "innosetup";
         // `-Switches` round-trips as one space-joined field; official splits it
         // with `-split $Switches`, which is exactly `split_whitespace`.
         let switches: Vec<String> = parts
@@ -220,12 +229,11 @@ pub async fn extract_markers(session: &Session, working_dir: &Path) {
         let result = if cli.is_empty() {
             session
                 .archive()
-                .extract(
+                .extract_marker(
+                    format,
                     source,
                     dest,
                     extract_dirs.as_ref().map(|d| d.as_slice()),
-                    None,
-                    innosetup,
                     &emit,
                 )
                 .await
@@ -695,6 +703,13 @@ mod tests {
 
     // ─── extract_markers ────────────────────────────────────────────
 
+    /// A committed real-7z fixture (see `tests/fixtures/7z/README.md`).
+    fn sevenz_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/7z")
+            .join(rel)
+    }
+
     fn write_markers(working_dir: &Path, lines: &[&str]) {
         let marker_path = working_dir.join("hok_extract_markers.txt");
         let body = lines
@@ -722,6 +737,109 @@ mod tests {
 
         extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
+    }
+
+    /// X6: a renamed download (`#/dl.7z_`, e.g. dotnet-generic-unpacker's
+    /// `64bit.zip_`) carries the declared `7z` format. `detect_format` cannot
+    /// name `dl.7z_`, so the marker used to fail with "unknown archive format"
+    /// and nothing landed on disk; the declared format must now drive the
+    /// extractor and the real 7z fixture must be extracted.
+    #[tokio::test]
+    async fn test_extract_markers_renamed_7z_extracts() {
+        let root = tmpdir("markers_renamed_7z");
+        let session = test_session(&root);
+        let renamed = root.join("dl.7z_");
+        std::fs::copy(sevenz_fixture("empty-entries.7z"), &renamed).unwrap();
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("7z|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("plain.txt")).unwrap(),
+            "hello"
+        );
+        // The stream-less entries prove the 7z decoder (not a copy) ran.
+        assert!(dest.join("empty.txt").is_file());
+        assert!(dest.join("sub/empty2.txt").is_file());
+        assert!(dest.join("emptydir").is_dir());
+    }
+
+    /// X6: same for a renamed zip (`#/dl.zip_`). The declared `7z` format is
+    /// the 7-Zip family, whose content sniffer recognises the zip payload
+    /// without consulting the filename.
+    #[tokio::test]
+    async fn test_extract_markers_renamed_zip_extracts() {
+        let root = tmpdir("markers_renamed_zip");
+        let session = test_session(&root);
+        let renamed = root.join("dl.zip_");
+        create_zip(&renamed);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("7z|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+    }
+
+    /// A marker may also name a decoder directly (`zip` here, as the marker
+    /// tests do); a renamed `dl.zip_` still extracts because the declared
+    /// format, not the filename, picks `extract_zip`.
+    #[tokio::test]
+    async fn test_extract_markers_declared_zip_format_on_renamed_file() {
+        let root = tmpdir("markers_declared_zip");
+        let session = test_session(&root);
+        let renamed = root.join("dl.zip_");
+        create_zip(&renamed);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("zip|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+    }
+
+    /// An unrecognised marker `format` must not silently no-op or copy the
+    /// file: it takes official's `7z.exe` route, so the reported error names
+    /// `7z.exe` (launch failure or exit code) rather than the old
+    /// filename-based "unknown archive format", and nothing is copied to dest.
+    #[tokio::test]
+    async fn test_extract_marker_unknown_format_goes_to_7z_cli() {
+        let root = tmpdir("markers_unknown_format");
+        let session = test_session(&root);
+        let src = root.join("dl.7z_");
+        std::fs::write(&src, b"not an archive").unwrap();
+        let dest = root.join("dest");
+
+        let err = session
+            .archive()
+            .extract_marker("banana", &src, &dest, None, &None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("7z.exe"),
+            "unknown format must reach the 7z.exe fallback, got: {msg}"
+        );
+        assert!(!dest.join("dl.7z_").exists());
     }
 
     #[tokio::test]

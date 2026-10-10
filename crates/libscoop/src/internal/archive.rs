@@ -102,46 +102,107 @@ pub fn extract(
     let fmt = detect_format(&filename)
         .ok_or_else(|| Error::ExtractionFailed(format!("unknown archive format: {}", filename)))?;
 
+    extract_by_format(fmt, cache_path, &effective_dest, extract_dir, emitter)
+}
+
+/// Dispatch a [`detect_format`] name to the in-process decoder for it.
+///
+/// This is the filename/signature-driven path for *downloaded* archives
+/// ([`crate::package::operations::extract_archives`]); it is deliberately not
+/// how a package script's `[[HOK_EXTRACT]]` marker is dispatched — a marker
+/// carries an authoritative `format` field, see [`extract_by_marker_format`].
+fn extract_by_format(
+    fmt: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
     match fmt {
-        "7z" => extract_pseudo_7z(cache_path, &effective_dest, extract_dir, emitter),
-        "zip" => extract_zip(cache_path, &effective_dest, extract_dir, emitter),
-        "tar" => extract_tar(cache_path, &effective_dest, extract_dir, None, emitter),
-        "gz" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Gzip),
-            emitter,
-        ),
-        "bz2" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Bzip2),
-            emitter,
-        ),
-        "xz" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Xz),
-            emitter,
-        ),
-        "zst" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Zstd),
-            emitter,
-        ),
-        "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
-        "msi" => extract_msi(cache_path, &effective_dest, extract_dir, &[], emitter),
-        "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
+        "7z" => extract_pseudo_7z(src, dest, extract_dir, emitter),
+        "zip" => extract_zip(src, dest, extract_dir, emitter),
+        "tar" => extract_tar(src, dest, extract_dir, None, emitter),
+        "gz" => extract_tar(src, dest, extract_dir, Some(Compression::Gzip), emitter),
+        "bz2" => extract_tar(src, dest, extract_dir, Some(Compression::Bzip2), emitter),
+        "xz" => extract_tar(src, dest, extract_dir, Some(Compression::Xz), emitter),
+        "zst" => extract_tar(src, dest, extract_dir, Some(Compression::Zstd), emitter),
+        "rar" => extract_rar(src, dest, extract_dir, emitter),
+        "msi" => extract_msi(src, dest, extract_dir, &[], emitter),
+        "lzh" | "iso" => extract_with_7z_exe(src, dest, emitter),
         _ => Err(Error::ExtractionFailed(format!(
             "unsupported format: {}",
             fmt
         ))),
     }
+}
+
+/// The extractor a `[[HOK_EXTRACT]]` marker's `format` field selects.
+///
+/// A marker records *which* Scoop `Expand-*Archive` function the package
+/// script called, so its declared `format` — not the source's name — must
+/// decide the extractor. Official behaves the same way: `Expand-7zipArchive`
+/// hands `$Path` straight to `7z.exe` (`lib/decompress.ps1:94`),
+/// `Expand-InnoArchive` to `innounp.exe` (`:245`) and `Expand-MsiArchive` to
+/// lessmsi (`:193`); none derives a format from the download's name. Renamed
+/// downloads (`#/dl.7z_`, `#/dl.zip_`) and suffix-less archives therefore
+/// still extract here even though [`detect_format`] cannot name them.
+///
+/// * `7z` — the 7-Zip family (`Expand-7zipArchive`). A source name
+///   [`detect_format`] recognises keeps hok's in-process decoder (the fast
+///   path, and exactly what the downloaded-archive path would pick); anything
+///   else goes to [`extract_pseudo_7z`], which sniffs the *content* (plain 7z,
+///   7z/zip SFX, NSIS, Inno) and finally falls back to `7z.exe`. A name is
+///   never used to reject the source.
+/// * `innosetup` / `msi` — `Expand-InnoArchive` / `Expand-MsiArchive`.
+/// * a [`detect_format`] name — that decoder (`zip`, `tar`, …).
+/// * anything else — official `Expand-7zipArchive` semantics via `7z.exe`.
+///   An unrecognised `format` is never a silent no-op: the source is either
+///   extracted or the error is reported; it is never copied as a plain file.
+pub fn extract_by_marker_format(
+    format: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    crate::internal::fs::ensure_dir(dest)?;
+    match format {
+        "innosetup" => extract_innosetup_or_fallback(src, dest, extract_dir, emitter),
+        "msi" => extract_msi(src, dest, extract_dir, &[], emitter),
+        "7z" => {
+            let filename = src.file_name().unwrap_or_default().to_string_lossy();
+            match detect_format(&filename) {
+                Some(native) => extract_by_format(native, src, dest, extract_dir, emitter),
+                None => extract_pseudo_7z(src, dest, extract_dir, emitter),
+            }
+        }
+        other if is_native_format(other) => {
+            extract_by_format(other, src, dest, extract_dir, emitter)
+        }
+        other => {
+            tracing::debug!(
+                "marker format '{}' is not a format hok decodes; falling back to 7z.exe",
+                other
+            );
+            extract_7z_cli(
+                src,
+                dest,
+                extract_dir,
+                &ScriptCliOptions::default(),
+                emitter,
+            )
+        }
+    }
+}
+
+/// True when `format` is a name [`detect_format`] can return, i.e. a container
+/// hok decodes in-process. Kept in step with [`extract_by_format`] by
+/// `test_native_format_predicate_matches_dispatch`.
+fn is_native_format(format: &str) -> bool {
+    matches!(
+        format,
+        "7z" | "zip" | "tar" | "gz" | "bz2" | "xz" | "zst" | "rar" | "lzh" | "iso" | "msi"
+    )
 }
 
 // ─── Compression enum for tar filters ────────────────────────────────
@@ -2025,6 +2086,22 @@ pub trait Archive: Send + Sync {
         emitter: &Option<mpsc::Sender<Event>>,
     ) -> Fallible<()>;
 
+    /// Extract a `[[HOK_EXTRACT]]` marker using the extractor its declared
+    /// `format` names, instead of re-deriving a format from `cache_path`.
+    ///
+    /// Separate from [`Archive::extract`] on purpose: the downloaded-archive
+    /// path must keep dispatching by filename ([`detect_format`]); only a
+    /// marker carries a declared format, and only a marker can be a renamed or
+    /// suffix-less download that the filename cannot identify.
+    async fn extract_marker(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()>;
+
     /// Extract a `[[HOK_EXTRACT]]` marker that carried `Expand-*Archive` CLI
     /// options (`-Switches` / `-Overwrite`), by handing them to the tool that
     /// defines them (`7z.exe` / `innounp.exe` / `lessmsi.exe`).
@@ -2091,6 +2168,36 @@ impl Archive for RealArchive {
         })
         .await
         .map_err(|e| Error::Custom(format!("extract task panicked: {}", e)))?
+    }
+
+    async fn extract_marker(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()> {
+        // Same reasoning as `extract`: decoding + disk writes are blocking.
+        let format = format.to_owned();
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract_by_marker_format(
+                &format,
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract marker task panicked: {}", e)))?
     }
 
     async fn extract_script_cli(
@@ -2225,7 +2332,37 @@ mod tests {
         assert_eq!(detect_format("foo.msi"), Some("msi"));
         assert_eq!(detect_format("foo.zst"), Some("zst"));
         assert_eq!(detect_format("foo.exe"), None);
+        // Renamed downloads (`#/dl.7z_`): the non-marker path still cannot
+        // name them, which is exactly why a marker's declared format must
+        // drive its extraction (X6).
+        assert_eq!(detect_format("dl.7z_"), None);
+        assert_eq!(detect_format("64bit.zip_"), None);
         assert_eq!(detect_format(""), None);
+    }
+
+    /// The marker-format dispatch's native-name predicate must not drift from
+    /// the decoder table: every name it accepts must be one `extract_by_format`
+    /// decodes rather than rejects as "unsupported format".
+    #[test]
+    fn test_native_format_predicate_matches_dispatch() {
+        let dest = tmpdir("native_format_predicate");
+        for name in [
+            "7z", "zip", "tar", "gz", "bz2", "xz", "zst", "rar", "lzh", "iso", "msi",
+        ] {
+            assert!(is_native_format(name), "{name} must be a native format");
+            let err = extract_by_format(name, Path::new("does-not-exist"), &dest, None, &None)
+                .unwrap_err();
+            assert!(
+                !err.to_string().contains("unsupported format"),
+                "{name} reached the unsupported arm: {err}"
+            );
+        }
+        for name in ["", "banana", "zstd", "exe", "nupkg"] {
+            assert!(
+                !is_native_format(name),
+                "{name} must not be a native format"
+            );
+        }
     }
 
     #[test]
