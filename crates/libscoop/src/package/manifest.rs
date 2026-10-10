@@ -1138,6 +1138,40 @@ impl Manifest {
         fn url() -> Vec<&str>, unwrap_or_default, url_for
     }
 
+    /// Walk this manifest's `architecture` sections in Scoop's fixed order
+    /// (`64bit → 32bit → arm64`, `bin/checkhashes.ps1:76-83`), skipping the
+    /// sections the manifest does not declare.
+    ///
+    /// Yields each section's JSON pointer — the location of its `hash` field,
+    /// e.g. `/architecture/64bit/hash`, which is also where the section's
+    /// manifest name is spelled — together with the section itself.
+    ///
+    /// This is the single source for every fixed-order architecture walk in
+    /// this module: [`Self::all_urls`], [`Self::all_hashes`],
+    /// [`Self::all_hash_segments`] and [`Self::checkhashes_accessors`]. The
+    /// per-architecture selection of `arch_specific_field!` is a different
+    /// mechanism (first-present-wins, one architecture chosen) and
+    /// deliberately does not use this.
+    fn arch_specs(&self) -> impl Iterator<Item = (&'static str, &ArchitectureSpec)> {
+        let arch = self.inner.architecture.as_ref();
+        [
+            (
+                "/architecture/64bit/hash",
+                arch.and_then(|a| a.amd64.as_ref()),
+            ),
+            (
+                "/architecture/32bit/hash",
+                arch.and_then(|a| a.ia32.as_ref()),
+            ),
+            (
+                "/architecture/arm64/hash",
+                arch.and_then(|a| a.aarch64.as_ref()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(pointer, spec)| spec.map(|spec| (pointer, spec)))
+    }
+
     /// Collect ALL URLs from this manifest (noarch + all architectures).
     ///
     /// Unlike `url()` which only returns URLs for the current platform,
@@ -1154,15 +1188,10 @@ impl Manifest {
             }
         }
         // Add architecture-specific URLs (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(ref u) = spec.url {
-                    for s in u.devectorize() {
-                        urls.push(s);
-                    }
+        for (_, spec) in self.arch_specs() {
+            if let Some(ref u) = spec.url {
+                for s in u.devectorize() {
+                    urls.push(s);
                 }
             }
         }
@@ -1184,15 +1213,10 @@ impl Manifest {
             }
         }
         // Add architecture-specific hashes (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(ref h) = spec.hash {
-                    for s in h.devectorize() {
-                        hashes.push(s);
-                    }
+        for (_, spec) in self.arch_specs() {
+            if let Some(ref h) = spec.hash {
+                for s in h.devectorize() {
+                    hashes.push(s);
                 }
             }
         }
@@ -1218,19 +1242,11 @@ impl Manifest {
             }
         }
         // Architecture-specific hashes (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for (arch_name, spec_opt) in [
-                ("64bit", &arch.amd64),
-                ("32bit", &arch.ia32),
-                ("arm64", &arch.aarch64),
-            ] {
-                if let Some(spec) = spec_opt
-                    && let Some(ref h) = spec.hash
-                {
-                    let count = h.devectorize().len();
-                    if count > 0 {
-                        segments.push((format!("/architecture/{arch_name}/hash"), count));
-                    }
+        for (pointer, spec) in self.arch_specs() {
+            if let Some(ref h) = spec.hash {
+                let count = h.devectorize().len();
+                if count > 0 {
+                    segments.push((pointer.to_string(), count));
                 }
             }
         }
@@ -1285,27 +1301,20 @@ impl Manifest {
             return out;
         }
 
-        if let Some(ref arch) = self.inner.architecture {
-            for (path, spec) in [
-                ("/architecture/64bit/hash", &arch.amd64),
-                ("/architecture/32bit/hash", &arch.ia32),
-                ("/architecture/arm64/hash", &arch.aarch64),
-            ] {
-                let Some(spec) = spec else { continue };
-                let urls = spec
-                    .url
-                    .as_ref()
-                    .map(|u| u.devectorize())
-                    .unwrap_or_default();
-                let hashes = spec
-                    .hash
-                    .as_ref()
-                    .map(|h| h.devectorize())
-                    .unwrap_or_default();
-                for (i, url) in urls.iter().enumerate() {
-                    if let Some(hash) = hashes.get(i) {
-                        out.push((*url, *hash, path));
-                    }
+        for (pointer, spec) in self.arch_specs() {
+            let urls = spec
+                .url
+                .as_ref()
+                .map(|u| u.devectorize())
+                .unwrap_or_default();
+            let hashes = spec
+                .hash
+                .as_ref()
+                .map(|h| h.devectorize())
+                .unwrap_or_default();
+            for (i, url) in urls.iter().enumerate() {
+                if let Some(hash) = hashes.get(i) {
+                    out.push((*url, *hash, pointer));
                 }
             }
         }
