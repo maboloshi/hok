@@ -6,10 +6,15 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（78 条，自动生成）
+## 索引（83 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-11 | PS 兼容层 `-Switches`/`-Overwrite` 生效，参数声明对齐官方 | `caa1ba6` `56d3083` | [`2026-10-11-ps-decompress-switches.md`](2026-10-11-ps-decompress-switches.md) |
+| 2026-10-11 | marker 的 format 决定 extractor：改名下载不再静默失败 | `9f59e58` | [`2026-10-11-marker-format-extractor.md`](2026-10-11-marker-format-extractor.md) |
+| 2026-10-11 | 清单解析失败不再静默消失：显式查询逐条 warn + 全量扫描一行汇总 | `628645b` | [`2026-10-11-manifest-parse-visibility.md`](2026-10-11-manifest-parse-visibility.md) |
+| 2026-10-11 | 衰减资产收敛：架构顺序 / hash 表 / nightly / 测试入口四处单点化 | `964bdcd` `e33a474` `1405580` `26e88af` | [`2026-10-11-decay-asset-convergence.md`](2026-10-11-decay-asset-convergence.md) |
+| 2026-10-11 | config 分层：行表与编辑器启动上移 CLI | `f1ebad7` | [`2026-10-11-config-command-layer-split.md`](2026-10-11-config-command-layer-split.md) |
 | 2026-10-09 | reset 对齐官方：位置参数全为 app + 全局自动识别 | `eddc682` | [`2026-10-09-reset-official-alignment.md`](2026-10-09-reset-official-alignment.md) |
 | 2026-10-09 | PS 解压兼容层：自递归别名 P0，与它掩盖的两个静默错 | `750a51e` | [`2026-10-09-ps-decompress-marker-layer.md`](2026-10-09-ps-decompress-marker-layer.md) |
 | 2026-10-09 | autostash_on_conflict：官方键在 hok 落到 bucket 同步 | `954ff56` | [`2026-10-09-autostash-on-conflict-bucket-sync.md`](2026-10-09-autostash-on-conflict-bucket-sync.md) |
