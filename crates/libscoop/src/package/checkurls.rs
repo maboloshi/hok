@@ -41,9 +41,18 @@ pub async fn check_urls(
     let mut on_result = on_result;
 
     for (path, name) in manifest_walker::discover_matching(dir, app_filters)? {
-        let manifest = match manifest::parse_file(path) {
+        let manifest = match manifest::parse_file(&path) {
             Ok(m) => m,
-            Err(_) => continue,
+            // Official checkurls reads each file through `parse_json`, which
+            // warns and returns `$null` (`lib/manifest.ps1:10`); the manifest
+            // then contributes an empty URL list (`bin/checkurls.ps1:37-38`).
+            // hok used to skip the file in silence.
+            Err(err) => {
+                session
+                    .output()
+                    .warn(manifest::parse_failure_message(&path, &err));
+                continue;
+            }
         };
 
         let raw_urls: Vec<String> = if manifest.url().is_empty() {

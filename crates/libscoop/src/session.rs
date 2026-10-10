@@ -98,12 +98,14 @@ pub struct Session {
     /// Per session, not per process: the notice is written to this session's
     /// output sink, so the session that served the rows is the one that
     /// remembers having said so (see [`Session::mark_stale_warned`]).
+    /// The per-key once-notices live in [`Session::mark_warned_once`].
     stale_warned: AtomicBool,
 
-    /// `bucket/package` keys of the manifest-cache mismatch notices already
-    /// emitted through this session's output sink (see
-    /// [`Session::mark_mismatch_warned`]).
-    mismatch_warned: Mutex<HashSet<String>>,
+    /// Keys of the once-per-session notices already emitted through this
+    /// session's output sink: manifest-cache mismatches (`bucket/package`) and
+    /// manifest parse failures (`parse:bucket/package`) — see
+    /// [`Session::mark_warned_once`].
+    warned_once: Mutex<HashSet<String>>,
 
     /// Injectable network capability, defaulting to the real implementation.
     network: OnceLock<Arc<dyn Network + Send + Sync>>,
@@ -182,7 +184,7 @@ impl Session {
                 global: AtomicBool::new(false),
                 force_confirm: AtomicBool::new(false),
                 stale_warned: AtomicBool::new(false),
-                mismatch_warned: Mutex::new(HashSet::new()),
+                warned_once: Mutex::new(HashSet::new()),
                 network: OnceLock::new(),
                 git: OnceLock::new(),
                 archive: OnceLock::new(),
@@ -203,7 +205,7 @@ impl Session {
             global: AtomicBool::new(false),
             force_confirm: AtomicBool::new(false),
             stale_warned: AtomicBool::new(false),
-            mismatch_warned: Mutex::new(HashSet::new()),
+            warned_once: Mutex::new(HashSet::new()),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -246,7 +248,7 @@ impl Session {
             global: AtomicBool::new(false),
             force_confirm: AtomicBool::new(false),
             stale_warned: AtomicBool::new(false),
-            mismatch_warned: Mutex::new(HashSet::new()),
+            warned_once: Mutex::new(HashSet::new()),
             network: OnceLock::new(),
             git: OnceLock::new(),
             archive: OnceLock::new(),
@@ -307,17 +309,19 @@ impl Session {
         !self.stale_warned.swap(true, Ordering::Relaxed)
     }
 
-    /// Claim this session's notice for the manifest-cache mismatch of
-    /// `bucket/package`.
+    /// Claim this session's notice for `key`, an opaque identifier of the
+    /// thing being reported (the manifest-cache notices pass
+    /// `bucket/package`).
     ///
     /// Returns `true` for the caller that must emit it, `false` when this
-    /// session already reported that package: one command can reach the same
+    /// session already reported that key: one command can reach the same
     /// package through several code paths (`depends` resolves the package and
-    /// then resolves its tree), and the notice is about the cache, not about
-    /// the command.
-    pub(crate) fn mark_mismatch_warned(&self, key: &str) -> bool {
+    /// then resolves its tree; an explicit query both re-reads the file behind
+    /// a cache row and probes it by name), and the notice is about the thing,
+    /// not about the code path that found it.
+    pub(crate) fn mark_warned_once(&self, key: &str) -> bool {
         let mut warned = self
-            .mismatch_warned
+            .warned_once
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if warned.contains(key) {

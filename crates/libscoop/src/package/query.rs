@@ -23,18 +23,21 @@
 
 use rayon::prelude::*;
 use std::path::Path;
+use std::sync::Mutex;
 use tracing::debug;
 
 use crate::{
-    Session, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible, package::manifest::parse_file,
+    Session, bucket::Bucket, constant::ISOLATED_PACKAGE_BUCKET, error::Fallible,
+    package::identity::split_bucket_query, package::manifest::parse_file,
 };
 
 use super::install_state::{
-    CurrentVersionSource, fill_install_state, install_info_path, installed_manifest_path,
-    load_bucket_manifest, maybe_fill_upgradable, parse_install_info, resolve_current_version,
+    CurrentVersionSource, bucket_manifest_path, fill_install_state, install_info_path,
+    installed_manifest_path, load_bucket_manifest, maybe_fill_upgradable, parse_install_info,
+    resolve_current_version,
 };
 use super::query_matcher::{QueryOption, build_matchers, manifest_matches, name_prefiltered_out};
-use super::{InstallState, InstallStateInstalled, Manifest, Package, manifest_cache};
+use super::{InstallState, InstallStateInstalled, Manifest, Package, manifest, manifest_cache};
 
 /// Search installed packages.
 pub fn query_installed(
@@ -249,6 +252,102 @@ pub(crate) fn query_synced(
     query_synced_files(session, queries, options)
 }
 
+// ─── Manifest parse failures ─────────────────────────────────────────────────
+
+/// A manifest file that exists but does not parse, met while answering a query.
+///
+/// Plain data, so it can cross a rayon worker boundary; the notice is emitted
+/// after the parallel section (the threading note in [`query_synced_cached`]
+/// explains why). Without it a bucket file that fails to parse makes its
+/// package vanish from the answer — the user then sees "not found", which is
+/// simply false (official Scoop warns `Error parsing JSON at '<path>'.` and
+/// returns `$null`, `lib/manifest.ps1:5-12`).
+struct ParseFailure {
+    bucket: String,
+    name: String,
+    /// The rendered notice (see [`manifest::parse_failure_message`]).
+    message: String,
+}
+
+impl ParseFailure {
+    fn new(bucket: &str, name: &str, path: &Path, err: &crate::Error) -> Self {
+        ParseFailure {
+            bucket: bucket.to_owned(),
+            name: name.to_owned(),
+            message: manifest::parse_failure_message(path, err),
+        }
+    }
+
+    /// The once-per-session latch key. Keyed by the package, not the file, so
+    /// the several paths that can meet the same broken manifest (an in-scan
+    /// hit, the fallback behind a cache row, a by-name probe) report it once.
+    fn latch_key(&self) -> String {
+        format!("parse:{}/{}", self.bucket, self.name)
+    }
+}
+
+/// Emit the parse-failure notices for one query walk.
+///
+/// **Named scope** — the query named specific package(s), so each unparsable
+/// manifest is a fact the user asked about: one warning per package, with the
+/// path and the real reason, *next to* the not-found error rather than instead
+/// of it (the error and its exit code are unchanged).
+///
+/// **Full scan** — a bucket can carry dozens of unparsable manifests, nearly
+/// all of them far stricter than official Scoop would be; listing them by
+/// default is noise the user cannot act on. The walk reports one counted
+/// summary instead and leaves the paths to `-vv` ([`Output::Detail`]).
+fn emit_parse_failures(session: &Session, failures: Vec<ParseFailure>, full_scan: bool) {
+    if failures.is_empty() {
+        return;
+    }
+
+    if full_scan {
+        session.output().warn(hok_i18n::t!(
+            "cmd.manifest_parse_failed_summary",
+            count = failures.len()
+        ));
+        for failure in &failures {
+            session.output().detail(failure.message.clone());
+        }
+        return;
+    }
+
+    for failure in &failures {
+        if session.mark_warned_once(&failure.latch_key()) {
+            session.output().warn(failure.message.clone());
+        }
+    }
+}
+
+/// Probe the named queries' manifests on disk.
+///
+/// Bounded by design: one read per queried name per bucket, never a bucket
+/// walk. This is what covers a broken manifest the cache-driven walk cannot
+/// see at all — a file that fails to parse is never inserted into the cache
+/// (`manifest_cache::insert_manifest_row`), so an explicit query under
+/// `use_sqlite_cache` reaches it only by name.
+fn named_parse_failures(buckets: &[Bucket], queries: &[&str]) -> Vec<ParseFailure> {
+    let mut failures = vec![];
+    for bucket in buckets {
+        for query in queries {
+            let (query_bucket, name) = split_bucket_query(query);
+            if let Some(query_bucket) = query_bucket
+                && !bucket.name().eq_ignore_ascii_case(&query_bucket)
+            {
+                continue;
+            }
+            let Some(path) = bucket.path_of_manifest(name) else {
+                continue;
+            };
+            if let Err(err) = parse_file(&path) {
+                failures.push(ParseFailure::new(bucket.name(), name, &path, &err));
+            }
+        }
+    }
+    failures
+}
+
 /// Search available packages by reading manifests directly from the bucket
 /// files, bypassing the SQLite cache. Always fresh, never a stale cached
 /// manifest. Operation-class resolution (install / update, including
@@ -265,6 +364,13 @@ pub(crate) fn query_synced_files(
     let apps_dir = session.apps_dir();
     let no_junction = session.config().no_junction();
     let matchers = build_matchers(queries, is_wildcard_query, is_explicit_mode)?;
+
+    // A full scan counts what it drops (one summary afterwards); a named query
+    // instead probes its own names on disk, so a broken manifest is reported
+    // as a warning even when the name prefilter would not have reached its
+    // file (e.g. `search --with-binary`, which disables the prefilter and
+    // would otherwise turn a scan of the whole bucket into per-file noise).
+    let failures = Mutex::new(Vec::new());
 
     let packages = buckets
         .iter()
@@ -284,35 +390,50 @@ pub(crate) fn query_synced_files(
                             return None;
                         }
 
-                        if let Ok(manifest) = parse_file(entry.path()) {
-                            // Only real manifests: `version` is required, and a
-                            // bucket directory can hold unrelated JSON
-                            // (`.markdownlint.json`). Upstream skips such a file
-                            // when it writes its DB (lib/database.ps1:176), and
-                            // the cached path skips it too — the two must agree.
-                            if manifest.version().is_empty() {
-                                return None;
+                        match parse_file(entry.path()) {
+                            Ok(manifest) => {
+                                // Only real manifests: `version` is required, and a
+                                // bucket directory can hold unrelated JSON
+                                // (`.markdownlint.json`). Upstream skips such a file
+                                // when it writes its DB (lib/database.ps1:176), and
+                                // the cached path skips it too — the two must agree.
+                                if manifest.version().is_empty() {
+                                    return None;
+                                }
+                                let bucket = bucket.name();
+
+                                if !manifest_matches(
+                                    name,
+                                    bucket,
+                                    &manifest,
+                                    is_wildcard_query,
+                                    is_explicit_mode,
+                                    &matchers,
+                                    options,
+                                ) {
+                                    return None;
+                                }
+
+                                let package = Package::from(name, bucket, manifest);
+                                fill_install_state(&package, &apps_dir, name, no_junction);
+
+                                Some(package)
                             }
-                            let bucket = bucket.name();
-
-                            if !manifest_matches(
-                                name,
-                                bucket,
-                                &manifest,
-                                is_wildcard_query,
-                                is_explicit_mode,
-                                &matchers,
-                                options,
-                            ) {
-                                return None;
+                            Err(err) => {
+                                if is_wildcard_query {
+                                    failures
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                        .push(ParseFailure::new(
+                                            bucket.name(),
+                                            name,
+                                            &entry.path(),
+                                            &err,
+                                        ));
+                                }
+                                None
                             }
-
-                            let package = Package::from(name, bucket, manifest);
-                            fill_install_state(&package, &apps_dir, name, no_junction);
-
-                            return Some(package);
                         }
-                        None
                     })
                     .collect::<Vec<_>>();
 
@@ -322,6 +443,15 @@ pub(crate) fn query_synced_files(
         })
         .flatten()
         .collect::<Vec<_>>();
+
+    let failures = if is_wildcard_query {
+        failures
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    } else {
+        named_parse_failures(&buckets, queries)
+    };
+    emit_parse_failures(session, failures, is_wildcard_query);
 
     Ok(packages)
 }
@@ -376,6 +506,10 @@ fn query_synced_cached(
     // a walk over the bucket.
     let verify = is_explicit_mode && !is_wildcard_query;
 
+    // Parse failures met while serving the rows; emitted after the parallel
+    // section (see the comment there).
+    let failures = Mutex::new(Vec::new());
+
     let checked = entries
         .par_iter()
         .filter_map(|entry| {
@@ -386,8 +520,25 @@ fn query_synced_cached(
                 return None;
             }
 
-            let mut manifest = manifest_cache::entry_to_manifest(entry)
-                .or_else(|| load_bucket_manifest(&root_path, bucket, name))?;
+            let mut manifest = match manifest_cache::entry_to_manifest(entry) {
+                Some(manifest) => manifest,
+                // The stored JSON no longer parses. Fall back to the file, and
+                // record the failure that leaves the row's package invisible
+                // when the file cannot answer either.
+                None => {
+                    let path = bucket_manifest_path(&root_path, bucket, name)?;
+                    match parse_file(&path) {
+                        Ok(manifest) => manifest,
+                        Err(err) => {
+                            failures
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .push(ParseFailure::new(bucket, name, &path, &err));
+                            return None;
+                        }
+                    }
+                }
+            };
 
             if !manifest_matches(
                 name,
@@ -420,8 +571,19 @@ fn query_synced_cached(
                     }
                     // The hit is a phantom row: its file is gone, so there is
                     // no package to return — but the disappearance is still
-                    // worth reporting.
+                    // worth reporting. A file that is *there* but does not
+                    // parse is not a phantom: it is a parse failure, and must
+                    // not be reported as "no manifest on disk".
                     None => {
+                        if let Some(path) = bucket_manifest_path(&root_path, bucket, name)
+                            && let Err(err) = parse_file(&path)
+                        {
+                            failures
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .push(ParseFailure::new(bucket, name, &path, &err));
+                            return None;
+                        }
                         return Some(CheckedHit::Phantom {
                             bucket: bucket.clone(),
                             name: name.clone(),
@@ -468,6 +630,21 @@ fn query_synced_cached(
             }
         }
     }
+
+    // A named query also probes its names on disk: a manifest that fails to
+    // parse has no cache row at all, so the row-driven walk above cannot reach
+    // it. Full scans report the rows that failed instead — walking the bucket
+    // would defeat the cache they are served from.
+    let mut failures = failures
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if !is_wildcard_query {
+        failures.extend(named_parse_failures(
+            &crate::bucket::bucket_added(session)?,
+            queries,
+        ));
+    }
+    emit_parse_failures(session, failures, is_wildcard_query);
 
     Ok(packages)
 }
@@ -839,6 +1016,139 @@ mod tests {
         // Case-insensitive: alpha, Boost, vcredist (manifest declares
         // vcredist first; a case-sensitive sort would put Boost first).
         assert_eq!(features, ["extras/alpha", "boost", "extras/vcredist"]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── Manifest parse-failure visibility ───────────────────────────────────
+
+    /// Install a sink that records everything the session emits.
+    fn record_output(
+        session: &Session,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<crate::output::Output>>> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        session
+            .set_output(std::sync::Arc::new(move |out| {
+                sink.lock().unwrap().push(out)
+            }))
+            .unwrap();
+        seen
+    }
+
+    fn outputs_of(
+        seen: &std::sync::Mutex<Vec<crate::output::Output>>,
+        pick: impl Fn(&crate::output::Output) -> Option<String>,
+    ) -> Vec<String> {
+        seen.lock().unwrap().iter().filter_map(pick).collect()
+    }
+
+    /// The parse-failure warnings a sink received (the per-path notices).
+    fn parse_warnings(seen: &std::sync::Mutex<Vec<crate::output::Output>>) -> Vec<String> {
+        outputs_of(seen, |out| match out {
+            crate::output::Output::Warn(msg) if msg.contains("Error parsing JSON at '") => {
+                Some(msg.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Every warning a sink received.
+    fn warnings_of(seen: &std::sync::Mutex<Vec<crate::output::Output>>) -> Vec<String> {
+        outputs_of(seen, |out| match out {
+            crate::output::Output::Warn(msg) => Some(msg.clone()),
+            _ => None,
+        })
+    }
+
+    /// A named query that finds the broken file reports one warning naming the
+    /// file and the real reason — `install` / `update` / `depends` reach the
+    /// walk with empty options, exactly like this call.
+    #[test]
+    fn a_named_query_reports_an_unparsable_manifest_once() {
+        let root = tmpdir("query_named_parse_failure");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "good", &mini_manifest("1.0.0"));
+        write_bucket_manifest(&root, "main", "broken", "{ not json");
+
+        let seen = record_output(&session);
+        let packages = query_synced_files(&session, &["broken"], &[]).unwrap();
+        assert!(packages.is_empty(), "a broken manifest yields no package");
+        assert_eq!(packages.len(), 0);
+
+        let warnings = parse_warnings(&seen);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(warnings[0].contains("broken.json"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("main"),
+            "the path identifies the bucket: {}",
+            warnings[0]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A full scan never prints one line per broken manifest: it emits a single
+    /// counted summary, and the paths are `-vv` details ([`Output::Detail`]).
+    #[test]
+    fn a_wildcard_scan_reports_one_counted_summary() {
+        let root = tmpdir("query_wildcard_parse_summary");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "good", &mini_manifest("1.0.0"));
+        write_bucket_manifest(&root, "main", "broken_a", "{ not json");
+        write_bucket_manifest(&root, "main", "broken_b", "[1, 2");
+
+        let seen = record_output(&session);
+        let packages = query_synced_files(&session, &["*"], &[]).unwrap();
+        assert_eq!(packages.len(), 1, "only the healthy manifest is listed");
+
+        let warnings = warnings_of(&seen);
+        assert_eq!(warnings.len(), 1, "one summary, not one line per file");
+        assert!(
+            warnings[0].contains("could not be parsed"),
+            "the summary must count both failures: {}",
+            warnings[0]
+        );
+        assert!(
+            warnings[0].contains('2'),
+            "the summary must count both failures: {}",
+            warnings[0]
+        );
+
+        let details = outputs_of(&seen, |out| match out {
+            crate::output::Output::Detail(msg) => Some(msg.clone()),
+            _ => None,
+        });
+        assert_eq!(details.len(), 2, "the paths are -vv details: {details:?}");
+        assert!(
+            details
+                .iter()
+                .all(|d| d.contains("Error parsing JSON at '"))
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A bucket whose manifests all parse adds nothing at all: the visibility
+    /// must not cost the healthy path a single byte (named or wildcard).
+    #[test]
+    fn a_healthy_bucket_emits_no_new_output() {
+        let root = tmpdir("query_healthy_silent");
+        let session = test_session(&root);
+        write_bucket_manifest(&root, "main", "good", &mini_manifest("1.0.0"));
+
+        let seen = record_output(&session);
+        assert_eq!(
+            query_synced_files(&session, &["good"], &[]).unwrap().len(),
+            1
+        );
+        assert_eq!(query_synced_files(&session, &["*"], &[]).unwrap().len(), 1);
+
+        let all: Vec<_> = seen.lock().unwrap().clone();
+        assert!(
+            all.is_empty(),
+            "a healthy bucket must emit nothing, got {all:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

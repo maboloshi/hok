@@ -341,7 +341,16 @@ pub async fn execute(
     for (path, stem) in manifest_walker::discover_matching(dir, &options.app)? {
         let manifest = match manifest::parse_file(&path) {
             Ok(m) => m,
-            Err(_) => continue,
+            // Official checkver reads each file through `parse_json`, which
+            // warns and returns `$null` (`lib/manifest.ps1:10`), and then skips
+            // the manifest (`bin/checkver.ps1:100-103`). hok skipped it in
+            // silence, so a broken manifest was invisible here.
+            Err(err) => {
+                session
+                    .output()
+                    .warn(manifest::parse_failure_message(&path, &err));
+                continue;
+            }
         };
 
         let cv = match manifest.checkver() {

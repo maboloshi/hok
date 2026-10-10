@@ -827,12 +827,16 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
     // to integrate. But I believe there should be an alternative to
     // `serde_json` which can parse JSON files much *faster*. Perhaps
     // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
-    let text = std::str::from_utf8(&bytes).map_err(|e| {
-        crate::Error::Custom(format!(
-            "failed to parse manifest {}: not valid UTF-8: {e}",
-            path.display()
-        ))
-    })?;
+    let text = std::str::from_utf8(&bytes)
+        .inspect_err(|e| {
+            warn!("failed to parse manifest {} (err: {})", path.display(), e);
+        })
+        .map_err(|e| {
+            crate::Error::Custom(format!(
+                "failed to parse manifest {}: not valid UTF-8: {e}",
+                path.display()
+            ))
+        })?;
     let inner: ManifestSpec = internal::json::parse_str(text).inspect_err(|e| {
         warn!("failed to parse manifest {} (err: {})", path.display(), e);
     })?;
@@ -843,6 +847,20 @@ pub fn parse_file<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
         inner,
         raw: None,
     })
+}
+
+/// The user-facing notice for a manifest that exists but does not parse.
+///
+/// Official Scoop's sentence (`lib/manifest.ps1:10`) plus hok's reason, so a
+/// bucket maintainer recognises the line while still seeing why hok rejected
+/// the file. One constructor for every scan path that survives a failure —
+/// `query`, `checkver`, `checkurls` — so the wording cannot drift per command.
+pub(crate) fn parse_failure_message(path: &Path, err: &crate::Error) -> String {
+    hok_i18n::t!(
+        "cmd.manifest_parse_failed",
+        path = path.display().to_string(),
+        reason = err.to_string()
+    )
 }
 
 impl Manifest {

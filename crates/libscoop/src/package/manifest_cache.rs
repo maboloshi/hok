@@ -236,7 +236,7 @@ pub(crate) enum CacheMismatch {
 /// The notice is not optional: without it the user cannot tell that the cache
 /// trailed the buckets, and would have no reason to run `hok update`.
 ///
-/// Once per package per session — see [`Session::mark_mismatch_warned`].
+/// Once per package per session — see [`Session::mark_warned_once`].
 pub(crate) fn warn_if_cache_mismatch(
     session: &Session,
     bucket: &str,
@@ -244,7 +244,7 @@ pub(crate) fn warn_if_cache_mismatch(
     mismatch: &CacheMismatch,
 ) {
     let key = format!("{bucket}/{name}");
-    if !session.mark_mismatch_warned(&key) {
+    if !session.mark_warned_once(&key) {
         return;
     }
 
@@ -1394,6 +1394,130 @@ mod tests {
             packages[0].version(),
             "1.0",
             "a listing must be served from the cache, not re-read from disk"
+        );
+    }
+
+    /// A manifest that does not parse is never inserted into the cache
+    /// (`insert_manifest_row`), so an explicit query under `use_sqlite_cache`
+    /// reaches it only by name — the by-name probe is what keeps "not found"
+    /// from being the whole answer.
+    #[test]
+    fn explicit_query_reports_a_manifest_without_a_cache_row() {
+        let root = tmpdir("cache_parse_failure_named");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "good", r#"{"version": "1.0"}"#);
+        write_bucket_manifest(&root, "main", "broken", "{ not json");
+
+        let conn = populated(&root, &session);
+        assert!(
+            row_count(&conn, "broken", "main").is_empty(),
+            "an unparsable manifest must get no cache row"
+        );
+        drop(conn);
+
+        let seen = record_output(&session);
+        let packages = crate::package::query::query_synced(
+            &session,
+            &["broken"],
+            &[crate::package::QueryOption::Explicit],
+        )
+        .unwrap();
+
+        assert!(packages.is_empty());
+        let warnings: Vec<_> = warnings_of(&seen)
+            .into_iter()
+            .filter(|msg| msg.contains("Error parsing JSON at '"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("broken.json"), "{}", warnings[0]);
+    }
+
+    /// A stored row whose JSON no longer parses *and* whose file does not
+    /// either is a row the cache holds but no query can use: a full scan counts
+    /// it instead of dropping it without a word.
+    #[test]
+    fn a_wildcard_cached_scan_counts_an_unusable_row() {
+        let root = tmpdir("cache_parse_failure_row");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "foo", r#"{"version": "1.0"}"#);
+        let conn = populated(&root, &session);
+        // A schema change or a hand-edited database can leave a row the current
+        // parser rejects while the file still answered.
+        conn.execute(
+            "UPDATE app SET manifest = '{\"version\": 1.0}' WHERE name = 'foo'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        // The file is the row's safety net; break it too, so the row really is
+        // unusable instead of silently answered from disk.
+        write_bucket_manifest(&root, "main", "foo", "{ not json");
+
+        let seen = record_output(&session);
+        let packages = crate::package::query::query_synced(&session, &["*"], &[]).unwrap();
+        assert!(packages.is_empty());
+
+        let warnings: Vec<_> = warnings_of(&seen)
+            .into_iter()
+            .filter(|msg| msg.contains("could not be parsed"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "one summary: {warnings:?}");
+        assert!(
+            warnings[0].contains("1 manifest"),
+            "the summary counts the row: {}",
+            warnings[0]
+        );
+    }
+
+    /// A row that parses but whose file does not is not a *phantom* row: the
+    /// explicit-hit check must report the parse failure, not claim the manifest
+    /// is gone from disk (the row is still there, and so is the file).
+    #[test]
+    fn explicit_query_reports_a_corrupt_file_instead_of_a_phantom_row() {
+        let root = tmpdir("cache_parse_failure_corrupt_file");
+        let session = test_session(&root);
+        session
+            .config_mut()
+            .unwrap()
+            .set("use_sqlite_cache", "true")
+            .unwrap();
+        write_bucket_manifest(&root, "main", "v_corrupt", r#"{"version": "1.0"}"#);
+        let _ = populated(&root, &session);
+        write_bucket_manifest(&root, "main", "v_corrupt", "{ not json");
+
+        let seen = record_output(&session);
+        let packages = crate::package::query::query_synced(
+            &session,
+            &["v_corrupt"],
+            &[crate::package::QueryOption::Explicit],
+        )
+        .unwrap();
+
+        assert!(packages.is_empty());
+        let warnings = warnings_of(&seen);
+        assert_eq!(
+            warnings
+                .iter()
+                .filter(|msg| msg.contains("Error parsing JSON at '"))
+                .count(),
+            1,
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings
+                .iter()
+                .any(|msg| msg.contains("has no manifest on disk")),
+            "a corrupt file must not be reported as missing: {warnings:?}"
         );
     }
 

@@ -231,6 +231,8 @@ cmd:
   cache_stale: "清单缓存可能不是最新（%{count} 个仓库未同步）；运行 'hok update --force' 重建。"
   cache_mismatch: "清单缓存与文件不一致：%{name} 缓存 %{cached}，文件 %{file}（已改用文件值）。"
   cache_missing: "清单缓存与文件不一致：%{name} 的清单文件已不存在（已忽略缓存行）。"
+  manifest_parse_failed: "解析 JSON 出错：'%{path}'。%{reason}"
+  manifest_parse_failed_summary: "%{count} 个清单无法解析（使用 -vv 查看路径）。"
   history_index: "正在维护清单历史索引..."
   history_index_done: "清单历史索引已更新。"
   history_index_skipped: "清单历史索引已跳过：%{e}（下次 update 会自动重试）。"

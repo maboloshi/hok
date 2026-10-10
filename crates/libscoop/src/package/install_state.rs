@@ -272,11 +272,20 @@ pub(crate) fn fill_install_state(
     );
 }
 
-pub(crate) fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -> Option<Manifest> {
+/// The on-disk path of `bucket/name`'s manifest, when that bucket exists and
+/// declares a manifest for the name.
+///
+/// Shared by [`load_bucket_manifest`] and the query layer: a caller that has
+/// to report *why* a manifest could not be used needs the path, not just the
+/// parsed result (or the absence of one).
+pub(crate) fn bucket_manifest_path(root_path: &Path, bucket: &str, name: &str) -> Option<PathBuf> {
     let bucket_path = crate::internal::path::bucket_dir(root_path, bucket);
     let bucket = Bucket::from(&bucket_path).ok()?;
-    let manifest_path = bucket.path_of_manifest(name)?;
-    parse_file(manifest_path).ok()
+    bucket.path_of_manifest(name)
+}
+
+pub(crate) fn load_bucket_manifest(root_path: &Path, bucket: &str, name: &str) -> Option<Manifest> {
+    parse_file(bucket_manifest_path(root_path, bucket, name)?).ok()
 }
 
 pub(crate) fn maybe_fill_upgradable(

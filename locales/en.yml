@@ -231,6 +231,8 @@ cmd:
   cache_stale: "The manifest cache may be out of date (%{count} bucket(s) not synced); run 'hok update --force' to rebuild it."
   cache_mismatch: "Manifest cache differs from the file: %{name} cached %{cached}, file %{file} (using the file value)."
   cache_missing: "Manifest cache differs from the file: %{name} has no manifest on disk (cache row ignored)."
+  manifest_parse_failed: "Error parsing JSON at '%{path}'. %{reason}"
+  manifest_parse_failed_summary: "%{count} manifest(s) could not be parsed (run with -vv to list them)."
   history_index: "Maintaining the manifest history index..."
   history_index_done: "Manifest history index updated."
   history_index_skipped: "Manifest history index skipped: %{e} (the next update retries)."
