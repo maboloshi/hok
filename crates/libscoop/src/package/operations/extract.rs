@@ -155,15 +155,25 @@ pub fn copy_downloaded_files(
 ///
 /// `asset_scripts/decompress.ps1`'s `Expand-*Archive` helpers do not extract
 /// anything themselves; they emit one marker line per call into
-/// `hok_extract_markers.txt` inside `working_dir`, using the five-field
-/// protocol `format|source|dest|extract_dir|removal`. Each marker is extracted
-/// natively by Rust. Extraction failures are logged but do not abort.
+/// `hok_extract_markers.txt` inside `working_dir`, using the seven-field
+/// protocol `format|source|dest|extract_dir|removal|switches|overwrite`. Each
+/// marker is extracted natively by Rust. Extraction failures are logged but do
+/// not abort.
 ///
 /// This side owns the two semantics PowerShell cannot express correctly here:
 /// * `dest` is the *base* destination; `extract_dir` is applied here, giving
 ///   Scoop's layout (extract only that subtree, then hoist it into `dest`).
 /// * `removal` deletes `source` only after a *successful* extraction, so a
 ///   failed extraction never loses the archive.
+///
+/// `switches` / `overwrite` are the CLI options of the helper tools
+/// (`-Switches`, `-Overwrite All|Skip|Rename`). When either is present the
+/// marker goes to [`Archive::extract_script_cli`], which hands them to the
+/// real `7z.exe` / `innounp.exe` / `lessmsi.exe`; official Scoop passes
+/// `-Switches` through `-split` verbatim and turns `-Overwrite` into
+/// `-aoa`/`-aos`/`-aou` (`lib/decompress.ps1:99-106`), so those arguments only
+/// mean anything to that CLI. A marker without them keeps the native backend,
+/// byte-for-byte as before.
 pub async fn extract_markers(session: &Session, working_dir: &Path) {
     let marker_path = working_dir.join("hok_extract_markers.txt");
     let Ok(markers) = std::fs::read_to_string(&marker_path) else {
@@ -185,6 +195,21 @@ pub async fn extract_markers(session: &Session, working_dir: &Path) {
         let extract_dir = parts.get(3).copied().filter(|d| !d.is_empty());
         let removal = parts.get(4).is_some_and(|r| *r == "removal");
         let innosetup = format == "innosetup";
+        // `-Switches` round-trips as one space-joined field; official splits it
+        // with `-split $Switches`, which is exactly `split_whitespace`.
+        let switches: Vec<String> = parts
+            .get(5)
+            .map(|s| s.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default();
+        let overwrite = parts
+            .get(6)
+            .copied()
+            .filter(|s| !s.is_empty())
+            .and_then(internal::archive::Overwrite::from_marker);
+        let cli = internal::archive::ScriptCliOptions {
+            switches,
+            overwrite,
+        };
 
         if !source.exists() {
             continue;
@@ -192,18 +217,32 @@ pub async fn extract_markers(session: &Session, working_dir: &Path) {
 
         let extract_dirs = extract_dir.map(|d| [d]);
         let emit = session.emitter();
-        match session
-            .archive()
-            .extract(
-                source,
-                dest,
-                extract_dirs.as_ref().map(|d| d.as_slice()),
-                None,
-                innosetup,
-                &emit,
-            )
-            .await
-        {
+        let result = if cli.is_empty() {
+            session
+                .archive()
+                .extract(
+                    source,
+                    dest,
+                    extract_dirs.as_ref().map(|d| d.as_slice()),
+                    None,
+                    innosetup,
+                    &emit,
+                )
+                .await
+        } else {
+            session
+                .archive()
+                .extract_script_cli(
+                    format,
+                    source,
+                    dest,
+                    extract_dirs.as_ref().map(|d| d.as_slice()),
+                    &cli,
+                    &emit,
+                )
+                .await
+        };
+        match result {
             Ok(()) => {
                 if removal && let Err(e) = std::fs::remove_file(source) {
                     debug!("P2 removal failed for {}: {}", source.display(), e);
@@ -858,6 +897,124 @@ mod tests {
         extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
         assert!(!archive.exists());
+    }
+
+    // ─── extract_markers: -Switches / -Overwrite ────────────────────
+
+    /// A zip that also carries `app/drop.pdb`, so an exclusion switch has
+    /// something to exclude (the shared `create_zip` deliberately stays as is).
+    fn create_zip_with_pdb(path: &Path) {
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+        use zip::write::FileOptions;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> =
+            FileOptions::default().compression_method(CompressionMethod::Stored);
+
+        zip.start_file("app/hello.txt", opts).unwrap();
+        zip.write_all(b"Hello, World!").unwrap();
+        zip.start_file("app/sub/deep.txt", opts).unwrap();
+        zip.write_all(b"Deep content").unwrap();
+        zip.start_file("app/drop.pdb", opts).unwrap();
+        zip.write_all(b"debug symbols").unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// `7z.exe` availability for the CLI-path marker tests: `HOK_7Z_EXE`, then
+    /// Scoop's shim, then `PATH` (mirrors `pwsh_available`).
+    fn seven_zip_available() -> bool {
+        if let Some(exe) = std::env::var_os("HOK_7Z_EXE") {
+            return Path::new(&exe).is_file();
+        }
+        let scoop = std::env::var("SCOOP").unwrap_or_default();
+        if Path::new(&scoop).join("shims").join("7z.exe").is_file() {
+            return true;
+        }
+        std::process::Command::new("7z.exe")
+            .arg("i")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    /// The `switches` field must reach the tool that defines it. The source is
+    /// deliberately a `#/dl.7z_`-style renamed download: the native extractor
+    /// classifies by extension and would reject it, so a successful extraction
+    /// *plus* the excluded file being absent proves the CLI backend ran with
+    /// the marker's switch.
+    #[tokio::test]
+    async fn test_extract_markers_switches_reach_the_cli_tool() {
+        if !seven_zip_available() {
+            eprintln!("skipping: no 7z.exe (HOK_7Z_EXE / Scoop shim / PATH)");
+            return;
+        }
+        let root = tmpdir("markers_switches");
+        let session = test_session(&root);
+        let archive = root.join("dl.7z_");
+        create_zip_with_pdb(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "7z|{}|{}|||-xr!*.pdb|",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(dest.join("app/sub/deep.txt").exists());
+        assert!(
+            !dest.join("app/drop.pdb").exists(),
+            "-xr!*.pdb must be applied by the CLI backend"
+        );
+    }
+
+    /// The `overwrite` field must not be swallowed: `-Overwrite Skip` keeps an
+    /// existing destination file (7-Zip `-aos`), while the rest of the archive
+    /// still lands — which is what proves the extraction ran at all.
+    #[tokio::test]
+    async fn test_extract_markers_overwrite_skip_keeps_existing_files() {
+        if !seven_zip_available() {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        }
+        let root = tmpdir("markers_overwrite_skip");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip_with_pdb(&archive);
+        let dest = root.join("dest");
+        std::fs::create_dir_all(dest.join("app")).unwrap();
+        std::fs::write(dest.join("app/hello.txt"), b"STALE").unwrap();
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "7z|{}|{}||||skip",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/hello.txt")).unwrap(),
+            "STALE",
+            "-Overwrite Skip must leave the existing file alone"
+        );
+        assert!(
+            dest.join("app/sub/deep.txt").exists(),
+            "the non-conflicting entry must still be extracted"
+        );
     }
 
     // --- spawn_blocking concurrency guardrail ------------------------

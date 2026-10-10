@@ -824,6 +824,29 @@ Assert-Def 'Expand-MsiArchive' 'Write-ExtractMarker "msi"'
 Assert-Def 'Expand-InnoArchive' 'Write-ExtractMarker "innosetup"'
 Assert-Def 'Expand-Msi' 'Expand-MsiArchive'
 Assert-Def 'Expand-ZipArchive' 'Expand-7zipArchive'
+# `-Switches` / `-Overwrite` must stay declared parameters: without them
+# PowerShell feeds `-Overwrite` to `ValueFromRemainingArguments`
+# (`$Switches`) and the value is silently dropped.
+function Assert-Param($Name, $Param) {
+    $p = (Get-Command $Name -CommandType Function -ErrorAction SilentlyContinue).Parameters
+    if (-not $p -or -not $p.ContainsKey($Param)) {
+        Write-Host "MISSINGPARAM:${Name}:${Param}"; $script:fail = 1; return
+    }
+    Write-Host "PARAM-OK:${Name}:${Param}"
+}
+Assert-Param 'Expand-7zipArchive' 'Switches'
+Assert-Param 'Expand-7zipArchive' 'Overwrite'
+Assert-Param 'Expand-7zipArchive' 'Removal'
+Assert-Param 'Expand-InnoArchive' 'Switches'
+Assert-Param 'Expand-MsiArchive' 'Switches'
+# `-Overwrite` is a validated set, like official (lib/decompress.ps1:77-79).
+$ov = (Get-Command 'Expand-7zipArchive').Parameters['Overwrite'].Attributes |
+    Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+if (-not $ov -or ($ov.ValidValues -join ',') -ne 'All,Skip,Rename') {
+    Write-Host "BAD:OverwriteValidateSet"; $script:fail = 1
+} else {
+    Write-Host 'PARAM-OK:Expand-7zipArchive:OverwriteValidateSet'
+}
 if ($fail) { exit 1 }
 Write-Host 'ALIAS-OK'
 "#;
@@ -931,6 +954,132 @@ Write-Host 'ALIAS-OK'
         assert!(
             !working_dir.join("payload.zip").exists(),
             "-Removal must delete the source archive after a successful extraction"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `7z.exe` availability for the `-Switches`/`-Overwrite` end-to-end tests
+    /// (`HOK_7Z_EXE`, then Scoop's shim, then `PATH`).
+    fn seven_zip_available() -> bool {
+        if let Some(exe) = std::env::var_os("HOK_7Z_EXE") {
+            return std::path::Path::new(&exe).is_file();
+        }
+        let scoop = std::env::var("SCOOP").unwrap_or_default();
+        if std::path::Path::new(&scoop)
+            .join("shims")
+            .join("7z.exe")
+            .is_file()
+        {
+            return true;
+        }
+        std::process::Command::new("7z.exe")
+            .arg("i")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    /// A manifest package with a trivial body, for the script tests.
+    fn test_pkg() -> crate::package::Package {
+        crate::package::Package::from(
+            "test-pkg",
+            "main",
+            crate::package::Manifest::from_json(
+                "test-pkg",
+                r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// X5 end-to-end: a real package script's `-Switches` must survive the
+    /// PS → marker → Rust round trip and change what lands on disk. `-xr!`
+    /// removes a member the archive really contains, so the assertion cannot
+    /// pass if the switch was dropped.
+    #[tokio::test]
+    async fn expand_7zip_archive_switches_take_effect() {
+        if !pwsh_available() || !seven_zip_available() {
+            eprintln!("skipping: needs pwsh + 7z.exe");
+            return;
+        }
+        let root = crate::test_utils::tmpdir("decompress_switches_e2e");
+        let session = crate::test_utils::test_session(&root);
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        create_zip(&working_dir.join("payload.zip"));
+
+        run_script(
+            &session,
+            &test_pkg(),
+            &working_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec![
+                "Expand-7zipArchive \"$dir\\payload.zip\" \"$dir\" -Switches '-xr!deep.txt'",
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            working_dir.join("app").join("hello.txt").exists(),
+            "the non-excluded member must be extracted"
+        );
+        assert!(
+            !working_dir
+                .join("app")
+                .join("sub")
+                .join("deep.txt")
+                .exists(),
+            "-Switches '-xr!deep.txt' must keep deep.txt out of the tree"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// X5 end-to-end: `-Overwrite` must no longer be swallowed by
+    /// `ValueFromRemainingArguments`. `Skip` keeps a pre-existing file
+    /// (7-Zip `-aos`) while the rest of the archive still extracts.
+    #[tokio::test]
+    async fn expand_7zip_archive_overwrite_skip_is_honoured() {
+        if !pwsh_available() || !seven_zip_available() {
+            eprintln!("skipping: needs pwsh + 7z.exe");
+            return;
+        }
+        let root = crate::test_utils::tmpdir("decompress_overwrite_e2e");
+        let session = crate::test_utils::test_session(&root);
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(working_dir.join("app")).unwrap();
+        std::fs::write(working_dir.join("app").join("hello.txt"), b"STALE").unwrap();
+        create_zip(&working_dir.join("payload.zip"));
+
+        run_script(
+            &session,
+            &test_pkg(),
+            &working_dir,
+            None,
+            "installer",
+            "install",
+            Some(vec![
+                "Expand-7zipArchive \"$dir\\payload.zip\" \"$dir\" -Overwrite 'Skip'",
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(working_dir.join("app").join("hello.txt")).unwrap(),
+            "STALE",
+            "-Overwrite Skip must not replace the existing file"
+        );
+        assert!(
+            working_dir
+                .join("app")
+                .join("sub")
+                .join("deep.txt")
+                .exists(),
+            "the non-conflicting member must still be extracted"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

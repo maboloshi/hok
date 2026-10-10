@@ -5,10 +5,10 @@
 # [[HOK_EXTRACT]] marker, and hok's Rust side performs the extraction natively
 # (crates/libscoop/src/package/operations/extract.rs::extract_markers).
 #
-# Marker protocol — five pipe-separated fields (a `|` cannot occur in a
+# Marker protocol — seven pipe-separated fields (a `|` cannot occur in a
 # Windows path, so it is a safe separator):
 #
-#     format|source|dest|extract_dir|removal
+#     format|source|dest|extract_dir|removal|switches|overwrite
 #
 # * `format`      — `7z` | `innosetup` | `msi`; selects the Rust extractor.
 # * `source`      — absolute path of the archive to extract.
@@ -22,6 +22,21 @@
 #                   empty. The Rust side deletes `source` only *after* a
 #                   successful extraction, so a failed extraction never loses
 #                   the archive.
+# * `switches`    — the `-Switches` argument, space-joined. Official passes it
+#                   on with `-split $Switches` (lib/decompress.ps1:99-101), so
+#                   a space-joined field round-trips through a single split
+#                   exactly like the original argument list. Empty when none.
+# * `overwrite`   — the `-Overwrite` argument lowercased: `all` | `skip` |
+#                   `rename` | empty. Only `Expand-7zipArchive` declares it
+#                   (lib/decompress.ps1:77-79); official maps it to 7-Zip's
+#                   `-aoa`/`-aos`/`-aou` (lib/decompress.ps1:102-106).
+#
+# The last two fields are *CLI* arguments of the helper tools, so the Rust side
+# applies them by handing the marker to the real `7z.exe` / `innounp.exe` /
+# `lessmsi.exe` instead of the native extractor — a marker without them keeps
+# the native path unchanged. Silently dropping them is not an option: `-p`
+# (encrypted archives), `-x!`/`-xr!` (exclusions) and `-Overwrite Skip|Rename`
+# all change what ends up on disk.
 #
 # Do NOT add a case-variant wrapper of an existing function here. PowerShell
 # function names are case-insensitive, so `function Expand-7ZipArchive { ... }`
@@ -37,10 +52,16 @@
 # (`C:\pkg.7z`) that rewrite yields the drive-relative `C:` instead of `C:\`,
 # and the Rust side normalizes the path anyway.
 
-function Write-ExtractMarker($format, $source, $dest, $extractDir, $removal) {
+function Write-ExtractMarker($format, $source, $dest, $extractDir, $removal, $switches, $overwrite) {
     $removalField = if ($removal) { 'removal' } else { '' }
     if ($null -eq $extractDir) { $extractDir = '' }
-    $marker = "[[HOK_EXTRACT]]$format|$source|$dest|$extractDir|$removalField"
+    # `-Switches` may arrive either as one argument holding several switches or
+    # as several remaining arguments; joining with a space reproduces official's
+    # `-split $Switches` for both shapes (PowerShell itself joins leftover
+    # arguments with a space before official splits them again).
+    $switchesField = if ($switches) { ($switches -join ' ').Trim() } else { '' }
+    $overwriteField = if ($overwrite) { $overwrite.ToLowerInvariant() } else { '' }
+    $marker = "[[HOK_EXTRACT]]$format|$source|$dest|$extractDir|$removalField|$switchesField|$overwriteField"
     Write-Host $marker
     # Append to the marker file for the Rust side to read. UTF-8 (not ASCII):
     # a source/destination under a non-ASCII path would otherwise be written
@@ -53,14 +74,26 @@ function Write-ExtractMarker($format, $source, $dest, $extractDir, $removal) {
 }
 
 function Expand-7zipArchive {
+    # The explicit positions are load-bearing. PowerShell makes a parameter
+    # positional only while *no* parameter of the function declares a
+    # `Position`; once one does, the unpositioned ones become named-only.
+    # Official Scoop positions only `Path`/`DestinationPath`, so its
+    # `-Switches` (which is `ValueFromRemainingArguments`) swallows every
+    # leftover positional argument. hok keeps `ExtractDir` positional at 2 —
+    # its pre-X5 shape, so existing calls bind exactly as before — and the
+    # explicit positions newly make `-Overwrite` named-only. Without that,
+    # adding the parameter would let a stray positional argument (e.g.
+    # `'-psordum'` in dControl) bind to `-Overwrite` and be rejected by the
+    # ValidateSet instead of reaching `$Switches`.
     param(
-        [String]$Path,
-        [String]$DestinationPath = (Split-Path $Path),
-        [String]$ExtractDir,
+        [Parameter(Position = 0)][String]$Path,
+        [Parameter(Position = 1)][String]$DestinationPath = (Split-Path $Path),
+        [Parameter(Position = 2)][String]$ExtractDir,
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
+        [ValidateSet('All', 'Skip', 'Rename')][String]$Overwrite,
         [Switch]$Removal
     )
-    Write-ExtractMarker "7z" $Path $DestinationPath $ExtractDir $Removal
+    Write-ExtractMarker "7z" $Path $DestinationPath $ExtractDir $Removal $Switches $Overwrite
 }
 
 function Expand-InnoArchive {
@@ -71,7 +104,7 @@ function Expand-InnoArchive {
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [Switch]$Removal
     )
-    Write-ExtractMarker "innosetup" $Path $DestinationPath $ExtractDir $Removal
+    Write-ExtractMarker "innosetup" $Path $DestinationPath $ExtractDir $Removal $Switches
 }
 
 function Expand-MsiArchive {
@@ -82,7 +115,7 @@ function Expand-MsiArchive {
         [Parameter(ValueFromRemainingArguments = $true)][String[]]$Switches,
         [Switch]$Removal
     )
-    Write-ExtractMarker "msi" $Path $DestinationPath $ExtractDir $Removal
+    Write-ExtractMarker "msi" $Path $DestinationPath $ExtractDir $Removal $Switches
 }
 
 # Distinct-name aliases (Scoop compatibility).

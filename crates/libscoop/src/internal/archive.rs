@@ -135,7 +135,7 @@ pub fn extract(
             emitter,
         ),
         "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
-        "msi" => extract_msi(cache_path, &effective_dest, extract_dir, emitter),
+        "msi" => extract_msi(cache_path, &effective_dest, extract_dir, &[], emitter),
         "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
         _ => Err(Error::ExtractionFailed(format!(
             "unsupported format: {}",
@@ -1061,29 +1061,44 @@ fn extract_rar(
     Ok(())
 }
 
-// ─── Fallback: call external 7z.exe for ISO ─────────────────────────
+// ─── External helper tools ───────────────────────────────────────────
 
-fn extract_with_7z_exe(
-    src: &Path,
-    dest: &Path,
+/// Resolve a Scoop helper executable: the shim hok's own dependency install
+/// creates (`<SCOOP>\shims\<name>.exe`) first, then bare `PATH` lookup.
+///
+/// The shim is what `manifest::Manifest::dependencies` provisions — it injects
+/// `7zip` for any script mentioning `Expand-7zipArchive`, `innounp` for
+/// `Expand-InnoArchive` and `lessmsi` for `Expand-MsiArchive` — so the helper
+/// is present exactly when the script that needs it is.
+fn helper_exe(name: &str) -> PathBuf {
+    let path_env = std::env::var("SCOOP").unwrap_or_default();
+    let shim = Path::new(&path_env)
+        .join("shims")
+        .join(format!("{name}.exe"));
+    if shim.exists() {
+        shim
+    } else {
+        PathBuf::from(format!("{name}.exe"))
+    }
+}
+
+/// Build `-<prefix><path>` as a single `OsString`, so a non-UTF-8 path is not
+/// mangled by a `display()` round-trip.
+fn arg_with_path(prefix: &str, path: &Path) -> std::ffi::OsString {
+    let mut arg = std::ffi::OsString::from(prefix);
+    arg.push(path);
+    arg
+}
+
+/// Run `7z.exe` with an explicit argument list, forwarding its `-bsp1`
+/// progress to the event bus; a non-zero exit is an error.
+fn run_7z_exe(
+    exe: &Path,
+    args: &[std::ffi::OsString],
     emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
-    // Look for 7z.exe in PATH or in Scoop's shims directory
-    let path_env = std::env::var("SCOOP").unwrap_or_default();
-    let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
-    let exe = if shims_7z.exists() {
-        shims_7z
-    } else {
-        std::path::PathBuf::from("7z.exe")
-    };
-
-    let mut child = Command::new(&exe)
-        .arg("x")
-        .arg(src)
-        .arg(format!("-o{}", dest.display()))
-        .arg("-y")
-        .arg("-bso0")
-        .arg("-bsp1")
+    let mut child = Command::new(exe)
+        .args(args)
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -1136,6 +1151,352 @@ fn extract_with_7z_exe(
     Ok(())
 }
 
+/// Run an external helper to completion and fail on a non-zero exit, keeping
+/// its stderr in the message (helpers such as `innounp.exe` report the real
+/// reason there).
+fn run_helper(exe: &Path, args: &[std::ffi::OsString], tool: &str) -> Fallible<()> {
+    let output = Command::new(exe)
+        .args(args)
+        .output()
+        .map_err(|e| Error::ExtractionFailed(format!("failed to launch {tool}: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::ExtractionFailed(format!(
+            "{tool} exited with code {:?}: {}",
+            output.status.code(),
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+// ─── `Expand-*Archive` CLI options from package scripts ───────────────
+
+/// `-Overwrite` as declared by Scoop's `Expand-7zipArchive`
+/// (`lib/decompress.ps1:77-79`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overwrite {
+    /// `-Overwrite All` → 7-Zip `-aoa`.
+    All,
+    /// `-Overwrite Skip` → 7-Zip `-aos`.
+    Skip,
+    /// `-Overwrite Rename` → 7-Zip `-aou`.
+    Rename,
+}
+
+impl Overwrite {
+    /// Parse the lowercased `overwrite` marker field.
+    pub fn from_marker(field: &str) -> Option<Self> {
+        match field {
+            "all" => Some(Self::All),
+            "skip" => Some(Self::Skip),
+            "rename" => Some(Self::Rename),
+            _ => None,
+        }
+    }
+
+    /// The 7-Zip switch official maps this value to
+    /// (`lib/decompress.ps1:102-106`).
+    fn as_7z_switch(self) -> &'static str {
+        match self {
+            Self::All => "-aoa",
+            Self::Skip => "-aos",
+            Self::Rename => "-aou",
+        }
+    }
+}
+
+/// The command-line options a package script handed to a Scoop
+/// `Expand-*Archive` helper.
+///
+/// These are arguments of the *helper tools* (`7z.exe` / `innounp.exe` /
+/// `lessmsi.exe`), not an abstract request: official passes `-Switches`
+/// through `-split` verbatim (`lib/decompress.ps1:99-101`) and turns
+/// `-Overwrite` into `-aoa`/`-aos`/`-aou` (`:102-106`). hok therefore applies
+/// them by invoking the same tool rather than re-implementing its option
+/// semantics natively — dropping them is not an option, because `-p`
+/// (encrypted archives), `-x!`/`-xr!` (exclusions) and
+/// `-Overwrite Skip|Rename` all change what lands on disk.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScriptCliOptions {
+    /// `-Switches`, already whitespace-split (official's `-split $Switches`).
+    pub switches: Vec<String>,
+    /// `-Overwrite`, declared only by `Expand-7zipArchive`.
+    pub overwrite: Option<Overwrite>,
+}
+
+impl ScriptCliOptions {
+    /// True when the call used neither `-Switches` nor `-Overwrite`; such a
+    /// marker keeps the native extractor, so calls that never passed these
+    /// options are byte-for-byte unchanged.
+    pub fn is_empty(&self) -> bool {
+        self.switches.is_empty() && self.overwrite.is_none()
+    }
+}
+
+/// Official `Expand-7zipArchive`'s `$IsTar` test (`lib/decompress.ps1:95`):
+/// `((strip_ext $Path) -match '\.tar$') -or ($Path -match '\.t[abgpx]z2?$')`.
+///
+/// Note that a bare `.tar` is *not* `$IsTar` upstream — only a compressed tar
+/// (`.tar.gz`) or a `.t[abgpx]z2?` name is.
+fn is_tar_container(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    // `strip_ext`: everything up to the last dot.
+    let stem = match name.rfind('.') {
+        Some(idx) => &name[..idx],
+        None => name.as_str(),
+    };
+    stem.ends_with(".tar")
+        || [".taz", ".tbz", ".tbz2", ".tgz", ".tpz", ".txz"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
+/// Official Scoop's `Expand-7zipArchive` argument list
+/// (`lib/decompress.ps1:94-106`), plus hok's own `-bso0 -bsp1` progress flags:
+///
+/// ```text
+/// x <path> -o<dest> -xr!*.nsis -y [-ir!<extract_dir>\*] [switches] [-ao*]
+/// ```
+///
+/// Pure so the parity with official can be asserted without running 7z.exe.
+/// `switch -Regex` order in official puts the `-ir!` include filter before the
+/// `-Switches`, and the `-ao*` overwrite switch after them.
+fn seven_zip_cli_args(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&str>,
+    switches: &[String],
+    overwrite: Option<Overwrite>,
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        std::ffi::OsString::from("x"),
+        src.as_os_str().to_os_string(),
+        arg_with_path("-o", dest),
+        // 7-Zip keeps `.nsis` side files out of the tree, like official.
+        std::ffi::OsString::from("-xr!*.nsis"),
+        std::ffi::OsString::from("-y"),
+    ];
+    // Official skips the include filter for tar containers: the first pass is
+    // only meant to unwrap the outer container (`:95-98`).
+    if !is_tar_container(src)
+        && let Some(dir) = extract_dir
+    {
+        args.push(std::ffi::OsString::from(format!("-ir!{dir}\\*")));
+    }
+    args.extend(switches.iter().map(std::ffi::OsString::from));
+    if let Some(overwrite) = overwrite {
+        args.push(std::ffi::OsString::from(overwrite.as_7z_switch()));
+    }
+    args.push(std::ffi::OsString::from("-bso0"));
+    args.push(std::ffi::OsString::from("-bsp1"));
+    args
+}
+
+/// Official Scoop's `Expand-InnoArchive` argument list
+/// (`lib/decompress.ps1:245-253`):
+///
+/// ```text
+/// -x -d<dest> <path> -y [-c{app}\<extract_dir> | -c<extract_dir> | -c{app}] [switches]
+/// ```
+///
+/// The `-c` component mirrors official's `switch -Regex ($ExtractDir)`: a
+/// non-`{`-prefixed value is anchored under `{app}`, an already-anchored value
+/// is taken as-is, and an absent one selects the whole `{app}` tree.
+fn innounp_cli_args(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&str>,
+    switches: &[String],
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        std::ffi::OsString::from("-x"),
+        arg_with_path("-d", dest),
+        src.as_os_str().to_os_string(),
+        std::ffi::OsString::from("-y"),
+    ];
+    match extract_dir {
+        Some(dir) if dir.starts_with('{') => args.push(format!("-c{dir}").into()),
+        Some(dir) if !dir.is_empty() => args.push(format!("-c{{app}}\\{dir}").into()),
+        _ => args.push(std::ffi::OsString::from("-c{app}")),
+    }
+    args.extend(switches.iter().map(std::ffi::OsString::from));
+    args
+}
+
+/// Promote `dest/<extract_dir>` up into `dest`, mirroring official Scoop's
+/// `movedir "$DestinationPath\$ExtractDir" $DestinationPath` plus the
+/// empty-top-directory cleanup (`lib/decompress.ps1:122-129`).
+///
+/// Used by the 7z CLI path, where the include filter (`-ir!`) leaves the
+/// subtree nested; the native path instead filters and strips in one pass.
+fn promote_extract_dir(dest: &Path, extract_dir: &str) -> Fallible<()> {
+    let from = dest.join(extract_dir);
+    if from == dest || !from.exists() {
+        return Ok(());
+    }
+    // Same volume, so `rename` moves whole subtrees atomically; an existing
+    // destination entry is replaced first (robocopy's `/move` overwrites).
+    for entry in std::fs::read_dir(&from)
+        .map_err(|e| Error::ExtractionFailed(format!("read {}: {}", from.display(), e)))?
+    {
+        let entry = entry.map_err(|e| Error::ExtractionFailed(format!("read dir entry: {}", e)))?;
+        let dst = dest.join(entry.file_name());
+        let _ = std::fs::remove_file(&dst);
+        let _ = crate::internal::fs::remove_dir(&dst);
+        std::fs::rename(entry.path(), &dst).map_err(|e| {
+            Error::ExtractionFailed(format!("move '{}': {}", entry.path().display(), e))
+        })?;
+    }
+    // Drop the emptied subtree, then an emptied top component (`a/b` → `a`).
+    let _ = std::fs::remove_dir(&from);
+    if let Some(top) = extract_dir.split(['\\', '/']).next()
+        && !top.is_empty()
+    {
+        let _ = std::fs::remove_dir(dest.join(top));
+    }
+    Ok(())
+}
+
+/// Extract via external `7z.exe` with a script's `-Switches`/`-Overwrite`.
+///
+/// Mirrors official `Expand-7zipArchive`: the outer pass unpacks the container,
+/// and for a compressed tar it then unpacks the inner `.tar` — official's
+/// recursive call deliberately drops `$Switches`/`$Overwrite`
+/// (`lib/decompress.ps1:117`), so the inner pass is the plain native one.
+fn extract_7z_cli(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    let single_extract_dir = extract_dir.and_then(|d| d.first().copied());
+    let args = seven_zip_cli_args(src, dest, single_extract_dir, &cli.switches, cli.overwrite);
+    run_7z_exe(&helper_exe("7z"), &args, emitter)?;
+
+    if is_tar_container(src) {
+        let inner = inner_tar(dest)?;
+        let extract_dirs = extract_dir.map(|d| d.to_vec());
+        let extract_refs = extract_dirs.as_deref();
+        extract(&inner, dest, extract_refs, None, false, emitter)?;
+        let _ = std::fs::remove_file(&inner);
+        return Ok(());
+    }
+    if let Some(dir) = single_extract_dir {
+        promote_extract_dir(dest, dir)?;
+    }
+    Ok(())
+}
+
+/// The single `.tar` the first pass of a compressed-tar extraction left in
+/// `dest` — official finds it by regexing the `7z l` log
+/// (`lib/decompress.ps1:113-117`); scanning the destination is equivalent for
+/// the one-container case and does not depend on log formatting.
+fn inner_tar(dest: &Path) -> Fallible<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dest)
+        .map_err(|e| Error::ExtractionFailed(format!("read {}: {}", dest.display(), e)))?
+    {
+        let entry = entry.map_err(|e| Error::ExtractionFailed(format!("read dir entry: {}", e)))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("tar"))
+        {
+            found.push(path);
+        }
+    }
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        n => Err(Error::ExtractionFailed(format!(
+            "expected one inner .tar in {}, found {}",
+            dest.display(),
+            n
+        ))),
+    }
+}
+
+/// Extract an Inno Setup installer via `innounp.exe` with a script's
+/// `-Switches` (official `Expand-InnoArchive`, `lib/decompress.ps1:244-254`).
+fn extract_inno_cli(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    _emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    if cli.overwrite.is_some() {
+        // Structurally unreachable: only `Expand-7zipArchive` declares
+        // `-Overwrite`, and the marker writer only emits the field from there.
+        // Fail loudly rather than drop a declared option on the floor.
+        return Err(Error::ExtractionFailed(
+            "innounp has no -Overwrite semantics; refusing to ignore it".into(),
+        ));
+    }
+    let args = innounp_cli_args(
+        src,
+        dest,
+        extract_dir.and_then(|d| d.first().copied()),
+        &cli.switches,
+    );
+    run_helper(&helper_exe("innounp"), &args, "innounp.exe")
+}
+
+/// Extract a marker that carried `Expand-*Archive` CLI options by handing them
+/// to the tool that defines them: `7z.exe` for the 7z family, `innounp.exe`
+/// for Inno Setup, `lessmsi.exe` for MSI. Dispatch is on the marker's declared
+/// `format`, which is the extractor the package script asked for.
+fn extract_with_cli(
+    format: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    crate::internal::fs::ensure_dir(dest)?;
+    match format {
+        "innosetup" => extract_inno_cli(src, dest, extract_dir, cli, emitter),
+        "msi" => {
+            if cli.overwrite.is_some() {
+                return Err(Error::ExtractionFailed(
+                    "lessmsi has no -Overwrite semantics; refusing to ignore it".into(),
+                ));
+            }
+            if !cli.switches.is_empty() {
+                tracing::debug!("msi extract: forwarding -Switches to lessmsi");
+            }
+            extract_msi(src, dest, extract_dir, &cli.switches, emitter)
+        }
+        // `7z` — and any future format hok does not know — use Scoop's
+        // `Expand-7zipArchive` semantics, whose options are 7-Zip's own.
+        _ => extract_7z_cli(src, dest, extract_dir, cli, emitter),
+    }
+}
+
+/// Fallback for formats only the external tool covers (`lzh`, `iso`).
+fn extract_with_7z_exe(
+    src: &Path,
+    dest: &Path,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    let args = vec![
+        std::ffi::OsString::from("x"),
+        src.as_os_str().to_os_string(),
+        arg_with_path("-o", dest),
+        std::ffi::OsString::from("-y"),
+        std::ffi::OsString::from("-bso0"),
+        std::ffi::OsString::from("-bsp1"),
+    ];
+    run_7z_exe(&helper_exe("7z"), &args, emitter)
+}
+
 // ─── MSI extraction via lessmsi ───────────────────────────────
 
 /// Extract a Windows Installer (`.msi`) archive via the external `lessmsi`
@@ -1154,24 +1515,21 @@ fn extract_msi(
     src: &Path,
     dest: &Path,
     extract_dir: Option<&[&str]>,
+    switches: &[String],
     emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     // Resolve lessmsi.exe from Scoop's shims or PATH, like `extract_with_7z_exe`.
-    let path_env = std::env::var("SCOOP").unwrap_or_default();
-    let shims_lessmsi = Path::new(&path_env).join("shims").join("lessmsi.exe");
-    let exe = if shims_lessmsi.exists() {
-        shims_lessmsi
-    } else {
-        PathBuf::from("lessmsi.exe")
-    };
+    let exe = helper_exe("lessmsi");
 
     // The trailing separator signals an extraction directory to lessmsi.
     let target = format!("{}{}", dest.display(), std::path::MAIN_SEPARATOR);
 
-    let mut child = Command::new(&exe)
-        .arg("x")
-        .arg(src)
-        .arg(&target)
+    let mut command = Command::new(&exe);
+    command.arg("x").arg(src).arg(&target);
+    // Official appends its `-Switches` after the base argument list
+    // (`lib/decompress.ps1:199-201`), which is where lessmsi's own options go.
+    command.args(switches);
+    let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -1666,6 +2024,24 @@ pub trait Archive: Send + Sync {
         innosetup: bool,
         emitter: &Option<mpsc::Sender<Event>>,
     ) -> Fallible<()>;
+
+    /// Extract a `[[HOK_EXTRACT]]` marker that carried `Expand-*Archive` CLI
+    /// options (`-Switches` / `-Overwrite`), by handing them to the tool that
+    /// defines them (`7z.exe` / `innounp.exe` / `lessmsi.exe`).
+    ///
+    /// Separate from [`Archive::extract`] on purpose: a marker without options
+    /// must keep the native backend byte-for-byte, while these options are the
+    /// CLI's own arguments and cannot be honoured by re-decoding natively
+    /// without re-implementing 7-Zip's option semantics.
+    async fn extract_script_cli(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        cli: &ScriptCliOptions,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()>;
 }
 
 /// Default archive implementation wrapping the free functions above.
@@ -1710,6 +2086,40 @@ impl Archive for RealArchive {
                 extract_dir.as_deref(),
                 extract_to.as_deref(),
                 innosetup,
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract task panicked: {}", e)))?
+    }
+
+    async fn extract_script_cli(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        cli: &ScriptCliOptions,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()> {
+        // Same reasoning as `extract`: spawning and waiting on an external
+        // tool is blocking work and must not occupy a runtime worker.
+        let format = format.to_owned();
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let cli = cli.clone();
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract_with_cli(
+                &format,
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                &cli,
                 &emitter,
             )
         })
@@ -2925,5 +3335,439 @@ mod rar_fixtures {
         }
         std::fs::write(golden_path(), out).expect("write golden file");
         eprintln!("wrote {}", golden_path().display());
+    }
+
+    // ─── Expand-*Archive CLI options (-Switches / -Overwrite) ─────────
+
+    use std::ffi::OsString;
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    /// `7z.exe` for the CLI-path tests: `HOK_7Z_EXE`, then Scoop's shim, then
+    /// `PATH`. `None` means "no 7zip on this machine" and the calling test
+    /// returns early — CI has no 7zip installed and only exercises the native
+    /// path, exactly like `pwsh_available` in `operations::script`.
+    fn seven_zip_for_test() -> Option<PathBuf> {
+        if let Some(exe) = std::env::var_os("HOK_7Z_EXE") {
+            let exe = PathBuf::from(exe);
+            return exe.is_file().then_some(exe);
+        }
+        let shim = helper_exe("7z");
+        if shim.is_file() {
+            return Some(shim);
+        }
+        Command::new("7z.exe")
+            .arg("i")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .is_some()
+            .then(|| PathBuf::from("7z.exe"))
+    }
+
+    /// Official `Expand-7zipArchive` argument-list parity
+    /// (`lib/decompress.ps1:94-106`): the `-ir!` include filter goes before the
+    /// `-Switches`, and the `-ao*` overwrite switch after them.
+    #[test]
+    fn test_seven_zip_cli_args_match_official_scoop() {
+        let src = Path::new(r"C:\pkg\dl.7z");
+        let dest = Path::new(r"C:\pkg");
+
+        // Plain call: no include filter, no switches, no overwrite.
+        assert_eq!(
+            seven_zip_cli_args(src, dest, None, &[], None),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // `-ExtractDir` becomes `-ir!<dir>\*` (official `:96-98`).
+        assert_eq!(
+            seven_zip_cli_args(src, dest, Some("app"), &[], None),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                r"-ir!app\*",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // Switches are appended verbatim (official `:99-101`), then `-ao*`
+        // (official `:102-106`) — not the other way round.
+        let cli = ScriptCliOptions {
+            switches: vec!["-pSECRET".into(), "-xr!*.pdb".into()],
+            overwrite: Some(Overwrite::Skip),
+        };
+        assert_eq!(
+            seven_zip_cli_args(src, dest, Some("app"), &cli.switches, cli.overwrite),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                r"-ir!app\*",
+                "-pSECRET",
+                "-xr!*.pdb",
+                "-aos",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // A tar container drops the include filter on the first pass
+        // (official `:95-98`).
+        let tar = Path::new("pkg.tar.gz");
+        assert_eq!(
+            seven_zip_cli_args(tar, dest, Some("app"), &[], None),
+            os_args(&[
+                "x",
+                "pkg.tar.gz",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+    }
+
+    /// Official `$IsTar` (`lib/decompress.ps1:95`) — a bare `.tar` is *not* a
+    /// tar container there, only a compressed one or the `.t[abgpx]z2?` set.
+    #[test]
+    fn test_is_tar_container_matches_official() {
+        for yes in [
+            "pkg.tar.gz",
+            "pkg.tar.bz2",
+            "pkg.tar.xz",
+            "pkg.tar.zst",
+            "pkg.tgz",
+            "pkg.tbz",
+            "pkg.tbz2",
+            "pkg.taz",
+            "pkg.tpz",
+            "pkg.txz",
+        ] {
+            assert!(is_tar_container(Path::new(yes)), "{yes} must be IsTar");
+        }
+        for no in ["pkg.tar", "pkg.7z", "dl.7z_", "pkg.zip", "pkg.tzst"] {
+            assert!(!is_tar_container(Path::new(no)), "{no} must not be IsTar");
+        }
+    }
+
+    /// `-Overwrite` values come from the marker lowercased (`all`/`skip`/
+    /// `rename`) and map to 7-Zip's `-aoa`/`-aos`/`-aou`.
+    #[test]
+    fn test_overwrite_marker_values_map_to_7z_switches() {
+        assert_eq!(Overwrite::from_marker("all"), Some(Overwrite::All));
+        assert_eq!(Overwrite::from_marker("skip"), Some(Overwrite::Skip));
+        assert_eq!(Overwrite::from_marker("rename"), Some(Overwrite::Rename));
+        assert_eq!(Overwrite::from_marker("Skip"), None, "marker is lowercased");
+        assert_eq!(Overwrite::from_marker(""), None);
+        assert_eq!(Overwrite::All.as_7z_switch(), "-aoa");
+        assert_eq!(Overwrite::Skip.as_7z_switch(), "-aos");
+        assert_eq!(Overwrite::Rename.as_7z_switch(), "-aou");
+
+        assert!(ScriptCliOptions::default().is_empty());
+        let mut cli = ScriptCliOptions::default();
+        cli.switches.push("-y".into());
+        assert!(!cli.is_empty());
+    }
+
+    /// Official `Expand-InnoArchive` argument-list parity
+    /// (`lib/decompress.ps1:245-253`), including the `-c` switch-regex branches.
+    #[test]
+    fn test_innounp_cli_args_match_official_scoop() {
+        let src = Path::new(r"C:\pkg\setup.exe");
+        let dest = Path::new(r"C:\pkg");
+
+        assert_eq!(
+            innounp_cli_args(src, dest, None, &[]),
+            os_args(&["-x", r"-dC:\pkg", r"C:\pkg\setup.exe", "-y", "-c{app}"])
+        );
+        // Unanchored `ExtractDir` is rooted at `{app}`.
+        assert_eq!(
+            innounp_cli_args(src, dest, Some("bin"), &[]),
+            os_args(&["-x", r"-dC:\pkg", r"C:\pkg\setup.exe", "-y", r"-c{app}\bin"])
+        );
+        // Already-anchored value is taken as-is.
+        assert_eq!(
+            innounp_cli_args(src, dest, Some(r"{app}\{tmp}"), &[]),
+            os_args(&[
+                "-x",
+                r"-dC:\pkg",
+                r"C:\pkg\setup.exe",
+                "-y",
+                r"-c{app}\{tmp}"
+            ])
+        );
+        // `-Switches` are appended last (official `:251-253`).
+        assert_eq!(
+            innounp_cli_args(src, dest, None, &["-a".to_string()]),
+            os_args(&[
+                "-x",
+                r"-dC:\pkg",
+                r"C:\pkg\setup.exe",
+                "-y",
+                "-c{app}",
+                "-a"
+            ])
+        );
+    }
+
+    /// `promote_extract_dir` hoists the `-ir!`-filtered subtree into `dest` and
+    /// drops the emptied directories — official's `movedir` + empty-top
+    /// cleanup (`lib/decompress.ps1:122-129`).
+    #[test]
+    fn test_promote_extract_dir_hoists_and_cleans_up() {
+        let root = tmpdir("promote_extract_dir");
+        let dest = root.join("dest");
+        let nested = dest.join("a").join("b");
+        crate::internal::fs::ensure_dir(&nested).unwrap();
+        std::fs::write(nested.join("hello.txt"), b"hi").unwrap();
+        crate::internal::fs::ensure_dir(&nested.join("sub")).unwrap();
+        std::fs::write(nested.join("sub").join("deep.txt"), b"deep").unwrap();
+        // An existing destination entry is replaced (robocopy /move semantics).
+        std::fs::write(dest.join("hello.txt"), b"stale").unwrap();
+
+        promote_extract_dir(&dest, r"a\b").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("hello.txt")).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("sub").join("deep.txt")).unwrap(),
+            "deep"
+        );
+        assert!(!dest.join("a").exists(), "emptied subtree must be removed");
+    }
+
+    /// Create a real 7z archive with `7z.exe` (optionally encrypted) so the CLI
+    /// path can be exercised against the tool official Scoop also uses.
+    fn create_7z(
+        exe: &Path,
+        archive: &Path,
+        work: &Path,
+        files: &[(&str, &str)],
+        password: Option<&str>,
+    ) {
+        crate::internal::fs::ensure_dir(work).unwrap();
+        for (name, body) in files {
+            let path = work.join(name);
+            if let Some(parent) = path.parent() {
+                crate::internal::fs::ensure_dir(parent).unwrap();
+            }
+            std::fs::write(&path, body).unwrap();
+        }
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(work).arg("a").arg("-t7z");
+        if let Some(password) = password {
+            // `-mhe=on` also encrypts the header, like the `-p` corpora.
+            cmd.arg(format!("-p{password}")).arg("-mhe=on");
+        }
+        cmd.arg(archive);
+        for (name, _) in files {
+            cmd.arg(name);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "7z a failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The load-bearing half of X5: an encrypted archive (the `-p` corpora,
+    /// ~28 manifest lines) cannot be read natively without a password, and the
+    /// `-Switches` field is what makes `7z.exe` decrypt it.
+    #[test]
+    fn test_cli_path_applies_password_switch() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe (HOK_7Z_EXE / Scoop shim / PATH)");
+            return;
+        };
+        let root = tmpdir("cli_password");
+        let archive = root.join("secret.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("keep.txt", "SECRET-BODY")],
+            Some("HOK-PW"),
+        );
+
+        // Native path, no switches: fails (or writes nothing) — the password
+        // is not expressible there.
+        let native_dest = root.join("native");
+        let native = extract(&archive, &native_dest, None, None, false, &None);
+        assert!(
+            native.is_err() || !native_dest.join("keep.txt").exists(),
+            "an encrypted archive must not yield its payload without a password"
+        );
+
+        // CLI path with `-p`: payload lands.
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-pHOK-PW".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, None, &cli, &None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
+            "SECRET-BODY"
+        );
+    }
+
+    /// A switching option that *removes* content: `-xr!*.pdb` must keep the
+    /// excluded file out of the extracted tree.
+    #[test]
+    fn test_cli_path_applies_exclude_switch() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_exclude");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[
+                ("app/keep.txt", "keep"),
+                ("app/drop.pdb", "pdb"),
+                ("app/sub/deep.txt", "deep"),
+            ],
+            None,
+        );
+
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-xr!*.pdb".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, None, &cli, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(dest.join("app/sub/deep.txt").exists());
+        assert!(
+            !dest.join("app/drop.pdb").exists(),
+            "-xr!*.pdb must keep drop.pdb out"
+        );
+    }
+
+    /// `-Overwrite` parity: `All` replaces, `Skip` keeps the existing file,
+    /// `Rename` writes alongside it — official's `-aoa`/`-aos`/`-aou`.
+    #[test]
+    fn test_cli_path_applies_overwrite_modes() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_overwrite");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("keep.txt", "NEW")],
+            None,
+        );
+
+        let run = |mode: Overwrite, dest: &Path| {
+            crate::internal::fs::ensure_dir(dest).unwrap();
+            std::fs::write(dest.join("keep.txt"), b"OLD").unwrap();
+            let cli = ScriptCliOptions {
+                switches: Vec::new(),
+                overwrite: Some(mode),
+            };
+            extract_with_cli("7z", &archive, dest, None, &cli, &None).unwrap();
+        };
+
+        let all = root.join("all");
+        run(Overwrite::All, &all);
+        assert_eq!(
+            std::fs::read_to_string(all.join("keep.txt")).unwrap(),
+            "NEW"
+        );
+
+        let skip = root.join("skip");
+        run(Overwrite::Skip, &skip);
+        assert_eq!(
+            std::fs::read_to_string(skip.join("keep.txt")).unwrap(),
+            "OLD",
+            "-aos must leave an existing file alone"
+        );
+
+        let rename = root.join("rename");
+        run(Overwrite::Rename, &rename);
+        assert_eq!(
+            std::fs::read_to_string(rename.join("keep.txt")).unwrap(),
+            "OLD",
+            "-aou must keep the existing file"
+        );
+        let renamed = std::fs::read_dir(&rename)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .find(|n| n != "keep.txt")
+            .unwrap_or_else(|| panic!("-aou wrote no renamed copy"));
+        assert_eq!(
+            std::fs::read_to_string(rename.join(&renamed)).unwrap(),
+            "NEW",
+            "the renamed copy must hold the archive's content"
+        );
+    }
+
+    /// A `-ExtractDir` on the CLI path must produce the same layout as the
+    /// native path: only that subtree, hoisted into `dest`.
+    #[test]
+    fn test_cli_path_extract_dir_matches_native_layout() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_extract_dir");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("app/hello.txt", "hi"), ("other/skip.txt", "no")],
+            None,
+        );
+
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-t7z".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, Some(&["app"]), &cli, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("hello.txt")).unwrap(),
+            "hi"
+        );
+        assert!(
+            !dest.join("app").exists(),
+            "extract_dir subtree must be hoisted, not nested"
+        );
+        assert!(!dest.join("other").exists(), "filter leaked other/");
     }
 }
