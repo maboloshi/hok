@@ -105,8 +105,22 @@ pub static REGEX_CACHE_FILE: LazyLock<Regex> = LazyLock::new(|| {
 ///   schema's `hashPattern` (Scoop's `schema.json`), which does not bind the
 ///   prefix to a specific length.
 pub static REGEX_HASH: LazyLock<Regex> = LazyLock::new(|| {
-    let pattern = r"^(?:[a-fA-F0-9]{64}|(?:md5|sha1|sha256|sha512):(?:[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128}))$";
-    RegexBuilder::new(pattern).build().unwrap()
+    // Algorithm names and digest lengths come from the one algorithm table
+    // (`internal::hash::HASH_ALGORITHMS`) so this schema mirror cannot drift
+    // from the algorithms hok actually verifies.
+    let names = crate::internal::hash::HASH_ALGORITHMS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join("|");
+    let lengths = crate::internal::hash::HASH_ALGORITHMS
+        .iter()
+        .map(|(_, length)| format!("[a-fA-F0-9]{{{length}}}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    // The leading alternative is the bare (unprefixed) sha256 digest.
+    let pattern = format!("^(?:[a-fA-F0-9]{{64}}|(?:{names}):(?:{lengths}))$");
+    RegexBuilder::new(&pattern).build().unwrap()
 });
 
 pub static REGEX_ARCHIVE_7Z: LazyLock<Regex> = LazyLock::new(|| {

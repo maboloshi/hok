@@ -65,10 +65,8 @@ impl Entry {
     fn formatted_expected(&self) -> String {
         if self.expected.is_empty() {
             String::new()
-        } else if self.algorithm == "sha256" {
-            self.expected.clone()
         } else {
-            format!("{}:{}", self.algorithm, self.expected)
+            crate::internal::hash::format_hash_value(&self.algorithm, &self.expected)
         }
     }
 }

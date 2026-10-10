@@ -617,13 +617,9 @@ fn format_hash(hash: &str) -> Option<String> {
     } else {
         hash
     };
-    let algo = match hash.len() {
-        32 => "md5",      // MD5
-        40 => "sha1",     // SHA1
-        64 => "sha256",   // SHA256 (no prefix)
-        128 => "sha512",  // SHA512
-        _ => return None, // Unknown length
-    };
+    // Upstream maps length to algorithm and returns $null for any other
+    // length (`lib/autoupdate.ps1:12-18`); the table lives in internal::hash.
+    let algo = crate::internal::hash::algorithm_for_digest_length(hash.len())?;
     Some(crate::internal::hash::format_hash_value(algo, &hash))
 }
 
