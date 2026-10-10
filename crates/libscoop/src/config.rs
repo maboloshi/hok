@@ -183,8 +183,8 @@ pub struct ConfigInner {
     #[serde(skip_serializing_if = "Option::is_none")]
     cat_style: Option<String>,
 
-    /// The text editor used by `hok config edit` (hok-specific key; Scoop
-    /// only honours the `EDITOR` environment variable). When unset,
+    /// The text editor used by `hok config edit` (a hok-specific key: upstream
+    /// has no editor launch at all and never reads `EDITOR`). When unset,
     /// `$EDITOR` is used, falling back to the system default handler.
     #[serde(skip_serializing_if = "Option::is_none")]
     editor: Option<String>,
@@ -398,6 +398,30 @@ impl Config {
         self.global_path.as_path()
     }
 
+    /// The built-in default root path: `$env:SCOOP`, else `$HOME/scoop`.
+    ///
+    /// [`Config::root_path`] only reports it while the key is unset; this is
+    /// for the reader that must show the current value **and** the default
+    /// side by side (`hok config --all`'s default column).
+    #[inline]
+    pub fn default_root_path() -> PathBuf {
+        default::root_path()
+    }
+
+    /// The built-in default cache path: `$env:SCOOP_CACHE`, else
+    /// `<default root>/cache`.
+    #[inline]
+    pub fn default_cache_path() -> PathBuf {
+        default::cache_path()
+    }
+
+    /// The built-in default global path: `$env:SCOOP_GLOBAL`, else
+    /// `$ProgramData/scoop`.
+    #[inline]
+    pub fn default_global_path() -> PathBuf {
+        default::global_path()
+    }
+
     /// Get the `no_junction` config.
     #[inline]
     pub fn no_junction(&self) -> bool {
@@ -529,6 +553,13 @@ impl Config {
     #[inline]
     pub fn default_architecture(&self) -> Option<&str> {
         self.inner.default_architecture.as_deref()
+    }
+
+    /// Get the `last_update` config: Scoop's last bucket-update timestamp, as
+    /// stored (upstream sets it in `lib/core.ps1`'s update check).
+    #[inline]
+    pub fn last_update(&self) -> Option<&str> {
+        self.inner.last_update.as_deref()
     }
 
     /// Whether Aria2 (or equivalent curl fragmentation) is enabled.
@@ -1110,9 +1141,9 @@ pub(crate) fn canonical_key(key: &str) -> Option<&'static str> {
 }
 
 /// The value a setting currently holds in the config **file**, as stored — not
-/// the resolved default ([`list_all_rows`] is the place for those, and the
-/// difference matters: `scoop config aria2-split` answers "not set" while the
-/// downloader still uses the built-in 5).
+/// the resolved default (`hok config --all`'s default column carries those, and
+/// the difference matters: `scoop config aria2-split` answers "not set" while
+/// the downloader still uses the built-in 5).
 ///
 /// Returns `None` when the key is unset, when it is not a setting hok writes
 /// (upstream's `scoop config <name>` answers the same way for a key it does not
@@ -1128,7 +1159,9 @@ pub fn value(session: &crate::Session, key: &str) -> Fallible<Option<serde_json:
     // legacy `alias` index are file-only settings that read back but are not
     // writable from the CLI.
     let name = canonical_key(key).unwrap_or(key);
-    let document: serde_json::Value = serde_json::from_str(&list(session)?)?;
+    // Re-reading hok's own serialization goes through the shared JSON entry
+    // point like every other read (`internal::json`), not a bare `serde_json`.
+    let document: serde_json::Value = internal::json::parse_str(&list(session)?)?;
     Ok(document.get(name).cloned())
 }
 
@@ -1235,293 +1268,6 @@ fn is_official_only_key(key: &str) -> bool {
     OFFICIAL_ONLY_KEYS
         .iter()
         .any(|name| name.eq_ignore_ascii_case(key))
-}
-
-/// One cell of the config listing.
-///
-/// The library never renders a config table itself: it reports *what* a value
-/// is, so the CLI can localize the placeholder cells (`Unset`, `Auto`) and
-/// print the real ones verbatim. Collapsing `Unset` into the literal `"none"`
-/// (as this module used to) made the placeholder indistinguishable from a real
-/// value — `proxy = none` is a legitimate setting.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ConfigCell {
-    /// The setting has no value.
-    Unset,
-    /// Resolved at runtime by hok (the architecture).
-    Auto,
-    /// A concrete value the user can read back and set verbatim.
-    Text(String),
-    /// A list value, rendered one element per entry.
-    List(Vec<String>),
-}
-
-impl ConfigCell {
-    fn text(value: impl Into<String>) -> ConfigCell {
-        ConfigCell::Text(value.into())
-    }
-
-    fn optional(value: Option<String>) -> ConfigCell {
-        value.map_or(ConfigCell::Unset, ConfigCell::Text)
-    }
-}
-
-/// One row of [`list_all_rows`]: the key, its current value and its built-in
-/// default. Column headers and the short description are the CLI's business
-/// (i18n lives there, not here).
-#[derive(Clone, Debug)]
-pub struct ConfigRow {
-    pub key: String,
-    pub value: ConfigCell,
-    pub default: ConfigCell,
-}
-
-/// Every supported setting with its current value and effective default.
-///
-/// The current value is what hok actually uses at runtime (defaults apply when
-/// the key is unset); the default column shows the built-in default, including
-/// environment-resolved paths (`$SCOOP`, `$SCOOP_CACHE`, ...).
-///
-/// # Errors
-///
-/// Returns an error if the config is currently borrowed elsewhere.
-pub fn list_all_rows(session: &crate::Session) -> Fallible<Vec<ConfigRow>> {
-    let config = session.config();
-
-    let row = |key: &str, value: ConfigCell, default: ConfigCell| ConfigRow {
-        key: key.to_owned(),
-        value,
-        default,
-    };
-    let mut rows = vec![row(
-        "aria2-enabled",
-        ConfigCell::text(fmt_bool(config.aria2_enabled())),
-        ConfigCell::text("true"),
-    )];
-    rows.push(row(
-        "aria2-split",
-        ConfigCell::text(config.aria2_split().to_string()),
-        ConfigCell::text("5"),
-    ));
-    rows.push(row(
-        "aria2-max-connection-per-server",
-        ConfigCell::text(config.aria2_max_connection_per_server().to_string()),
-        ConfigCell::text("5"),
-    ));
-    rows.push(row(
-        "jobs",
-        ConfigCell::text(config.jobs().to_string()),
-        ConfigCell::text("4"),
-    ));
-    rows.push(row(
-        "aria2-min-split-size",
-        ConfigCell::text(fmt_size(config.aria2_min_split_size())),
-        ConfigCell::text("20M"),
-    ));
-    rows.push(row(
-        "cache_path",
-        ConfigCell::text(config.cache_path().display().to_string()),
-        ConfigCell::text(default::cache_path().display().to_string()),
-    ));
-
-    let cat_style = config.cat_style();
-    rows.push(row(
-        "cat_style",
-        if cat_style.is_empty() {
-            ConfigCell::Unset
-        } else {
-            ConfigCell::text(cat_style)
-        },
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "editor",
-        ConfigCell::optional(config.editor().map(str::to_owned)),
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "default_architecture",
-        config
-            .default_architecture()
-            .map_or(ConfigCell::Auto, ConfigCell::text),
-        ConfigCell::Auto,
-    ));
-    rows.push(row(
-        "global_path",
-        ConfigCell::text(config.global_path().display().to_string()),
-        ConfigCell::text(default::global_path().display().to_string()),
-    ));
-    rows.push(row(
-        "gh_token",
-        ConfigCell::optional(config.gh_token.clone()),
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "ignore_failures",
-        ConfigCell::text(fmt_bool(config.ignore_failures())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "ignore_running_processes",
-        ConfigCell::text(fmt_bool(config.ignore_running_processes())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "language",
-        ConfigCell::text(config.language()),
-        ConfigCell::text("auto"),
-    ));
-    rows.push(row(
-        "last_update",
-        ConfigCell::optional(config.inner.last_update.clone()),
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "no_color",
-        ConfigCell::text(fmt_bool(config.no_color())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "confirm",
-        ConfigCell::text(fmt_bool(config.confirm())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "script_engine",
-        ConfigCell::text(fmt_bool(config.script_engine())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "no_junction",
-        ConfigCell::text(fmt_bool(config.no_junction())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "autostash_on_conflict",
-        ConfigCell::text(fmt_bool(config.autostash_on_conflict())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "private_hosts",
-        // The host *match patterns* only: `headers` carries the auth tokens
-        // these hosts need, and this listing must never print them.
-        match config.private_hosts() {
-            Some(hosts) if !hosts.is_empty() => ConfigCell::List(
-                hosts
-                    .iter()
-                    .map(|host| host.match_pattern().to_owned())
-                    .collect(),
-            ),
-            _ => ConfigCell::Unset,
-        },
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "proxy",
-        ConfigCell::optional(config.proxy().map(str::to_owned)),
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "root_path",
-        ConfigCell::text(config.root_path().display().to_string()),
-        ConfigCell::text(default::root_path().display().to_string()),
-    ));
-
-    let isolated = config.use_isolated_path();
-    rows.push(row(
-        "use_git_history",
-        ConfigCell::text(fmt_bool(config.use_git_history())),
-        ConfigCell::text("true"),
-    ));
-    rows.push(row(
-        "use_isolated_path",
-        match isolated {
-            None => ConfigCell::Unset,
-            Some(IsolatedPath::Boolean(b)) => ConfigCell::text(fmt_bool(*b)),
-            Some(IsolatedPath::Named(name)) => ConfigCell::text(name.clone()),
-        },
-        ConfigCell::Unset,
-    ));
-    rows.push(row(
-        "use_sqlite_cache",
-        ConfigCell::text(fmt_bool(config.use_sqlite_cache())),
-        ConfigCell::text("false"),
-    ));
-    rows.push(row(
-        "virustotal_api_key",
-        ConfigCell::optional(config.virustotal_api_key.clone()),
-        ConfigCell::Unset,
-    ));
-
-    Ok(rows)
-}
-
-fn fmt_bool(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
-/// Format a byte size back into the `aria2-min-split-size` style (5M, 10M).
-fn fmt_size(bytes: u64) -> String {
-    const G: u64 = 1024 * 1024 * 1024;
-    const M: u64 = 1024 * 1024;
-    const K: u64 = 1024;
-    if bytes >= G && bytes.is_multiple_of(G) {
-        format!("{}G", bytes / G)
-    } else if bytes >= M && bytes.is_multiple_of(M) {
-        format!("{}M", bytes / M)
-    } else if bytes >= K && bytes.is_multiple_of(K) {
-        format!("{}K", bytes / K)
-    } else {
-        bytes.to_string()
-    }
-}
-
-/// Open the config file in the user's configured editor.
-///
-/// Launches `$EDITOR` (if set) with the config file path as its argument and
-/// waits for the editor to exit. Returns `Ok(false)` when the `EDITOR`
-/// environment variable is not set, so the caller can fall back to opening
-/// the file with the system default handler.
-///
-/// `$EDITOR` is first spawned directly (passing the config path as UTF-16 on
-/// Windows, so non-ASCII paths — e.g. a CJK username — reach the editor
-/// intact). If that fails — the value is a command line such as `code --wait`
-/// or a `.cmd`/`.bat` script, which `std::process::Command` cannot start
-/// directly — it is executed through `cmd /c`, mirroring Scoop's
-/// `Invoke-Expression "$EDITOR \"$config\""` (libexec/scoop-config.ps1).
-///
-/// # Errors
-///
-/// I/O errors from spawning or waiting on the editor process are returned.
-pub fn edit(session: &crate::Session) -> Fallible<bool> {
-    let config = session.config();
-    // The `editor` config key wins; `$EDITOR` is the fallback, and the
-    // system default handler is used when neither is set.
-    let command = config
-        .editor()
-        .map(str::to_owned)
-        .or_else(|| std::env::var("EDITOR").ok())
-        .filter(|s| !s.trim().is_empty());
-    match command {
-        Some(editor) => {
-            let path = config.path.clone();
-            match std::process::Command::new(&editor).arg(&path).spawn() {
-                Ok(mut child) => {
-                    child.wait()?;
-                    Ok(true)
-                }
-                Err(_) => {
-                    let quoted = format!("\"{}\"", path.display());
-                    let mut child = std::process::Command::new("cmd")
-                        .args(["/c", &editor, &quoted])
-                        .spawn()?;
-                    child.wait()?;
-                    Ok(true)
-                }
-            }
-        }
-        None => Ok(false),
-    }
 }
 
 /// Set a configuration key. *
@@ -1733,106 +1479,9 @@ mod tests {
         assert!(matches!(err, Error::ConfigKeyInvalid(_)));
     }
 
-    /// `list_all_rows` covers every supported key with its current value and
-    /// effective default; a placeholder stays distinguishable from a real
-    /// value, and after `config set` the current value updates.
-    #[test]
-    fn list_all_rows_covers_supported_keys_with_current_and_default() {
-        let session = test_session("config_list_all");
-
-        let rows = crate::config::list_all_rows(&session).unwrap();
-        // every key reachable through `hok config set` is listed
-        for key in [
-            "aria2-enabled",
-            "aria2-split",
-            "aria2-max-connection-per-server",
-            "aria2-min-split-size",
-            "jobs",
-            "cache_path",
-            "cat_style",
-            "confirm",
-            "default_architecture",
-            "editor",
-            "global_path",
-            "gh_token",
-            "ignore_failures",
-            "ignore_running_processes",
-            "language",
-            "last_update",
-            "no_color",
-            "no_junction",
-            "autostash_on_conflict",
-            "private_hosts",
-            "proxy",
-            "root_path",
-            "script_engine",
-            "use_git_history",
-            "use_isolated_path",
-            "use_sqlite_cache",
-            "virustotal_api_key",
-        ] {
-            assert!(
-                rows.iter().any(|r| r.key == key),
-                "missing key {key} in {:?}",
-                rows.iter().map(|r| r.key.as_str()).collect::<Vec<_>>()
-            );
-        }
-
-        // An absent setting is `Unset` — never the literal "none", which is a
-        // real `proxy` value the CLI could not tell apart from it — and an
-        // auto-detected one is `Auto`; real values stay verbatim.
-        assert_eq!(value_of(&rows, "proxy"), ConfigCell::Unset);
-        assert_eq!(value_of(&rows, "editor"), ConfigCell::Unset);
-        assert_eq!(value_of(&rows, "cat_style"), ConfigCell::Unset);
-        assert_eq!(value_of(&rows, "default_architecture"), ConfigCell::Auto);
-        assert_eq!(
-            value_of(&rows, "no_junction"),
-            ConfigCell::Text("false".to_owned())
-        );
-
-        // after setting, the current value column shows the new value
-        crate::config::set(&session, "no_junction", "true").unwrap();
-        let rows = crate::config::list_all_rows(&session).unwrap();
-        assert_eq!(
-            value_of(&rows, "no_junction"),
-            ConfigCell::Text("true".to_owned())
-        );
-    }
-
-    /// A row's default column is a promise about the runtime: for every
-    /// boolean key it must equal the getter's value on a fresh (all-unset)
-    /// config. This is the guard for the drift S12 found — the runtime default
-    /// was changed to `false` while the column kept the old `true`.
-    #[test]
-    fn boolean_default_column_matches_the_runtime_default() {
-        let session = test_session("config_bool_defaults");
-        let rows = crate::config::list_all_rows(&session).unwrap();
-        let config = session.config();
-        for (key, actual) in [
-            ("aria2-enabled", config.aria2_enabled()),
-            ("ignore_failures", config.ignore_failures()),
-            (
-                "ignore_running_processes",
-                config.ignore_running_processes(),
-            ),
-            ("no_color", config.no_color()),
-            ("confirm", config.confirm()),
-            ("script_engine", config.script_engine()),
-            ("no_junction", config.no_junction()),
-            ("autostash_on_conflict", config.autostash_on_conflict()),
-            ("use_sqlite_cache", config.use_sqlite_cache()),
-        ] {
-            assert_eq!(
-                default_of(&rows, key),
-                ConfigCell::Text(fmt_bool(actual).to_owned()),
-                "{key}: the default column disagrees with the runtime default"
-            );
-        }
-    }
-
     /// `autostash_on_conflict` is a supported setting now: it round-trips
-    /// through `set`, `value` and the `list_all_rows` table, defaults to
-    /// `false`, and is no longer answered as an upstream-only key.
+    /// through `set` and `value`, defaults to `false`, and is no longer
+    /// answered as an upstream-only key.
     #[test]
     fn autostash_on_conflict_is_supported_and_round_trips() {
         use serde_json::json;
@@ -1848,11 +1497,6 @@ mod tests {
         // Default is `false`: `set` accepts the key and the runtime getter
         // starts out off.
         assert!(!session.config().autostash_on_conflict());
-        let rows = crate::config::list_all_rows(&session).unwrap();
-        assert_eq!(
-            default_of(&rows, "autostash_on_conflict"),
-            ConfigCell::Text("false".to_owned())
-        );
 
         crate::config::set(&session, "autostash_on_conflict", "true").unwrap();
         assert_eq!(
@@ -1860,11 +1504,6 @@ mod tests {
             Some(json!(true))
         );
         assert!(session.config().autostash_on_conflict());
-        let rows = crate::config::list_all_rows(&session).unwrap();
-        assert_eq!(
-            value_of(&rows, "autostash_on_conflict"),
-            ConfigCell::Text("true".to_owned())
-        );
 
         crate::config::set(&session, "autostash_on_conflict", "").unwrap();
         assert_eq!(
@@ -1872,22 +1511,6 @@ mod tests {
             None
         );
         assert!(!session.config().autostash_on_conflict());
-    }
-
-    fn value_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
-        rows.iter()
-            .find(|r| r.key == key)
-            .unwrap_or_else(|| panic!("missing row {key}"))
-            .value
-            .clone()
-    }
-
-    fn default_of(rows: &[crate::config::ConfigRow], key: &str) -> ConfigCell {
-        rows.iter()
-            .find(|r| r.key == key)
-            .unwrap_or_else(|| panic!("missing row {key}"))
-            .default
-            .clone()
     }
 
     /// Scoop-only settings that hok does not support must be refused by the CLI
