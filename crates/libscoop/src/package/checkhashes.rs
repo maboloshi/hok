@@ -107,6 +107,10 @@ pub async fn execute(
                 continue;
             }
         };
+        // Not `Package::is_nightly()`: upstream's comparison here is
+        // case-insensitive (`$manifest.version -eq 'nightly'` is `-ieq`,
+        // `bin/checkhashes.ps1:68`) while `is_nightly` matches exactly. See
+        // that method's note on the registered deviation.
         if manifest.version().eq_ignore_ascii_case("nightly") {
             continue;
         }

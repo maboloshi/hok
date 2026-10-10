@@ -380,6 +380,15 @@ impl Package {
         self.installed_version().is_some()
     }
 
+    /// Check if the package is a `nightly` build — the single entry for
+    /// "is this the nightly version?" on every hash-skipping path.
+    ///
+    /// The match is exact (case-sensitive). Upstream's comparisons are not
+    /// (`$version -eq 'nightly'` is `-ieq`, `lib/install.ps1:21`,
+    /// `bin/checkhashes.ps1:68`); that difference is registered as a deliberate
+    /// deviation in `.agents/docs/active/audit/command-deviation-audit-2026-09.md`
+    /// ("nightly 判定"), which is why `checkhashes` keeps its own
+    /// case-insensitive comparison instead of folding into this method.
     #[inline]
     pub fn is_nightly(&self) -> bool {
         self.version() == "nightly"

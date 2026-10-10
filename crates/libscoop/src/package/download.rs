@@ -250,7 +250,7 @@ pub struct DownloadOutcome {
 /// Skips the empty hashes upstream also skips (a warning is raised per file)
 /// and nightly packages, which upstream never verifies.
 fn verifiable_files(pkg: &Package) -> usize {
-    if pkg.version() == "nightly" {
+    if pkg.is_nightly() {
         return 0;
     }
     pkg.download_hashes()
@@ -282,7 +282,7 @@ fn verify_inline_file(
     }
     // Upstream never hashes a nightly package — neither does the tail pass —
     // so no warning either.
-    if package.version() == "nightly" {
+    if package.is_nightly() {
         return Ok(());
     }
     let files = package.download_filenames();

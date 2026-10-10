@@ -135,7 +135,7 @@ pub(crate) fn verify_downloads(
     let cache_root = config.cache_path();
 
     for &pkg in packages.iter() {
-        if pkg.version() == "nightly" {
+        if pkg.is_nightly() {
             info!("skip hash check for nightly package '{}'", pkg.name());
             continue;
         }
