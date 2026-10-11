@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（85 条，自动生成）
+## 索引（86 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-12 | 0.3 事实复核：DESIGN 拆分、config 帮助手册对齐与发布提交重做 | `386975b` | [`2026-10-12-doc-fact-pass-and-config-help-realign.md`](2026-10-12-doc-fact-pass-and-config-help-realign.md) |
 | 2026-10-12 | 集成分支改名 dev 与两轮历史引用修复 | `eb5deca` | [`2026-10-12-dev-branch-rename-and-deadref-repair.md`](2026-10-12-dev-branch-rename-and-deadref-repair.md) |
 | 2026-10-11 | 待办复核落地：bucket 优先级、安装态回落可见性、Start Menu 解析 | `28b04f3` `e8c999a` `ed308e5` `4df879c` | [`2026-10-11-pending-review-landing.md`](2026-10-11-pending-review-landing.md) |
 | 2026-10-11 | PS 兼容层 `-Switches`/`-Overwrite` 生效，参数声明对齐官方 | `caa1ba6` `56d3083` | [`2026-10-11-ps-decompress-switches.md`](2026-10-11-ps-decompress-switches.md) |
