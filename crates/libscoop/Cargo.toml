@@ -96,7 +96,13 @@ shortcuts-rs = "1.1.1"
 
 [build-dependencies]
 hok-shim = { path = "../hok-shim" }
-serde_json = { workspace = true }
+# `preserve_order` is load-bearing here, not a nicety: `embed_known_buckets`
+# reads `assets/buckets.json` into a `serde_json::Map` and bakes the *key order*
+# into `KNOWN_BUCKETS` / `BUCKET_PRIORITY_ORDER` (the official known-bucket
+# priority, `main` first). Without the feature that map is a `BTreeMap`, so both
+# constants come out alphabetically sorted and `bucket known` renders the wrong
+# order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [features]
 default = []

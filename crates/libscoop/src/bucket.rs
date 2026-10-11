@@ -910,16 +910,43 @@ mod tests {
         }
     }
 
+    /// The generated constants must keep **`assets/buckets.json`'s key order**
+    /// (`main` first), not an alphabetical sort.
+    ///
+    /// Comparing the two generated lists to each other cannot catch a wrong
+    /// order — both come out of the same generation — so this pins the literal
+    /// official order. `preserve_order` on the build script's `serde_json` is
+    /// what makes it hold; without that feature the map is a `BTreeMap` and
+    /// `main` lands fourth.
     #[tokio::test]
-    async fn bucket_priority_matches_known_keys() {
-        // BUCKET_PRIORITY is generated from the same buckets.json key order,
-        // so the two lists must agree on the key set.
+    async fn bucket_priority_matches_official_order() {
+        const OFFICIAL: [&str; 10] = [
+            "main",
+            "extras",
+            "versions",
+            "nirsoft",
+            "sysinternals",
+            "php",
+            "nerd-fonts",
+            "nonportable",
+            "java",
+            "games",
+        ];
+
+        let priority = crate::constant::BUCKET_PRIORITY.to_vec();
+        assert_eq!(
+            priority, OFFICIAL,
+            "BUCKET_PRIORITY must keep the buckets.json order"
+        );
+
         let known: Vec<&str> = crate::constant::BUILTIN_BUCKET_LIST
             .iter()
             .map(|(n, _)| *n)
             .collect();
-        let priority = crate::constant::BUCKET_PRIORITY.to_vec();
-        assert_eq!(known, priority, "priority must match known key order");
+        assert_eq!(
+            known, OFFICIAL,
+            "KNOWN_BUCKETS must keep the buckets.json order"
+        );
     }
 
     #[tokio::test]
