@@ -26,11 +26,8 @@ Updated: 2026-10-11
 |---|---|---|---|---|
 | **RF1** | 超长函数拆分（`checkver.rs` 的 `execute` + `apply_autoupdate` 收益最高） | 有条件 | **前置**：先给出具体问题陈述（性能或维护痛点）；`commit_one_install` / `commit_one_remove` 结构对称，先核对是否真能抽公共管线，别用开关掩盖 install/remove 语义差异 | 同上 |
 | **CA1** | `--dry-run`（uninstall → cleanup → install） | 下一批 | 验收 = 零副作用 | [`cli-additions-plan.md`](cli-additions-plan.md) |
-| **C1** | 官方独有 config 键的**剩余**真缺口 2 个：`use_external_7zip` / `show_manifest`（`autostash_on_conflict` 已于 2026-10-09 单独落地，键一旦拆出即按用户拍板只做这一键） | 以后 | 各需单独立案：`use_external_7zip` 与 X3/X5 的 7z 面重叠，`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
-| **B1** | `resolve.rs` 的 bucket 优先级 TODO（"smartly using pre-defined bucket priority"） | 以后 | 与"多 bucket 命中"主题合并处理 | 代码内 TODO：`crates/libscoop/src/package/resolve.rs` |
-| **X6** | 清单 hash 大小写：官方 `get_hash` 用 `-notcontains`（不区分大小写）接受 `SHA256:xxx`，hok 的 `REGEX_HASH` 大小写敏感 ⇒ 判无效 | 待拍板 | 对齐会扩大对既有清单的接受面，属行为变更；先判是否列为有意偏离 | [`systemic-optimization-audit-2026-09.md`](../audit/systemic-optimization-audit-2026-09.md) + D1 会话记录 |
-| **C2** | `Package::is_nightly` 大小写：官方三处 nightly 判定均不区分大小写（`-eq`），hok 精确比较而 `checkhashes` 走 `eq_ignore_ascii_case` ⇒ 同一语义两种口径 | 待拍板 | 对齐会让 download/verify 对 `Nightly` 变体从"不跳过校验"变"跳过校验"；决定后单独提交并更新偏离登记 | 同上 |
-| **MS1** | 安装态解析失败仍静默（H3 未覆盖的三个点）：`resolve_current_version` 坏清单**静默回落**到 `newest_version_dir`（可能给出**另一个版本**）、`load_install_state` 把坏清单当"未安装"、`maybe_fill_upgradable` 把坏清单当"不可升级" | 以后 | 需要给共享解析器加失败通道并贯穿 `Session`，调用点跨 7+ 模块（cleanup/health/info/list/session/manifest_source/sync_remove/query）⇒ 单独一条工作流；判据与已覆盖部分见 H3 devlog | H3 会话记录（2026-10-11） |
+| **C1** | 官方独有 config 键的**剩余**真缺口 1 个：`show_manifest`（`use_external_7zip` 已于 2026-10-11 判为有意偏离，见 §5；`autostash_on_conflict` 已于 2026-10-09 落地） | 以后 | 单独立案：`show_manifest` 属安装前交互（新增交互面）。入口仍是 `ConfigInner` 加字段 + `set()` match + `list_all` | [`scoop-gap-status.md`](../audit/scoop-gap-status.md) |
+| **MS1** | 安装态解析的**决策后果**仍静默（回落路径本身已于 2026-10-11 在 `cleanup` 可见化）：`load_install_state` 把坏清单当"未安装"、`maybe_fill_upgradable` 当"不可升级" | 以后 | 需要给共享解析器加失败通道并贯穿 `Session`，调用点跨 7+ 模块（health/info/list/session/manifest_source/sync_remove/query）⇒ 单独一条工作流；判据与已覆盖部分见 [`2026-10-11-manifest-parse-visibility.md`](../../devlog/2026-10-11-manifest-parse-visibility.md) | H3 会话记录（2026-10-11） |
 
 ## 3. 进行中
 
@@ -38,6 +35,7 @@ Updated: 2026-10-11
 
 > 编号是**按落地顺序发号**：`X6` 曾被 X5 会话用于「marker 的 `format` 未被当作格式判定」，该缺陷已于
 > 2026-10-11 修掉（`9f59e58`），编号归还待办池后由「清单 hash 大小写」接管。历史记录里出现的 X6 指前者。
+> 同轮复核后，「清单 hash 大小写」转 §5、`use_external_7zip` 新发号 `X7`，两者都不再占 §2 的行。
 
 ## 4. 暂缓（必须写理由与重启条件）
 
@@ -59,7 +57,7 @@ Updated: 2026-10-11
 | **PB1** | 私有 bucket SSH（SSH 凭据 / hostkey TOFU / token 注入 / README；含 `git2` 的 ssh feature 去留） | 私有 HTTPS 已可用、SSH 完全不可用；方案已定稿 | 需要 SSH bucket 时（先定路线：补齐 SSH vs 关 ssh feature 并登记 gap） | [`private-bucket-plan-2026-09.md`](private-bucket-plan-2026-09.md) |
 | **L1** | libscoop 独立给第三方用（路线 A 登记为不可独立使用 / 路线 B 真做成可发布） | 已实测不能独立使用，用户"先不动" | 要对外发布 libscoop 时 | [`systemic-optimization-audit-2026-09.md`](../audit/systemic-optimization-audit-2026-09.md) |
 | **M1** | 清单缓存按本地桶 mtime/size 行级记账 | 唯一收益场景是无 git 的本地目录桶，本机没有 | 出现无 git 的本地目录桶且成为瓶颈时 | 同上 |
-| **N2** | `shortcut.rs` / `psmodule.rs` 的 CWD 相对路径潜在项（缺 home 时的落点） | 只观察到潜在项，尚未复现 | 出现 CWD 相对路径相关的安装／卸载异常时 | 代码：`crates/libscoop/src/shortcut.rs`、`crates/libscoop/src/psmodule.rs` |
+| **N2** | `shortcut.rs` 的 Start Menu 解析：缺 `%APPDATA%` 时会落到 `%USERPROFILE%\.config`（末级仍会造 CWD 相对路径，与官方退化行为一致） | 正常环境不可达；`psmodule.rs` 那半实测不成立（兜底是空串，不产生相对路径，且比官方更安全），已从本条移出 | 出现快捷方式落点错误的安装／卸载异常时 | 代码：`crates/libscoop/src/shortcut.rs` |
 | **RF2** | 投机性重构组（事件模型折叠 / 库内默认事件消费者 / install-remove 公共提交管线 / 公共 API 收窄 / 依赖替换） | 属"该等"的一类：需需求稳定或性能证据才能判对错 | 各自的触发条件见 [`systemic-optimization-audit-2026-09.md`](../audit/systemic-optimization-audit-2026-09.md) 的「使用规则」小节 | 同上 |
 
 ## 5. 已定不做 / 有意偏离（长期登记，不计入"还剩什么"）
@@ -73,6 +71,9 @@ Updated: 2026-10-11
 | **EN4** upstream 0.6.0 的两条行为差：`git pull --tags --force`（只作用于桶同步）、`update -f` 丢 pin 重解析到桶 HEAD（hok 是原地重装） | 只记录差距 | 用户 2026-10-03 拍板；[`upstream-0.6.0-impact-2026-10.md`](../audit/upstream-0.6.0-impact-2026-10.md) |
 | **EN5** 二进制体积的 profile 调优 | 不改 | 实测体积是结构性的，杠杆在分发压缩；[`binary-size-analysis-2026-09.md`](../audit/binary-size-analysis-2026-09.md) |
 | **EN6** 清单历史索引的已知取舍：只走第一父链、不跟随重命名（`--follow`）、`gc --prune` 后按行失效回落 autoupdate | 登记不动 | 有意取舍；[`manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md) |
+| **X6** 清单 hash 算法前缀大小写 | 不改 | 官方运行时 `get_hash` 的 `-notcontains` 接受 `SHA256:`，但 hok 与官方 `schema.json` 同严（只认小写前缀）⇒ 是「比官方运行时更严」而非漏判。2026-10-11 实测本机 4 桶 22,845 份清单大写前缀 0 例，放宽只扩大接受面、无真实用例 |
+| **C2** nightly 判定大小写 | 不改 | 官方各处 `-eq 'nightly'` 不区分大小写，hok 精确比较。2026-10-11 实测 `"version": "Nightly"` 0 例；对齐会把「跳过 hash 校验」扩到大小写变体上，是放宽而非修正 |
+| **X7** `use_external_7zip`（原 C1 的 7z 半边） | 不做 | 上游原意是**依赖归属**而非性能：键为 true 时不装 Scoop 的 `7zip` helper、改用 PATH 上的 `7z.exe`，并跳过 `checkup` 的 helper 告警（`lib/decompress.ps1`、`lib/depends.ps1`、`libexec/scoop-checkup.ps1`）。hok 主力解压链不走 `7z.exe`，落点比上游窄且与 X2/X4 同面；要做必须与 X2 同批 |
 
 ## 6. 专题计划（细节在各自文档，本表只留指针）
 

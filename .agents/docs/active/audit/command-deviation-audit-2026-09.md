@@ -716,3 +716,15 @@
 | §4.2 `cleanup -k` 的输出 | **hok 扩展（登记）**：`-k` 原先对缓存零输出（官方同样静默），"只删了缓存"与"什么都没做"在屏幕上无法区分。现在收尾打一行 `过期下载缓存已删除：共 %{count} 个文件，%{size}`（`cmd.cleanup_cache_removed`）——**零删除也打**，于是静默只可能意味着没加 `-k`。官方无此行 |
 | §4.1 `cache rm <app>` 的覆盖面 | **随 `ff05b80` 一并扩大**：`*.download` 残留与含 `+`/`_` 的版本名现在同 `remove_outdated` 一起被 `cache rm <app>` 与 `cleanup -k` 看见并删除（官方 `^$app#` 本就能命中它们）。aria2 sidecar `<app>.txt` 的归属不变：只有 `cache rm` 删，`cleanup -k` 不碰 |
 | §4.1 部分下载残留（`.parts`） | **hok 扩展（登记，`7b92635`）**：`remove_incomplete` 除上游的 `*.download` 外，还递归删除 `<缓存名>.parts` 目录。官方 `Remove-Item "$cachedir\$app#*"` **不带 `-Recurse`** ⇒ 非空 `.parts` 目录上游清不掉（PowerShell 对非空目录报错跳过）；而中断的分片下载**没有缓存条目可依附**，只有按目录形状扫描的兜底入口能覆盖。输出上 hok 另起一行 `残留下载分片已清理：共 N 项，X`（官方无对应输出，属 hok 扩展） |
+
+## 本轮处置：bucket 优先级 / 安装态回落可见性 / Start Menu 解析 / 三条有意偏离（2026-10-11，4 提交 `28b04f3`/`e8c999a`/`ed308e5`/`4df879c`）
+
+| 位置 | 处置 |
+|---|---|
+| §6.2 之外的 `resolve::select_candidate`（多 bucket 命中） | **已修（`e8c999a`）**：无已安装候选时的排序原先只按 bucket 名字母序 ⇒ `extras` 压过 `main`。现按官方 `Get-LocalBucket`（`lib/buckets.ps1:56-75`）的 known-first 顺序排名，未知桶排在全部 known 之后、彼此仍按名字序；交互提示同序。排名收敛为一个 `bucket::known_rank`（`bucket list` 原先自带同款查找，已并入）。**残留偏离**：无 emitter／无人应答时 hok 仍报 `PackageMultipleCandidates`，官方此时取 `$matched_buckets[0]` 并 warn（`pending-tasks.md` S8） |
+| §6.2 bucket 的 known 数据 | **已修（`28b04f3`）**：`build.rs` 读 `assets/buckets.json` 的 build-dependency `serde_json` 未开 `preserve_order` ⇒ `KNOWN_BUCKETS` / `BUCKET_PRIORITY_ORDER` 实为**字母序**（`main` 落到第 4 位），与注释声称的「`buckets.json` 键序」不符；`bucket known` 输出的也是这个错序。补 feature 后恢复官方序。守卫测试原先把两个生成结果互比（恒真），现改为钉字面官方序 |
+| §4.2 `cleanup` 的当前版本回落 | **hok 扩展（登记，`ed308e5`）**：junction 模式下 `current` 清单不可解析时 `resolve_current_version` 回落到版本目录（官方 `Get-InstalledVersion` 同样如此），而该版本正是 `cleanup` **保留**的那个 ⇒ 判错就保错目录。官方此刻由 `parse_json`（`lib/manifest.ps1:5-12`）发默认可见的 `Write-Warning`，hok 的同类告警要到 `-v`/`-vv`；现补一条默认可见告警（`cmd.cleanup_current_from_version_dirs`）并点名将被保留的版本。解析与控制流**不变**（对齐官方「告警后照做」） |
+| 跨命令：清单 hash 算法前缀大小写 | **登记有意偏离（X6）**：官方运行时 `get_hash`（`lib/download.ps1:761-773`）经 `-notcontains` 接受 `SHA256:` 前缀，hok 与官方 `schema.json` 的 `hashPattern` 同严（只认小写）。2026-10-11 实测本机 4 桶 22,845 份清单大写前缀 **0 例**，不放宽 |
+| 跨命令：nightly 判定大小写 | **登记有意偏离（C2）**：官方各点 `-eq 'nightly'` 不区分大小写（`lib/install.ps1:21`、`libexec/scoop-download.ps1:99`、`libexec/scoop-update.ps1:286`、`bin/checkhashes.ps1:68`），`Package::is_nightly` 精确比较。实测 `"version": "Nightly"` **0 例**；对齐会把「跳过 hash 校验」扩到大小写变体上，属放宽而非修正 |
+| §6.3 `config` 的 `use_external_7zip` | **登记有意偏离（X7）**：上游原意是**依赖归属**而非性能——true 时不装 Scoop 的 `7zip` helper、改用 PATH 上的 `7z.exe`，并跳过 `checkup` 的 helper 告警（`lib/decompress.ps1:25-33,83-91`、`lib/depends.ps1:109`、`libexec/scoop-checkup.ps1:22`）；hok 主力解压链不走 `7z.exe`，落点窄且与 X2/X4 同面 ⇒ 不做 |
+| 跨命令：Start Menu 解析 | **已修（`4df879c`）**：`shortcut_dir` 的用户范围原先走 `config_dir()` 链（`%APPDATA%` → `$XDG_CONFIG_HOME` → `%USERPROFILE%\.config`），缺 `%APPDATA%` 时快捷方式落到 `%USERPROFILE%\.config\...` —— 那不是开始菜单。现按官方 `[Environment]::GetFolderPath('StartMenu'|'CommonStartMenu')`（`lib/shortcuts.ps1:22-29`）读注册表 `Shell Folders`；环境变量链保留为兜底（官方在同样环境下同样退化为 CWD 相对路径） |
