@@ -314,8 +314,27 @@ pub fn cleanup(
         // (upstream `Select-CurrentVersion`) — a local `read_link("current")`
         // diverges from it on broken/nightly installs, and deleting the wrong
         // dir here is destructive.
-        let current_version = install_state::resolve_current_version(&pkg_dir, no_junction)
-            .map(|resolved| resolved.version);
+        let resolved = install_state::resolve_current_version(&pkg_dir, no_junction);
+
+        // A junction install whose `current` metadata is unusable still
+        // resolves — through the version dirs, exactly as upstream's
+        // `Get-InstalledVersion` fallback does — and that resolved version is
+        // then *excluded* from deletion, so a wrong answer preserves the wrong
+        // directory. Upstream says so through `parse_json`'s warning; hok's own
+        // parse warnings sit behind `-v`/`-vv`, so the degradation is surfaced
+        // here, before removals are planned.
+        if !no_junction
+            && let Some(resolved) = &resolved
+            && resolved.source == install_state::CurrentVersionSource::VersionDirs
+        {
+            session.output().warn(hok_i18n::t!(
+                "cmd.cleanup_current_from_version_dirs",
+                name = name,
+                version = &resolved.version
+            ));
+        }
+
+        let current_version = resolved.map(|resolved| resolved.version);
 
         let Some(ref current_ver) = current_version else {
             // No install info — skip broken package. Its cache still goes:
@@ -504,6 +523,58 @@ mod tests {
         assert!(root.0.join("apps/app/1.0.0").exists(), "current kept");
         assert!(!root.0.join("apps/app/0.9.0").exists(), "old removed");
         assert!(!root.0.join("apps/app/0.8.0").exists(), "old removed");
+    }
+
+    /// A junction install whose `current` manifest is unreadable still resolves
+    /// — through the version dirs, as upstream's `Get-InstalledVersion` fallback
+    /// does — and that resolved version is the one cleanup *keeps*. The
+    /// degradation therefore has to be visible before removals are planned, not
+    /// only as a `-v`/`-vv` parse warning.
+    ///
+    /// The resolution itself is unchanged: the app is still cleaned.
+    #[test]
+    fn cleanup_warns_when_current_manifest_is_unreadable() {
+        use std::sync::Arc;
+
+        let (session, root) = setup("broken_current_warns");
+        install_versions(&root.0, "app", &["1.0.0", "0.9.0"], "1.0.0");
+        // Through the junction this is `1.0.0/manifest.json`; corrupt it and
+        // leave the install record the version-dir fallback orders by.
+        std::fs::write(
+            root.0.join("apps/app/current/manifest.json"),
+            b"{ \"version\": ",
+        )
+        .unwrap();
+        std::fs::write(
+            root.0.join("apps/app/1.0.0/install.json"),
+            r#"{"architecture":"64bit","bucket":"main"}"#,
+        )
+        .unwrap();
+
+        let warnings: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&warnings);
+        session
+            .set_output(Arc::new(move |out| {
+                if let crate::output::Output::Warn(msg) = out {
+                    sink.lock().unwrap().push(msg);
+                }
+            }))
+            .unwrap();
+
+        let outcome = cleanup(&session, &["app".to_owned()], &opts(false), &|_| {}).unwrap();
+
+        let warnings = warnings.lock().unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("no usable manifest under 'current'")),
+            "the version-dir fallback must be reported, got {warnings:?}"
+        );
+        assert_eq!(
+            outcome.apps[0].removed,
+            vec!["0.9.0".to_owned()],
+            "reporting the fallback must not change what is removed"
+        );
     }
 
     /// `cleanup -k` drops the app's outdated cached downloads but keeps the

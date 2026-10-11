@@ -176,6 +176,7 @@ cmd:
   cleanup_removing: "Removing %{name}:"
   cleanup_row: "%{name}: %{ver}"
   cleanup_list_current_unknown: "current version unknown"
+  cleanup_current_from_version_dirs: "'%{name}' has no usable manifest under 'current'; using version '%{version}' from the version directories as the current one."
   cleanup_failed_summary: "%{count} app(s) still have old versions: %{apps} (close the program using those files and retry; those directories may be partially deleted)"
   cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
   cleanup_cache_removed: "Outdated download cache removed: %{count} files, %{size}"

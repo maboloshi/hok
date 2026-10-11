@@ -176,6 +176,7 @@ cmd:
   cleanup_removing: "正在移除 %{name}："
   cleanup_row: "%{name}：%{ver}"
   cleanup_list_current_unknown: "当前版本未知"
+  cleanup_current_from_version_dirs: "'%{name}' 的 'current' 下没有可用清单；改以版本目录中的 '%{version}' 作为当前版本。"
   cleanup_failed_summary: "%{count} 个应用的旧版本未能移除：%{apps}（请关闭占用这些文件的程序后重试；相关目录可能已被部分删除）"
   cleanup_remove_failed: "无法移除 %{name} v%{ver}：%{e}"
   cleanup_cache_removed: "过期下载缓存已删除：共 %{count} 个文件，%{size}"
