@@ -144,10 +144,12 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   `.agents/skills/hok-worktree-parallel` (script path, self-test, wrap-up quartet). The load-bearing
   rules are:
   - one conversation = one worktree = one topic, based on the main line's **current** tip;
-  - the main line advances by linear `--ff-only` only — **merge commits are forbidden**; whoever lands
-    later rebases and preserves both sides' semantics. Its **name** is machine-local git config, not the
-    literal `main` (name, current value and how to reset: `.agents/skills/hok-worktree-parallel` →
-    本仓事实);
+  - the main line advances by `--ff-only` when it can; when a branch has genuinely diverged a **merge
+    commit is allowed** — preserve both sides' semantics, and never rewrite commits that already
+    landed (the devlog and the audits cite their shas; rebasing them breeds unreadable references).
+    A merge that lands anything noteworthy gets a devlog line like any other landing. The line's
+    **name** is machine-local git config, not the literal `main` (name, current value and how to
+    reset: `.agents/skills/hok-worktree-parallel` → 本仓事实);
   - each worktree builds into its own `target/`; verification trusts only a binary **you** built and
     copied out yourself — and a fresh worktree must run `cargo build -p hok-shim` first, or
     `crates/libscoop/build.rs:204` panics with "hok-shim binary not found";

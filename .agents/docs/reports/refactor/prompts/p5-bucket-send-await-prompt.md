@@ -1,7 +1,7 @@
 # P5 开工提示词：bucket update 事件 send() 收尾（对齐 rake 背压，新会话）
 
 > 用法：新开对话后，把本文件整段贴给 agent。配合 `.agents/docs/reports/refactor/tokio-purity-plan.md` 与 `.agents/docs/reports/refactor/plan.md` 使用。
-> 分支：`refactor/edition-2024`。前置：P1–P4 已完成 ✅（纯净化全链路 tokio 已落地；下载进度已对齐 rake：100ms 节流 + 单流 `send().await` 背压，见 commit `8009f1c`）。
+> 分支：`refactor/edition-2024`。前置：P1–P4 已完成 ✅（纯净化全链路 tokio 已落地；下载进度已对齐 rake：100ms 节流 + 单流 `send().await` 背压，见 commit `d967c7f`）。
 
 ## 目的
 把 `bucket.rs` 里遗留的 5 处 `let _ = tx.send(...)` 非绑定 future（clippy `let_underscore_future` warning）收尾：这些调用都发生在 async 上下文（`bucket::update` 及其 `tokio::task::spawn` 内的并发 pull），应改为 `send().await` 保背压、消除 warning，对齐下载路径已完成的背压纪律。
@@ -10,7 +10,7 @@
 - `crates/libscoop/src/bucket.rs` 的 `update(session)` 是 async，`session.emitter()` 返回 `tokio::sync::mpsc::Sender<Event>`
 - 事件总线（P4 已迁）`tokio::sync::mpsc::bounded(EVENT_BUS_CAPACITY=20)`；`tx.send()` 返回 future，被 `let _ =` 丢弃 → clippy `non-binding let on a future` warning（5 处：`bucket.rs:479/513/520/526/549`）
 - 事件：`BucketUpdateProgress`（并发 pull 的 start/succeeded/failed）、`BucketUpdateDone`（空桶分支 + 收尾）——均为低频事件
-- 下载路径（`8009f1c`）已示范：单流进度回调改 async boxed-future `ProgressCallback` + `send().await`；`bucket.rs` 是同构的 async 调用点，直接 `send().await` 即可
+- 下载路径（`d967c7f`）已示范：单流进度回调改 async boxed-future `ProgressCallback` + `send().await`；`bucket.rs` 是同构的 async 调用点，直接 `send().await` 即可
 
 ## 开工必读
 1. `.agents/docs/reports/refactor/tokio-purity-plan.md`（确认 P1–P4 现状）

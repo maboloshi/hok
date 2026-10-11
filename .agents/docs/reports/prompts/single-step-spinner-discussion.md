@@ -13,7 +13,7 @@
 1. **`f09d9e0` — 单步进度统一为 TTY 感知层**（`src/output.rs`）：
    - `status/done/ok` TTY 感知：TTY 用后台线程 spinner，非 TTY 纯文本无 ANSI；TTY 检测 `std::io::IsTerminal`（不加依赖）；快步骤 `MIN_SPIN=300ms` 不画帧；`output::` 公开签名不变。
    - 新增 `status_line()` 承载报表/数据行（search/list/status/checkver/auto_pr/checkup/update/loading_cache），`status/done/ok` 只做真单步对。
-2. **`ba7ca09` — TTY 定格改 `✓ <status>`**：
+2. **`ba7ca09`（提交号已随 2026-08 重构失效落空，且无等价提交）— TTY 定格改 `✓ <status>`**：
    - `done` 在 TTY 定格成 `✓ <status>`（去尾部 `...`），丢弃冗长的“…完成。”句；非 TTY 保持两行（status + done）。
    - 缓存刷新并入 spinner（`update.rs` 的 `status_line(refresh_cache)` → `status`）；`strip_trailing_ellipsis` + ANSI-strip 测试。
 
@@ -29,7 +29,7 @@ rake 的 UI 按场景分三类：
 
 ## 待讨论的开放问题
 
-1. **单步是否要“像 update.rs（bucket spinner）”处理？** 用户曾提议撤销 `f09d9e0`+`ba7ca09`，在 `scoop_handler.rs` 像 `update.rs` 那样用事件驱动 UI 组件（`BucketUpdateUI` 风格）承载单步。需评估：rake 自己单步不是 spinner，硬套偏离 rake；且单步进度不只走事件（还有 `cmd/mod.rs` 的 Output sink、reinstall 直接调用），改 `scoop_handler` 会失去统一入口。
+1. **单步是否要“像 update.rs（bucket spinner）”处理？** 用户曾提议撤销 `f09d9e0`+`ba7ca09`（后者的提交号已随 2026-08 重构失效落空，且无等价提交），在 `scoop_handler.rs` 像 `update.rs` 那样用事件驱动 UI 组件（`BucketUpdateUI` 风格）承载单步。需评估：rake 自己单步不是 spinner，硬套偏离 rake；且单步进度不只走事件（还有 `cmd/mod.rs` 的 Output sink、reinstall 直接调用），改 `scoop_handler` 会失去统一入口。
 2. **`BucketUpdateUI` 非 TTY 是否要干净化？** `BucketUpdateUI` 是 `indicatif::MultiProgress`，非 TTY/管道下会整组 `\r` 重绘出乱码/ANSI（2026-08-21 devlog 已记录同类问题）。是否在 `update.rs` 加非 TTY 分流（TTY 用 BucketUpdateUI，非 TTY 用纯文本 status_line/done）？**不需要改 Event**。
 3. **是否改 `Event::BucketUpdateProgress`？** 事件已携带 name+state(Started/Succeeded/Failed)，信息足够；非 TTY 乱序是管道本质，改 Event 不解决。非 TTY 分流只需消费端 `is_tty()` 判断。
 4. **组件式架构**：是否把单步 spinner 从 `output.rs` 抽成 `cui.rs` 独立 UI 组件（`BucketUpdateUI` 同层），`output.rs` 只留薄分发入口、行为不变——纯架构重构，值不值得（“命名即文档”权衡）。

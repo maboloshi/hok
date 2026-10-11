@@ -1,20 +1,21 @@
 ---
 name: hok-worktree-parallel
 title: hok 并行 worktree 专属细则
-description: 在 hok 里开 worktree 并行干活、做主线 ff-only 落地、或做会话收尾回填时读：本仓专属的 worktree 细则、沙箱坑与收尾四件套（通用纪律与脚本见全局 worktree-parallel）。
+description: 在 hok 里开 worktree 并行干活、做主线落地、或做会话收尾回填时读：本仓专属的 worktree 细则、分支与主线的最新命名、沙箱坑与收尾四件套（通用纪律与脚本见全局 worktree-parallel）。
 metadata:
   type: project
 ---
 
-**通用纪律见全局 skill `worktree-parallel`**（一会话一 worktree、base 现取、独立构建目录、副本产物验证、显式 `git add`、rebase + `--ff-only`、冲突保双方语义、未跟踪文档只在主树改；§8 还带配套脚本 `scripts/worktree-merge.ps1` 与自测）。本文件只记 hok 落地细节；**多子代理并行编排纪律见 [[hok-agent-orchestration]]**（派活前的文件+语义重叠矩阵、并发上限 2–3、子代理 prompt 契约、决策门与证据纪律、收口落地检查单、换对话前的交接文档模式）。
+**通用纪律见全局 skill `worktree-parallel`**（一会话一 worktree、base 现取、独立构建目录、副本产物验证、显式 `git add`、冲突保双方语义、未跟踪文档只在主树改；§8 还带配套脚本 `scripts/worktree-merge.ps1` 与自测）。本文件只记 hok 落地细节；**多子代理并行编排纪律见 [[hok-agent-orchestration]]**（派活前的文件+语义重叠矩阵、并发上限 2–3、子代理 prompt 契约、决策门与证据纪律、收口落地检查单、换对话前的交接文档模式）。
 
 ## 本仓事实
 - **全新 worktree 先建 shim 再构建**：`cargo build -p hok-shim`。否则第一次 `cargo test`/`cargo build` 会在 `crates/libscoop/build.rs:204` panic（`hok-shim binary not found … Run \`cargo build -p hok-shim\` first.`）——该 worktree 自己的 `target/` 里还没有 `hok-shim{,-gui}.exe`。
 - **全新 worktree 的 cargo 还要绕开 sccache wrapper**：本机 `$CARGO_HOME/config.toml` 用 `rustc-wrapper` 指向 sccache，它在**全新** worktree 里编译 C 依赖（`libsqlite3-sys` / `zstd-sys` / `libz-sys`）时报 `Compiler not supported: Failed to detect showIncludes prefix`（clang-cl）。跑 cargo 前设 `$env:RUSTC_WRAPPER=''`；若看到 `could not parse TOML configuration`，先查那份 config 的值里有没有未转义的反斜杠路径（Windows 路径要正斜杠）。
-- 主线是**线性历史**；只接受 `--ff-only` 前进，**禁 merge commit**（后落地者 rebase + 解冲突，保留双方语义）。
-  `main` 是最终目标线（当前落后于开发线很多；"合并到 main / push / 版本号"是独立主题）。
+- **落地优先 `--ff-only`；分叉时允许 merge commit**（保留双方语义，不重写已落地的提交号——日志与审计大量引用它们）。
+  已落地并被文档引用的提交**不再 rewrite**：分叉了就 merge，别 rebase。
+  `dev` 是集成分支、`main` 是发布线；两条长期分叉时，`main` 定期 merge `dev`（或发布时推进），别让 dev 落后成孤岛。
 - 主线分支名由 `git config worktree-merge.mainbranch` 决定（脚本据此解析主线，无需每次传 `-MainBranch`）。
-  **这是机器本地配置、不入库**——本机当前值是开发线 `refactor/edition-2024`；改主线/换分支后必须重设：
+  **这是机器本地配置、不入库**——本机当前值是集成分支 `dev`；改主线/换分支后必须重设：
   `git config worktree-merge.mainbranch <branch>`。
 - **已入库文档**：`.agents/**`、`AGENTS.md`、`CLAUDE.md`、`docs/` 每个 worktree 都有独立副本，正常改、正常提交。
 - **汇总型热点文件（例外，仍只在主树改）**：清单与理由见 [`.agents/AGENTS.md`](../AGENTS.md) → 硬约束 1；

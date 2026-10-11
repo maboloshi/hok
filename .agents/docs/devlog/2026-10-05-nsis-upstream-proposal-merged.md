@@ -9,7 +9,7 @@
 |---|---|
 | issue #2 `dest_path()` 目录跟踪 | 上游 [PR #19](https://github.com/ATRAPSLLC/nsis-rs/pull/19) 修复，0.4.0 发布 |
 | issue #3 solid 截断/吞错 | 上游 [PR #8](https://github.com/ATRAPSLLC/nsis-rs/pull/8) 修复（`SolidStatus` + `Error::OutputTooLarge`） |
-| issue #4 / PR #5 lzma-rust2 + zlib-rs | [PR #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5) 合并，提交 `201df25`（merge `2e454b7`），0.4.0 发布 |
+| issue #4 / PR #5 lzma-rust2 + zlib-rs | [PR #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5) 合并，提交 [`201df25`](https://github.com/ATRAPSLLC/nsis-rs/commit/201df25dbda82c38bd5ec6c7814597429e07f3a9)（merge [`2e454b7`](https://github.com/ATRAPSLLC/nsis-rs/commit/2e454b7ae4be1eb74e0a41bc884691a17c9f882d)），0.4.0 发布 |
 | innospect PR #3 | 0.1.4（2026-09-18）合并 |
 
 **改动**（只改状态，提案正文一律不动）：`legacy/nsis-issue.md` 文首加「闭环」块 + §PR 3 的 OPEN 改「已合并」

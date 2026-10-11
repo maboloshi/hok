@@ -4,9 +4,9 @@
 > nsis 版本基线：**0.4.0**（2026-08-15，已发布；0.3.1 已过时）
 > innospect：https://github.com/ATRAPSLLC/innospect（原 BinFlip/inno-rs，已转移）
 > innospect 版本基线：**0.1.4**（2026-09-18，已收录 PR #3）
-> **闭环（2026-10-05 复核）：本文件全部提案均已由上游合并**——nsis-rs issue #2（`dest_path()` 目录跟踪）由上游 [PR #19](https://github.com/ATRAPSLLC/nsis-rs/pull/19) 修复、issue #3（solid 截断/吞错）由上游 [PR #8](https://github.com/ATRAPSLLC/nsis-rs/pull/8) 修复（`SolidStatus` + `Error::OutputTooLarge`）、issue #4 / [PR #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5) 直接合并（提交 `201df25`，merge commit `2e454b7`），nsis-rs 三项随 **0.4.0（2026-08-15）** 发布；innospect [PR #3](https://github.com/ATRAPSLLC/innospect/pull/3) 随 **0.1.4（2026-09-18）** 合并。上游现为 **0.5.0（2026-09-27，含 breaking API）**，hok 仍钉 `nsis = "0.4"`（升级未评估）。**本文件自此只作历史记录，状态不再更新。**
+> **闭环（2026-10-05 复核）：本文件全部提案均已由上游合并**——nsis-rs issue #2（`dest_path()` 目录跟踪）由上游 [PR #19](https://github.com/ATRAPSLLC/nsis-rs/pull/19) 修复、issue #3（solid 截断/吞错）由上游 [PR #8](https://github.com/ATRAPSLLC/nsis-rs/pull/8) 修复（`SolidStatus` + `Error::OutputTooLarge`）、issue #4 / [PR #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5) 直接合并（提交 [`201df25`](https://github.com/ATRAPSLLC/nsis-rs/commit/201df25dbda82c38bd5ec6c7814597429e07f3a9)，merge commit [`2e454b7`](https://github.com/ATRAPSLLC/nsis-rs/commit/2e454b7ae4be1eb74e0a41bc884691a17c9f882d)），nsis-rs 三项随 **0.4.0（2026-08-15）** 发布；innospect [PR #3](https://github.com/ATRAPSLLC/innospect/pull/3) 随 **0.1.4（2026-09-18）** 合并。上游现为 **0.5.0（2026-09-27，含 breaking API）**，hok 仍钉 `nsis = "0.4"`（升级未评估）。**本文件自此只作历史记录，状态不再更新。**
 > 状态（2026-08-16→17）：
-> - **nsis-rs 0.4.0 已发布并吸收 hok 全部提案**：LZMA lzma-rs → lzma-rust2 + flate2 zlib-rs（commit 201df25，即原 PR #5）、`ExtractedFile::dest_path()`（原 PR 1 / issue #2）、solid 截断/解压失败不再静默（原 PR 2 / issue #3，`SolidStatus` + `Error::OutputTooLarge`），另含 NSIS 1.x 支持等大量修复；
+> - **nsis-rs 0.4.0 已发布并吸收 hok 全部提案**：LZMA lzma-rs → lzma-rust2 + flate2 zlib-rs（commit [`201df25`](https://github.com/ATRAPSLLC/nsis-rs/commit/201df25dbda82c38bd5ec6c7814597429e07f3a9)，即原 PR #5）、`ExtractedFile::dest_path()`（原 PR 1 / issue #2）、solid 截断/解压失败不再静默（原 PR 2 / issue #3，`SolidStatus` + `Error::OutputTooLarge`），另含 NSIS 1.x 支持等大量修复；
 > - **innospect [PR #3](https://github.com/ATRAPSLLC/innospect/pull/3)（已合并 → 0.1.4）**：同样的 lzma-rust2 + zlib-rs 切换（fork `maboloshi/innospect` 分支 `lzma-rust2`），2026-09-18 随 0.1.4 发布；上游另把 **LZMA2 字典大小改为读 Inno 的属性字节**（比 fork 的固定 32MiB 更强，`lzma2/ultra64` 类大字典包可正确解码）；
 > - 早期 issue：nsis-rs [issues/2](https://github.com/ATRAPSLLC/nsis-rs/issues/2)（dest_path）、[issues/3](https://github.com/ATRAPSLLC/nsis-rs/issues/3)（solid 预算）、[issues/4](https://github.com/ATRAPSLLC/nsis-rs/issues/4)（lzma-rust2）；英文草案见 `nsis-issue-1-body.md` / `nsis-issue-2-body.md` / `nsis-issue-lzma-body.md`（同目录）
 > 决策（2026-08-15→17）：dest_path / solid 预算 **暂不提 PR**，等维护者回应 issue #2/#3 的 API 方向；补丁 `nsis-pr1.patch` 已备好待用（同目录）。lzma-rust2 建议（issue #4）**已直接提 PR**（用户 2026-08-16 决定"直接 PR"）。
@@ -221,7 +221,7 @@ let full_stream = decompress::decompress_block(
 ## PR 3（已提交）：LZMA 解码 lzma-rs → lzma-rust2 + flate2 zlib-rs
 
 > **状态（2026-08-16 提交；2026-10-05 复核均已合并）**——
-> [nsis-rs #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5)（**已合并** 2026-08-15，提交 `201df25` / merge commit `2e454b7`，随 0.4.0 发布）、
+> [nsis-rs #5](https://github.com/ATRAPSLLC/nsis-rs/pull/5)（**已合并** 2026-08-15，提交 [`201df25`](https://github.com/ATRAPSLLC/nsis-rs/commit/201df25dbda82c38bd5ec6c7814597429e07f3a9) / merge commit [`2e454b7`](https://github.com/ATRAPSLLC/nsis-rs/commit/2e454b7ae4be1eb74e0a41bc884691a17c9f882d)，随 0.4.0 发布）、
 > [innospect #3](https://github.com/ATRAPSLLC/innospect/pull/3)（**已合并**，随 0.1.4 于 2026-09-18 发布）。
 > 由 issue [nsis-rs #4](https://github.com/ATRAPSLLC/nsis-rs/issues/4) 演进而来，
 > 用户 2026-08-16 决定跳过等回应、直接提 PR；两个 fork 分支均为 `lzma-rust2`。

@@ -6,10 +6,11 @@
 > **维护**：一条日志 = 一个文件 `YYYY-MM-DD-<english-slug>.md`；首行 `# <主题>`，第 3 行 `> <日期> ｜ 提交 … ｜ 分支 …`。
 > 本索引由 `node .agents/scripts/devlog-index.mjs` 生成，**禁手改**（规则见 [[docs/AGENTS.md]] R7）。
 
-## 索引（84 条，自动生成）
+## 索引（85 条，自动生成）
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
+| 2026-10-12 | 集成分支改名 dev 与两轮历史引用修复 | — | [`2026-10-12-dev-branch-rename-and-deadref-repair.md`](2026-10-12-dev-branch-rename-and-deadref-repair.md) |
 | 2026-10-11 | 待办复核落地：bucket 优先级、安装态回落可见性、Start Menu 解析 | `28b04f3` `e8c999a` `ed308e5` `4df879c` | [`2026-10-11-pending-review-landing.md`](2026-10-11-pending-review-landing.md) |
 | 2026-10-11 | PS 兼容层 `-Switches`/`-Overwrite` 生效，参数声明对齐官方 | `caa1ba6` `56d3083` | [`2026-10-11-ps-decompress-switches.md`](2026-10-11-ps-decompress-switches.md) |
 | 2026-10-11 | marker 的 format 决定 extractor：改名下载不再静默失败 | `9f59e58` | [`2026-10-11-marker-format-extractor.md`](2026-10-11-marker-format-extractor.md) |
@@ -86,11 +87,11 @@
 | 2026-09-09 | 输出配色统一为单一「主题安全」调色板 | — | [`2026-09-09-output-theme-safe-palette.md`](2026-09-09-output-theme-safe-palette.md) |
 | 2026-08-29 | 阶段 3b 性能基准：细粒度事件发射开销可忽略，推迟源头发射门控 | — | [`2026-08-29-phase3b-emit-gating-deferred.md`](2026-08-29-phase3b-emit-gating-deferred.md) |
 | 2026-08-28 | update 误判「全部已缓存」导致 verify 文件不存在 | — | [`2026-08-28-update-false-all-cached.md`](2026-08-28-update-false-all-cached.md) |
-| 2026-08-23 | `hok update` 无包名并发 bucket 同步改用 spinner UI | `2b9f5d0` | [`2026-08-23-update-bucket-sync-spinner.md`](2026-08-23-update-bucket-sync-spinner.md) |
+| 2026-08-23 | `hok update` 无包名并发 bucket 同步改用 spinner UI | `a80ea33` | [`2026-08-23-update-bucket-sync-spinner.md`](2026-08-23-update-bucket-sync-spinner.md) |
 | 2026-08-23 | 单步进度统一为 TTY 感知 | `f09d9e0` | [`2026-08-23-single-step-progress-tty.md`](2026-08-23-single-step-progress-tty.md) |
-| 2026-08-23 | 纯净化 P5：bucket update 事件 send() 收尾 | `1e01967` | [`2026-08-23-purity-p5-bucket-update-send.md`](2026-08-23-purity-p5-bucket-update-send.md) |
+| 2026-08-23 | 纯净化 P5：bucket update 事件 send() 收尾 | `b70f160` | [`2026-08-23-purity-p5-bucket-update-send.md`](2026-08-23-purity-p5-bucket-update-send.md) |
 | 2026-08-23 | i18n 一致性安全网 | — | [`2026-08-23-i18n-key-parity-net.md`](2026-08-23-i18n-key-parity-net.md) |
-| 2026-08-23 | 下载进度对齐 rake：100ms 节流 + 单流 send() 背压 | `8009f1c` | [`2026-08-23-download-progress-throttle.md`](2026-08-23-download-progress-throttle.md) |
+| 2026-08-23 | 下载进度对齐 rake：100ms 节流 + 单流 send() 背压 | `d967c7f` | [`2026-08-23-download-progress-throttle.md`](2026-08-23-download-progress-throttle.md) |
 | 2026-08-21 | update verify/extract 缓存文件名不一致 + zip 反斜杠解压修复 | `fdd1114` `9e91b31` | [`2026-08-21-update-cache-name-mismatch.md`](2026-08-21-update-cache-name-mismatch.md) |
 | 2026-08-16 | 快捷方式参数丢失修复 | `5beedb7` | [`2026-08-16-shortcut-args-loss.md`](2026-08-16-shortcut-args-loss.md) |
 | 2026-08-15 | NSIS 提取、兼容修复、进度条与 7z 性能 | — | [`2026-08-15-nsis-extraction-and-7z-perf.md`](2026-08-15-nsis-extraction-and-7z-perf.md) |

@@ -4,7 +4,7 @@ Status: superseded-by [清单历史索引正式方案](../reports/manifest-histo
 Updated: 2026-10-06
 
 > **这是什么**：为「hok 能在 bucket HEAD 已无该版本时，按版本号取回**原文清单**」这条能力做的调研与决策记录。
-> 起因是上游 Scoop 0.6.0 的 `63cb8f84`（历史清单链），评估见
+> 起因是上游 Scoop 0.6.0 的 [`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8)（历史清单链），评估见
 > [`upstream-0.6.0-impact-2026-10.md`](../active/audit/upstream-0.6.0-impact-2026-10.md) §3.1–3.2。
 > **状态：只有结论与方案，没有实现**。新对话按 `investigate-first` 出正式方案（提交拆分 + 验收标准）后再动代码。
 > **口径**：官方侧引用 `../Scoop`（v0.6.0）file:line；hok 侧引用本仓 file:line。数据为 2026-10-03 本机实测。

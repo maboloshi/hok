@@ -1,9 +1,9 @@
 # 上游 Scoop 0.5.3 → 0.6.0 影响评估与本仓处置
 
-Status: active（P0/P1/P3 已落地；P2 中 `63cb8f84` 已于 2026-10-07 落地，余两条只留差距记录）
+Status: active（P0/P1/P3 已落地；P2 中 [`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) 已于 2026-10-07 落地，余两条只留差距记录）
 Updated: 2026-10-07
 
-> **是什么**：本地官方源码 `../Scoop` 于 2026-10-02 从 v0.5.3（`b588a06e`，2025-08-12）快进到 v0.6.0（`e6aa3b36`，2026-09-30），共 **76 个提交**。本文是这些改动对 hok 的影响逐项评估与本会话的处置记录。
+> **是什么**：本地官方源码 `../Scoop` 于 2026-10-02 从 v0.5.3（[`b588a06`](https://github.com/ScoopInstaller/Scoop/commit/b588a06e41d920d2123ec70aee682bae14935939)，2025-08-12）快进到 v0.6.0（[`e6aa3b3`](https://github.com/ScoopInstaller/Scoop/commit/e6aa3b366bdee8ed138c1e0f7b85192ebdd35d0f)，2026-09-30），共 **76 个提交**。本文是这些改动对 hok 的影响逐项评估与本会话的处置记录。
 > **口径**：官方侧一律引用 `../Scoop` 的 file:line（v0.6.0）；hok 侧引用本仓 file:line。**本节为静态读码 + 少量实测**，未做端到端复现的条目标注为「未实测」。
 > **与旧审计的关系**：`command-deviation-audit-2026-09.md`、`scoop-gap-analysis-2026-08.md`、`scoop-gap-status.md` 的对标口径是 **0.5.3**，其结论在其口径内仍有效，但**不再是当前上游**；本文覆盖 0.5.3 → 0.6.0 的增量。
 
@@ -13,7 +13,7 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 ## 1. P0 — 元数据文件名（必改）
 
-`145381fc` 把落盘元数据改名，并加了「新名优先、旧名回落」的读链：
+[`145381f`](https://github.com/ScoopInstaller/Scoop/commit/145381fc0db8134376f98f4234376023224305db) 把落盘元数据改名，并加了「新名优先、旧名回落」的读链：
 
 | 项 | 官方（v0.6.0） | hok（改前） |
 |---|---|---|
@@ -41,34 +41,34 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 | 上游 | 官方行为 | hok 改前 | 判定 |
 |---|---|---|---|
 | `cbd7c64b!` | API 模式默认 `$jsonpath='$.tag_name'` + 正则 `(?:v\|V)?([\d.-]+)`；HTML 模式默认正则 `/releases/tag/(?:v\|V)?([\d.-]+)`（`bin/checkver.ps1:180-191`） | `checkver.rs:139` 默认正则为 `([\d.]+)`（无 `-`）；`resolve_checkver_source` 从不注入默认 jsonpath、无 API/HTML 分流（`:530-600`） | **已对齐**：API 模式默认 jsonpath + API 正则、HTML 模式默认正则（`checkver.rs:804-817`，常量 `:228-232`；测试 `github_api_mode_defaults_to_tag_name_and_the_api_regex`） |
-| `35334422` | 校验 `$inputGithubUrl`（homepage 或 `checkver.github`）对 `^https://((www\.)?github\.com/…\|api\.github\.com/repos/…)$`，不匹配则报错并**跳过该 manifest**；非 api 才追加 `/releases/latest`；token 重写不再受 `$useGithubAPI` 门控（`bin/checkver.ps1:155-191`） | `checkver.rs:549-556` 只查 `starts_with("https://github.com/")` 且只出非致命 `pre_message`；map 形式完全不校验；`:589-593` 重写仍被 `use_github_api` 门控 | **已对齐**：`GITHUB_URL_PATTERN` 校验并给出 `skip_reason`（`checkver.rs:778-787`）；非 api 才追加 `/releases/latest`（`:789-794`）；token 重写不再受 `use_github_api` 门控（`:795-801`） |
-| `bdf63444` | `checkver.github` 的 `$useGithubAPI` 改为无条件（删掉 `PSObject.Properties.Count -eq 1` 门） | `checkver.rs:560-563` 仍有 `if cv.github_solo` 门；测试 `:1899-1918`、`:3090-3118` 断言这个已被删除的行为 | **已对齐**：`github_solo` 门已删（2026-10-07 全仓无该符号），map 形式无条件走 GitHub 分流 |
-| `d452e8f6` | `$.tag_name` 默认仅在**没有** `checkver.script` 时注入（`bin/checkver.ps1:182-184`） | `checkver.rs:278` `jsonpath = cv.jsonpath.clone()`，本就无默认 | **已对齐**：默认 jsonpath 注入以 `cv.script.is_none()` 为前提（`checkver.rs:808`） |
-| `20a178b1` | fetch 失败但存在 `checkver.script` 时，警告后**仍执行脚本**（`bin/checkver.ps1:307-321`） | `checkver.rs:336-339` 直接返回 `CheckverFetch::DownloadError`，脚本分支（`:340-364`）永远到不了 | **已对齐**：下载失败且有脚本时返回 `CheckverFetch::ScriptFallback`（`checkver.rs:494-519`），上层先出警告再跑脚本（`:589-622`） |
-| `c9f0728f` | `$originurl = strip_fragment $url` 同时喂 5 个版本变量与 github 模式的 jsonpath 字面量（`lib/autoupdate.ps1:214-218,303`） | `Substitution::with_url`（`checkver.rs:1165-1181`）已去 fragment；但 `checkver_hash.rs` 的 github jsonpath 用**原始 url** | **已对齐**：github 模式的 jsonpath 走 fragment 剥离后的 url（`checkver_hash.rs:160,174-176`，测试 `github_digest_jsonpath_uses_the_fragment_stripped_url`、`github_hash_lookup_strips_the_url_fragment`） |
-| `bd2e93df` | `find_hash_in_json` 仅在 URL 匹配 `^https?://api\.github\.com/.*` 且有 token 时加 `Authorization: Bearer` + `X-GitHub-Api-Version: 2022-11-28`（`lib/autoupdate.ps1:121-124`；实际条件以源码为准，CHANGELOG 还提到 HTTPS 要求） | 对**任意** json hash URL 都传 token（`internal/network.rs` 的 opts 覆盖）；从不发 `X-GitHub-Api-Version` | **已对齐**：`HeaderProfile::uses_github_token` 按 host 门控（`network.rs:136-176`），`X-GitHub-Api-Version` 按 profile 与 URL 发（`:232`，测试 `github_token_never_leaks_to_other_hosts`、`github_api_version_…`） |
+| [`3533442`](https://github.com/ScoopInstaller/Scoop/commit/353344224261956ab9eed698e18c6e8c78c80b3b) | 校验 `$inputGithubUrl`（homepage 或 `checkver.github`）对 `^https://((www\.)?github\.com/…\|api\.github\.com/repos/…)$`，不匹配则报错并**跳过该 manifest**；非 api 才追加 `/releases/latest`；token 重写不再受 `$useGithubAPI` 门控（`bin/checkver.ps1:155-191`） | `checkver.rs:549-556` 只查 `starts_with("https://github.com/")` 且只出非致命 `pre_message`；map 形式完全不校验；`:589-593` 重写仍被 `use_github_api` 门控 | **已对齐**：`GITHUB_URL_PATTERN` 校验并给出 `skip_reason`（`checkver.rs:778-787`）；非 api 才追加 `/releases/latest`（`:789-794`）；token 重写不再受 `use_github_api` 门控（`:795-801`） |
+| [`bdf6344`](https://github.com/ScoopInstaller/Scoop/commit/bdf6344423c92bbd0f5ccc7f90cdb17f109d1366) | `checkver.github` 的 `$useGithubAPI` 改为无条件（删掉 `PSObject.Properties.Count -eq 1` 门） | `checkver.rs:560-563` 仍有 `if cv.github_solo` 门；测试 `:1899-1918`、`:3090-3118` 断言这个已被删除的行为 | **已对齐**：`github_solo` 门已删（2026-10-07 全仓无该符号），map 形式无条件走 GitHub 分流 |
+| [`d452e8f`](https://github.com/ScoopInstaller/Scoop/commit/d452e8f6a02e1227f212d61a53b2ce12db76d9c1) | `$.tag_name` 默认仅在**没有** `checkver.script` 时注入（`bin/checkver.ps1:182-184`） | `checkver.rs:278` `jsonpath = cv.jsonpath.clone()`，本就无默认 | **已对齐**：默认 jsonpath 注入以 `cv.script.is_none()` 为前提（`checkver.rs:808`） |
+| [`20a178b`](https://github.com/ScoopInstaller/Scoop/commit/20a178b1f3cdd6b41efc910c77092d6bc4e7d705) | fetch 失败但存在 `checkver.script` 时，警告后**仍执行脚本**（`bin/checkver.ps1:307-321`） | `checkver.rs:336-339` 直接返回 `CheckverFetch::DownloadError`，脚本分支（`:340-364`）永远到不了 | **已对齐**：下载失败且有脚本时返回 `CheckverFetch::ScriptFallback`（`checkver.rs:494-519`），上层先出警告再跑脚本（`:589-622`） |
+| [`c9f0728`](https://github.com/ScoopInstaller/Scoop/commit/c9f0728ff7cab879fc0adecad319816c5aded95b) | `$originurl = strip_fragment $url` 同时喂 5 个版本变量与 github 模式的 jsonpath 字面量（`lib/autoupdate.ps1:214-218,303`） | `Substitution::with_url`（`checkver.rs:1165-1181`）已去 fragment；但 `checkver_hash.rs` 的 github jsonpath 用**原始 url** | **已对齐**：github 模式的 jsonpath 走 fragment 剥离后的 url（`checkver_hash.rs:160,174-176`，测试 `github_digest_jsonpath_uses_the_fragment_stripped_url`、`github_hash_lookup_strips_the_url_fragment`） |
+| [`bd2e93d`](https://github.com/ScoopInstaller/Scoop/commit/bd2e93df635de0538ff2afc3dd3bb5a792e956a2) | `find_hash_in_json` 仅在 URL 匹配 `^https?://api\.github\.com/.*` 且有 token 时加 `Authorization: Bearer` + `X-GitHub-Api-Version: 2022-11-28`（`lib/autoupdate.ps1:121-124`；实际条件以源码为准，CHANGELOG 还提到 HTTPS 要求） | 对**任意** json hash URL 都传 token（`internal/network.rs` 的 opts 覆盖）；从不发 `X-GitHub-Api-Version` | **已对齐**：`HeaderProfile::uses_github_token` 按 host 门控（`network.rs:136-176`），`X-GitHub-Api-Version` 按 profile 与 URL 发（`:232`，测试 `github_token_never_leaks_to_other_hosts`、`github_api_version_…`） |
 
-**已对齐（无需动）**：`3bee8159`（substitute 最长键优先，`checkver.rs:1107-1121` 已按长度倒序）、`3a79532d`（`$page` 跨迭代；hok 每次取出都是新值，结构上免疫）、`874e8e6f`（脚本无输出时的返回；hok 空页即报错、不返回旧版本）、`79669717`（`hash.mode: github`；`checkver_hash.rs:172` 早已分发，且 hok 不随仓带 `schema.json`）。
+**已对齐（无需动）**：[`3bee815`](https://github.com/ScoopInstaller/Scoop/commit/3bee8159e068a7779697b474cc63518bf85a512d)（substitute 最长键优先，`checkver.rs:1107-1121` 已按长度倒序）、[`3a79532`](https://github.com/ScoopInstaller/Scoop/commit/3a79532d5f85fe526a65c278125cebfdc80ac19e)（`$page` 跨迭代；hok 每次取出都是新值，结构上免疫）、[`874e8e6`](https://github.com/ScoopInstaller/Scoop/commit/874e8e6fa129116b33e1e49bba13006b89de5a63)（脚本无输出时的返回；hok 空页即报错、不返回旧版本）、[`7966971`](https://github.com/ScoopInstaller/Scoop/commit/79669717fe3e53ba642ec073a45bbe53acb77b8e)（`hash.mode: github`；`checkver_hash.rs:172` 早已分发，且 hok 不随仓带 `schema.json`）。
 
 ## 3. P2 — 新增能力/新键缺失（**不采纳，只记录差距**，2026-10-03 用户拍板）
 
-> **2026-10-07 更正**：`63cb8f84` 的历史清单链（含 `use_git_history`）**已改为落地**——同库新表
+> **2026-10-07 更正**：[`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) 的历史清单链（含 `use_git_history`）**已改为落地**——同库新表
 > `hok_manifest_history`（只存 `(bucket,name,version) → blob_oid,path,committed_at`）＋ `hok update` 上的种子/增量，
 > 读路径接 `manifest_source::generate_user_manifest` 第 2 段；方案
 > [`../reports/manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md)，成本优化
 > [`../reports/manifest-seed-tree-cost-plan.md`](../../reports/manifest-seed-tree-cost-plan.md)。
-> `db8d554f` / `198818ae` 两条仍为「不采纳，只记录差距」，见下表与 §6。
+> [`db8d554`](https://github.com/ScoopInstaller/Scoop/commit/db8d554f80607ad7554bb10ada31e01a6bd0036b) / [`198818a`](https://github.com/ScoopInstaller/Scoop/commit/198818aee623c92bacc0d1dfe82070c7148c5216) 两条仍为「不采纳，只记录差距」，见下表与 §6。
 
 | 上游 | 官方行为 | hok 现状（2026-10-03 核对） | 影响 |
 |---|---|---|---|
-| `63cb8f84` | 新增 config 键 `use_git_history`（默认 `$true`）+ SQLite→git→autoupdate 的历史清单链（`lib/manifest.ps1:183-335`、`libexec/scoop-config.ps1:33-36`） | **已落地（2026-10-07）**。原状：`use_git_history` 已登记为「官方键、hok 无实现」（`crates/libscoop/src/config.rs:1158-1176` 的 `OFFICIAL_ONLY_KEYS`，非报「未知键」）；**无任何调用点**。`@version` **本身是支持的**，只是唯一手段是 autoupdate（`package/manifest_source.rs:422-479` → `checkver.rs:1035-1131`） | 原缺口（重建不出的版本无解：当前 autoupdate 模板套不出该版本的 URL、或 manifest 无 `autoupdate` 段）**已由历史索引补上**：读路径命中即取回原文，未命中/失效才回落 autoupdate |
-| `db8d554f` | bucket pull 改为 `git pull --tags --force -q`（`libexec/scoop-update.ps1:139`） | libgit2 fetch，refspec 只含 heads（`internal/git.rs:146-172`），全文无 tag 处理 | **不构成互锁**（见 §3.1）：0.6.0 的历史查询不使用 tag，真正的互锁在 git 历史 provider 的缺失 |
-| `198818ae` | `scoop update -f` 把 `@version` pin 升到 bucket HEAD；`$pin_broken`、`Find-AppBucket` 重解析（`libexec/scoop-update.ps1:271-284,443-451`） | pin/URL 安装即 isolated；`-f` 在 installed 集上原地重装当期版本（`sync_install.rs:137-144,328`） | `hok update -f` 不会升到 bucket HEAD（**与上游同口径**：两者都不能"升级"一个 pin，上游的做法是 `-f` 时**丢掉 pin 重新解析**） |
-| `e02633c7` | 配置键 `aria2-fallback-disabled` 反转为 `aria2-fallback-enabled`（`libexec/scoop-config.ps1:142`） | **已登记**（`config.rs:1159`，随 `4168ba8`）⇒ 报「官方键、hok 无实现」而非「未知键」 | 仅"无法设置"（用户拍板接受），非能力缺口 |
-| `327040cf` | `scoop download` 任一失败即 `exit 1`（`libexec/scoop-download.ps1` 末尾 `exit [int]$download_failed`） | **已落地**：`download_apps.rs:106-148` 返回失败标志，`src/cmd/download.rs:53-60` 转非零退出码（`4168ba8`） | 无。附带**更正**：`scoop-gap-status.md` 里「download 失败按官方改为 0」的口径已过期（0.6.0 起官方为 1） |
+| [`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) | 新增 config 键 `use_git_history`（默认 `$true`）+ SQLite→git→autoupdate 的历史清单链（`lib/manifest.ps1:183-335`、`libexec/scoop-config.ps1:33-36`） | **已落地（2026-10-07）**。原状：`use_git_history` 已登记为「官方键、hok 无实现」（`crates/libscoop/src/config.rs:1158-1176` 的 `OFFICIAL_ONLY_KEYS`，非报「未知键」）；**无任何调用点**。`@version` **本身是支持的**，只是唯一手段是 autoupdate（`package/manifest_source.rs:422-479` → `checkver.rs:1035-1131`） | 原缺口（重建不出的版本无解：当前 autoupdate 模板套不出该版本的 URL、或 manifest 无 `autoupdate` 段）**已由历史索引补上**：读路径命中即取回原文，未命中/失效才回落 autoupdate |
+| [`db8d554`](https://github.com/ScoopInstaller/Scoop/commit/db8d554f80607ad7554bb10ada31e01a6bd0036b) | bucket pull 改为 `git pull --tags --force -q`（`libexec/scoop-update.ps1:139`） | libgit2 fetch，refspec 只含 heads（`internal/git.rs:146-172`），全文无 tag 处理 | **不构成互锁**（见 §3.1）：0.6.0 的历史查询不使用 tag，真正的互锁在 git 历史 provider 的缺失 |
+| [`198818a`](https://github.com/ScoopInstaller/Scoop/commit/198818aee623c92bacc0d1dfe82070c7148c5216) | `scoop update -f` 把 `@version` pin 升到 bucket HEAD；`$pin_broken`、`Find-AppBucket` 重解析（`libexec/scoop-update.ps1:271-284,443-451`） | pin/URL 安装即 isolated；`-f` 在 installed 集上原地重装当期版本（`sync_install.rs:137-144,328`） | `hok update -f` 不会升到 bucket HEAD（**与上游同口径**：两者都不能"升级"一个 pin，上游的做法是 `-f` 时**丢掉 pin 重新解析**） |
+| [`e02633c`](https://github.com/ScoopInstaller/Scoop/commit/e02633c7f32e3096d3787054defbc40598951274) | 配置键 `aria2-fallback-disabled` 反转为 `aria2-fallback-enabled`（`libexec/scoop-config.ps1:142`） | **已登记**（`config.rs:1159`，随 `4168ba8`）⇒ 报「官方键、hok 无实现」而非「未知键」 | 仅"无法设置"（用户拍板接受），非能力缺口 |
+| [`327040c`](https://github.com/ScoopInstaller/Scoop/commit/327040cf5d77c7a7f87a0acb463d333be8966c01) | `scoop download` 任一失败即 `exit 1`（`libexec/scoop-download.ps1` 末尾 `exit [int]$download_failed`） | **已落地**：`download_apps.rs:106-148` 返回失败标志，`src/cmd/download.rs:53-60` 转非零退出码（`4168ba8`） | 无。附带**更正**：`scoop-gap-status.md` 里「download 失败按官方改为 0」的口径已过期（0.6.0 起官方为 1） |
 
-**登记去向**：前三条（`63cb8f84` / `db8d554f` / `198818ae`）转入
-[`pending-tasks.md`](../plan/pending-tasks.md) 的「暂缓」与「已定不做」两节（其中 `63cb8f84` 已于 2026-10-07 标为已落地）；后两条已闭环，仅在本表留更正。
+**登记去向**：前三条（[`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) / [`db8d554`](https://github.com/ScoopInstaller/Scoop/commit/db8d554f80607ad7554bb10ada31e01a6bd0036b) / [`198818a`](https://github.com/ScoopInstaller/Scoop/commit/198818aee623c92bacc0d1dfe82070c7148c5216)）转入
+[`pending-tasks.md`](../plan/pending-tasks.md) 的「暂缓」与「已定不做」两节（其中 [`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) 已于 2026-10-07 标为已落地）；后两条已闭环，仅在本表留更正。
 
 ### 3.1 上游意图（为什么这么改）
 
@@ -76,14 +76,14 @@ P0 一项（元数据文件名）是**单向互操作破坏**，会随 0.6.0 普
 
 **先厘清现状（2026-10-03 更正）**：`@<版本>` **本来就是支持的**——官方 0.5.3 与 hok 现在都靠 `generate_user_manifest` 在版本不等时跑 autoupdate 重建（官方 `lib/manifest.ps1:318-334`，hok `package/manifest_source.rs:422-479` → `checkver.rs:1035-1131`：替换 `$version` 后重算 hash，产物落在 workspace（`<root>/workspace/<app>.json`），本机实测 `..\Scoop\workspace\reasonix-hermes.json` 即此产物）。重建成功与否**不取决于旧版本还在不在 HEAD**，而取决于当前模板能否套出那个版本的 URL。0.6.0 的改动是：**在"重建不出"时，把原文按版本号找回来**。
 
-1. **`63cb8f84` 的三级链解决的是"找原文"，而 autoupdate 只是重建**（`lib/manifest.ps1:306-335`）：
+1. **[`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8) 的三级链解决的是"找原文"，而 autoupdate 只是重建**（`lib/manifest.ps1:306-335`）：
    - ① SQLite 精确匹配（`:183-208`，`use_sqlite_cache`，opt-in）—— 快，但**只能命中 git 历史里也有的东西**（索引由 `Sync-Bucket` 按本次 diff 建，`libexec/scoop-update.ps1:202-258`）⇒ 是加速层，不是权威层；
    - ② git 历史（`:210-275`，`use_git_history`，**默认 `$true`**）—— 权威来源，代价高。`log --follow` + pickaxe 按**版本号**回溯提交，拿到的正是当时的 URL/hash/extract_dir：模板改过结构、产物换过名、URL 规则变过时，autoupdate 会失手而原文仍然可用。内部三步也有意图：先 `git show HEAD:<内层相对路径>` 快路径（HEAD 就有时不查历史）→ 双探针（`-G` 正则避开 Windows 命令行吞引号，失败再 `-S` 字面）→ 命中提交的 `<hash>^` 与 `<hash>` 各试一次（覆盖"改版本号那次提交本身与其前一状态"）；
    - ③ autoupdate（`:318-334`）—— 仍保留为最后手段，装出来的是**重建**而非原版。所以三级是"原文优先、重建兜底"，不是"新功能"。
    配置默认值本身是口径：`use_git_history` 默认 `$true` ⇒ 上游认为 git 查询的磁盘/时间代价可接受；SQLite 反而保持 opt-in。上游自述（`libexec/scoop-config.ps1:33-36`）是 *first search the bucket's git history for the exact version before falling back to autoupdate*。
-2. **`db8d554f` 的 `--tags` 是同步层的鲁棒性补丁，不是历史查询的前置**：它只加在 `Sync-Bucket` 的「仓库/分支未变」分支（`:139`），`--force` 用于强制对齐本地被改过的 tag；而 ② 的三处 git 调用（HEAD show / pickaxe / show）**一处都没用 tag**。即"按 tag 找历史清单"并不是上游设计——历史按 **bucket 仓库提交历史**找，对应 hok 的等价物是"每个已添加 bucket 的 git 仓库"，而非 tag。
-3. **`198818ae` 修的是"pin 之后永久卡死"，判据比看上去窄**：`$force -and $null -eq $bucket -and $url`（`libexec/scoop-update.ps1:271-284`）—— 官方把"URL 安装"与"`@version` 在 workspace 生成的清单"都表示成 **`bucket == $null` + `url`**，所以一条判据同时覆盖两种来源；命中即 `Find-AppBucket` 重解析、清空 `$url`，升到 bucket HEAD。hok 用 `__isolated__` 哨兵表示同一类安装（`constant.rs:41`），因此移植时的等价判据是 `is_isolated()`/bucket 为空，**不能照抄 `url` 非空**。
-4. **`e02633c7` / `327040cf` 不是新能力**：前者跟随 `lib/download.ps1` 的实际语义把负向键翻正；后者是一批 code review 修补，把 `download` 的失败写进退出码（顺带更正了 0.5.3 时代"按 0"的旧口径）。
+2. **[`db8d554`](https://github.com/ScoopInstaller/Scoop/commit/db8d554f80607ad7554bb10ada31e01a6bd0036b) 的 `--tags` 是同步层的鲁棒性补丁，不是历史查询的前置**：它只加在 `Sync-Bucket` 的「仓库/分支未变」分支（`:139`），`--force` 用于强制对齐本地被改过的 tag；而 ② 的三处 git 调用（HEAD show / pickaxe / show）**一处都没用 tag**。即"按 tag 找历史清单"并不是上游设计——历史按 **bucket 仓库提交历史**找，对应 hok 的等价物是"每个已添加 bucket 的 git 仓库"，而非 tag。
+3. **[`198818a`](https://github.com/ScoopInstaller/Scoop/commit/198818aee623c92bacc0d1dfe82070c7148c5216) 修的是"pin 之后永久卡死"，判据比看上去窄**：`$force -and $null -eq $bucket -and $url`（`libexec/scoop-update.ps1:271-284`）—— 官方把"URL 安装"与"`@version` 在 workspace 生成的清单"都表示成 **`bucket == $null` + `url`**，所以一条判据同时覆盖两种来源；命中即 `Find-AppBucket` 重解析、清空 `$url`，升到 bucket HEAD。hok 用 `__isolated__` 哨兵表示同一类安装（`constant.rs:41`），因此移植时的等价判据是 `is_isolated()`/bucket 为空，**不能照抄 `url` 非空**。
+4. **[`e02633c`](https://github.com/ScoopInstaller/Scoop/commit/e02633c7f32e3096d3787054defbc40598951274) / [`327040c`](https://github.com/ScoopInstaller/Scoop/commit/327040cf5d77c7a7f87a0acb463d333be8966c01) 不是新能力**：前者跟随 `lib/download.ps1` 的实际语义把负向键翻正；后者是一批 code review 修补，把 `download` 的失败写进退出码（顺带更正了 0.5.3 时代"按 0"的旧口径）。
 5. **hok 侧的差距与代价**（采纳与否的判据，本次结论仍是**不采纳**）：hok 缺的是"找原文"这一步——`@version` 只有 autoupdate（`manifest_source.rs:422-479`），重建不出即报错（无 `autoupdate` 段时是 `does not have autoupdate capability`）。要接 ②，需要在 bucket 仓库里按版本号回溯提交并读旧 blob；hok 已有现成零件（见 §3.2）。三条都要动 `manifest_source` 这个热文件，故**不排期**——注意这是"少了一条兜底"，不是"`@旧版本` 不能用"。
 
 ### 3.2 缓存与 git 的两点实测（2026-10-03）
@@ -100,7 +100,7 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 | 路径 | 实测 | 说明 |
 |---|---|---|
 | HEAD 快路径 `git show HEAD:<rel>` | 192 ms | 命中率取决于 HEAD 版本是否就是请求版本 |
-| `log --follow -G`（正则，上游主探针） | 976 ms | 命中 `b14bfe9a`（26.00 那次）；`--follow` 有重命名检测开销 |
+| `log --follow -G`（正则，上游主探针） | 976 ms | 命中 `b14bfe9a`（提交号已随 2026-08 重构失效落空，且无等价提交）（26.00 那次）；`--follow` 有重命名检测开销 |
 | `log --follow -S`（字面兜底） | 3639 ms | 未命中时仍要付这个代价，所以"主探针命中"很重要 |
 | SQLite 点查 | ~0 ms | 索引点查（本机缓存关闭时不可用） |
 
@@ -110,15 +110,15 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 
 | 上游 | 官方行为 | hok 现状（2026-10-03 核对，三条均随 `4168ba8` 已对齐） |
 |---|---|---|
-| `4c55e7ae` | 卸载脚本里 `$bucket = $install.bucket`，URL 安装为 `$null`（`libexec/scoop-uninstall.ps1:62`） | 已对齐：`operations/script.rs:136-150` 的 `script_bucket()` 把哨兵折成空串，三个注入点（PS 前导 env、`-File` 环境、`expand_scoop_vars`）共用 |
-| `7e86336a` | 增删环境变量有可见输出（`lib/install.ps1:341,352`） | 已对齐：`PackageEnvVarSet/Remove` 带 name/value/scope（`event.rs`），`src/scoop_handler.rs:171-190` 每个变量一行，不再只走 `tracing::debug!` |
-| `b592b38a` | notes 前后各有 `Notes` / `-----` 分隔（`lib/install.ps1:355-362`），建议行 `DarkYellow`（`:421`） | 已对齐：`output::notes` 出 `Notes` / `-----` 框（`src/scoop_handler.rs:254-256`，复用既有 `cmd.info_notes`），建议行恢复 DarkYellow |
+| [`4c55e7a`](https://github.com/ScoopInstaller/Scoop/commit/4c55e7aebdd734eef7a068988d22e51a799c01fc) | 卸载脚本里 `$bucket = $install.bucket`，URL 安装为 `$null`（`libexec/scoop-uninstall.ps1:62`） | 已对齐：`operations/script.rs:136-150` 的 `script_bucket()` 把哨兵折成空串，三个注入点（PS 前导 env、`-File` 环境、`expand_scoop_vars`）共用 |
+| [`7e86336`](https://github.com/ScoopInstaller/Scoop/commit/7e86336a42971b289078a8dd4f1a95ecc9d7c5d2) | 增删环境变量有可见输出（`lib/install.ps1:341,352`） | 已对齐：`PackageEnvVarSet/Remove` 带 name/value/scope（`event.rs`），`src/scoop_handler.rs:171-190` 每个变量一行，不再只走 `tracing::debug!` |
+| [`b592b38`](https://github.com/ScoopInstaller/Scoop/commit/b592b38abd078b83ee6143f2b120c3cce169c8b2) | notes 前后各有 `Notes` / `-----` 分隔（`lib/install.ps1:355-362`），建议行 `DarkYellow`（`:421`） | 已对齐：`output::notes` 出 `Notes` / `-----` 框（`src/scoop_handler.rs:254-256`，复用既有 `cmd.info_notes`），建议行恢复 DarkYellow |
 
 （本表之外的 P3 条目在两处登记：两个 config 键与 `download` 退出码见 §3 表末两行，`locales/*` 侧随 `507aab2`。）
 
 ## 5. 判定为无影响 / 已对齐（不必动）
 
-`3bee8159`、`aa3f9aa9`、`25d35007`、`2120c28c`、`ff38652e`、`d9b4d28a`、`2a637361`、`03d831d9`、`a8d4027a`、`a5c3b58e`、`7a537586`、`41ccd2c0`、`ca0506cf`/`0e698ccb`（输出函数化：仅 `Error.`/`Done.` 大小写与 `error` 前缀）、`0f8cd488`（WoW64 路径重写只对 x86 shim 生效，hok-shim 的 stub 是 x64 PE ⇒ 不适用）、`52a035b5`（hok `internal::path::normalize_path` 已解析 `..`，`is_in_dir` 归一化语义等价）。
+[`3bee815`](https://github.com/ScoopInstaller/Scoop/commit/3bee8159e068a7779697b474cc63518bf85a512d)、[`aa3f9aa`](https://github.com/ScoopInstaller/Scoop/commit/aa3f9aa983c0180b99065fac4946a17c4a410307)、[`25d3500`](https://github.com/ScoopInstaller/Scoop/commit/25d35007c64141cb6df25767e92d80f65cfd77a4)、[`2120c28`](https://github.com/ScoopInstaller/Scoop/commit/2120c28c221dc039c986b0d9409e972576a5a957)、[`ff38652`](https://github.com/ScoopInstaller/Scoop/commit/ff38652e0126d8a86b1f935dbb2e69299061e4dc)、[`d9b4d28`](https://github.com/ScoopInstaller/Scoop/commit/d9b4d28a3b203b27022bde628d2d661e2e7fecb7)、[`2a63736`](https://github.com/ScoopInstaller/Scoop/commit/2a637361ccce0c5e6970ee8a3e3bab0bde050ab6)、[`03d831d`](https://github.com/ScoopInstaller/Scoop/commit/03d831d9a09c78445b8e0eb9e6aabd159c63c945)、[`a8d4027`](https://github.com/ScoopInstaller/Scoop/commit/a8d4027a904072518ec3e8a97857b9aa0db94a89)、[`a5c3b58`](https://github.com/ScoopInstaller/Scoop/commit/a5c3b58e830307b59b2c3452db4990948b196f21)、[`7a53758`](https://github.com/ScoopInstaller/Scoop/commit/7a537586b241aea72d9d19294160a9f778688403)、[`41ccd2c`](https://github.com/ScoopInstaller/Scoop/commit/41ccd2c0cedc58b89a6181d67f6646052d342b66)、[`ca0506c`](https://github.com/ScoopInstaller/Scoop/commit/ca0506cf3e26d6b1038270dc32bc4f4804dc9a01)/[`0e698cc`](https://github.com/ScoopInstaller/Scoop/commit/0e698ccbd51b752ed60b929d509fe48bd86b7b74)（输出函数化：仅 `Error.`/`Done.` 大小写与 `error` 前缀）、[`0f8cd48`](https://github.com/ScoopInstaller/Scoop/commit/0f8cd488159842bc56828c307a25e6c59f9bc548)（WoW64 路径重写只对 x86 shim 生效，hok-shim 的 stub 是 x64 PE ⇒ 不适用）、[`52a035b`](https://github.com/ScoopInstaller/Scoop/commit/52a035b5ccaac35de8c7978f74c90ad57cd8a097)（hok `internal::path::normalize_path` 已解析 `..`，`is_in_dir` 归一化语义等价）。
 
 ## 6. 本会话处置与排期
 
@@ -127,7 +127,7 @@ main 桶 81855 个提交的命名确实是机器约定（实测样例：`7zip: U
 | P0 | 元数据文件名（写新名 + 读新名优先回落旧名 + 版本解析/枚举双名） | worktree `.worktrees/p0-metadata-names`，分支 `feat/metadata-scoop-prefix`，base `22b9e68`；**枚举行同属本次落地**（`install_info_mtime` 新名优先，测试 `resolve_current_version_reads_scoop_names_only`），原「遗留」已更正，见 §1 |
 | P1 | checkver GitHub 模式整体移植（上表 7 条 + 改掉锁定旧行为的测试） | worktree `.worktrees/p1-checkver-github`，分支 `fix/checkver-github-mode`，base `22b9e68` |
 | P3 | `$bucket` 语义、环境变量输出、notes 分隔/高亮、两个新 config 键登记、`download` 退出码 | 父会话主树直接改（`locales/*` 是必冲突热点，不派分支）。**已落地**（`4168ba8` + `507aab2`）：两个 config 键已登记、`download` 退出码已非零；审计文档旧行已就地更正（§3、§4） |
-| 已改判 | P2 的 `63cb8f84`（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../reports/manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN6 |
-| 不采纳 | P2 的 `db8d554f`（`git pull --tags --force`）/ `198818ae`（`update -f` 丢 pin）两条（2026-10-03 用户拍板只记录差距） | 已登记进 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN4；设计与意图见 §3.1 |
+| 已改判 | P2 的 [`63cb8f8`](https://github.com/ScoopInstaller/Scoop/commit/63cb8f848bf6f4dde8db27da8c3d32f4b447bed8)（历史清单链 + `use_git_history`）：2026-10-03 记为「不采纳」，2026-10-06 立方案、**2026-10-07 落地**（`615a6bb`…`9db5d13`） | 方案 [`../reports/manifest-history-index-plan.md`](../../reports/manifest-history-index-plan.md)；行状态见 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN6 |
+| 不采纳 | P2 的 [`db8d554`](https://github.com/ScoopInstaller/Scoop/commit/db8d554f80607ad7554bb10ada31e01a6bd0036b)（`git pull --tags --force`）/ [`198818a`](https://github.com/ScoopInstaller/Scoop/commit/198818aee623c92bacc0d1dfe82070c7148c5216)（`update -f` 丢 pin）两条（2026-10-03 用户拍板只记录差距） | 已登记进 [`pending-tasks.md`](../plan/pending-tasks.md) 的 EN4；设计与意图见 §3.1 |
 
 **门禁策略（用户 2026-10-02 选定）**：每条子分支自测一次（`cargo fmt --check` / `clippy -D warnings` / 目标测试），落地后父会话在最终树上跑一次完整门禁；不在每条分支重复跑完整套。

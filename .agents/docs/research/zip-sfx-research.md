@@ -63,7 +63,7 @@ zip_start = cd_start - cd_offset;   // 前缀起点 = 切片起点
 与 rc-zip 的推导逐项一致（差异只在"切片 vs 加偏移"的落地方式，数学等价）。
 无需引入 rc-zip 依赖（会带回 miniz_oxide / lzma-rs）。
 
-## 3. 落地记录（commit）
+## 3. 落地记录（commit；本节三个提交号均已随 2026-08 重构失效落空，且无等价提交）
 
 - `f979730`：7z.exe 进度修复（`read_until('\r')` 解析 CR 分隔进度）；原生
   PE 前缀 ZIP 提取（`find_embedded_zip_start` + `extract_zip_embedded`），

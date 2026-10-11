@@ -83,5 +83,5 @@ git2 / 解压（zstd/bzip2/sevenz）/ rusqlite 是阻塞库，当前在 async fn
 - 提交规范：一个主题一个 commit；`git -c core.autocrlf=false`，eol=lf；提交前 `$env:HOME=$env:USERPROFILE`（gpg 签名）；只修本次改动 hunk（禁整包 fmt）。
 - 完工后更新本文档「决策」状态为 ✅，并同步 `.agents/docs/reports/refactor/plan.md` 执行日志。
 
-## 纯净化 P5（已完成，2026-08，`1e01967`）
-- `bucket.rs::update` 遗留 5 处 `let _ = tx.send(...)` 非绑定 future（clippy `let_underscore_future`）改 `send().await` 收尾——空桶 `BucketUpdateDone`（479）、并发 pull spawn 内 `BucketUpdateProgress` start/succeeded/failed（513/520/526）、收尾 `BucketUpdateDone`（549），对齐下载路径 `8009f1c` 的背压纪律。`let _ =` 保留（满/关静默忽略）；低频事件直接 await，无死锁。行为等价（事件顺序/last_update/并发 pull/幂等不变），clippy 0 warning，测试全绿。
+## 纯净化 P5（已完成，2026-08，`b70f160`）
+- `bucket.rs::update` 遗留 5 处 `let _ = tx.send(...)` 非绑定 future（clippy `let_underscore_future`）改 `send().await` 收尾——空桶 `BucketUpdateDone`（479）、并发 pull spawn 内 `BucketUpdateProgress` start/succeeded/failed（513/520/526）、收尾 `BucketUpdateDone`（549），对齐下载路径 `d967c7f` 的背压纪律。`let _ =` 保留（满/关静默忽略）；低频事件直接 await，无死锁。行为等价（事件顺序/last_update/并发 pull/幂等不变），clippy 0 warning，测试全绿。

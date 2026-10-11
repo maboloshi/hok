@@ -1,8 +1,10 @@
 # 纯净化 P5：bucket update 事件 send() 收尾
 
-> 2026-08-23 ｜ commit `1e01967`
+> 2026-08-23 ｜ commit `b70f160`
+>
+> 原引用 `1e01967`，2026-08 重构后等价提交为 `b70f160`。
 
-**背景**：P4 把事件总线从 flume 迁到 `tokio::sync::mpsc`（`f2b2262`）后，下载路径已在 `8009f1c` 对齐 rake 背压（100ms 节流 + 单流 `send().await`），但 `bucket.rs::update` 遗留 5 处 `let _ = tx.send(...)` 非绑定 future——clippy `let_underscore_future` warning 既有债，且语义上丢弃 future 等于放弃背压。P5 收尾：把这 5 处改 `send().await`，消除 warning、对齐下载路径的背压纪律。
+**背景**：P4 把事件总线从 flume 迁到 `tokio::sync::mpsc`（`7d294dc`）后，下载路径已在 `d967c7f` 对齐 rake 背压（100ms 节流 + 单流 `send().await`），但 `bucket.rs::update` 遗留 5 处 `let _ = tx.send(...)` 非绑定 future——clippy `let_underscore_future` warning 既有债，且语义上丢弃 future 等于放弃背压。P5 收尾：把这 5 处改 `send().await`，消除 warning、对齐下载路径的背压纪律。
 
 **改动（单文件 `crates/libscoop/src/bucket.rs`，5 处，7+/5-）**：
 

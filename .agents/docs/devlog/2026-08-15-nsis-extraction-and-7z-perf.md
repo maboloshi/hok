@@ -90,7 +90,7 @@
 - **CRLF 陷阱**：fork clone 检出 CRLF 是 autocrlf 转换残留，blob 实为 LF → 干净 clone + `--config core.autocrlf=false` 后 diff 干净；nsis 仓库 blob 是 CRLF 则反之（保持 CRLF 提交）；
 - **hok 侧**：`crates/innospect` 对齐 0.1.3（`e3c1ec1`：ATRAPS LLC 版权/URL/pascalscript 0.1.2/NOTICE），`Cargo.lock` 重新生成（`161f311`，330→318 包，lzma-rs 仅 dev-dep 保留）。
 
-## 10. doubao 进度条根因 + zip SFX 原生解压 + zip 并行（3 commit：`f979730` `0b29111` `b4f6e59`）
+## 10. doubao 进度条根因 + zip SFX 原生解压 + zip 并行（3 commit：`f979730` `0b29111` `b4f6e59`；三者均为拆分前的原始提交号，本节末尾有勘误）
 
 **用户报告**：`hok update doubao`（2.23.7→2.24.7）解压无进度条，缓存 `doubao#2.24.7#5cf1e4d.7z`。
 
