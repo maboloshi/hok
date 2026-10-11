@@ -24,24 +24,57 @@ use std::path::{Path, PathBuf};
 
 use crate::{Event, Session, error::Fallible, internal, package::Package};
 
+/// The Start Menu folder for a scope, from the registry — upstream's
+/// `[Environment]::GetFolderPath('StartMenu' | 'CommonStartMenu')`
+/// (`lib/shortcuts.ps1:22-29`).
+///
+/// `Shell Folders` holds the resolved absolute path, which is what
+/// `GetFolderPath` returns. `None` when the value is missing, so the caller can
+/// fall back to the environment-derived location.
+fn start_menu_folder(global: bool) -> Option<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    const SHELL_FOLDERS: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders";
+
+    let (hive, value) = if global {
+        (HKEY_LOCAL_MACHINE, "Common Start Menu")
+    } else {
+        (HKEY_CURRENT_USER, "Start Menu")
+    };
+
+    let key = RegKey::predef(hive).open_subkey(SHELL_FOLDERS).ok()?;
+    let path: String = key.get_value(value).ok()?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
 /// Return the path to the `Scoop Apps` shortcut folder.
 ///
 /// User scope: `~\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Scoop Apps`
 /// Global scope: `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Scoop Apps`
 /// (mirrors Scoop's `shortcut_folder`, which picks `StartMenu` vs `CommonStartMenu`).
+///
+/// The registry is asked first because deriving the Start Menu from
+/// `%APPDATA%` is wrong twice over: with `%APPDATA%` unset but a profile
+/// present, `internal::path::config_dir()` falls back to
+/// `%USERPROFILE%\.config`, which is not the Start Menu at all, and with no
+/// profile either the result is relative to the CWD. The environment-derived
+/// paths stay as the fallback for a stripped environment — upstream degenerates
+/// the same way there, since `GetFolderPath` returns `""` and `Path.Combine`
+/// makes the result relative.
 fn shortcut_dir(global: bool) -> PathBuf {
-    let mut dir = if global {
-        std::env::var_os("ProgramData")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-    } else {
-        // Missing APPDATA / XDG_CONFIG_HOME / HOME (service accounts,
-        // stripped environments): fall back to a relative path rather
-        // than panicking.
-        internal::path::config_dir().unwrap_or_default()
-    };
-    dir.push("Microsoft/Windows/Start Menu/Programs/Scoop Apps");
-    internal::path::normalize_path(dir)
+    let folder = start_menu_folder(global).unwrap_or_else(|| {
+        let base = if global {
+            std::env::var_os("ProgramData")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        } else {
+            internal::path::config_dir().unwrap_or_default()
+        };
+        base.join("Microsoft/Windows/Start Menu")
+    });
+    internal::path::normalize_path(folder.join("Programs/Scoop Apps"))
 }
 
 /// Build the `.lnk` path for a shortcut display name.
@@ -287,6 +320,29 @@ mod tests {
     use super::*;
     use crate::package::manifest::Manifest;
     use std::path::Path;
+
+    /// Both scopes must land inside a real Start Menu folder. Which source
+    /// supplied it is not asserted — the registry lookup, its environment
+    /// fallback and the degenerate `config_dir()` path all have to compose the
+    /// same tail — but the folder must never be derived from
+    /// `%USERPROFILE%\.config`, which is what the previous `config_dir()`-only
+    /// user-scope path produced whenever `%APPDATA%` was unset.
+    #[test]
+    fn shortcut_dir_composes_the_start_menu_path() {
+        for global in [false, true] {
+            let dir = shortcut_dir(global);
+            assert!(
+                dir.ends_with(Path::new(r"Programs\Scoop Apps")),
+                "unexpected shortcut dir for global={global}: {}",
+                dir.display()
+            );
+            assert!(
+                !dir.to_string_lossy().contains(r"\.config\"),
+                "the Start Menu must not come from %USERPROFILE%\\.config: {}",
+                dir.display()
+            );
+        }
+    }
 
     #[test]
     fn shortcut_link_path_keeps_dots_in_name() {
