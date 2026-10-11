@@ -534,6 +534,23 @@ pub async fn add(session: &Session, name: &str, remote_url: &str) -> Fallible<()
     add_resolved(session, &bucket).await
 }
 
+/// Rank a bucket by the official known-bucket priority: `main` is `0`, the rest
+/// of `assets/buckets.json` follow in order, and any other bucket ranks after
+/// all of them ([`usize::MAX`]).
+///
+/// Upstream hoists the known buckets to the front in that order
+/// (`Get-LocalBucket`, `lib/buckets.ps1:56-75`) — both when listing buckets and
+/// when picking the manifest of an app that several buckets provide
+/// (`Find-AppBucket`, `lib/manifest.ps1:100-113`, which takes the first match).
+/// Every caller sorts with a *stable* sort, so the buckets upstream leaves
+/// alone keep the order the caller produced.
+pub(crate) fn known_rank(name: &str) -> usize {
+    crate::constant::BUCKET_PRIORITY
+        .iter()
+        .position(|known| known.eq_ignore_ascii_case(name))
+        .unwrap_or(usize::MAX)
+}
+
 /// Get a list of added buckets.
 ///
 /// # Returns
@@ -550,16 +567,7 @@ pub fn list(session: &Session) -> Fallible<Vec<Bucket>> {
         // order and leaves the rest in directory order
         // (`lib/buckets.ps1:56-75`). `sort_by_key` is stable, so the unknown
         // buckets keep the directory order `bucket_added` produced.
-        buckets.sort_by_key(|b| {
-            let name = b.name().to_lowercase();
-            match crate::constant::BUILTIN_BUCKET_LIST
-                .iter()
-                .position(|&(n, _)| n.eq_ignore_ascii_case(&name))
-            {
-                Some(idx) => (0usize, idx),
-                None => (1usize, 0usize),
-            }
-        });
+        buckets.sort_by_key(|b| known_rank(b.name()));
         buckets
     })
 }
@@ -946,6 +954,25 @@ mod tests {
         assert_eq!(
             known, OFFICIAL,
             "KNOWN_BUCKETS must keep the buckets.json order"
+        );
+    }
+
+    /// [`known_rank`] is the single ranking predicate behind both `bucket list`
+    /// and the multi-bucket candidate choice, so its three properties are pinned
+    /// here: `main` first, `buckets.json` order after it, everything else last.
+    #[test]
+    fn known_rank_orders_official_buckets_first() {
+        assert_eq!(super::known_rank("main"), 0);
+        assert_eq!(
+            super::known_rank("Main"),
+            0,
+            "the known-bucket lookup folds case"
+        );
+        assert_eq!(super::known_rank("extras"), 1);
+        assert_eq!(
+            super::known_rank("some-third-party"),
+            usize::MAX,
+            "an unknown bucket ranks after every known one"
         );
     }
 

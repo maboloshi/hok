@@ -69,11 +69,12 @@ include!(concat!(env!("OUT_DIR"), "/known_buckets.rs"));
 pub static BUILTIN_BUCKET_LIST: LazyLock<Vec<(&'static str, &'static str)>> =
     LazyLock::new(|| KNOWN_BUCKETS.to_vec());
 
-/// Bucket lookup priority (same key order as `assets/buckets.json`).
+/// Bucket lookup priority: the official known-bucket order (`main` first),
+/// generated from `assets/buckets.json`'s key order.
 ///
-/// Only consumed by `bucket::tests::bucket_priority_matches_known_keys` today;
-/// kept as the anchor for the pending bucket-priority ordering feature.
-#[allow(dead_code)]
+/// Read through `bucket::known_rank`, which is the one place the ranking is
+/// applied — upstream's `Get-LocalBucket` reordering (`lib/buckets.ps1:56-75`)
+/// drives both `bucket list` and the multi-bucket candidate choice.
 pub static BUCKET_PRIORITY: LazyLock<Vec<&'static str>> =
     LazyLock::new(|| BUCKET_PRIORITY_ORDER.to_vec());
 

@@ -253,13 +253,18 @@ pub(crate) async fn select_candidate(
 ) -> Fallible<()> {
     let name = candidates[0].name().to_owned();
 
-    // Sort candidates by package ident, in other words, by alphabetical order
-    // of bucket name.
-    candidates.sort_by_key(|p| p.ident().to_lowercase());
+    // Known buckets first — upstream's `Get-LocalBucket` reordering, shared
+    // with `bucket list` — then by package ident, i.e. alphabetically by bucket
+    // name, for everything else.
+    candidates.sort_by(|a, b| {
+        crate::bucket::known_rank(a.bucket())
+            .cmp(&crate::bucket::known_rank(b.bucket()))
+            .then_with(|| a.ident().to_lowercase().cmp(&b.ident().to_lowercase()))
+    });
 
     if assume_yes {
-        // Non-interactive (assume-yes): pick the alphabetically-first
-        // candidate — the built-in selection algorithm.
+        // Non-interactive (assume-yes): pick the top-ranked candidate — the
+        // built-in selection algorithm.
         *candidates = vec![candidates[0].clone()];
         return Ok(());
     }
@@ -288,7 +293,10 @@ pub(crate) async fn select_candidate(
         }
     }
 
-    // TODO: handle this case smartly using pre-defined bucket priority
+    // Candidates are ranked by bucket priority above, but hok still refuses to
+    // guess when it cannot ask: upstream takes `$matched_buckets[0]` and warns
+    // (`Find-AppBucket`), hok errors. Picking one here would install from a
+    // bucket the user did not choose, so this stays a registered deviation.
     Err(Error::PackageMultipleCandidates(name))
 }
 
@@ -657,6 +665,37 @@ mod tests {
         let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a", "b"]);
         assert_eq!(buckets, vec!["alt", "main"], "installed candidate wins");
+    }
+
+    /// With no installed candidate the choice is not interactive, and the
+    /// official bucket priority must decide: upstream's `Get-LocalBucket` moves
+    /// the known buckets to the front, in `buckets.json` order
+    /// (`lib/buckets.ps1:56-75`), and `Find-AppBucket` takes the first match
+    /// (`lib/manifest.ps1:100-113`).
+    ///
+    /// The three candidates pin all three levels at once: `aaa` is an unknown
+    /// bucket, `extras` is known but ranks below `main`, and both sort before
+    /// `main` alphabetically. Ordering by name alone picked `aaa`; a
+    /// "known first, then alphabetical" rule picked `extras`.
+    #[tokio::test]
+    async fn resolve_multiple_candidates_prefers_official_bucket() {
+        let (session, root) = setup("multi_known_priority");
+        write_manifest(&root.0, "aaa", "a", &[]);
+        write_manifest(&root.0, "extras", "a", &[]);
+        write_manifest(&root.0, "main", "a", &[]);
+        write_manifest(&root.0, "main", "b", &["a"]);
+
+        let mut packages = vec![pkg("main", "b", &["a"])];
+        resolve_dependencies(&session, &mut packages, false, true)
+            .await
+            .unwrap();
+
+        let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
+        assert_eq!(
+            buckets,
+            vec!["main", "main"],
+            "`main` outranks a lower-ranked known bucket and an unknown one"
+        );
     }
 
     #[tokio::test]
