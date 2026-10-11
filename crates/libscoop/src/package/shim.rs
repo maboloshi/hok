@@ -1,12 +1,14 @@
 //! Inspect Scoop shims.
 //!
-//! Lists the shims installed under `<root>/shims/` and resolves the concrete
-//! shim files (`.cmd` / `.ps1` / `.exe` / no extension) for a given command —
-//! the business logic behind the `hok shim` and `hok which` commands.
+//! Lists the shims installed under `<root>/shims/`, resolves the concrete shim
+//! files (`.cmd` / `.ps1` / `.exe` / no extension) for a given command, and
+//! answers "where does this command actually live?" the way upstream's
+//! `Get-CommandPath` does — the business logic behind the `hok shim` and
+//! `hok which` commands.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::{error::Fallible, Session};
+use crate::{Session, error::Fallible};
 
 /// List the names of all shims (each shim is reported once, without
 /// extension). Both `.shim` metadata files and `.ps1` shims are collected
@@ -50,4 +52,431 @@ pub fn shim_paths(session: &Session, name: &str) -> Fallible<Vec<(String, PathBu
         }
     }
     Ok(paths)
+}
+
+/// The `shims` folder of one scope (`<root>/shims` or `<global>/shims`).
+fn shims_dir_in(session: &Session, global: bool) -> PathBuf {
+    let root = if global {
+        session.config().global_path().to_path_buf()
+    } else {
+        session.config().root_path().to_path_buf()
+    };
+    root.join("shims")
+}
+
+/// Whether `path` is a Scoop alias script (`<shims>\scoop-<name>.ps1`,
+/// upstream `lib/commands.ps1:57-74`).
+fn is_alias_script(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = file_name.to_ascii_lowercase();
+    lower.starts_with("scoop-") && lower.ends_with(".ps1")
+}
+
+/// Whether `path` lies inside directory `dir` (case-insensitive, component
+/// aware — a sibling `shims2` must not match `shims`).
+fn under_dir(path: &Path, dir: &Path) -> bool {
+    let path = comparable(path);
+    let mut dir = comparable(dir);
+    if !dir.ends_with('\\') {
+        dir.push('\\');
+    }
+    path.starts_with(&dir)
+}
+
+/// A path rendered as a lower-cased backslash string for comparison.
+fn comparable(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+}
+
+/// The target a shim *declares*, whether or not it still exists.
+///
+/// - a `.shim` metadata file: the `path = "..."` value on its first line;
+/// - anything else (`.cmd`, `.ps1`, extension-less): the first `@rem` / `#`
+///   comment line, falling back to the last quoted string.
+///
+/// This is upstream's `Get-ShimTarget` without the `Convert-Path` probe, which
+/// [`shim_target`] adds back. The health check needs the declared target to
+/// name it in the report, and a `.exe` shim (the launcher itself, not a text
+/// pointer) has none — it is not a failure, just nothing to read.
+pub fn shim_target_raw(shim_path: &Path) -> Option<PathBuf> {
+    let content = std::fs::read_to_string(shim_path).ok()?;
+
+    let target = if shim_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("shim"))
+    {
+        content
+            .lines()
+            .next()?
+            .replace("path = ", "")
+            .replace('"', "")
+    } else {
+        match first_comment(&content) {
+            Some(line) if !line.is_empty() => line,
+            _ => last_quoted(&content).unwrap_or_default(),
+        }
+    };
+
+    let target = target.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(target))
+}
+
+/// The real target a shim points at — upstream `Get-ShimTarget`
+/// (`lib/core.ps1:854-866`).
+///
+/// The target is returned only when it exists — upstream applies
+/// `Convert-Path -ErrorAction SilentlyContinue`, so a shim whose target is
+/// gone resolves to nothing (and `which` then reports "not found").
+pub fn shim_target(shim_path: &Path) -> Option<PathBuf> {
+    let target = shim_target_raw(shim_path)?;
+    target.exists().then_some(target)
+}
+
+/// A shim whose declared target no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenShim {
+    /// Shim name (the file stem, without its extension).
+    pub name: String,
+    /// The shim file that declares the missing target.
+    pub shim: PathBuf,
+    /// The declared target, or `None` when the shim file is unreadable or
+    /// carries no target at all.
+    pub target: Option<PathBuf>,
+}
+
+/// Collect the shims under the session's shim directory whose target is gone.
+///
+/// A name is broken only when **every** text variant it has (`.shim`, `.cmd`,
+/// extension-less, `.ps1`) fails to resolve — the rule errs towards silence, so
+/// a shim the user can still run is never reported. The `.exe` variant is the
+/// launcher itself and is never read, and `scoop-<name>.ps1` alias scripts are
+/// skipped (upstream reserves that prefix for aliases, which point at no
+/// package file).
+///
+/// Known limitation: when an `.exe` launcher is present, `PATH` lookup resolves
+/// the name through its `.shim` metadata, so a `.ps1` sibling with a live
+/// target can mask a dead `.shim`. That combination is not something the shim
+/// writer produces today.
+pub fn broken_shims(session: &Session) -> Fallible<Vec<BrokenShim>> {
+    let shims_dir = session.shims_dir();
+    let mut broken = Vec::new();
+    if !shims_dir.is_dir() {
+        return Ok(broken);
+    }
+
+    for name in list_shims(session)? {
+        // The last text variant seen, with its declared target: `None` means
+        // this name has no text variant at all (e.g. only an alias script).
+        let mut missing: Option<(PathBuf, Option<PathBuf>)> = None;
+        let mut resolved = false;
+        for ext in [".shim", "", ".cmd", ".ps1"] {
+            let path = shims_dir.join(format!("{name}{ext}"));
+            if !path.is_file() || is_alias_script(&path) {
+                continue;
+            }
+            let raw = shim_target_raw(&path);
+            if raw.as_ref().is_some_and(|target| target.exists()) {
+                resolved = true;
+                break;
+            }
+            missing = Some((path, raw));
+        }
+
+        let Some((shim, target)) = missing else {
+            continue;
+        };
+        if !resolved {
+            broken.push(BrokenShim { name, shim, target });
+        }
+    }
+
+    Ok(broken)
+}
+
+/// The text after a leading `@rem` / `#` on the first matching line
+/// (upstream's `^(?:@rem|#)\s*(.*)$`).
+fn first_comment(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        trimmed
+            .strip_prefix("@rem")
+            .or_else(|| trimmed.strip_prefix('#'))
+            .map(|rest| rest.trim().to_owned())
+    })
+}
+
+/// The last quoted string in `content`, excluding quotes containing `@` or `&`
+/// (upstream's fallback pattern `['"]([^@&]*?)['"]`, last match wins).
+fn last_quoted(content: &str) -> Option<String> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut last = None;
+    let mut index = 0;
+    while index < chars.len() {
+        let quote = chars[index];
+        if quote == '"' || quote == '\'' {
+            let mut end = index + 1;
+            while end < chars.len() && chars[end] != quote {
+                end += 1;
+            }
+            if end < chars.len() {
+                let inner: String = chars[index + 1..end].iter().collect();
+                if !inner.is_empty() && !inner.contains(['@', '&']) {
+                    last = Some(inner);
+                }
+                index = end + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    last
+}
+
+/// Resolve a command to the path that would actually run — upstream
+/// `Get-CommandPath` (`lib/core.ps1:498-532`).
+///
+/// Returns `None` when the command is not on `PATH` at all, or when it is a
+/// shim whose target cannot be resolved — both are upstream's "not found".
+///
+/// # Deliberate deviations
+///
+/// Upstream only treats the *user* shims folder as alias scripts
+/// (`core.ps1:518`); a **global** `scoop-*.ps1` falls into the shim branch,
+/// where its `# Summary: ...` banner is read as the target. Measured on
+/// Windows PowerShell 5.1 and pwsh 7: `Get-CommandPath scoop-hello` (user
+/// scope) returns the script path, while `Get-CommandPath scoop-ghello`
+/// (global scope) returns `$null` — official `scoop which` reports "not
+/// found" for a working global alias. hok resolves alias scripts in both
+/// scopes.
+pub fn command_path(session: &Session, command: &str) -> Option<PathBuf> {
+    let resolved = crate::shim::resolve_in_path(command)?;
+    classify_command_path(session, resolved)
+}
+
+/// [`command_path`]'s classification half: `resolved` is the command file the
+/// `PATH` lookup found, and this maps it to the path that would actually run.
+fn classify_command_path(session: &Session, resolved: PathBuf) -> Option<PathBuf> {
+    let user_shims = shims_dir_in(session, false);
+    let global_shims = shims_dir_in(session, true);
+    let in_shims = under_dir(&resolved, &user_shims) || under_dir(&resolved, &global_shims);
+
+    // 1. Scoop alias scripts resolve to the script itself.
+    if in_shims && is_alias_script(&resolved) {
+        return Some(resolved);
+    }
+
+    // 2. Shims resolve to their recorded target.
+    if in_shims {
+        // Upstream rewrites a `.exe` shim path to its `.shim` metadata file
+        // before reading the target; the other shim forms are read directly.
+        let meta = match resolved
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        {
+            true => resolved.with_extension("shim"),
+            false => resolved,
+        };
+        return shim_target(&meta);
+    }
+
+    // 3. Anything else on `PATH` is the program itself.
+    Some(resolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils;
+
+    fn setup(name: &str) -> (Session, PathBuf) {
+        let root = test_utils::tmpdir(name);
+        let session = test_utils::test_session(&root);
+        let shims = session.shims_dir();
+        std::fs::create_dir_all(&shims).unwrap();
+        (session, shims)
+    }
+
+    fn write(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn shim_target_reads_each_shim_form() {
+        let (session, shims) = setup("shim-target-forms");
+        let target = session.app_dir("app").join("current/tool.exe");
+        write(&target, "stub");
+
+        write(
+            &shims.join("a.shim"),
+            &format!("path = \"{}\"\r\n", target.display()),
+        );
+        write(
+            &shims.join("b.cmd"),
+            &format!("@rem {}\r\n@\"\" %*\r\n", target.display()),
+        );
+        write(
+            &shims.join("c.ps1"),
+            &format!("# {}\n$path = 1\n", target.display()),
+        );
+
+        assert_eq!(shim_target(&shims.join("a.shim")), Some(target.clone()));
+        assert_eq!(shim_target(&shims.join("b.cmd")), Some(target.clone()));
+        assert_eq!(shim_target(&shims.join("c.ps1")), Some(target));
+    }
+
+    #[test]
+    fn shim_target_is_none_when_the_target_is_gone() {
+        let (session, shims) = setup("shim-target-missing");
+        let ghost = session.app_dir("app").join("current/ghost.exe");
+        write(
+            &shims.join("ghost.shim"),
+            &format!("path = \"{}\"\r\n", ghost.display()),
+        );
+        assert_eq!(shim_target(&shims.join("ghost.shim")), None);
+    }
+
+    /// The healthy variant next to a broken one must not be reported: the scan
+    /// is name-scoped, and a paired `.cmd`/`.shim` names the same target.
+    #[test]
+    fn broken_shims_reports_only_unresolved_names() {
+        let (session, shims) = setup("broken-shims");
+        let target = session.app_dir("app").join("current/tool.exe");
+        write(&target, "stub");
+        write(
+            &shims.join("ok.shim"),
+            &format!("path = \"{}\"\r\n", target.display()),
+        );
+
+        let ghost = session.app_dir("app").join("current/ghost.exe");
+        write(
+            &shims.join("gone.shim"),
+            &format!("path = \"{}\"\r\n", ghost.display()),
+        );
+        write(
+            &shims.join("gone.cmd"),
+            &format!("@rem {}\r\n", ghost.display()),
+        );
+
+        // An alias script declares no package file — never a broken shim.
+        write(&shims.join("scoop-hello.ps1"), "Write-Host 'hi'\n");
+
+        let broken = broken_shims(&session).unwrap();
+        assert_eq!(broken.len(), 1, "{broken:?}");
+        assert_eq!(broken[0].name, "gone");
+        assert_eq!(broken[0].target.as_deref(), Some(ghost.as_path()));
+        assert!(broken[0].shim.is_file(), "reported shim must exist");
+    }
+
+    /// A name with no text variant the scan can read (only the `.exe` launcher)
+    /// is left alone rather than reported.
+    #[test]
+    fn broken_shims_ignores_the_launcher_only_name() {
+        let (session, shims) = setup("broken-shims-launcher");
+        write(&shims.join("only.exe"), "stub");
+        assert!(broken_shims(&session).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_shim_resolves_to_its_target() {
+        let (session, shims) = setup("command-path-shim");
+        let target = session.app_dir("demo").join("current/demo.exe");
+        write(&target, "stub");
+        write(
+            &shims.join("demo.shim"),
+            &format!("path = \"{}\"\r\n", target.display()),
+        );
+
+        assert_eq!(
+            classify_command_path(&session, shims.join("demo.exe")),
+            Some(target.clone())
+        );
+        // A `.cmd` shim is read directly (no `.exe` -> `.shim` rewrite).
+        write(
+            &shims.join("demo2.cmd"),
+            &format!("@rem {}\r\n", target.display()),
+        );
+        assert_eq!(
+            classify_command_path(&session, shims.join("demo2.cmd")),
+            Some(target.clone())
+        );
+    }
+
+    #[test]
+    fn an_alias_script_resolves_to_itself() {
+        let (session, shims) = setup("command-path-alias");
+        let script = shims.join("scoop-hello.ps1");
+        write(&script, "# Summary: says hello\r\nWrite-Output 'hello'\r\n");
+        assert_eq!(
+            classify_command_path(&session, script.clone()),
+            Some(script)
+        );
+    }
+
+    #[test]
+    fn a_non_shim_path_is_returned_as_is() {
+        let (session, _shims) = setup("command-path-plain");
+        let plain = session.config().root_path().join("plain/plain.exe");
+        write(&plain, "stub");
+        assert_eq!(classify_command_path(&session, plain.clone()), Some(plain));
+    }
+
+    #[test]
+    fn a_broken_shim_resolves_to_nothing() {
+        let (session, shims) = setup("command-path-broken");
+        let ghost = session.app_dir("demo").join("current/ghost.exe");
+        write(
+            &shims.join("ghost.shim"),
+            &format!("path = \"{}\"\r\n", ghost.display()),
+        );
+        assert_eq!(
+            classify_command_path(&session, shims.join("ghost.exe")),
+            None
+        );
+    }
+
+    #[test]
+    fn alias_scripts_are_recognized_only_for_scoop_ps1() {
+        assert!(is_alias_script(Path::new(
+            "C:\\scoop\\shims\\scoop-hello.ps1"
+        )));
+        assert!(is_alias_script(Path::new(
+            "C:\\scoop\\shims\\SCOOP-Hello.PS1"
+        )));
+        assert!(!is_alias_script(Path::new("C:\\scoop\\shims\\hello.ps1")));
+        assert!(!is_alias_script(Path::new(
+            "C:\\scoop\\shims\\scoop-hello.cmd"
+        )));
+    }
+
+    #[test]
+    fn under_dir_is_component_aware() {
+        assert!(under_dir(
+            Path::new("C:\\scoop\\shims\\demo.exe"),
+            Path::new("C:\\scoop\\SHIMS")
+        ));
+        assert!(!under_dir(
+            Path::new("C:\\scoop\\shims2\\demo.exe"),
+            Path::new("C:\\scoop\\shims")
+        ));
+    }
+
+    #[test]
+    fn last_quoted_skips_at_and_ampersand() {
+        assert_eq!(
+            last_quoted("@echo off\r\n\"first\"\r\n\"second\"\r\n"),
+            Some("second".to_owned())
+        );
+        // Upstream's fallback pattern is `['"]([^@&]*?)['"]`, so a quoted run
+        // containing `@` or `&` is skipped and the next one wins.
+        assert_eq!(last_quoted("\"a@b\" \"keep\""), Some("keep".to_owned()));
+        assert_eq!(last_quoted("\"a&b\""), None);
+    }
 }

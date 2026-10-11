@@ -3,10 +3,9 @@
 //! Scoop stores bucket-update timestamps as .NET round-trip strings
 //! (`[System.DateTime]::Now.ToString('o')`), e.g.
 //! `2026-07-19T10:48:34.0100861+08:00` — local wall time with offset and
-//! 7 fractional digits. The writer (`bucket::update`) and the reader
-//! (`Config::update_cooldown_remaining`) must agree on this exact format;
-//! keeping the format/parse pair in one module guarantees they cannot
-//! drift apart.
+//! 7 fractional digits. The writer (`bucket::update`) and the reader must
+//! agree on this exact format; keeping the format/parse pair in one module
+//! guarantees they cannot drift apart.
 //!
 //! # Design
 //!
@@ -22,8 +21,9 @@ use time::macros::format_description;
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 
 /// Scoop `LAST_UPDATE` output shape: `YYYY-MM-DDTHH:MM:SS.fffffff±HH:MM`.
-const FMT_LAST_UPDATE: &[time::format_description::FormatItem<'_>] =
-    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:7][offset_hour sign:mandatory]:[offset_minute]");
+const FMT_LAST_UPDATE: &[time::format_description::FormatItem<'_>] = format_description!(
+    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:7][offset_hour sign:mandatory]:[offset_minute]"
+);
 
 /// Bare no-offset input shape (treated as UTC): fractional seconds optional.
 /// Two formats because a time optional group starting with a literal (`.`)
@@ -39,6 +39,12 @@ const FMT_NAIVE_UTC_FRAC: &[time::format_description::FormatItem<'_>] =
 const FMT_SHORT_LOCAL: &[time::format_description::FormatItem<'_>] = format_description!(
     "[year]/[month padding:none]/[day padding:none] [hour padding:none]:[minute]:[second]"
 );
+
+/// Local-time output shape for the `list` `Updated` column:
+/// `2026-07-25 10:48:34` — the .NET format string upstream's
+/// `ScoopTypes.Format.ps1xml:24` applies to a `DateTime` (zero-padded).
+const FMT_UPDATED_LOCAL: &[time::format_description::FormatItem<'_>] =
+    format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
 
 /// Format `now` as Scoop's `last_update` config value.
 ///
@@ -59,6 +65,14 @@ pub fn format_last_update(now: OffsetDateTime) -> String {
 /// time + offset), `Z`-suffixed UTC timestamps, and bare no-offset values
 /// (treated as UTC) produced by other tools. Returns `None` when the string
 /// cannot be parsed.
+///
+/// Only unit tests consume it today: its production caller was the bucket
+/// update cooldown, which hok dropped (upstream never throttles an explicit
+/// `scoop update`, `libexec/scoop-update.ps1:397-398`). Kept as the reader
+/// half of the codec pair — the value is still written by `bucket::update`
+/// for Scoop config compatibility, and upstream's freshness check
+/// (`is_scoop_outdated()`, `lib/core.ps1:1168-1178`) is a pending feature.
+#[allow(dead_code)]
 pub fn parse_last_update(s: &str) -> Option<OffsetDateTime> {
     if let Ok(dt) = OffsetDateTime::parse(s, &Rfc3339) {
         return Some(dt.to_offset(UtcOffset::UTC));
@@ -78,6 +92,17 @@ pub fn format_short_local(secs: i64) -> Option<String> {
     let ts = OffsetDateTime::from_unix_timestamp(secs).ok()?;
     let local = UtcOffset::local_offset_at(ts).unwrap_or(UtcOffset::UTC);
     ts.to_offset(local).format(FMT_SHORT_LOCAL).ok()
+}
+
+/// Format a filesystem timestamp as the `list` `Updated` column's local wall
+/// time (`2026-07-25 10:48:34`), mirroring upstream's
+/// `Get-Item … .LastWriteTime` rendered with `yyyy-MM-dd HH:mm:ss`
+/// (`supporting/formats/ScoopTypes.Format.ps1xml:22-25`). Returns `None` when
+/// formatting fails (an out-of-range timestamp).
+pub fn format_updated_local(t: std::time::SystemTime) -> Option<String> {
+    let ts = OffsetDateTime::from(t);
+    let local = UtcOffset::local_offset_at(ts).unwrap_or(UtcOffset::UTC);
+    ts.to_offset(local).format(FMT_UPDATED_LOCAL).ok()
 }
 
 #[cfg(test)]
@@ -192,6 +217,25 @@ mod tests {
     #[test]
     fn short_local_rejects_out_of_range_seconds() {
         assert!(format_short_local(i64::MAX).is_none());
+    }
+
+    // ── format_updated_local ─────────────────────────────────────────────────
+
+    #[test]
+    fn updated_local_has_the_upstream_shape() {
+        // 2026-07-25T…Z rendered as local wall time, every component
+        // zero-padded (`yyyy-MM-dd HH:mm:ss`).
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_784_933_314);
+        let s = format_updated_local(when).expect("in-range timestamp should format");
+        let parts: Vec<&str> = s.split(['-', ' ', ':']).collect();
+        assert_eq!(parts.len(), 6, "unexpected shape: {s}");
+        assert_eq!(parts[0].len(), 4, "year width: {s}");
+        for (name, part) in ["month", "day", "hour", "minute", "second"]
+            .iter()
+            .zip(&parts[1..])
+        {
+            assert_eq!(part.len(), 2, "{name} not zero-padded: {s}");
+        }
     }
 
     // ── format ⇄ parse ───────────────────────────────────────────────────────

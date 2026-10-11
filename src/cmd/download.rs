@@ -5,9 +5,9 @@
 //! (Scoop's `scoop download`).
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::{Session, package};
 
-use crate::Result;
+use crate::{ExitCode, Result, output};
 
 /// Download package(s) into the cache folder without installing
 #[derive(Debug, Parser)]
@@ -21,9 +21,9 @@ pub struct Args {
     #[arg(short = 'f', long, action = ArgAction::SetTrue)]
     force: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
     /// Use the specified architecture (32bit/64bit/arm64), overriding the
     /// runtime-detected and configured default (Scoop's -a/--arch)
@@ -31,7 +31,7 @@ pub struct Args {
     arch: Option<String>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `-a/--arch` overrides the effective architecture (same as install).
     if let Some(arch) = args.arch.as_deref() {
         session.set_default_architecture(arch)?;
@@ -40,13 +40,27 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     let opts = package::download::DownloadOptions {
         force: args.force,
-        check_hash: !args.no_hash_check,
+        check_hash: !args.skip_hash_check,
     };
 
+    // Upstream announces once that `-f` ignores the cache
+    // (`libexec/scoop-download.ps1:55`).
+    if args.force {
+        output::warn(hok_i18n::t!("cmd.cache_ignored"));
+    }
+
     let handle = crate::eventloop::run_event_loop_default(session);
-    let result = package::download::download_apps(session, &queries, &opts);
-    handle.join().unwrap();
-    result?;
+    let result = package::download::download_apps(session, &queries, &opts).await;
+    handle.await.unwrap();
+    let all_succeeded = result?;
+
+    // Upstream exits non-zero when any requested app failed to download, after
+    // still downloading the rest (`exit [int]$download_failed`,
+    // libexec/scoop-download.ps1:153-156). The per-app errors were already
+    // reported, so the exit code is all that is left to mirror.
+    if !all_succeeded {
+        return Err(ExitCode(1).into());
+    }
 
     Ok(())
 }

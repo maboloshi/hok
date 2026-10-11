@@ -3,6 +3,9 @@ flamegraph.svg
 bench.ps1
 sandbox.wsb
 
+# vs-Scoop guardrail benchmark output
+scripts/benchmark-output/
+
 # Rust
 *.pyc
 *.swp
@@ -18,7 +21,9 @@ sandbox.wsb
 Thumbs.db
 .DS_Store
 
-# Generated analysis reports
+# Generated analysis reports — machine dumps from one-off scans.
+# Deliberately unanchored: these never enter git, including copies archived
+# under `.agents/docs/reports/` (that index marks them as "not tracked").
 *_report.txt
 *_drywall.txt
 *_duplicates.txt
@@ -28,4 +33,17 @@ Cargo.lock.txt
 /src/cmd/__cmd_reg__.rs
 
 .reasonix
-.dsh
+# Agent workspace: instructions, skills and records are tracked;
+# only machine-local or scratch state is ignored.
+.agents/tmp/
+.agents/**/*.local.md
+.agents/**/*.local.*
+
+# Local investigation lab (fixture manifests, served files, scratch scripts)
+.s10lab/
+
+# Windows SDK winsqlite3 staging, produced by scripts/stage-winsqlite3.ps1
+/.winsqlite3
+
+# Git worktrees (per-session branches, e.g. .worktrees/s1-s13)
+/.worktrees

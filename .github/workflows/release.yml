@@ -28,10 +28,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release
-        run: |
-          cargo build -p hok-shim --release
-          cargo build -p hok --release
+      # Published binaries link the SQLite that ships with Windows instead of
+      # compiling the bundled amalgamation (about 1 MB smaller). The script
+      # stages the SDK's winsqlite3, sets the three libsqlite3-sys variables for
+      # its own process only, builds hok-shim + hok, and -Verify asserts that
+      # the result really imports winsqlite3.dll. Only x64/arm64 can do this: on
+      # x86 the winsqlite3 import library exports __stdcall-decorated names that
+      # rusqlite's cdecl bindings cannot resolve (see crates/libscoop/build.rs).
+      - name: Build release (winsqlite3 shape)
+        run: pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify
 
       - name: Upload assets
         env:

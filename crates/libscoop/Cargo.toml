@@ -8,78 +8,124 @@ authors = ["Chawye Hsu <su+cratesio@chawyehsu.com>", "沙漠之子 <7850715+mabo
 categories = ["command-line-utilities"]
 keywords = ["package-manager", "windows", "scoop"]
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 readme = "README.md"
 
 [dependencies]
 # curl = { version = "0.4", features = ["static-curl"] }
-dirs = "5.0.1"
-flume = "0.10"
-time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
+time = { workspace = true, features = ["formatting", "parsing", "macros", "local-offset"] }
+# Phase 4 (方案 B): async traits + reqwest (真 async I/O) + concurrency.
+async-trait = "0.1"
+futures = "0.3"
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros", "sync"] }
+# Cooperative cancellation (P2): CancellationToken threaded through downloads,
+# scripts and waits so Ctrl-C aborts cleanly (temp files, cursor, subprocesses).
+tokio-util = { workspace = true, features = ["rt"] }
 git2 = "0.19.0"
+# Order-preserving map for `manifest.suggest` (upstream keeps manifest order).
+indexmap = { workspace = true }
 rayon = "1.7.0"
-regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
+regex = { workspace = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0.120", features = ["preserve_order"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror = "2"
-tracing = "0.1.41"
-# ureq: default-features off so its gzip feature (flate2 with default
-# backend) does not pull miniz_oxide into the tree — without gzip, ureq
-# simply never sends `Accept-Encoding: gzip`, so servers return plain
-# responses. rustls (TLS) and json (API payloads) are kept.
-ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+tracing = { workspace = true }
+# Async HTTP client (phase 4): async `Network` impl + GitHub / VirusTotal APIs.
+# TLS uses `native-tls` = schannel on Windows: the OS certificate store and
+# proxy configuration, matching what official Scoop gets through PowerShell.
+# It also keeps `ring`/`rustls`/`webpki-roots` (and their `getrandom 0.2`
+# pin) out of the tree. hok is Windows-only, so no non-Windows TLS backend
+# is needed.
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "stream", "json", "gzip"] }
 jsonpath-rust = "1.0"
 json5 = "0.4"
 sxd-document = "0.3"
 sxd-xpath = "0.4"
 base64 = "0.22"
-rust-i18n = "3.1.5"
-md-5 = "0.11"
-sha1 = "0.11"
-sha2 = "0.11"
+# Shared in-house i18n runtime: the locale tables are generated once, inside
+# `hok-i18n`, so the CLI and this library translate against one copy of them.
+hok-i18n = { workspace = true }
+md-5 = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
 
 # Archive — pure Rust crates (no cmake/bindgen needed)
-sevenz-rust2 = { version = "0.21", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = { version = "0.4", default-features = false }
 # flate2 unified on the pure-Rust zlib-rs backend across the workspace
-# (libscoop, upstream nsis 0.4, vendored innospect, zip), so miniz_oxide
-# stays out of the tree entirely.
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-lzma-rust2 = { version = "0.18", default-features = false, features = ["std", "optimization", "xz"] }
-unrar = "0.5"
+# (libscoop, upstream nsis, upstream innospect, zip), so miniz_oxide
+# is not pulled in by any of them.
+flate2 = { workspace = true }
+lzma-rust2 = { workspace = true, features = ["xz"] }
+# RAR (`.rar`) extraction. Reads RAR 1.3/1.4, RAR 1.5-4.x and RAR 5+ (including
+# RAR 7), follows volume sets, and applies the RARVM filters in pure Rust, so no
+# C++ toolchain is needed to build this crate.
+rars = "0.9.4"
 zstd = { version = "0.13", default-features = false }
-bzip2 = "0.6.1"
+bzip2 = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 junction = "1.2.0"
-winreg = "0.52"
+# 0.56 accepts `windows-sys >=0.59, <=0.61`, so it unifies with the direct
+# dependency below instead of pulling a second copy.
+winreg = "0.56"
 # Native Windows ACL APIs (GetNamedSecurityInfoW/SetEntriesInAclW/
 # SetNamedSecurityInfoW) for `permission::grant_users_write_inherit` —
 # keeps the ACL grant a pure-Rust call instead of shelling out to icacls.
-windows-sys = { version = "0.52", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
 ] }
-# Vendored fork of inno-rs (0.1.2) with LZMA/Zlib decoders switched to
-# lzma-rust2 + flate2/zlib-rs (faster, removes miniz_oxide from the tree).
-# Upstream: https://github.com/BinFlip/inno-rs
-innospect = { path = "../innospect" }
-# Upstream nsis-rs 0.4.0 (registry): adopted our lzma-rust2/zlib-rs PR
+# Upstream innospect 0.2.0 (registry): our lzma-rust2 + flate2/zlib-rs PR (#3)
+# landed in 0.1.4, and it additionally takes the LZMA2 dictionary size from
+# Inno's property byte, so the vendored fork (crates/innospect) is retired.
+# Upstream: https://github.com/ATRAPSLLC/innospect
+innospect = "0.2"
+# Upstream nsis-rs 0.6.0 (registry): 0.4.0 adopted our lzma-rust2/zlib-rs PR
 # (upstream commit 201df25) plus dest_path/solid-truncation fixes, so the
-# vendored fork (crates/nsis) is retired. Upstream: https://github.com/ATRAPSLLC/nsis-rs
-nsis = "0.4"
+# vendored fork (crates/nsis) is retired. 0.5/0.6 only touch the disassembly and
+# opcode-analysis surface hok never imports, and 0.6.0 caps the LZMA dictionary
+# a stream may declare — hok parses downloaded, untrusted installers under a
+# 512 MiB budget. Upstream: https://github.com/ATRAPSLLC/nsis-rs
+nsis = "0.6"
 shortcuts-rs = "1.1.1"
 
 [build-dependencies]
 hok-shim = { path = "../hok-shim" }
-serde_json = "1.0"
+# `preserve_order` is load-bearing here, not a nicety: `embed_known_buckets`
+# reads `assets/buckets.json` into a `serde_json::Map` and bakes the *key order*
+# into `KNOWN_BUCKETS` / `BUCKET_PRIORITY_ORDER` (the official known-bucket
+# priority, `main` first). Without the feature that map is a `BTreeMap`, so both
+# constants come out alphabetically sorted and `bucket known` renders the wrong
+# order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 
 [features]
 default = []
 
+[lints.rust]
+unsafe_code = "deny"
+
 [lints.rustdoc]
 broken_intra_doc_links = "deny"
+
+[dev-dependencies]
+# Guardrail benchmarks for the key pure functions (phase 5). Dev-only — never
+# affects release builds. `cargo bench` runs them.
+criterion = "0.8"
+# No RAR dependency here, not even a dev one: `tests/fixtures/rar/expected-trees.txt`
+# is committed, and the ignored `rar_regenerate_golden_baseline` re-derives it by
+# shelling out to WinRAR's `Rar.exe` (override the path with `HOK_RAR_EXE`). See
+# `tests/fixtures/rar/README.md`. Nothing in this crate needs a C++ toolchain.
+
+[[bench]]
+name = "pure_functions"
+harness = false
+
+[[bench]]
+name = "event_emission"
+harness = false

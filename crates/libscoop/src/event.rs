@@ -5,7 +5,8 @@
 //!
 //! # Design
 //!
-//! - **Full-duplex channel**: The event bus wraps two `flume` channels:
+//! - **Full-duplex channel**: The event bus wraps two `tokio::sync::mpsc`
+//!   channels:
 //!   - *Outbound* (`inner_tx` → `outer_rx`): Session backend → frontend.
 //!     Events flow *out* of the session to the caller (e.g. progress, prompts).
 //!   - *Inbound* (`outer_tx` → `inner_rx`): Frontend → session backend.
@@ -34,61 +35,110 @@
 //! variant and use the inbound channel (`EventBus::sender()`) to send it
 //! back.
 
-use flume::{bounded, Receiver, Sender};
+use tokio::sync::mpsc;
 
 use crate::{
     bucket::BucketUpdateProgressContext,
     constant::EVENT_BUS_CAPACITY,
-    package::{download::PackageDownloadProgressContext, sync::Transaction},
+    package::{
+        download::{PackageDownloadProgressContext, PackageVerifyProgressContext},
+        sync::Transaction,
+    },
 };
 
 /// Event bus for event transmission.
 #[derive(Debug)]
 pub struct EventBus {
-    // Outbound channel, used to send events out from the session
-    inner_tx: Sender<Event>,
-    outer_rx: Receiver<Event>,
+    // Outbound channel, used to send events out from the session. Wrapped in a
+    // Mutex so the outbound channel can be recreated when a new event loop
+    // takes the receiver (reinstall runs two sync transactions back-to-back
+    // in one session; the tokio::sync::mpsc receiver is single-consumer).
+    inner_tx: std::sync::Mutex<mpsc::Sender<Event>>,
+    // The outbound receiver is a single-consumer tokio::sync::mpsc
+    // receiver (a single-consumer channel), so it is stored in a
+    // Mutex<Option<_>> and handed out exactly once — to the event loop task
+    // (or a test that drains it) — via EventBus::receiver().
+    outer_rx: std::sync::Mutex<Option<mpsc::Receiver<Event>>>,
 
     // Inbound channel, used to receive events from outside
-    outer_tx: Sender<Event>,
-    inner_rx: Receiver<Event>,
+    outer_tx: mpsc::Sender<Event>,
+    // The inbound receiver is consumed sequentially by the backend while it
+    // awaits prompt responses (confirm_transaction, select_candidate), so it
+    // lives in a tokio::sync::Mutex and is awaited in place.
+    inner_rx: tokio::sync::Mutex<Option<mpsc::Receiver<Event>>>,
 }
 
 impl EventBus {
     /// Create a new event bus.
     pub fn new() -> EventBus {
-        let (inner_tx, outer_rx) = bounded(EVENT_BUS_CAPACITY);
-        let (outer_tx, inner_rx) = bounded(EVENT_BUS_CAPACITY);
+        let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
+        let (outer_tx, inner_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
         Self {
-            inner_tx,
-            outer_rx,
+            inner_tx: std::sync::Mutex::new(inner_tx),
+            outer_rx: std::sync::Mutex::new(Some(outer_rx)),
             outer_tx,
-            inner_rx,
+            inner_rx: tokio::sync::Mutex::new(Some(inner_rx)),
         }
     }
 
     /// Get the sender of the event bus.
     ///
     /// This sender is used to send events into the session.
-    pub fn sender(&self) -> Sender<Event> {
+    pub fn sender(&self) -> mpsc::Sender<Event> {
         self.outer_tx.clone()
     }
 
     /// Get the receiver of the event bus.
     ///
-    /// This receiver is used to receive events from the session.
-    pub fn receiver(&self) -> Receiver<Event> {
-        self.outer_rx.clone()
+    /// This receiver is used to receive events from the session. Because a
+    /// tokio::sync::mpsc receiver is single-consumer, it can only be obtained
+    /// once per outbound channel — the event loop (or a test) is its sole owner.
+    ///
+    /// Returns `None` if the receiver was already taken. To run a *second*
+    /// event loop on the same session (e.g. reinstall runs a remove then an
+    /// install transaction back-to-back), call [`Self::reset_outbound`]
+    /// between the two phases so a fresh outbound channel is created.
+    pub fn receiver(&self) -> Option<mpsc::Receiver<Event>> {
+        self.outer_rx.lock().unwrap().take()
+    }
+
+    /// Recreate the outbound channel so a new event loop can take the receiver.
+    ///
+    /// The outbound `tokio::sync::mpsc` receiver is single-consumer, so a
+    /// session's event loop (or test) owns it. A command that runs *two*
+    /// event loops on one session — reinstall runs a remove then an install
+    /// transaction back-to-back — must call this after the first event loop's
+    /// `JoinHandle` has completed (the previous loop has broken on its
+    /// `PackageSyncDone` and fully drained the old channel) and before
+    /// starting the next one.
+    ///
+    /// This is a no-op when the receiver has not been taken yet.
+    pub fn reset_outbound(&self) {
+        let mut guard = self.outer_rx.lock().unwrap();
+        if guard.is_some() {
+            // Not taken yet (or already reset): nothing to recreate.
+            return;
+        }
+        let (inner_tx, outer_rx) = mpsc::channel(EVENT_BUS_CAPACITY);
+        *self.inner_tx.lock().unwrap() = inner_tx;
+        *guard = Some(outer_rx);
     }
 
     /// Get the outbound sender of the event bus.
-    pub(crate) fn inner_sender(&self) -> Sender<Event> {
-        self.inner_tx.clone()
+    pub(crate) fn inner_sender(&self) -> mpsc::Sender<Event> {
+        self.inner_tx.lock().unwrap().clone()
     }
 
-    /// Get the inbound receiver of the event bus.
-    pub(crate) fn inner_receiver(&self) -> &Receiver<Event> {
-        &self.inner_rx
+    /// Await the next inbound (frontend → backend) event.
+    ///
+    /// Used by the backend to wait for a response to a prompt it emitted on
+    /// the outbound channel. Returns None when the channel is closed.
+    pub(crate) async fn receive_response(&self) -> Option<Event> {
+        let mut guard = self.inner_rx.lock().await;
+        match guard.as_mut() {
+            Some(rx) => rx.recv().await,
+            None => None,
+        }
     }
 }
 
@@ -109,10 +159,44 @@ pub enum Event {
     BucketUpdateDone,
 
     /// Package has started to be committed.
-    PackageCommitStart(String),
+    ///
+    /// Carries the version change (`old_version` -> `new_version`) so the
+    /// frontend can render the per-package commit header; both are empty for
+    /// operations with no version transition (e.g. uninstall).
+    PackageCommitStart {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+        /// Currently installed version, or empty if new install.
+        old_version: String,
+        /// Version to be installed.
+        new_version: String,
+    },
 
-    /// Package has been committed.
-    PackageCommitDone(String),
+    /// Package has been committed successfully.
+    PackageCommitDone {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+    },
+
+    /// Package commit failed.
+    PackageCommitFailed {
+        /// Package name.
+        name: String,
+        /// 1-based position in the commit sequence.
+        index: usize,
+        /// Total packages in the commit sequence.
+        total: usize,
+        /// The error that caused the commit to fail.
+        error: String,
+    },
 
     /// Calculating download size has started.
     PackageDownloadSizingStart,
@@ -126,8 +210,26 @@ pub enum Event {
     /// Package download has made some progress.
     PackageDownloadProgress(PackageDownloadProgressContext),
 
+    /// Download is about to start for a known set of packages. Carries each
+    /// package's total download bytes so the frontend can render a single
+    /// aggregate progress bar up front.
+    PackageDownloadInfo {
+        /// (ident, total_bytes_to_download) for each package being fetched.
+        packages: Vec<(String, u64)>,
+        /// How many of their files will be hashed inline — the `校验 n/m`
+        /// denominator of that same line. 0 when hash checking is skipped.
+        verify_files: u32,
+    },
+
     /// Package download has finished.
     PackageDownloadDone,
+
+    /// Inline verification advanced for one package.
+    ///
+    /// Emitted while the download bar is live (each file is hashed as soon as
+    /// it lands), so the frontend can fold the verification state into the
+    /// single download line instead of printing a status line of its own.
+    PackageVerifyProgress(PackageVerifyProgressContext),
 
     /// Package extraction has started.
     PackageExtractStart(String),
@@ -176,17 +278,29 @@ pub enum Event {
     /// Package environment path(s) removal has finished.
     PackageEnvPathRemoveDone,
 
-    /// Package environment variable(s) setting has started.
-    PackageEnvVarSetStart,
+    /// One `env_set` variable is about to be written, with its **expanded**
+    /// value. Upstream prints this unconditionally, not only in verbose mode
+    /// (`Write-Output "Setting … environment variable: $name = $val"`,
+    /// lib/install.ps1:337).
+    PackageEnvVarSet {
+        /// Variable name, as written in the manifest.
+        name: String,
+        /// The value after Scoop-variable expansion (`$dir`, `$version`, …).
+        value: String,
+        /// `true` for a `-g` install (upstream prints "system" rather than
+        /// "user").
+        global: bool,
+    },
 
-    /// Package environment variable(s) setting has finished.
-    PackageEnvVarSetDone,
-
-    /// Package environment variable(s) removal has started.
-    PackageEnvVarRemoveStart,
-
-    /// Package environment variable(s) removal has finished.
-    PackageEnvVarRemoveDone,
+    /// One `env_set` variable is about to be removed.
+    /// (`Write-Output "Removing … environment variable: $name"`,
+    /// lib/install.ps1:348).
+    PackageEnvVarRemove {
+        /// Variable name, as written in the manifest.
+        name: String,
+        /// `true` for a `-g` install.
+        global: bool,
+    },
 
     /// Package integrity check has started.
     PackageIntegrityCheckStart,
@@ -251,21 +365,38 @@ pub enum Event {
     /// A standalone download operation (`download_apps`) has finished.
     DownloadDone,
 
-    /// PowerShell script emitted output (stdout line).
-    ScriptOutput(String),
+    /// PowerShell script emitted a line on its success / information stream.
+    ///
+    /// Separate from [`Event::ScriptStderr`] / [`Event::ScriptWarning`] so the
+    /// frontend can render each PowerShell stream with its own convention
+    /// colour (and still pass script-embedded ANSI through untouched).
+    ScriptStdout(String),
 
-    /// Version information for a resolved package (old -> new).
-    PackageVersionKnown {
-        /// Package name
+    /// PowerShell script emitted a line on its warning stream.
+    ///
+    /// Only the resident-engine path can distinguish this from stderr (the
+    /// fresh-spawn path folds warnings into stderr); see
+    /// `package::operations::psengine`.
+    ScriptWarning(String),
+
+    /// PowerShell script emitted a line on its error stream (or stderr).
+    ScriptStderr(String),
+
+    /// A package's download was satisfied from the local cache.
+    ///
+    /// Carries the package's readable identity, not the cache file name
+    /// (`<name>#<version>#<sha7><ext>`): the file name is an implementation
+    /// detail of the cache layout that the frontend must not decode. Emitted
+    /// once per fully cached package — a package with several files would
+    /// otherwise print the same line once per file.
+    PackageCacheHit {
+        /// The package identity, `bucket/name`.
+        ident: String,
+        /// The package name, e.g. `nodejs`.
         name: String,
-        /// Currently installed version, or empty if new install
-        old_version: String,
-        /// Version to be installed
-        new_version: String,
+        /// The package version, e.g. `22.9.0`.
+        version: String,
     },
-
-    /// A download was satisfied from local cache.
-    PackageCacheHit(String),
 
     /// A symlink/junction was removed.
     PackageSymlinkRemove(String),
@@ -286,6 +417,24 @@ pub enum Event {
         stderr: String,
     },
 
+    /// A single lifecycle step performed during an install / update /
+    /// uninstall / reset commit, in Scoop execution order.
+    ///
+    /// Emitted by the sync pipelines at each stage boundary. The frontend
+    /// renders it as a "verb + object" line (e.g. "Creating shim for 7z") —
+    /// but only when verbose step output is enabled, so the default minimal
+    /// stdout is unchanged. `kind` selects the localized sentence; `object`
+    /// carries the concrete target (archive name, exe, shim name, path,
+    /// persisted item, ...) when the phrase takes one.
+    PackageStep {
+        /// Package being committed.
+        name: String,
+        /// Which Scoop stage this is.
+        kind: PackageStepKind,
+        /// The concrete object of the step, or `None` for phrase-only steps.
+        object: Option<String>,
+    },
+
     /// Post-install notes from the manifest.
     PackageNotes(String),
 
@@ -297,8 +446,18 @@ pub enum Event {
         version: String,
     },
 
-    /// Prompt the user to confirm the transaction.
-    PromptTransactionNeedConfirm(Transaction),
+    /// Present the transaction to the frontend for confirmation.
+    ///
+    /// The transaction plan is always rendered by the frontend; `gate` is
+    /// `true` only when the confirmation gate is enabled (and stdin is
+    /// interactive), so the frontend should wait for a Y/n answer instead of
+    /// auto-approving.
+    PromptTransactionNeedConfirm {
+        /// The transaction to present (and, when gated, confirm).
+        transaction: Transaction,
+        /// Whether the frontend should wait for an interactive Y/n answer.
+        gate: bool,
+    },
 
     /// Result of [`PromptTransactionNeedConfirm`][1].
     ///
@@ -312,4 +471,61 @@ pub enum Event {
     ///
     /// [1]: Event::PromptPackageCandidate
     PromptPackageCandidateResult(usize),
+}
+
+/// The Scoop lifecycle stage a [`PackageStep`][1] belongs to.
+///
+/// [1]: Event::PackageStep
+///
+/// Each variant is a *phrase* the frontend renders as a sentence. The
+/// concrete target rides along in `Event::PackageStep::object`; variants here
+/// with an `object` expectation substitute it into the sentence, the rest are
+/// phrase-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PackageStepKind {
+    /// Extracting an archive. `object` = archive file name.
+    Extract,
+    /// Running a manifest hook script (`pre_install` / `post_install` /
+    /// `pre_uninstall` / `post_uninstall`). `object` = the hook token.
+    RunHookScript,
+    /// Running an installer / uninstaller executable. `object` = "file args".
+    RunInstallerFile,
+    /// Re-pointing the `current` junction/symlink.
+    LinkCurrent,
+    /// Dropping the `current` junction/symlink.
+    UnlinkCurrent,
+    /// Refreshing a shim during `reset` (removed then recreated in place).
+    /// `object` = shim name.
+    RefreshShim,
+    /// Refreshing a shortcut during `reset`. `object` = shortcut name.
+    RefreshShortcut,
+    /// Creating a shim. `object` = shim name.
+    CreateShim,
+    /// Removing a shim. `object` = shim name.
+    RemoveShim,
+    /// Creating a shortcut. `object` = shortcut name.
+    CreateShortcut,
+    /// Removing a shortcut. `object` = shortcut name.
+    RemoveShortcut,
+    /// Installing a PowerShell module. `object` = module name.
+    AddPsModule,
+    /// Removing a PowerShell module. `object` = module name.
+    RemovePsModule,
+    /// Adding a PATH entry. `object` = the directory.
+    AddEnvPath,
+    /// Removing a PATH entry. `object` = the directory.
+    RemoveEnvPath,
+    /// Setting an environment variable. `object` = the variable name.
+    SetEnvVar,
+    /// Removing an environment variable. `object` = the variable name.
+    RemoveEnvVar,
+    /// Linking persisted data. `object` = the persisted item.
+    PersistLink,
+    /// Unlinking persisted data. `object` = the persisted item.
+    PersistUnlink,
+    /// Removing a version directory. `object` = the directory.
+    RemoveDir,
+    /// Purging persisted data.
+    PersistPurge,
 }

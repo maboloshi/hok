@@ -3,30 +3,16 @@ output:
   done: "done."
   warn: "WARN"
   error: "ERROR"
-  detail_prefix: "·"
   confirm_continue: "Do you want to continue? [y/N]:"
   ok_all: "Everything is ok!"
   downloaded_only: "Downloaded (not installed)."
-  field_identity: "Identity:"
-  field_name: "Name:"
-  field_bucket: "Bucket:"
-  field_description: "Description:"
-  field_version: "Version:"
-  field_homepage: "Homepage:"
-  field_license: "License:"
-  field_shims: "Shims:"
   select_prompt: "Please select one, enter the number to continue:"
-  select_one: "Select one (0-%{max}):"
 status:
   resolving: "Resolving packages..."
   sizing: "Calculating download size..."
   downloading: "Downloading packages..."
   checking_hash: "Checking hash..."
-  resolving_done: "Resolving packages completed."
-  sizing_done: "Download size calculated."
-  downloading_done: "Download completed."
 detail:
-  extract_done: "extract done"
   shim_done: "shim done"
   shim_removed: "shim removed"
   shortcut_done: "shortcut done"
@@ -43,83 +29,173 @@ detail:
   removing_persist: "removing persisted data..."
   psmodule_removed: "psmodule removed"
   extracting: "extracting: %{ctx}"
-  extracting_done: "extract done"
   checking_hash_item: "Checking hash...%{ctx}"
   creating_shim: "creating shim: %{ctx}"
   creating_shortcut: "creating shortcut: %{ctx}"
   removing_shim: "removing shim: %{ctx}"
   removing_shortcut: "removing shortcut: %{ctx}"
+  installing_psmodule: "installing psmodule: %{ctx}"
+  psmodule_installed: "psmodule installed"
   removing_psmodule: "removing psmodule: %{ctx}"
-  loading_cache: "Loading %{filename} from cache."
+  loading_cache: "Loading %{name} %{version} from cache."
+  verifying: "verifying"
   unlinking: "Unlinking %{path}"
   linking: "Linking %{from} => %{to}"
   shortcut_conflict: "shortcut already exists and belongs to another package; it will be overwritten: %{path}"
   shortcut_not_found: "shortcut not found: %{path}"
   shim_conflict: "shim already exists and belongs to another package; it will be overwritten: %{path}"
   config_fallback: "all config paths failed, falling back to default config"
+step:
+  extract: "Extracting %{object}"
+  hook_script: "Running %{object} script"
+  installer: "Running installer: %{object}"
+  link_current: "Linking current"
+  unlink_current: "Unlinking current"
+  refresh_shim: "Refreshing shim for %{object}"
+  refresh_shortcut: "Refreshing shortcut for %{object}"
+  create_shim: "Creating shim for %{object}"
+  remove_shim: "Removing shim for %{object}"
+  create_shortcut: "Creating shortcut for %{object}"
+  remove_shortcut: "Removing shortcut for %{object}"
+  add_psmodule: "Installing ps-module %{object}"
+  remove_psmodule: "Removing ps-module %{object}"
+  add_env_path: "Adding PATH entry: %{object}"
+  remove_env_path: "Removing PATH entry: %{object}"
+  set_env_var: "Setting env var %{object}"
+  remove_env_var: "Removing env var %{object}"
+  persist_link: "Persisting %{object}"
+  persist_unlink: "Unlinking persist %{object}"
+  remove_dir: "Removing %{object}"
+  persist_purge: "Purging persisted data"
 reinstall:
   released: "Packages released."
   reheld: "Packages re-held."
+  releasing: "Releasing held packages: %{names}"
+  reholding: "Re-holding packages: %{names}"
 cmd:
   header_aliases: "Aliases"
+  alias_header_name: "Name"
+  alias_header_command: "Command"
+  alias_header_summary: "Summary"
   header_buckets: "Updating buckets"
   header_buckets_list: "Known buckets"
   header_installed_apps: "Installed apps"
+  header_installed_apps_matching: "Installed apps matching '%{query}'"
   list_header_name: "Name"
   list_header_version: "Version"
   list_header_source: "Source"
+  list_header_updated: "Updated"
   list_header_info: "Info"
-  list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable"
+  list_info_deprecated: "Deprecated package"
+  list_summary: "%{count} installed, %{held} held, %{upgradable} upgradable, %{broken} broken, %{orphaned} orphaned, %{isolated} isolated"
+  list_version_old: "old"
+  list_no_versions: "no version directory"
+  list_no_match: "No installed app matched."
+  list_no_apps: "There aren't any apps installed."
+  search_no_match: "No matches found."
+  search_no_query: "No query provided. Usage: hok search <query> [options]"
+  search_summary: "Found %{count} package(s) matching '%{query}'"
+  list_summary_versions: "%{versions} older version(s) retained across %{apps} app(s)"
   no_aliases: "No aliases configured."
-  alias_add_usage: "Usage: hok alias add <name> <command>"
   alias_added: "alias added: %{name} -> %{value}"
-  alias_rm_usage: "Usage: hok alias rm <name>"
   alias_removed: "alias removed: %{name}"
-  alias_unknown: "Unknown command: '%{cmd}'. Use: list, add, rm"
   no_apps_found: "No apps directory found."
   no_current_symlink: "no 'current' symlink"
+  health_current_dangling: "'current' link points to a missing version: %{target}"
+  health_shim_broken: "shim target is missing: %{target}"
+  health_shims_unreadable: "cannot read the shims directory: %{e}"
   missing_install_json: "missing install.json"
   missing_manifest_json: "missing manifest.json"
   no_issues: "No issues found."
   run_reset: "run 'hok reset <app>' to fix"
-  bucket_err: "Err"
-  cache_cleaned: "Cache cleaned."
+  health_issue_count: "%{count} issue(s) found."
+  checkup_defender: "Windows Defender may slow down or disrupt installs with realtime scanning."
+  checkup_defender_consider: "Consider running:"
+  checkup_defender_exclude: "sudo Add-MpPreference -ExclusionPath '%{path}'"
+  checkup_defender_sudo: "(Requires 'sudo' command. Run 'hok install sudo' if you don't have it.)"
+  checkup_main_bucket: "Main bucket is not added."
+  checkup_main_bucket_hint: "run 'hok bucket add main'"
+  checkup_long_paths_unsupported: "This version of Windows does not support configuration of LongPaths."
+  checkup_long_paths_disabled: "LongPaths support is not enabled."
+  checkup_long_paths_enable: "You can enable it by running:"
+  checkup_long_paths_set: "sudo Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Name 'LongPathsEnabled' -Value 1"
+  checkup_developer_mode: "Windows Developer Mode is not enabled. Operations relevant to symlinks may fail without proper rights."
+  checkup_developer_mode_read: "You may read more about the symlinks support here:"
+  checkup_developer_mode_link: "https://blogs.windows.com/windowsdeveloper/2016/12/02/symlinks-windows-10/"
+  checkup_missing_7zip: "'7-Zip' is not installed! It's required for unpacking most programs. Please run 'hok install 7zip'."
+  checkup_missing_innounp: "'Inno Setup Unpacker' is not installed! It's required for unpacking InnoSetup files. Please run 'hok install innounp'."
+  checkup_missing_dark: "'dark' is not installed! It's required for unpacking installers created with the WiX Toolset. Please run 'hok install dark' or 'hok install wixtoolset'."
+  checkup_ntfs_global: "hok requires an NTFS volume to work! Please point $env:SCOOP_GLOBAL or 'global_path' variable in '~/.config/hok/config.json' to another drive."
+  checkup_ntfs_root: "hok requires an NTFS volume to work! Please point $env:SCOOP or 'root_path' variable in '~/.config/hok/config.json' to another drive."
+  checkup_no_problems: "No problems identified!"
+  checkup_performance_problems: "Found %{count} performance problem(s)."
+  checkup_potential_problems: "Found %{count} potential problem(s)."
+  checkup_security_over_performance: "Security is more important than performance, in most cases."
+  cleanup_all_done: "Everything is shiny now!"
+  checkver_autoupdate: "autoupdate available"
+  create_failed: "create manifest failed: %{e}"
   cache_all_removed: "All download caches were removed."
   cache_matching_removed: "All caches matching '%{query}' were removed."
+  cache_app_missing: "<app(s)> missing"
+  header_cache: "Download cache"
+  cache_header_name: "Name"
+  cache_header_version: "Version"
+  cache_header_size: "Size"
+  cache_empty: "No cached downloads."
   cat_not_found: "Could not find package named '%{query}'."
   cat_invalid: "Invalid input."
-  checkhashes_skipped: "skipped (no hash)"
-  checkhashes_rehashed: "re-hashed"
+  cat_render_failed: "Failed to render the manifest."
+  cat_bat_failed: "bat could not render the manifest (cat_style = '%{style}'): %{reason}"
   checkhashes_mismatch_upd: "hash mismatch! updated"
-  checkhashes_mismatch: "hash mismatch expected %{expected} got %{actual}"
+  checkhashes_mismatch: "hash mismatch: expected %{expected}, actual %{actual}"
   checkhashes_summary: "Scanned %{total}: %{passed} ok, %{failed} failed, %{updated} updated."
+  checkhashes_no_url: "Manifest does not contain URL property."
+  checkhashes_parse_failed: "failed to parse manifest: %{e}"
+  checkhashes_download_failed: "download failed: %{e}"
+  checkhashes_hash_failed: "hash failed: %{e}"
+  checkhashes_path_not_found: "path %{path} not found in JSON"
   checkver_updated_to: "updated to %{ver}"
   checkver_update_failed: "update failed: %{e}"
-  checkver_no_version: "script returned no version"
   checkver_script_err: "script error: %{e}"
-  checkver_github_err: "could not extract GitHub repo from homepage"
-  checkver_sourceforge_err: "could not extract SourceForge project"
+  checkver_script_fallback: "%{e}. Falling back to checkver.script ..."
+  checkver_github_err: "%{name} checkver expects %{field} to be a valid GitHub repository URL"
   checkver_no_url: "no checkver url"
-  checkver_no_extract: "could not extract version"
-  checkver_version_wildcard: "cannot use --version with wildcard app pattern"
+  checkver_no_match: "couldn't match '%{regex}' in %{url}"
+  checkver_no_version: "couldn't find new version in %{url}"
+  checkver_checking: "checking manifests %{done}/%{total}"
+  checkver_no_manifests: "No manifests to check."
+  checkver_summary: "Checked %{total} manifest(s): %{outdated} outdated, %{failed} failed, %{current} up to date."
   checkurls_summary: "Checked %{total} URLs: %{valid} valid, %{invalid} invalid."
   checkurls_no_manifests: "No manifests to check."
   cleanup_no_old: "No old versions to clean up."
-  cleanup_removed: "%{count} old version(s) removed"
-  cleanup_removed_failed: "%{count} old version(s) removed, %{failed} failed (retry after restart)"
+  cleanup_app_missing: "<app> missing"
+  cleanup_not_installed_globally: "'%{name}' isn't installed globally, but it may be installed locally."
+  cleanup_try_local: "Try again without the --global (or -g) flag instead."
+  cleanup_not_installed_locally: "'%{name}' isn't installed locally, but it may be installed globally."
+  cleanup_try_global: "Try again with the --global (or -g) flag instead."
+  cleanup_removing: "Removing %{name}:"
+  cleanup_row: "%{name}: %{ver}"
+  cleanup_list_current_unknown: "current version unknown"
+  cleanup_current_from_version_dirs: "'%{name}' has no usable manifest under 'current'; using version '%{version}' from the version directories as the current one."
+  cleanup_failed_summary: "%{count} app(s) still have old versions: %{apps} (close the program using those files and retry; those directories may be partially deleted)"
+  cleanup_remove_failed: "failed to remove %{name} v%{ver}: %{e}"
+  cleanup_cache_removed: "Outdated download cache removed: %{count} files, %{size}"
+  cleanup_incomplete_removed: "Leftover partial downloads removed: %{count} item(s), %{size}"
   config_set: "Config '%{key}' has been set to '%{value}'"
-  config_unset: "Config '%{key}' has been unset"
+  config_removed: "Config '%{key}' has been removed"
+  config_not_set: "'%{key}' is not set"
+  config_cat_style_invalid: "bat does not accept '%{value}' as a style: %{reason} (cat_style is passed to 'bat --style'; run 'bat --help' for the accepted components)"
   create_url_required: "URL is required."
   create_manifest_saved: "Manifest saved to: %{path}"
   depends_invalid: "Invalid selection."
   depends_not_found: "Could not find package named '%{query}'."
   reset_app_missing: "<app> missing. Use 'hok reset <app>' or 'hok reset -a' to reset all apps."
   dir_not_found: "error: '%{path}' is not a directory"
+  dir_required_for_write: "%{cmd} writes to disk, so the target must be given explicitly: pass -d <dir>. (Read-only runs default to the current directory; a write run never scans it implicitly.)"
   err_download: "download failed: %{e}"
-  err_hash: "hash error: %{e}"
   formatjson_none: "No manifests needed formatting."
+  formatjson_writing: "Formatting %{path}..."
   formatjson_count: "Formatted %{count} manifest(s)."
-  hold_err: "Err"
   already_held: "'%{name}' is already held."
   not_held: "'%{name}' is not held."
   hold_failed: "Failed to hold '%{name}'."
@@ -127,50 +203,263 @@ cmd:
   hold_not_installed_global: "'%{name}' is not installed globally."
   import_complete: "Import complete."
   import_no_pkgs: "No packages found in import file."
-  install_ok: "All apps are up to date."
-  checkup_ok: "Everything is shiny now!"
+  header_status: "Status of installed apps"
+  status_header_name: "Name"
+  status_header_source: "Source"
+  status_header_installed: "Installed Version"
+  status_header_latest: "Latest Version"
+  status_header_missing: "Missing Dependencies"
+  status_header_info: "Info"
+  status_attention: "%{count} app(s) need attention: %{broken} broken · %{source} source issue(s) · %{deps} missing deps · %{updatable} updatable"
+  status_install_failed: "Install failed"
+  status_held: "Held package"
+  status_deprecated: "Deprecated"
+  status_removed: "Manifest removed"
+  status_bucket_missing: "Source bucket missing"
+  status_source_unknown: "Source unknown"
   no_apps: "No apps installed."
   no_old_versions: "No old versions to clean up."
   no_pkgs_found: "No packages found."
-  outdated: "All apps are up to date."
-  prefix_installed: "Package '%{pkg}' is installed but has no 'current' symlink."
-  prefix_no_pkg: "Package '%{pkg}' is not installed."
+  update_latest: "%{name}: %{version} (latest version)"
+  update_all_latest: "Latest versions for all apps are installed! For more information try 'hok status'"
+  update_cleanup_no_upgrade: "Nothing was upgraded, so there is nothing to clean up here. Run 'hok cleanup -a' to remove the old versions of every app."
+  prefix_not_found: "Could not find app path for '%{pkg}'."
   refresh_cache: "Refreshing manifest cache..."
   cache_done: "Manifest cache refreshed."
-  shim_info_usage: "Usage: hok shim info <name>"
+  cache_rebuilt: "Manifest cache rebuilt."
+  cache_rescanned: "Manifest cache refreshed (rebuilt buckets: %{buckets})."
+  cache_refresh_failed: "Manifest cache refresh failed: %{e}. Please retry 'hok update --force'."
+  cache_stale: "The manifest cache may be out of date (%{count} bucket(s) not synced); run 'hok update --force' to rebuild it."
+  cache_mismatch: "Manifest cache differs from the file: %{name} cached %{cached}, file %{file} (using the file value)."
+  cache_missing: "Manifest cache differs from the file: %{name} has no manifest on disk (cache row ignored)."
+  manifest_parse_failed: "Error parsing JSON at '%{path}'. %{reason}"
+  manifest_parse_failed_summary: "%{count} manifest(s) could not be parsed (run with -vv to list them)."
+  history_index: "Maintaining the manifest history index..."
+  history_index_done: "Manifest history index updated."
+  history_index_skipped: "Manifest history index skipped: %{e} (the next update retries)."
   shim_added: "Added shim: %{name}"
   shim_removed_by_name: "Removed shim: %{name}"
   shim_not_found: "shim not found: %{name}"
+  shim_other_scope: "a %{scope} shim exists; run '%{cmd}' to show its info"
+  shim_scope_local: "local"
+  shim_scope_global: "global"
+  shim_invalid_pattern: "invalid pattern '%{pattern}': %{e}"
+  shim_command_path_required: "<command_path> must be specified for subcommand 'add'"
   shim_no_dir: "No shims directory found."
-  missing_checkver_scan: "Scanned %{total} manifests: %{missing} missing checkver, %{noauto} missing autoupdate."
+  shim_header_name: "Name"
+  shim_header_source: "Source"
+  shim_header_alternatives: "Alternatives"
+  shim_header_is_global: "IsGlobal"
+  shim_header_is_hidden: "IsHidden"
+  shim_true: "True"
+  shim_false: "False"
+  missing_checkver_scan: "Scanned %{total} manifests: %{missing} missing checkver, %{noauto} missing autoupdate, %{unparsable} unparsable."
   missing_checkver_all: "All manifests have checkver and autoupdate."
   home_not_found: "Could not find package named '%{query}'."
   home_multiple: "Found multiple packages named '%{query}':"
   home_invalid: "Invalid input."
-  header_buckets: "Updating buckets"
+  home_no_homepage: "Could not find homepage in manifest for '%{pkg}'."
   header_installed: "The following packages will be INSTALLED:"
   header_upgraded: "The following packages will be UPGRADED:"
   header_replaced: "The following packages will be REPLACED:"
   header_removed: "The following packages will be REMOVED:"
-  vt_skip: "skipped (set VT_API_KEY to scan)"
+  vt_no_key: "VirusTotal API key is not configured. Set it with: hok config virustotal_api_key <API key>, or the VT_API_KEY environment variable."
   holding: "Holding"
   unholding: "Unholding"
   unhold_failed: "Failed to unhold '%{name}'."
-  adding_bucket: "Adding bucket"
+  bucket_checking_repo: "Checking repo... "
+  bucket_added_success: "The %{name} bucket was added successfully."
+  bucket_list_empty: "No bucket found. Please run 'hok bucket add main' to add the default 'main' bucket."
   removing_bucket: "Removing bucket"
   downloading: "Downloading"
-  computing_hash: "Computing hash"
+  verifying_count: "verifying %{done}/%{total}"
   found: "Found %{count} package(s) for query '%{query}'"
   no_download_urls: "no download URLs"
   held_skip: "'%{name}' is held to version %{version}"
+  held_install_skip: "'%{name}' is held to version %{version}. Run 'hok unhold %{name}' to install or upgrade it."
   reinstall_not_installed: "'%{name}' is not installed. Use 'hok install' to install it."
   admin_rights_required: "ERROR: you need admin rights to %{verb} global apps"
   update_global_no_app: "hok update: --global is invalid when <app> is not specified."
+  update_no_cache_no_app: "hok update: --no-cache is invalid when <app> is not specified."
   auto_err_token: "GITHUB_TOKEN is required for ci-auto-pr"
   auto_err_mode: "Must specify --push or --request"
   auto_err_upstream: "--request requires --upstream (<user>/<repo>:<branch>)"
   auto_pr_header: "ci-auto-pr"
   auto_pr_no_changes: "No manifests updated."
+  info_not_found: "Could not find any package matching '%{query}'."
+  info_more: "… and %{n} more matches. Refine the query for details."
+  info_name: "Name"
+  info_description: "Description"
+  info_version: "Version"
+  info_source: "Source"
+  info_website: "Website"
+  info_license: "License"
+  info_dependencies: "Dependencies"
+  info_updated_at: "Updated at"
+  info_updated_by: "Updated by"
+  info_manifest: "Manifest"
+  info_installed: "Installed"
+  info_installed_size: "Installed size"
+  info_download_size: "Download size"
+  info_binaries: "Binaries"
+  info_shortcuts: "Shortcuts"
+  info_environment: "Environment"
+  info_path_added: "Path Added"
+  info_suggestions: "Suggestions"
+  info_notes: "Notes"
+  info_update_available: "%{installed} (Update to %{latest} available)"
+  info_size_current_version: "Current version:"
+  info_size_old_versions: "Old versions:"
+  info_size_persisted_data: "Persisted data:"
+  info_size_cached_downloads: "Cached downloads:"
+  info_size_total: "Total:"
+  info_download_unknown: "Unknown (%{reason})"
+  info_download_cached: " (latest version is cached)"
+  info_download_no_content_length: "the server at %{host} did not send a Content-Length header"
+  info_download_server_down: "the server at %{host} is down"
+  which_not_found: "'%{command}' was not found: not a Scoop shim, a broken shim, or not an installed app command."
+  import_read_err: "Error reading '%{file}': %{e}"
+  import_parse_err: "Error parsing JSON: %{e}"
+  import_found: "Found %{count} packages to install."
+  import_err: "Import error: %{e}"
+  import_bucket_added: "Bucket '%{name}' has been added."
+  import_config_set: "'%{key}' has been set to '%{value}'."
+  import_config_set_mapped: "'%{key}' has been set to '%{value}' (as '%{hok_key}')."
+  import_alias_set: "Alias '%{name}' has been set to '%{command}'."
+  import_summary: "Imported %{imported} app(s); %{failed} not installed; skipped %{skipped} item(s) (see above)."
+  import_skip_app_arch: "Skipped the packages that need architecture '%{arch}': %{e}"
+  import_skip_app_err: "Skipped some packages: %{e}"
+  import_skip_app_check: "Could not check what the import installed: %{e}"
+  import_skip_app_failed: "Skipped app '%{name}': the Scoopfile records a failed install."
+  import_skip_app_bucket: "Skipped app '%{name}': its bucket '%{source}' is not available."
+  import_skip_app_version: "Skipped app '%{name}': a generated manifest needs a version to replay it."
+  import_skip_bucket_err: "Skipped bucket '%{name}': %{e}"
+  import_skip_bucket_exists: "Skipped bucket '%{name}': it is already added."
+  import_skip_bucket_list: "Could not list the added buckets: %{e}"
+  import_skip_bucket_local: "Skipped bucket '%{name}': '%{source}' is not a git remote (hok only adds git buckets)."
+  import_skip_config_err: "Skipped config '%{key}': %{e}"
+  import_skip_config_machine: "Skipped config '%{key}': it is machine-specific (upstream strips it too)."
+  import_skip_config_unsupported: "Skipped config '%{key}': hok has no such setting."
+  import_skip_config_value: "Skipped config '%{key}': hok cannot represent this value."
+  import_skip_alias_err: "Skipped alias '%{name}': %{e}"
+  import_skip_alias_no_command: "Skipped alias '%{name}': the file carries no command for it."
+  import_skip_alias_index: "Skipped the alias index: its commands are not part of that file."
+  import_skip_hold: "Could not hold '%{name}': %{e}"
+  create_creating: "Creating manifest for: %{url}"
+  reset_admin_skip: "'%{name}' is a global app — admin rights are required to reset it. Skipping."
+  reset_broken_skip: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
+  reset_failed: "Failed to reset '%{name}': %{e}"
+  vt_malicious: "MALICIOUS — %{n}/%{total} engines flagged"
+  vt_suspicious: "SUSPICIOUS — %{n}/%{total} engines suspicious"
+  vt_clean: "OK — no detection (checked %{total} engines)"
+  depends_already: "(already listed)"
+  header_buckets_local: "Added buckets"
+  bucket_header_name: "Name"
+  bucket_header_manifests: "Manifests"
+  bucket_header_updated: "Updated"
+  bucket_header_source: "Source"
+  bucket_header_repo: "Repository"
+  config_col_key: "key"
+  config_col_value: "value"
+  config_col_default: "default"
+  config_col_desc: "description"
+  header_config: "Config"
+  config_value_unset: "unset"
+  config_value_auto: "auto"
+  config_desc_aria2_enabled: "Enable fragmented downloads"
+  config_desc_aria2_split: "Connections per fragmented download"
+  config_desc_aria2_max_connection_per_server: "Max connections to one server"
+  config_desc_jobs: "Concurrent package downloads"
+  config_desc_aria2_min_split_size: "Minimum size to fragment"
+  config_desc_cache_path: "Download cache directory"
+  config_desc_cat_style: "Components passed to 'bat --style'"
+  config_desc_editor: "Editor for manifests"
+  config_desc_default_architecture: "Preferred install architecture"
+  config_desc_global_path: "Root of global installs"
+  config_desc_gh_token: "GitHub API token"
+  config_desc_ignore_failures: "Keep going after a package fails"
+  config_desc_ignore_running_processes: "Proceed while the app is running"
+  config_desc_language: "CLI language"
+  config_desc_last_update: "Last bucket update"
+  config_desc_no_color: "Disable colored output"
+  config_desc_confirm: "Ask before running an operation"
+  config_desc_script_engine: "Reuse the resident pwsh engine"
+  config_desc_no_junction: "Skip the 'current' junction"
+  config_desc_autostash_on_conflict: "Stash uncommitted changes that block a repo pull during update (hok: every bucket pull; upstream: only Scoop's own repo)"
+  config_desc_private_hosts: "Private hosts needing auth"
+  config_desc_proxy: "Proxy settings"
+  config_desc_root_path: "Scoop root directory"
+  config_desc_use_isolated_path: "Dedicated PATH environment variable"
+  config_desc_use_sqlite_cache: "Cache manifests in SQLite"
+  config_desc_virustotal_api_key: "VirusTotal API key"
+  bucket_not_git_skipped: "'%{bucket}' is not a git repository. Skipped."
+  bucket_update_failed: "Failed to update %{bucket}: %{e}"
+  bucket_no_remote: "no usable 'origin' remote (missing, or the git metadata is broken)"
+  bucket_update_failed_summary: "%{count} bucket(s) failed to update: %{buckets}; run 'hok update' to retry."
+  multiple_candidates: "Found multiple candidates for package '%{name}':"
+  script_failed: "script failed: %{stderr}"
+  total_download_size: "Total download size: %{size}"
+  total_download_size_estimated: "Total download size: %{size} (estimated)"
+  nothing_to_download: "Nothing to download, all cached."
+  download_size_unknown: "Could not determine the download size."
+  cache_ignored: "Cache is being ignored."
+  running_process_update: "Running process detected, skip updating '%{name}'."
+  running_process_reinstall: "Running process detected, skip reinstalling '%{name}'."
+  running_process_uninstall: "Running process detected, skip uninstalling '%{name}'."
+  running_process_reset: "Running process detected, skip resetting '%{name}'."
+  running_process_ignored: "'%{name}' is still running; hok is configured to ignore it (ignore_running_processes).\n     Continuing may cause data loss or instability; close it and retry."
+  not_installed: "'%{name}' isn't installed."
+  not_installed_version: "'%{name} (%{version})' isn't installed."
+  not_installed_correctly: "'%{name}' is not installed correctly. Reinstall it or fix the manifest."
+  failed_resolve: "failed to resolve '%{query}': %{error}"
+  failed_resolve_dependency: "failed to resolve dependency '%{query}' of '%{pkg}': %{error}"
+  failed_install: "failed to install '%{name}': %{error}"
+  failed_remove: "failed to remove '%{name}': %{error}"
+  failed_remove_cache: "failed to remove cache '%{path}': %{error}"
+  failed_download: "failed to download '%{name}': %{error}"
+  failed_reassemble: "failed to reassemble '%{name}': %{error}"
+  failed_move_download: "failed to move download of '%{name}': %{error}"
+  failed_verify: "failed to verify '%{name}': %{error}"
+  failed_read_file: "read %{path}: %{error}"
+  failed_read_dir: "read dir %{path}: %{error}"
+  failed_parse_file: "parse %{path}: %{error}"
+  manifest_no_version_field: "%{path}: no version field"
+  manifests_updated: "%{count} manifest(s) updated"
+  installer_added_path: "Installer added '%{path}' to path. Removing."
+  installer_added_system_path: "Installer added '%{path}' to system path. You might want to remove this manually (requires admin permission)."
+  already_installed: "'%{name}' (%{version}) is already installed.\nUse 'hok update %{name}%{global}' to install a new version."
+  suggests_install: "'%{pkg}' suggests installing '%{names}'."
+  cache_total_label: "Total:"
+  cache_total: "%{count} files, %{size}"
+  cache_removing: "Removing %{name}..."
+  cache_deleted_label: "Deleted:"
+  manifest_no_version: "Manifest for '%{name}' doesn't specify a version."
+  env_var_setting: "Setting %{scope} environment variable: %{name} = %{value}"
+  env_var_removing: "Removing %{scope} environment variable: %{name}"
+  manifest_version_invalid: "Manifest version for '%{name}' has an unsupported character."
+  arch_unsupported: "'%{name}' doesn't support the current architecture!"
+  downloaded_success: "'%{name}' (%{version}) was downloaded successfully!"
+  download_failed_list: "download failed for: %{names}"
+  no_hash_skip: "no hash in manifest for '%{name}', skipping verification"
+  version_mismatch: "Given version (%{given}) does not match manifest (%{manifest})"
+  resolving_historical_manifest: "Resolving historical manifest for '%{name}' (%{version})"
+  generating_manifest: "Attempting to generate manifest for '%{name}' (%{version})"
+  auto_pr_snapshotting: "Snapshotting"
+  auto_pr_manifests: "manifests"
+  auto_pr_checking: "Checking"
+  auto_pr_for_updates: "for updates"
+  auto_pr_forcing: "Forcing"
+  auto_pr_pushing: "Pushing"
+  auto_pr_creating: "Creating"
+  auto_pr_branch_exists: "%{app} (%{version}): branch already exists, skipping"
+  auto_pr_completed_push: "ci-auto-pr completed: %{pushed} pushed, %{skipped} skipped"
+  auto_pr_completed_pr: "ci-auto-pr completed: %{created} PRs created, %{skipped} skipped, %{existed} already existed"
+  auto_pr_head_sha_failed: "%{app}: get HEAD SHA failed: %{error}"
+  auto_pr_commit_failed: "%{app}: commit failed: %{error}"
+  auto_pr_create_branch_failed: "%{app}: create branch failed: %{error}"
+  auto_pr_create_pr_failed: "%{app}: create PR failed: %{error}"
+  auto_pr_pushed: "%{app} (%{version}) -> %{url}"
+  auto_pr_pr_created: "%{app} (%{version}) -> PR: %{url}"
 cli:
   config_set: "Config '%{key}' has been set to '%{value}'"
   config_unset: "Config '%{key}' has been unset"
@@ -178,15 +467,29 @@ error:
   bucket_not_found: "bucket '%{name}' does not exist"
   bucket_already_exists: "bucket '%{name}' already exists"
   bucket_add_remote_required: "'%{name}' is not a known bucket, <repo> is required"
+  bucket_invalid_git_url: "%{repo} is not a valid Git URL!"
+  bucket_invalid_git_url_hint: "Please see https://git-scm.com/docs/git-clone#_git_urls for valid ones."
+  bucket_repo_already_exists: "Bucket %{bucket} already exists for %{repo}"
+  bucket_repo_unreachable: "'%{repo}' doesn't look like a valid git repository\n\nError given:\n%{output}"
   bucket_update_not_fast_forward: "Cannot fast-forward update of bucket '%{ref}': histories diverged or unrelated (remote may have been rewritten)"
   bucket_update_merge_conflict: "Merge conflict while updating bucket '%{ref}'; resolve the conflicts in the bucket directory and retry"
   bucket_update_local_changes: "Local changes would be overwritten by the bucket update: %{files}"
   config_in_use: "Could not alter config because it is in use."
   config_key_invalid: "invalid config key '%{key}'"
+  config_key_unsupported: "'%{key}' is an upstream Scoop setting hok has no equivalent for; see 'hok config -a' for the settings hok supports"
   config_value_invalid: "invalid config value '%{value}'"
+  alias_already_exists: "Alias '%{name}' already exists."
+  alias_not_found: "Alias '%{name}' doesn't exist."
+  alias_script_exists: "File '%{file}' already exists in shims directory."
+  alias_invalid_name: "invalid alias name '%{name}'"
+  alias_reserved_name: "'%{name}' is a built-in command and cannot be used as an alias"
   user_agent_already_set: "User agent already set"
   output_already_set: "Output sink already set"
+  infra_already_set: "Infra implementation already set"
+  cancellation_token_already_set: "Cancellation token already set"
   hash_mismatch: "Hash mismatch"
+  hash_mismatch_detail: "Hash mismatch for package '%{name}':\n     Url: %{url}\nExpected: %{expected}\n  Actual: %{actual}"
+  download_timeout: "download '%{url}' timed out after %{secs}s"
   invalid_cache_file: "Invalid cache file"
   invalid_answer: "invalid answer"
   package_not_found: "Could not find package named '%{name}'"
@@ -195,7 +498,7 @@ error:
   package_multiple_candidates: "Found multiple candidates for package named '%{name}'"
   package_hold_not_installed: "package '%{name}' is not installed"
   package_hold_broken_install: "package '%{name}' is broken"
-  app_running: "'%{name}' is still running! Close the app(s) before proceeding."
+  shim_target_missing: "command path does not exist: %{path}"
   user_aborted: "Operation aborted."
   custom: "%{msg}"
   extraction_failed: "failed to extract archive: %{reason}"
@@ -207,19 +510,22 @@ error:
   regex: "Regular expression error"
   sqlite: "SQLite error"
   serde: "Serialization error"
+  caused_by: "Caused by:"
 
 cli_help:
   heading:
     usage: "Usage:"
     subcommands: "Subcommands"
     options: "Options"
+    arguments: "Arguments"
+    global_options: "Global Options"
   after_help: "Type 'hok help <command>' to get help for a specific command."
   help:
     about: "Print this message or the help of the given subcommand(s)"
   hok:
     about: "Hok is a CLI implementation of Scoop in Rust"
     args:
-      detail: "Show detailed operation information for debugging"
+      confirm: "Force the transaction confirmation gate, ignoring the confirm config"
       language: "Force CLI language (auto/en/zh)"
       no_color: "Disable colored output"
       verbose: "Increase logging verbosity"
@@ -228,15 +534,22 @@ cli_help:
       version: "Print version"
   alias:
     args:
-      command: "Command: list (default), add, rm"
-      name: Alias name (for add/rm)
-      value: Alias command (for add)
+      add: Add a new alias
+      add.name: Alias name
+      add.value: Command to execute
+      add.description: Alias description (written as the script's `# Summary:` line)
+      list: List all aliases (default)
+      list.verbose: Show the alias description column
+      remove: Remove an alias
+      remove.name: Alias name to remove
     about: "List, add, or remove Scoop aliases"
     long_about: "List, add, or remove Scoop aliases\n\nExamples:\n  hok alias list                   list all aliases\n  hok alias add <name> <command>   add an alias\n  hok alias rm  <name>            remove an alias"
   bucket:
     about: Manage manifest buckets
     args:
       add: Add a bucket
+      add.name: The bucket name
+      add.repo: The bucket repository url (optional for known buckets)
       list: List buckets
       list.known: List known buckets
       known: "List known buckets (Scoop: scoop bucket known)"
@@ -245,23 +558,41 @@ cli_help:
   cache:
     about: Package cache management
     args:
+      app: "App name(s) whose caches are listed (default: all)"
       list: List download caches
+      list.app: List caches of the given app(s)
       remove: Remove download caches
       remove.all: Remove all caches
+      remove.app: Remove caches of the given app(s)
   cat:
     args:
       package: Name of the package to be inspected
     about: Inspect the manifest of a package
   checkhashes:
     about: Verify and update manifest hashes
+    long_about: |-
+      Walks the manifests under `--dir`, downloads every URL they declare and compares the computed digest with the `hash` field, mirroring Scoop's `bin/checkhashes.ps1`. Manifests that declare a top-level `url` are checked against it alone; the rest are checked per architecture (64bit, 32bit, arm64).
+      With `--update` a manifest whose hashes do not match is rewritten in place (CRLF, trailing newline preserved), while `--force` also rewrites manifests whose hashes are already correct.
     args:
-      app: "Specific app(s) to check (supports wildcards, default: all)"
-      cache: Use cache directory for downloaded files
-      dir: Bucket directory to scan for manifests
-      force: Force update manifest even when hash matches (re-hash)
+      app: |-
+        Specific app(s) to check (supports wildcards, default: all)
+        Matching is case-insensitive, like Scoop's `-App` filter; multiple patterns are accepted and OR-ed together.
+      cache: |-
+        Use cache directory for downloaded files
+        Defaults to a temporary directory that is removed at the end of the run unless `--keep-cache` is given.
+      dir: |-
+        Bucket directory to scan for manifests
+        Defaults to the current directory, but required with `--update`/`--force` (which rewrite manifests) or hok refuses to run.
+      force: |-
+        Force update manifest even when hash matches
+        Downloads are always re-fetched with this flag, even together with `--keep-cache`.
+      keep_cache: |-
+        Keep downloaded files after the check completes
+        Equivalent to Scoop's `-UseCache`: the next run reuses the cached files instead of downloading them again, so it may check an already out-of-date file. The cache is keyed by manifest version.
+      skip_correct: Suppress output for manifests with correct hashes
       update: Update manifest with correct hash when mismatch found
   checkup:
-    about: Check for potential problems with installed packages
+    about: Check for potential problems
   checkurls:
     about: Check manifest URLs for validity
     args:
@@ -273,19 +604,24 @@ cli_help:
     about: Check manifest for a newer version
     args:
       app: "Specific app(s) to check (supports wildcards, default: all)"
-      dir: Bucket directory to scan for manifests
+      dir: |-
+        Bucket directory to scan for manifests
+        Defaults to the current directory, but required with `--update`/`--force-update` (which rewrite manifests) or hok refuses to run.
       update: Update manifest with new version and trigger autoupdate
-      force-update: Force update even when version is unchanged (useful for hash updates)
-      skip-updated: Skip manifests that are already up-to-date
+      force_update: Force update even when version is unchanged (useful for hash updates)
+      skip_updated: Only show outdated or failed manifests (skip up-to-date ones, upstream `-SkipUpdated`)
       version: Update manifest to specific version (skip version detection)
       timeout: Request timeout in seconds
+      jobs: Concurrent manifest checks (0 = no limit)
+      throw_error: Throw on the first error instead of reporting it and continuing
   cleanup:
     about: Cleanup apps by removing old versions
     args:
-      app: Given named app(s) to be cleaned up (all apps if empty)
+      app: Given named app(s) to be cleaned up
       all: Cleanup all apps (alternative to '*')
       global: Cleanup a globally installed app
       cache: Remove download cache simultaneously
+      list: List the installed versions instead of cleaning them
   completions:
     args:
       shell: The shell type
@@ -308,17 +644,24 @@ cli_help:
             Maximum number of connections to one server per download.
       aria2-min-split-size: size, default 5M
             Minimum file size to trigger fragmented downloads (e.g. 5M, 10M).
+      jobs: int, default 4
+            Number of packages downloaded concurrently in the download phase.
       cache_path: path, default $SCOOP_CACHE or <root>/cache
             Download cache directory.
       cat_style: string, default none
-            When set, use 'bat' to display manifests (requires bat installed).
+            When set, 'bat' displays manifests with these --style components
+            (requires bat installed; a value bat rejects falls back to plain JSON).
+      editor: string, default none
+            Editor used by 'hok config edit' ($EDITOR then the OS handler fall back).
+      confirm: bool, default false
+            Ask for confirmation before a sync operation runs.
       default_architecture: 64bit|32bit|arm64, default auto-detected
             Preferred architecture used for installation.
       global_path: path, default $SCOOP_GLOBAL or %ProgramData%\scoop
             Root directory for globally installed apps.
       gh_token: string, default none
             GitHub API token used for authenticated requests.
-      ignore-failures: bool, default true
+      ignore_failures: bool, default false
             Continue multi-package operations despite individual failures.
       ignore_running_processes: bool, default false
             Proceed even if the app is running (warning instead of abort).
@@ -326,18 +669,18 @@ cli_help:
             CLI language for messages and help text.
       last_update: string, internal
             Timestamp of the last bucket update (managed by hok).
-      no-color: bool, default false
+      no_color: bool, default false
             Disable colored output.
       no_junction: bool, default false
             Do not use the 'current' junction; shims point to version dirs instead.
-      output-style: scoop|pacman, default scoop
-            Output style of progress and status messages.
       private_hosts: array, edit file
             Private hosts needing extra auth headers; edit the config file directly.
       proxy: string, default none
             Proxy settings: none | default | currentuser | [username:password@]host:port.
       root_path: path, default $SCOOP or ~/scoop
             Scoop root directory.
+      script_engine: bool, default false
+            Reuse one resident pwsh process for installer/uninstaller scripts.
       use_isolated_path: bool|string, default none
             Store apps' PATH entries in a dedicated env var (SCOOP_PATH by default).
       use_sqlite_cache: bool, default false
@@ -345,18 +688,27 @@ cli_help:
       virustotal_api_key: string, default none
             VirusTotal API key used for uploading/scanning files.
 
-      Most settings can be changed with 'hok config set <key> <value>' (empty
-      value unsets). private_hosts and last_update are only editable in the
-      file. Run 'hok config list --all' to see current values and effective
-      defaults.
+      Bare 'hok config' prints the settings the config file holds, one
+      'key = value' line each; '-j' prints the same as JSON and '-a' lists
+      every known setting with its effective default. A setting is written
+      with 'hok config <key> <value>' and removed with 'hok config rm <key>',
+      the shapes upstream 'scoop config' uses. private_hosts and last_update
+      are only editable in the file.
+
+      Setting names are used exactly as listed above; there are no aliases.
+      'hok config edit' is a hok extension (upstream reads 'edit' as a key
+      name) and so are '-j' / '-a'.
     args:
+      json: Print the settings as JSON
+      all: List every setting with its effective default
+      key: Print this setting, or write it when a value follows
+      value: The new value for <KEY>
       edit: "Edit the config file [default: system default editor]"
-      list: "List all settings in key-value (--all also shows defaults)"
-      list.all: Also show the effective default value of every setting
-      set: Add a new setting to the config file
-      unset: Remove a setting from config file
+      rm: Remove a setting from the config file
+      rm.key: The key of the setting
   create:
     about: "Create a manifest from a download URL"
+    long_about: Downloads the file, computes its hash, and generates a manifest skeleton.
     args:
       url: Download URL
       output: "Optional output file (default: stdout)"
@@ -384,20 +736,26 @@ cli_help:
     args:
       package: The package(s) to download (name, bucket/name, name@version, or manifest URL/path)
       force: Force download (overwrite cache)
-      no_hash_check: Skip package integrity check (use with caution!)
+      skip_hash_check: Skip package integrity check (use with caution!)
       arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
   export:
     about: Export installed packages list
     args:
-      all: Include non-bucket packages (URL/path installs)
+      config: "Export the configuration too (upstream 'scoop export -c')"
+      hok: Append hok's own extension (config and per-app state); Scoop ignores it, hok restores it exactly
   formatjson:
     about: Format manifest JSON files in a bucket directory
     args:
-      app: "Specific app(s) to format (supports wildcards, default: all)"
-      dir: Bucket directory to scan for manifests
+      app: "Specific app(s) to format (wildcards and .json optional, case-insensitive; default: all)"
+      dir: |-
+        Bucket directory to scan for manifests
+        Required: this command rewrites every manifest it finds in place, and the scan is a recursive `*.json` walk that cannot tell a manifest from any other JSON file.
+  health:
+    about: Check for potential problems with installed packages
   hold:
     about: Hold package(s) to disable changes
     args:
+      global: Hold globally installed app (from $SCOOP_GLOBAL)
       package: The package(s) to be held
   home:
     args:
@@ -405,12 +763,13 @@ cli_help:
     about: Browse the homepage of a package
   import:
     args:
-      file: JSON file to import from
-    about: Import installed packages from a file
+      file: "Scoopfile to import from: a local path, an http(s) URL, or a UNC path"
+    about: Import installed packages from a Scoopfile
   info:
     args:
-      query: The query string (regex supported)
-    about: Show package(s) basic information
+      query: The app name (`bucket/name` also accepted), a manifest URL or a local manifest path
+      verbose: Show full paths and URLs
+    about: Display information about an app
   install:
     about: Install package(s)
     long_about: |-
@@ -437,12 +796,11 @@ cli_help:
       arch: "Use the specified architecture (32bit/64bit/arm64), overriding the detected default"
       assume_yes: Assume yes to all prompts and run non-interactively
       download_only: Download package(s) without performing installation
-      escape_hold: Escape hold to allow changes on held package(s)
       global: Install globally (to $SCOOP_GLOBAL)
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
-      independent: Do not install dependencies (may break packages)
-      no_hash_check: Skip package integrity check
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      independent: "Don't install dependencies automatically"
+      skip_hash_check: Skip package integrity check
       no_replace: Do not replace package(s)
       no_upgrade: Do not upgrade package(s)
       offline: Leverage cache and suppress network access
@@ -458,8 +816,9 @@ cli_help:
   missing_checkver:
     about: Check bucket manifests missing checkver and autoupdate
     args:
+      app: "Specific app(s) to check (wildcards and .json optional, case-insensitive; default: all)"
       dir: Bucket directory to scan for manifests
-      supported: Only show manifests that have checkver/autoupdate (inverse)
+      skip_supported: Skip manifests that have both checkver and autoupdate
   prefix:
     args:
       package: Name of the package
@@ -467,19 +826,20 @@ cli_help:
   reinstall:
     about: Reinstall a package
     args:
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      global: Install globally (to $SCOOP_GLOBAL)
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      skip_hash_check: Skip package integrity check
       offline: Leverage cache and suppress network access
       package: The package(s) to reinstall
   reset:
     args:
-      app: The app name
-      version: A specific version to reset to
+      app: "The app(s) to reset (name, bucket/name, or name@version)"
       all: Reset all installed apps
     about: "Reset an app to resolve conflicts (reapply shims, shortcuts, post_install)"
   search:
     about: "Search available package(s)"
+    long_about: "Search available package(s) from synced buckets. The query is performed against package names by default, use --with-description or --with-binary to search through package descriptions or binaries."
     args:
       explicit: Turn regex off and use explicit matching
       query: The query string (regex supported by default)
@@ -490,18 +850,18 @@ cli_help:
     long_about: |-
       Manipulate Scoop shims (add / remove / list / inspect).
 
-      Subcommands:
-        add <name> <target> [args...]  Add a custom shim pointing at an
-                                       arbitrary command path (or a name
-                                       resolved through PATH)
-        rm <name>...                   Remove shims (CAUTION: this may
-                                       remove shims created by an app
-                                       manifest)
-        list [<regex_pattern>...]      List all shims or matching shims
-        info <name>                    Show a shim's information
+      Examples:
+        hok shim add <name> <target> [args...]  add a custom shim pointing at an
+                                                arbitrary command path (or a name
+                                                resolved through PATH)
+        hok shim rm <name>...                   remove shims (CAUTION: may remove
+                                                shims created by an app manifest)
+        hok shim list [<regex_pattern>...]      list all shims or matching shims
+        hok shim info <name>                    show a shim's information
 
-      Options:
-        -g, --global  Manipulate global shim(s)
+      -g/--global may appear anywhere before `--`, so `hok shim -g list` and
+      `hok shim list -g` are the same command listing only global shims.
+      `hok shim list *` lists every shim.
 
       HINT: the first `--`, if any, is treated as the POSIX-style command
       option terminator and is NOT included in the shim arguments, so pass
@@ -510,6 +870,7 @@ cli_help:
     args:
       global: Manipulate global shim(s)
       add: Add a custom shim
+      add.long_about: "`hok shim add <name> <target> [args...]` — arguments starting with `-` must follow a `--` (POSIX-style option terminator); `-g`/`--global` itself is hok's option, so to pass it to the shim put it after the `--`."
       add.parts: "`<name> <target> [args...]` — name, then the target command path (or a name resolved through PATH), then any args"
       remove: "Remove shims (CAUTION: may remove shims created by an app manifest)"
       remove.names: Shim name
@@ -524,48 +885,63 @@ cli_help:
   unhold:
     about: Unhold package(s) to enable changes
     args:
+      global: Unhold globally installed app (from $SCOOP_GLOBAL)
       package: The package(s) to be unheld
   uninstall:
     about: Uninstall package(s)
     args:
-      escape_hold: Escape hold to allow changes on held package(s)
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      assume_yes: Assume yes to all prompts and run non-interactively
+      global: Uninstall a globally installed app (from $SCOOP_GLOBAL)
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      skip_hash_check: Skip package integrity check
       package: The package(s) to uninstall
+      purge: Remove all persistent data
   update:
     about: "Fetch and update subscribed buckets, or upgrade installed package(s)"
     long_about: "Fetch and update subscribed buckets, or upgrade installed package(s)\n\nExamples:\n  hok update         update buckets only\n  hok update <app>   upgrade a specific package (Scoop-compatible)\n  hok update *       upgrade all packages"
     args:
       assume_yes: Assume yes to all prompts and run non-interactively
-      escape_hold: Escape hold to allow to upgrade held package(s)
-      force: "Force update: bypass the cooldown and reinstall apps already at the requested version"
-      ignore_cache: Ignore cache and force download
-      ignore_failure: Ignore failures to ensure a complete transaction
-      independent: Do not install dependencies (may break packages)
-      no_hash_check: Skip package integrity check
+      force: "Force update even when there isn't a newer version"
+      no_cache: "Don't use the download cache"
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      independent: "Don't install dependencies automatically"
+      skip_hash_check: Skip package integrity check
       no_replace: Do not replace package(s)
       no_upgrade: Do not upgrade package(s)
       offline: Leverage cache and suppress network access
       package: The package(s) to be upgraded (omit to only update buckets)
       global: Install globally (to $SCOOP_GLOBAL)
       all: Update all installed packages (alternative to '*')
+      cleanup: "Remove the old versions of the package(s) this run upgrades; only packages whose installed version changed are cleaned, and nothing is removed when no package was upgraded (use 'hok cleanup -a' to sweep every app)"
   upgrade:
     about: Upgrade installed package(s)
     args:
+      all: Update all installed packages (alternative to '*')
+      cleanup: "Remove the old versions of the package(s) this run upgrades; only packages whose installed version changed are cleaned, and nothing is removed when no package was upgraded (use 'hok cleanup -a' to sweep every app)"
       assume_yes: Assume yes to all prompts and run non-interactively
-      escape_hold: Escape hold to allow to upgrade held package(s)
-      ignore_failure: Ignore failures to ensure a complete transaction
-      no_hash_check: Skip package integrity check
+      force: "Force upgrade: reinstall apps that are already at the requested version"
+      global: Install globally (to $SCOOP_GLOBAL)
+      ignore_failures: "Ignore failures to ensure a complete transaction (persistent setting: 'hok config ignore_failures true')"
+      independent: "Don't install dependencies automatically"
+      no_cache: "Don't use the download cache"
+      skip_hash_check: Skip package integrity check
       offline: Leverage cache and suppress network access
       package: "The package(s) to be upgraded (default: all except held)"
   virustotal:
     about: "Check a package's download URL against VirusTotal"
+    long_about: |-
+      Requires a VirusTotal API key. Set it with:
+        hok config virustotal_api_key <key>
+      Or set the $VT_API_KEY environment variable.
     args:
       app: Package name(s) to check
   which:
     about: Show the shim location(s) of a command
-  ciautopr:
+    args:
+      command: Command name to search for
+  auto_pr:
     about: "Auto-update manifests and create pull-requests via GitHub API (zero external binary, CI mode)"
+    long_about: This command runs in CI environments (e.g., GitHub Actions) and uses the GitHub API exclusively — no git/hub binary required.
     args:
       dir: Bucket directory to scan for manifests
       upstream: "Upstream repository with target branch (<user>/<repo>:<branch>)"
@@ -576,6 +952,8 @@ cli_help:
       skip_updated: Skip manifests that are already up-to-date
       special: Force update on these special snowflakes (comma-separated)
       token: "GitHub Token (default from GITHUB_TOKEN env var)"
+      app_slug: "GitHub App slug (e.g. `my-bot`); used to generate the DCO sign-off for the corresponding bot user when the token is a GitHub App installation token"
+      verbose: Show per-manifest checkver details (versions found, updates, errors)
 
 # Command aliases (for shell completions)
 cli_alias:

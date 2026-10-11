@@ -55,6 +55,27 @@ pub fn test_session(root: &std::path::Path) -> crate::Session {
     crate::Session::new_with(&config_path).unwrap()
 }
 
+/// Like [`test_session`], but with `no_junction` pinned in the config.
+///
+/// Install-layout behaviour that branches on junction mode (current-version
+/// resolution, `currentdir`-shaped paths, metadata location) needs the session
+/// to actually be in that mode — a plain `test_session` is always
+/// junction-mode.
+pub fn test_session_with_junctions(root: &std::path::Path, no_junction: bool) -> crate::Session {
+    let config_path = root.join("hok.json");
+    let root_escaped = root.to_string_lossy().replace('\\', "\\\\");
+    let cache_escaped = root.join("cache").to_string_lossy().replace('\\', "\\\\");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{{"root_path": "{}", "cache_path": "{}", "no_junction": {}}}"#,
+            root_escaped, cache_escaped, no_junction
+        ),
+    )
+    .unwrap();
+    crate::Session::new_with(&config_path).unwrap()
+}
+
 /// Write a Scoop manifest into `<root>/buckets/<bucket>/bucket/<name>.json`,
 /// making it visible to `query_synced` / `query_installed`.
 pub fn write_bucket_manifest(root: &std::path::Path, bucket: &str, name: &str, json: &str) {
@@ -64,7 +85,8 @@ pub fn write_bucket_manifest(root: &std::path::Path, bucket: &str, name: &str, j
 }
 
 /// Mark `name` as installed under `root` by creating
-/// `<root>/apps/<name>/current/{manifest.json, install.json}`.
+/// `<root>/apps/<name>/current/{scoop-manifest.json, scoop-install.json}` —
+/// the names Scoop >= 0.6.0 (and hok) write.
 pub fn mark_installed(
     root: &std::path::Path,
     name: &str,
@@ -72,12 +94,364 @@ pub fn mark_installed(
     manifest_json: &str,
     held: bool,
 ) {
+    mark_installed_named(
+        root,
+        name,
+        bucket,
+        manifest_json,
+        held,
+        (
+            crate::package::install_state::SCOOP_MANIFEST_JSON,
+            crate::package::install_state::SCOOP_INSTALL_JSON,
+        ),
+    );
+}
+
+/// [`mark_installed`] with the pre-0.6.0 `manifest.json` / `install.json`
+/// names, for the legacy-read regression tests.
+pub fn mark_installed_legacy(
+    root: &std::path::Path,
+    name: &str,
+    bucket: &str,
+    manifest_json: &str,
+    held: bool,
+) {
+    mark_installed_named(
+        root,
+        name,
+        bucket,
+        manifest_json,
+        held,
+        (
+            crate::package::install_state::LEGACY_MANIFEST_JSON,
+            crate::package::install_state::LEGACY_INSTALL_JSON,
+        ),
+    );
+}
+
+/// [`mark_installed`] with explicit metadata file names.
+pub fn mark_installed_named(
+    root: &std::path::Path,
+    name: &str,
+    bucket: &str,
+    manifest_json: &str,
+    held: bool,
+    names: (&str, &str),
+) {
+    let (manifest_name, install_name) = names;
     let current = root.join("apps").join(name).join("current");
     std::fs::create_dir_all(&current).unwrap();
-    std::fs::write(current.join("manifest.json"), manifest_json).unwrap();
+    std::fs::write(current.join(manifest_name), manifest_json).unwrap();
     let install_info = format!(
         r#"{{"architecture": "64bit", "bucket": "{}", "hold": {}}}"#,
         bucket, held
     );
-    std::fs::write(current.join("install.json"), install_info).unwrap();
+    std::fs::write(current.join(install_name), install_info).unwrap();
+}
+// ─── In-memory network fake ────────────────────────────────────────────────
+
+use crate::error::{Error, Fallible};
+use crate::internal::git::{Git, ManifestDiffEntry};
+use crate::internal::network::{
+    DownloadError, HeadResult, Network, ProgressCallback, RangeError, RangeResponse, RequestOptions,
+};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+
+/// An in-memory [`Network`] fake for offline tests.
+///
+/// Serves a per-URL body for `download` / `download_stream` / `head`, and a
+/// range server for `range_get` that mirrors the knobs of the legacy
+/// `spawn_range_server` (fail-first, ignore-range, truncate-first,
+/// range-conditioned failure) so the fragmented-download logic runs entirely
+/// off the network. Records received ranges and response statuses for
+/// assertions.
+#[derive(Debug)]
+pub struct FakeNetwork {
+    /// URL → full body.
+    bodies: Mutex<HashMap<String, Vec<u8>>>,
+    /// Fail the first `fail_first` range requests with `fail_status`.
+    fail_first: AtomicU32,
+    fail_status: AtomicU16,
+    /// Always answer 200 with the full body (server ignores `Range`).
+    ignore_range: AtomicBool,
+    /// Truncate the first 206 response to half the requested slice.
+    truncate_first: AtomicBool,
+    /// Fail every request whose range overlaps `[s, e]` for the first `n`.
+    fail_range: Mutex<Option<(u64, u64, u32)>>,
+    count: AtomicU32,
+    fail_range_count: AtomicU32,
+    /// `Range` header values received by `range_get`, in request order.
+    pub ranges: Mutex<Vec<String>>,
+    /// HTTP status codes sent in response order.
+    pub responses: Mutex<Vec<u16>>,
+}
+
+impl FakeNetwork {
+    /// Create an empty fake.
+    pub fn new() -> Self {
+        Self {
+            bodies: Mutex::new(HashMap::new()),
+            fail_first: AtomicU32::new(0),
+            fail_status: AtomicU16::new(500),
+            ignore_range: AtomicBool::new(false),
+            truncate_first: AtomicBool::new(false),
+            fail_range: Mutex::new(None),
+            count: AtomicU32::new(0),
+            fail_range_count: AtomicU32::new(0),
+            ranges: Mutex::new(Vec::new()),
+            responses: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Serve `body` for `url`.
+    pub fn serve(&self, url: &str, body: Vec<u8>) {
+        self.bodies.lock().unwrap().insert(url.to_owned(), body);
+    }
+
+    /// Configure range-server behaviour mirroring the legacy server.
+    pub fn range_behavior(
+        &self,
+        fail_first: u32,
+        fail_status: u16,
+        ignore_range: bool,
+        truncate_first: bool,
+        fail_range: Option<(u64, u64, u32)>,
+    ) {
+        self.fail_first.store(fail_first, Ordering::SeqCst);
+        self.fail_status.store(fail_status, Ordering::SeqCst);
+        self.ignore_range.store(ignore_range, Ordering::SeqCst);
+        self.truncate_first.store(truncate_first, Ordering::SeqCst);
+        *self.fail_range.lock().unwrap() = fail_range;
+    }
+
+    fn body(&self, url: &str) -> Option<Vec<u8>> {
+        self.bodies.lock().unwrap().get(url).cloned()
+    }
+}
+
+impl Default for FakeNetwork {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl Network for FakeNetwork {
+    async fn head(&self, url: &str, _opts: &RequestOptions) -> HeadResult {
+        self.responses.lock().unwrap().push(200);
+        let body = self.body(url);
+        HeadResult {
+            url: url.to_owned(),
+            status_code: 200,
+            error: None,
+            content_length: body.map(|b| b.len() as u64),
+        }
+    }
+
+    async fn download(&self, url: &str, _opts: &RequestOptions) -> Result<Vec<u8>, String> {
+        self.body(url)
+            .ok_or_else(|| format!("no canned body for {url}"))
+    }
+
+    async fn range_get(
+        &self,
+        url: &str,
+        start: u64,
+        end: u64,
+        _opts: &RequestOptions,
+    ) -> Result<RangeResponse, RangeError> {
+        self.ranges
+            .lock()
+            .unwrap()
+            .push(format!("bytes={start}-{end}"));
+        let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+
+        if n <= self.fail_first.load(Ordering::SeqCst) {
+            let status = self.fail_status.load(Ordering::SeqCst);
+            self.responses.lock().unwrap().push(status);
+            if (400..500).contains(&status) && status != 408 && status != 429 {
+                return Err(RangeError::Final(format!("HTTP {status} for {url}")));
+            }
+            return Err(RangeError::Transient(format!("HTTP {status}")));
+        }
+
+        if self.ignore_range.load(Ordering::SeqCst) {
+            self.responses.lock().unwrap().push(200);
+            return Err(RangeError::Final(
+                "expected 206 Partial Content, got 200 (server ignored Range request)".to_string(),
+            ));
+        }
+
+        let body = self
+            .body(url)
+            .ok_or_else(|| RangeError::Transient(format!("no canned body for {url}")))?;
+        let slice = &body[start as usize..=end as usize];
+
+        if let Some((fs, fe, attempts)) = *self.fail_range.lock().unwrap()
+            && start <= fe
+            && fs <= end
+        {
+            let m = self.fail_range_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if m <= attempts {
+                let status = self.fail_status.load(Ordering::SeqCst);
+                self.responses.lock().unwrap().push(status);
+                return Err(RangeError::Transient(format!("HTTP {status}")));
+            }
+        }
+
+        if self.truncate_first.load(Ordering::SeqCst) && n == 1 {
+            let half = slice.len() / 2;
+            self.responses.lock().unwrap().push(206);
+            return Ok(RangeResponse {
+                status: 206,
+                content_range_start: Some(start),
+                bytes: slice[..half].to_vec(),
+            });
+        }
+
+        self.responses.lock().unwrap().push(206);
+        Ok(RangeResponse {
+            status: 206,
+            content_range_start: Some(start),
+            bytes: slice.to_vec(),
+        })
+    }
+
+    async fn download_stream(
+        &self,
+        url: &str,
+        opts: &RequestOptions,
+        dest: &Path,
+        on_progress: &mut ProgressCallback<'_>,
+    ) -> Result<(), DownloadError> {
+        let body = self
+            .body(url)
+            .ok_or_else(|| DownloadError::Other(format!("no canned body for {url}")))?;
+        let resume = opts.range_start as usize;
+        self.ranges.lock().unwrap().push(if resume > 0 {
+            format!("bytes={resume}-")
+        } else {
+            String::new()
+        });
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Mirror the real client: append the tail when resuming, otherwise
+        // (re)write the whole body.
+        let slice = if resume < body.len() {
+            &body[resume..]
+        } else {
+            &[]
+        };
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
+        use std::io::Write as _;
+        file.write_all(slice)
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
+        let total = dest.metadata().map(|m| m.len()).unwrap_or(0);
+        on_progress(total).await;
+        Ok(())
+    }
+}
+
+// ─── In-memory git fake ────────────────────────────────────────────────────
+
+/// An in-memory [`Git`] fake for offline tests.
+///
+/// Records `clone_repo` / `ls_remote` / `pull` calls instead of touching real
+/// repositories. `ls_remote` and `pull` are no-op successes unless
+/// [`FakeGit::fail_ls_remote`] / [`FakeGit::fail_pull`] is set.
+/// `head_commit_id` / `diff_manifest_changes` are configurable so cache-tracking
+/// tests can script the manifest diff they expect after a pull.
+#[derive(Debug, Default)]
+pub struct FakeGit {
+    /// Record of `(remote_url, path)` clone calls.
+    pub clones: Mutex<Vec<(String, std::path::PathBuf)>>,
+    /// Record of `remote_url`s checked by `ls_remote`.
+    pub ls_remotes: Mutex<Vec<String>>,
+    /// Record of pulled repository paths.
+    pub pulls: Mutex<Vec<std::path::PathBuf>>,
+    /// Record of the `autostash` flag each `pull` was called with, so a test
+    /// can assert the config reaches the git layer.
+    pub pull_autostash: Mutex<Vec<bool>>,
+    /// When set, `ls_remote` returns an error.
+    pub fail_ls_remote: AtomicBool,
+    /// When set, `pull` returns an error.
+    pub fail_pull: AtomicBool,
+    /// Value returned by `head_commit_id` (per repo path).
+    pub head_ids: Mutex<HashMap<std::path::PathBuf, String>>,
+    /// Diff entries returned by `diff_manifest_changes` (per repo path).
+    pub diffs: Mutex<HashMap<std::path::PathBuf, Vec<ManifestDiffEntry>>>,
+    /// Record of `(repo path, from_commit)` for every `diff_manifest_changes`
+    /// call, so a test can assert which baseline was diffed from.
+    pub diff_baselines: Mutex<Vec<(std::path::PathBuf, String)>>,
+}
+
+#[async_trait::async_trait]
+impl Git for FakeGit {
+    async fn clone_repo(
+        &self,
+        remote_url: &str,
+        path: &Path,
+        _proxy: Option<&str>,
+    ) -> Fallible<()> {
+        self.clones
+            .lock()
+            .unwrap()
+            .push((remote_url.to_owned(), path.to_owned()));
+        Ok(())
+    }
+
+    async fn ls_remote(&self, remote_url: &str, _proxy: Option<&str>) -> Fallible<()> {
+        if self.fail_ls_remote.load(Ordering::SeqCst) {
+            return Err(Error::Custom("fake ls-remote failed".to_string()));
+        }
+        self.ls_remotes.lock().unwrap().push(remote_url.to_owned());
+        Ok(())
+    }
+
+    async fn pull(&self, path: &Path, _proxy: Option<&str>, autostash: bool) -> Fallible<()> {
+        if self.fail_pull.load(Ordering::SeqCst) {
+            return Err(Error::Custom("fake pull failed".to_string()));
+        }
+        self.pulls.lock().unwrap().push(path.to_owned());
+        self.pull_autostash.lock().unwrap().push(autostash);
+        Ok(())
+    }
+
+    fn remote_url_of(&self, _repo_path: &Path, remote: &str) -> Fallible<Option<String>> {
+        Ok(Some(format!("fake://{remote}")))
+    }
+
+    fn head_commit_time(&self, _path: &Path) -> Option<i64> {
+        Some(0)
+    }
+
+    fn head_commit_id(&self, path: &Path) -> Option<String> {
+        self.head_ids.lock().unwrap().get(path).cloned()
+    }
+
+    fn diff_manifest_changes(
+        &self,
+        path: &Path,
+        from_commit: &str,
+    ) -> Fallible<Vec<ManifestDiffEntry>> {
+        self.diff_baselines
+            .lock()
+            .unwrap()
+            .push((path.to_owned(), from_commit.to_owned()));
+        Ok(self
+            .diffs
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .unwrap_or_default())
+    }
 }

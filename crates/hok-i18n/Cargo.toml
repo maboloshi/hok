@@ -1,0 +1,26 @@
+[package]
+name = "hok-i18n"
+description = "In-house i18n runtime for hok: build-time locale tables plus a lookup macro"
+repository = "https://github.com/maboloshi/hok"
+version = "0.2.0"
+authors = ["Chawye Hsu <su+cratesio@chawyehsu.com>", "沙漠之子 <7850715+maboloshi@users.noreply.github.com>"]
+license = "Apache-2.0"
+edition = "2024"
+# Internal to the workspace: hok is the only consumer and libscoop is no longer
+# treated as a publishable crate (Windows-only, off upstream).
+publish = false
+
+[dependencies]
+
+# The locale files are parsed **only** here, at build time, so no YAML parser
+# ever enters the release dependency graph. `yaml-rust2` is pure Rust (no
+# unsafe, no libyaml C transcription) and only receives the small subset of
+# YAML the hand-maintained `locales/*.yml` files use.
+[build-dependencies]
+yaml-rust2 = "0.12"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

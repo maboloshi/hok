@@ -1,0 +1,90 @@
+# Expected extraction trees for the RAR fixtures in this directory.
+#
+# Baseline decoder: WinRAR's `Rar.exe` (7.23 when this file was last
+# regenerated). The trees were originally produced by the `unrar` 0.5 crate,
+# i.e. a UnRAR 6.x generation; regenerating them with WinRAR 7.23 reproduced
+# them byte for byte. A `D` line is a directory, an `F` line is a file
+# followed by the SHA-256 of its extracted bytes.
+#
+# Regenerate with:
+#   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored
+#
+# Every line here is a claim the extraction path has to reproduce exactly;
+# review the diff before accepting a regeneration.
+
+[rar5-normal.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F emoji-😀.txt 98284ac13b901628da4fe0afc96346c009fbd22a232043dde8247a2ce728a201
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+D 中文名
+F 中文名/测试-文件.txt bdbb7f6c4ba51157536becf0bc67428d0c317b09c4d15b9c3bd21d2913baf3b3
+
+[rar5-solid.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F emoji-😀.txt 98284ac13b901628da4fe0afc96346c009fbd22a232043dde8247a2ce728a201
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+D 中文名
+F 中文名/测试-文件.txt bdbb7f6c4ba51157536becf0bc67428d0c317b09c4d15b9c3bd21d2913baf3b3
+
+[rar5-store.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F emoji-😀.txt 98284ac13b901628da4fe0afc96346c009fbd22a232043dde8247a2ce728a201
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+D 中文名
+F 中文名/测试-文件.txt bdbb7f6c4ba51157536becf0bc67428d0c317b09c4d15b9c3bd21d2913baf3b3
+
+[rar5-x86filter.rar]
+F prog.exe d5d5e7d55a3c9164918ca51aa3f152e2d820bd463b734fed5d08f484b7420de1
+
+[rar5-vol.part1.rar]
+F volpayload.bin 0db25de34942cbfc86d339fd5c92afe23a46f8118e9831071dab2f3a0bd90191
+
+[rar4-normal.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+
+[rar4-solid.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+
+[rar4-store.rar]
+F binary.bin 8786f26f6530bfb18cca029b1d96e247892a86bf88602331f6e097f3f6e41a3d
+F empty.bin e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+F readme.txt da55f6fc058ba3c1c35686ae3f24c0b03e0092d9dde605a497b0aad99e503891
+D sub
+D sub/deep
+F sub/deep/leaf.bin 1fff2f551591f3933d67f87cddeef2d3d71bd4b61fab83a3ecb60de58ffe70b3
+F sub/nested.txt ce56529b492a31bf385f1eb498e8e1151e1d51476f3b9e3f5d02e8f975620eee
+
+[rar4-largepayloads.rar]
+F delta_ramp.bin 4b199fc0f56cccfd3c53057755241298fa6c37d4a6a2b684a63fc9921ffb8e7d
+F x86_stream.bin 9d2609315cb0a6200c2bb4db610015fee5579d9555bfca92d25ec05ff1b71b6d
+
+[rar4-vol.rar]
+F volpayload.bin 0db25de34942cbfc86d339fd5c92afe23a46f8118e9831071dab2f3a0bd90191
+

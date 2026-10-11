@@ -14,9 +14,12 @@
 //! - **Isolated path support**: Respects Scoop's `use_isolated_path`
 //!   config, which can use a custom env var name instead of `PATH`.
 //! - **Event emission**: Fires `PackageEnvPathAddStart/Done`,
-//!   `PackageEnvVarSetStart/Done` and `PackageEnvPathRemoveStart/Done`,
-//!   `PackageEnvVarRemoveStart/Done` events — in Scoop's order (path
-//!   entries first, then variables), for the event loop.
+//!   `PackageEnvVarSet` (per variable, carrying the expanded value) and
+//!   `PackageEnvPathRemoveStart/Done`, `PackageEnvVarRemove` (per variable) —
+//!   in Scoop's order (path entries first, then variables), for the event loop.
+//!   Upstream prints one line per variable unconditionally (lib/install.ps1:337
+//!   and :348), which is why the variable events carry their own payload rather
+//!   than being coarse start/done markers.
 //! - **`$dir` expansion**: `env_set` values go through the same
 //!   installer-variable expansion as `installer.args` (via
 //!   [`expand_scoop_vars`](crate::package::operations::expand_scoop_vars)),
@@ -30,13 +33,12 @@
 use std::ffi::OsString;
 
 use crate::{
-    config,
+    Error, Event, Session, config,
     error::Fallible,
     internal,
     internal::env::EnvScope,
     package::operations::expand_scoop_vars,
     package::{Manifest, Package},
-    Error, Event, Session,
 };
 
 /// Apply all environment variable definitions of a given package.
@@ -69,7 +71,7 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         let mut paths = internal::env::get_path_like_env(&env_path_name, scope)?;
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathAddStart);
+            let _ = tx.try_send(Event::PackageEnvPathAddStart);
         }
 
         let add_paths = env_add_path
@@ -107,24 +109,25 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
         internal::env::set(&env_path_name, Some(&updated), scope)?;
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathAddDone);
+            let _ = tx.try_send(Event::PackageEnvPathAddDone);
         }
     }
 
     // Set environment variables
     if let Some(env_set) = package.manifest().env_set() {
         require_env_privileges(session, package)?;
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarSetStart);
-        }
+        let global = session.is_global();
 
         for (key, value) in env_set {
             let expanded = expand_scoop_vars(&[value.as_str()], session, package, &working_dir, "");
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageEnvVarSet {
+                    name: key.clone(),
+                    value: expanded[0].clone(),
+                    global,
+                });
+            }
             internal::env::set(key, Some(&OsString::from(expanded[0].clone())), scope)?;
-        }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarSetDone);
         }
     }
 
@@ -178,7 +181,7 @@ fn remove_impl(
         let app_path = session.app_dir(package.name());
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathRemoveStart);
+            let _ = tx.try_send(Event::PackageEnvPathRemoveStart);
         }
 
         let env_add_path = env_add_path
@@ -222,24 +225,23 @@ fn remove_impl(
         }
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvPathRemoveDone);
+            let _ = tx.try_send(Event::PackageEnvPathRemoveDone);
         }
     }
 
     // Unset environment variables
     if let Some(env_set) = manifest.env_set() {
         require_env_privileges(session, package)?;
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarRemoveStart);
-        }
+        let global = session.is_global();
 
-        let keys = env_set.keys();
-        for key in keys {
+        for key in env_set.keys() {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageEnvVarRemove {
+                    name: key.clone(),
+                    global,
+                });
+            }
             internal::env::set(key, None, scope)?;
-        }
-
-        if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageEnvVarRemoveDone);
         }
     }
 
@@ -292,26 +294,23 @@ pub fn ensure_install_dir_not_in_path(
         paths.iter().filter(|p| is_in_or_sub(p)).cloned().collect();
     if !removed.is_empty() {
         for p in &removed {
-            session.output().info(format!(
-                "Installer added '{}' to path. Removing.",
-                p.display()
-            ));
+            session
+                .output()
+                .info(hok_i18n::t!("cmd.installer_added_path", path = p.display()));
         }
         paths.retain(|p| !is_in_or_sub(p));
         let updated = std::env::join_paths(&paths).map_err(|e| Error::Custom(e.to_string()))?;
         internal::env::set("PATH", Some(&updated), scope)?;
     }
 
-    if !session.is_global() {
-        if let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global) {
-            if let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p)) {
-                session.output().warn(format!(
-                    "Installer added '{}' to system path. You might want to remove this manually \
-                     (requires admin permission).",
-                    p.display()
-                ));
-            }
-        }
+    if !session.is_global()
+        && let Ok(sys_paths) = internal::env::get_path_like_env("PATH", EnvScope::Global)
+        && let Some(p) = sys_paths.iter().find(|p| is_in_or_sub(p))
+    {
+        session.output().warn(hok_i18n::t!(
+            "cmd.installer_added_system_path",
+            path = p.display()
+        ));
     }
 
     Ok(())

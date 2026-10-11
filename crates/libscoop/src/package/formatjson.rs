@@ -27,9 +27,11 @@
 //! - Only write when the file content has actually changed (avoid unnecessary disk writes).
 //! - Supports glob wildcard filtering (`*`, `?`).
 //! - If the input file contains a BOM (`\u{FEFF}`), it will be automatically stripped.
-//! - Input is parsed tolerantly (JSON5: comments, trailing commas, single-quoted
-//!   strings, unescaped newlines, etc. are accepted) and re-serialised as
-//!   strict standard JSON — non-standard input in, standard JSON out.
+//! - Input is parsed through [`crate::internal::json`] — strict JSON first,
+//!   JSON5 fallback (comments, trailing commas, single-quoted strings and
+//!   bare keys accepted; that module records the measured tolerance
+//!   contract) — and re-serialised as strict standard JSON: non-standard
+//!   input in, standard JSON out.
 //! - Semantics match Scoop's official `bin/formatjson.ps1` (`lib/json.ps1` `ConvertToPrettyJson`):
 //!   single-element arrays collapse to scalars, multi-line strings split into arrays,
 //!   single-element arrays nested inside arrays are flattened, and empty objects/arrays
@@ -37,16 +39,16 @@
 //!   (official behavior would alter string semantics, so this is intentionally skipped).
 
 use crate::package::manifest_walker;
-use crate::{error::Fallible, Error};
+use crate::{Error, error::Fallible, internal};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Format a single manifest JSON file in place using Scoop conventions.
 ///
-/// Reads the file, strips any BOM, parses it tolerantly (JSON5: comments,
-/// trailing commas, etc. are accepted), then serialises with 4-space
-/// indentation and CRLF line endings into strict JSON.  Writes back only if
-/// the content changed.
+/// Reads the file, parses it through the shared tolerance chain
+/// ([`internal::json`]: BOM stripped, strict JSON first, JSON5 fallback),
+/// then serialises with 4-space indentation and CRLF line endings into
+/// strict JSON.  Writes back only if the content changed.
 ///
 /// # Returns
 ///
@@ -54,9 +56,9 @@ use std::path::Path;
 /// correctly formatted, or an error on I/O / parse failure.
 pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
     let content = std::fs::read_to_string(path)?;
-    let cleaned = content.trim_start_matches('\u{FEFF}');
-
-    let value: serde_json::Value = json5::from_str(cleaned)
+    // The path is added here: the shared entry reports the parser's own
+    // error, which does not know which file it came from.
+    let value: serde_json::Value = internal::json::parse_str(&content)
         .map_err(|e| Error::Custom(format!("{}: parse error: {}", path.display(), e)))?;
     let formatted = to_scoop_json(&value)?;
 
@@ -70,8 +72,14 @@ pub fn format_manifest_file(path: &Path) -> Fallible<bool> {
 /// Batch result of [`format_manifests`].
 #[derive(Debug, Clone, Default)]
 pub struct FormatReport {
-    /// Manifests that were rewritten.
-    pub formatted: u32,
+    /// Manifests that were rewritten, in the order they were processed.
+    ///
+    /// Kept as paths rather than a bare count so the command can report every
+    /// file it rewrote: the destructive part of `formatjson` is that it
+    /// rewrites any JSON file it finds, so "which files changed" is the piece
+    /// of information the user most needs. Use
+    /// [`FormatReport::formatted_count`] for the summary count.
+    pub formatted: Vec<PathBuf>,
     /// Manifests already correctly formatted (not rewritten).
     pub unchanged: u32,
     /// Error messages from manifests that could not be formatted.
@@ -83,14 +91,21 @@ pub struct FormatReport {
     pub warnings: Vec<String>,
 }
 
+impl FormatReport {
+    /// Number of manifests rewritten by this run.
+    pub fn formatted_count(&self) -> usize {
+        self.formatted.len()
+    }
+}
+
 /// Format every manifest under `dir`, filtered by `app` patterns.
 ///
 /// Uses the same app-filtering semantics as `checkhashes` / `checkver` /
-/// `checkurls` (`manifest_walker::discover_matching` / `matches_any_glob`):
-/// a first pattern of `"*"` matches everything, otherwise each stem must
-/// match at least one pattern (glob `*`/`?` supported, plain patterns match
-/// exactly). `package.json` is skipped, and results are processed in sorted
-/// path order.
+/// `checkurls` / `missing_checkver` (`manifest_walker::discover_matching` /
+/// `matches_any_glob`): a first pattern of `"*"` matches everything, otherwise
+/// each stem must match at least one pattern (glob `*`/`?` supported, matching
+/// case-insensitive, a trailing `.json` on the pattern ignored). `package.json`
+/// is skipped, and results are processed in sorted path order.
 ///
 /// Per-file failures are collected into [`FormatReport::errors`] instead of
 /// aborting the whole batch.
@@ -98,7 +113,7 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
     let mut report = FormatReport::default();
     for (path, _stem) in manifest_walker::discover_matching(dir, app)? {
         match format_manifest_file(&path) {
-            Ok(true) => report.formatted += 1,
+            Ok(true) => report.formatted.push(path.clone()),
             Ok(false) => report.unchanged += 1,
             Err(e) => report.errors.push(e.to_string()),
         }
@@ -119,12 +134,15 @@ pub fn format_manifests(dir: &Path, app: &[String]) -> Fallible<FormatReport> {
 /// - `uninstaller` must include at least one of `file` / `script` (oneOf)
 /// - `version` matches `^[\w\.\-+_]+$`
 /// - each `shortcuts` entry has 2-4 elements
+///
+/// Best-effort by design: a manifest that cannot be read or parsed yields no
+/// warnings rather than failing the batch (see
+/// [`crate::internal::json::parse_str_or_none`]).
 fn schema_warnings(path: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return vec![];
     };
-    let Ok(value) = json5::from_str::<serde_json::Value>(content.trim_start_matches('\u{FEFF}'))
-    else {
+    let Some(value) = internal::json::parse_str_or_none::<serde_json::Value>(&content) else {
         return vec![];
     };
     let name = path.display().to_string();
@@ -153,24 +171,24 @@ fn schema_warnings(path: &Path) -> Vec<String> {
     }
 
     // uninstaller: at least one of `file` / `script` (oneOf, schema.json:419-430)
-    if let Some(serde_json::Value::Object(map)) = value.get("uninstaller") {
-        if map.get("file").is_none() && map.get("script").is_none() {
-            warnings.push(format!(
-                "{name}: uninstaller must include 'file' or 'script'"
-            ));
-        }
+    if let Some(serde_json::Value::Object(map)) = value.get("uninstaller")
+        && map.get("file").is_none()
+        && map.get("script").is_none()
+    {
+        warnings.push(format!(
+            "{name}: uninstaller must include 'file' or 'script'"
+        ));
     }
 
     // version pattern ^[\w\.\-+_]+$ (schema.json:644-647)
-    if let Some(ver) = value.get("version").and_then(|v| v.as_str()) {
-        if !ver
+    if let Some(ver) = value.get("version").and_then(|v| v.as_str())
+        && !ver
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
-        {
-            warnings.push(format!(
-                "{name}: version contains invalid characters: {ver}"
-            ));
-        }
+    {
+        warnings.push(format!(
+            "{name}: version contains invalid characters: {ver}"
+        ));
     }
 
     // shortcuts: each entry has 2-4 elements (schema.json:165-176)
@@ -509,13 +527,13 @@ mod tests {
         std::fs::write(dir.join("app2.json"), "{\"b\":[\"y\"]}").unwrap();
 
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 2);
+        assert_eq!(report.formatted_count(), 2);
         assert_eq!(report.unchanged, 0);
         assert!(report.errors.is_empty());
 
         // Idempotent second pass: nothing to rewrite.
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 0);
+        assert_eq!(report.formatted_count(), 0);
         assert_eq!(report.unchanged, 2);
     }
 
@@ -527,7 +545,7 @@ mod tests {
 
         // Plain pattern matches exactly: only app1 is formatted.
         let report = format_manifests(&dir, &["app1".to_string()]).unwrap();
-        assert_eq!(report.formatted, 1);
+        assert_eq!(report.formatted_count(), 1);
         assert_eq!(report.unchanged, 0);
     }
 
@@ -604,7 +622,7 @@ mod tests {
         std::fs::write(dir.join("bad.json"), "{ not json").unwrap();
 
         let report = format_manifests(&dir, &["*".to_string()]).unwrap();
-        assert_eq!(report.formatted, 1, "app.json formatted");
+        assert_eq!(report.formatted_count(), 1, "app.json formatted");
         assert_eq!(report.errors.len(), 1, "bad.json collected as error");
         assert!(
             !report.errors[0].contains("package.json"),

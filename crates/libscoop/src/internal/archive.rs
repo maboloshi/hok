@@ -21,10 +21,10 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::Error;
 use crate::error::Fallible;
 use crate::event::Event;
-use crate::Error;
-use flume::Sender;
+use tokio::sync::mpsc;
 
 /// Detect archive format from filename extension.
 ///
@@ -62,6 +62,9 @@ pub(crate) fn detect_format(filename: &str) -> Option<&'static str> {
     if filename.ends_with(".iso") {
         return Some("iso");
     }
+    if filename.ends_with(".msi") {
+        return Some("msi");
+    }
     None
 }
 
@@ -82,7 +85,7 @@ pub fn extract(
     extract_dir: Option<&[&str]>,
     extract_to: Option<&[&str]>,
     innosetup: bool,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     // Compute effective extract_to path (join all subdirs components)
     let effective_dest = match extract_to {
@@ -92,52 +95,114 @@ pub fn extract(
     crate::internal::fs::ensure_dir(&effective_dest)?;
 
     if innosetup {
-        return extract_innosetup(cache_path, &effective_dest, extract_dir, emitter);
+        return extract_innosetup_or_fallback(cache_path, &effective_dest, extract_dir, emitter);
     }
 
     let filename = cache_path.file_name().unwrap_or_default().to_string_lossy();
     let fmt = detect_format(&filename)
         .ok_or_else(|| Error::ExtractionFailed(format!("unknown archive format: {}", filename)))?;
 
+    extract_by_format(fmt, cache_path, &effective_dest, extract_dir, emitter)
+}
+
+/// Dispatch a [`detect_format`] name to the in-process decoder for it.
+///
+/// This is the filename/signature-driven path for *downloaded* archives
+/// ([`crate::package::operations::extract_archives`]); it is deliberately not
+/// how a package script's `[[HOK_EXTRACT]]` marker is dispatched — a marker
+/// carries an authoritative `format` field, see [`extract_by_marker_format`].
+fn extract_by_format(
+    fmt: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
     match fmt {
-        "7z" => extract_pseudo_7z(cache_path, &effective_dest, extract_dir, emitter),
-        "zip" => extract_zip(cache_path, &effective_dest, extract_dir, emitter),
-        "tar" => extract_tar(cache_path, &effective_dest, extract_dir, None, emitter),
-        "gz" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Gzip),
-            emitter,
-        ),
-        "bz2" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Bzip2),
-            emitter,
-        ),
-        "xz" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Xz),
-            emitter,
-        ),
-        "zst" => extract_tar(
-            cache_path,
-            &effective_dest,
-            extract_dir,
-            Some(Compression::Zstd),
-            emitter,
-        ),
-        "rar" => extract_rar(cache_path, &effective_dest, extract_dir, emitter),
-        "lzh" | "iso" => extract_with_7z_exe(cache_path, &effective_dest, emitter),
+        "7z" => extract_pseudo_7z(src, dest, extract_dir, emitter),
+        "zip" => extract_zip(src, dest, extract_dir, emitter),
+        "tar" => extract_tar(src, dest, extract_dir, None, emitter),
+        "gz" => extract_tar(src, dest, extract_dir, Some(Compression::Gzip), emitter),
+        "bz2" => extract_tar(src, dest, extract_dir, Some(Compression::Bzip2), emitter),
+        "xz" => extract_tar(src, dest, extract_dir, Some(Compression::Xz), emitter),
+        "zst" => extract_tar(src, dest, extract_dir, Some(Compression::Zstd), emitter),
+        "rar" => extract_rar(src, dest, extract_dir, emitter),
+        "msi" => extract_msi(src, dest, extract_dir, &[], emitter),
+        "lzh" | "iso" => extract_with_7z_exe(src, dest, emitter),
         _ => Err(Error::ExtractionFailed(format!(
             "unsupported format: {}",
             fmt
         ))),
     }
+}
+
+/// The extractor a `[[HOK_EXTRACT]]` marker's `format` field selects.
+///
+/// A marker records *which* Scoop `Expand-*Archive` function the package
+/// script called, so its declared `format` — not the source's name — must
+/// decide the extractor. Official behaves the same way: `Expand-7zipArchive`
+/// hands `$Path` straight to `7z.exe` (`lib/decompress.ps1:94`),
+/// `Expand-InnoArchive` to `innounp.exe` (`:245`) and `Expand-MsiArchive` to
+/// lessmsi (`:193`); none derives a format from the download's name. Renamed
+/// downloads (`#/dl.7z_`, `#/dl.zip_`) and suffix-less archives therefore
+/// still extract here even though [`detect_format`] cannot name them.
+///
+/// * `7z` — the 7-Zip family (`Expand-7zipArchive`). A source name
+///   [`detect_format`] recognises keeps hok's in-process decoder (the fast
+///   path, and exactly what the downloaded-archive path would pick); anything
+///   else goes to [`extract_pseudo_7z`], which sniffs the *content* (plain 7z,
+///   7z/zip SFX, NSIS, Inno) and finally falls back to `7z.exe`. A name is
+///   never used to reject the source.
+/// * `innosetup` / `msi` — `Expand-InnoArchive` / `Expand-MsiArchive`.
+/// * a [`detect_format`] name — that decoder (`zip`, `tar`, …).
+/// * anything else — official `Expand-7zipArchive` semantics via `7z.exe`.
+///   An unrecognised `format` is never a silent no-op: the source is either
+///   extracted or the error is reported; it is never copied as a plain file.
+pub fn extract_by_marker_format(
+    format: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    crate::internal::fs::ensure_dir(dest)?;
+    match format {
+        "innosetup" => extract_innosetup_or_fallback(src, dest, extract_dir, emitter),
+        "msi" => extract_msi(src, dest, extract_dir, &[], emitter),
+        "7z" => {
+            let filename = src.file_name().unwrap_or_default().to_string_lossy();
+            match detect_format(&filename) {
+                Some(native) => extract_by_format(native, src, dest, extract_dir, emitter),
+                None => extract_pseudo_7z(src, dest, extract_dir, emitter),
+            }
+        }
+        other if is_native_format(other) => {
+            extract_by_format(other, src, dest, extract_dir, emitter)
+        }
+        other => {
+            tracing::debug!(
+                "marker format '{}' is not a format hok decodes; falling back to 7z.exe",
+                other
+            );
+            extract_7z_cli(
+                src,
+                dest,
+                extract_dir,
+                &ScriptCliOptions::default(),
+                emitter,
+            )
+        }
+    }
+}
+
+/// True when `format` is a name [`detect_format`] can return, i.e. a container
+/// hok decodes in-process. Kept in step with [`extract_by_format`] by
+/// `test_native_format_predicate_matches_dispatch`.
+fn is_native_format(format: &str) -> bool {
+    matches!(
+        format,
+        "7z" | "zip" | "tar" | "gz" | "bz2" | "xz" | "zst" | "rar" | "lzh" | "iso" | "msi"
+    )
 }
 
 // ─── Compression enum for tar filters ────────────────────────────────
@@ -213,7 +278,7 @@ fn extract_pseudo_7z(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     // Read the whole file into memory once: block-parallel decoding shares
     // this buffer across worker threads. A plain 7z archive starts at
@@ -258,33 +323,31 @@ fn extract_pseudo_7z(
             // PE-prefixed 7z SFX: search for embedded 7z data. The magic
             // search is bounded to PE files (a 7z SFX stub is always MZ);
             // the zip probe below has no such constraint.
-            if file_data.starts_with(b"MZ") {
-                if let Some(pos) = file_data
+            if file_data.starts_with(b"MZ")
+                && let Some(pos) = file_data
                     .windows(MAGIC_7Z.len())
                     .position(|w| w == MAGIC_7Z)
+            {
+                // Validate the candidate before committing to the Rust
+                // path, so a false magic match falls through to 7z.exe.
+                let mut probe = std::io::Cursor::new(&file_data[pos..]);
+                if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty()).is_ok()
                 {
-                    // Validate the candidate before committing to the Rust
-                    // path, so a false magic match falls through to 7z.exe.
-                    let mut probe = std::io::Cursor::new(&file_data[pos..]);
-                    if sevenz_rust2::Archive::read(&mut probe, &sevenz_rust2::Password::empty())
-                        .is_ok()
-                    {
-                        return extract_7z_entries_mt(
-                            file_data,
-                            pos,
-                            dest.to_path_buf(),
-                            owned_filter(filter),
-                            emitter.clone(),
-                        );
-                    }
+                    return extract_7z_entries_mt(
+                        file_data,
+                        pos,
+                        dest.to_path_buf(),
+                        owned_filter(filter),
+                        emitter.clone(),
+                    );
                 }
             }
             // ZIP SFX / plain-zip-misnamed-.7z: locate the EOCD, slice from
             // the zip start, extract with the zip crate.
-            if let Some(zip_start) = find_embedded_zip_start(&file_data) {
-                if extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok() {
-                    return Ok(());
-                }
+            if let Some(zip_start) = find_embedded_zip_start(&file_data)
+                && extract_zip_embedded(file_data, zip_start, dest, filter, emitter).is_ok()
+            {
+                return Ok(());
             }
         }
         InstallerKind::Nsis if extract_nsis(src, dest, filter, emitter).is_ok() => {
@@ -314,7 +377,7 @@ fn extract_7z_entries_mt(
     start: usize,
     dest: PathBuf,
     filter: Option<Vec<String>>,
-    emitter: Option<Sender<Event>>,
+    emitter: Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use sevenz_rust2::{Archive, BlockDecoder, Password};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -383,10 +446,10 @@ fn extract_7z_entries_mt(
                             return Ok(true);
                         }
                         let name = entry.name();
-                        if let Some(f) = filter.as_deref() {
-                            if !f.iter().any(|d| name.starts_with(d)) {
-                                return Ok(true);
-                            }
+                        if let Some(f) = filter.as_deref()
+                            && !f.iter().any(|d| name.starts_with(d))
+                        {
+                            return Ok(true);
                         }
                         let n = file_idx.fetch_add(1, Ordering::Relaxed);
                         emit_extract_progress(&emitter, n, Some(total));
@@ -429,6 +492,60 @@ fn extract_7z_entries_mt(
     }
     if let Some(e) = errors.lock().unwrap().first() {
         return Err(Error::ExtractionFailed(format!("7z extract error: {}", e)));
+    }
+
+    // ── Stream-less entries ──────────────────────────────────────────────
+    // Empty files and *every* directory entry carry no stream, so they belong
+    // to no block and the per-block decoders above — which only walk block
+    // payloads — never visit them. `ArchiveReader::for_each_entries` appends
+    // an explicit pass for them (sevenz-rust2 `reader.rs`, "decode empty
+    // files"); this hand-rolled block-parallel path bypasses it, which is why
+    // empty files were silently dropped and empty directories never created.
+    // Materialize them here, after the workers joined, so the extracted tree
+    // matches what `7z.exe` produces.
+    let filter_ref: Option<Vec<&str>> = filter
+        .as_ref()
+        .as_ref()
+        .map(|f| f.iter().map(|s| s.as_str()).collect());
+    for entry in archive.files.iter() {
+        if entry.has_stream() {
+            continue;
+        }
+        let name = entry.name();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(f) = filter_ref.as_deref()
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            continue;
+        }
+        let target = strip_dir(name, filter_ref.as_deref()).unwrap_or_else(|| name.to_string());
+        let target = target.trim_end_matches(['/', '\\']);
+        if target.is_empty() {
+            continue;
+        }
+        if Path::new(target)
+            .components()
+            .any(|c| c == Component::ParentDir)
+        {
+            return Err(Error::PathTraversalDetected(format!("7z: {}", target)));
+        }
+        let target_path = dest.join(target);
+        if entry.is_directory() {
+            // Explicit directory entries include *empty* directories, which
+            // 7z.exe creates; nothing else in this path would bring them back.
+            crate::internal::fs::ensure_dir(&target_path)?;
+        } else {
+            let n = file_idx.fetch_add(1, Ordering::Relaxed);
+            emit_extract_progress(&emitter, n, Some(total));
+            if let Some(parent) = target_path.parent() {
+                crate::internal::fs::ensure_dir(parent)?;
+            }
+            std::fs::write(&target_path, []).map_err(|e| {
+                Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
+            })?;
+        }
     }
     Ok(())
 }
@@ -505,7 +622,7 @@ fn extract_zip(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let source = Arc::new(ZipSource::File(src.to_path_buf()));
     let total = source.len()?;
@@ -531,7 +648,7 @@ fn extract_zip_mt(
     total: usize,
     dest: PathBuf,
     filter: Option<Vec<String>>,
-    emitter: Option<Sender<Event>>,
+    emitter: Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -600,10 +717,10 @@ fn extract_zip_mt(
                     if name.ends_with('/') {
                         continue;
                     }
-                    if let Some(f) = filter_ref.as_deref() {
-                        if !f.iter().any(|d| name.starts_with(d)) {
-                            continue;
-                        }
+                    if let Some(f) = filter_ref.as_deref()
+                        && !f.iter().any(|d| name.starts_with(d))
+                    {
+                        continue;
                     }
                     let n = done.fetch_add(1, Ordering::Relaxed);
                     emit_extract_progress(&emitter, n, Some(total));
@@ -619,13 +736,12 @@ fn extract_zip_mt(
                         break;
                     }
                     let target_path = dest.join(&target);
-                    if let Some(parent) = target_path.parent() {
-                        if made_dirs.insert(parent.to_path_buf()) {
-                            if let Err(e) = crate::internal::fs::ensure_dir(parent) {
-                                errors.lock().unwrap().push(e.to_string());
-                                break;
-                            }
-                        }
+                    if let Some(parent) = target_path.parent()
+                        && made_dirs.insert(parent.to_path_buf())
+                        && let Err(e) = crate::internal::fs::ensure_dir(parent)
+                    {
+                        errors.lock().unwrap().push(e.to_string());
+                        break;
                     }
                     let mut data = Vec::new();
                     if let Err(e) = entry.read_to_end(&mut data) {
@@ -756,7 +872,7 @@ fn extract_zip_embedded(
     start: usize,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let source = Arc::new(ZipSource::Memory { data, start });
     let total = source.len()?;
@@ -776,7 +892,7 @@ fn extract_tar(
     dest: &Path,
     filter: Option<&[&str]>,
     compression: Option<Compression>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     use tar::Archive as TarArchive;
 
@@ -798,10 +914,10 @@ fn extract_tar(
         for (i, entry) in entries.enumerate() {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
-            if let Some(f) = filter {
-                if !f.iter().any(|d| path.starts_with(d)) {
-                    continue;
-                }
+            if let Some(f) = filter
+                && !f.iter().any(|d| path.starts_with(d))
+            {
+                continue;
             }
             emit_extract_progress(emitter, i, None);
             let target = strip_dir(&path, filter).unwrap_or(path);
@@ -830,40 +946,139 @@ fn extract_tar(
     Ok(())
 }
 
-// ─── RAR extraction via unrar crate ─────────────────────────────────
+// ─── RAR extraction via the pure-Rust rars crate ─────────────────────
+
+/// Every file of the volume set `src` belongs to, in archive order.
+///
+/// Only the names are derived here — a candidate is added only when it exists —
+/// so the caller can read each one and let a genuine read error surface.
+///
+/// Three shapes are recognised, matching what encoders emit:
+///
+/// * `X.partN.rar` — the new naming. A later volume is walked back to the
+///   first, so being handed `X.part3.rar` still yields the whole set.
+/// * `X.rar` — the old naming, with `X.r00`, `X.r01`, … following it.
+/// * `X.rNN` — a later old-named volume; the set is rebuilt from `X.rar`.
+///
+/// Anything else is a single-file archive.
+fn rar_volume_paths(src: &Path) -> Vec<PathBuf> {
+    let single = || vec![src.to_path_buf()];
+    let Some(name) = src.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return single();
+    };
+    let lower = name.to_ascii_lowercase();
+
+    // Bound every walk: a corrupt or hostile directory must not spin.
+    const MAX_VOLUMES: u64 = 10_000;
+
+    // `X.partN.rar`
+    if let Some(at) = lower.rfind(".part") {
+        let digits = &name[at + 5..];
+        let index = digits
+            .strip_suffix(".rar")
+            .filter(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()));
+        if let Some(index) = index {
+            let stem = &name[..at];
+            let width = index.len();
+            let mut first: u64 = index.parse().unwrap_or(1);
+            while first > 1 {
+                let previous = first - 1;
+                let candidate = src.with_file_name(format!("{stem}.part{previous:0width$}.rar"));
+                if !candidate.is_file() {
+                    break;
+                }
+                first = previous;
+            }
+            let mut out = Vec::new();
+            let mut n = first;
+            while out.len() < MAX_VOLUMES as usize {
+                let candidate = src.with_file_name(format!("{stem}.part{n:0width$}.rar"));
+                if !candidate.is_file() {
+                    break;
+                }
+                out.push(candidate);
+                n += 1;
+            }
+            return if out.is_empty() { single() } else { out };
+        }
+    }
+
+    // `X.rar` / `X.rNN`
+    let stem = name
+        .strip_suffix(".rar")
+        .or_else(|| name.strip_suffix(".RAR"))
+        .map(str::to_string)
+        .or_else(|| {
+            let (stem, extension) = name.rsplit_once('.')?;
+            let is_old_volume = extension.len() == 3
+                && extension[..1].eq_ignore_ascii_case("r")
+                && extension[1..].chars().all(|c| c.is_ascii_digit());
+            is_old_volume.then(|| stem.to_string())
+        });
+    let Some(stem) = stem else {
+        return single();
+    };
+
+    let mut out = Vec::new();
+    // Start from the first volume when it is present, even if the caller handed
+    // us a later one.
+    let first_volume = src.with_file_name(format!("{stem}.rar"));
+    if first_volume.is_file() {
+        out.push(first_volume);
+    }
+    let mut index = 0u64;
+    while out.len() < MAX_VOLUMES as usize {
+        let candidate = src.with_file_name(format!("{stem}.r{index:02}"));
+        if !candidate.is_file() {
+            break;
+        }
+        out.push(candidate);
+        index += 1;
+    }
+    if out.is_empty() { single() } else { out }
+}
+
+/// Read `src` and every volume that belongs to it.
+fn open_rar_volumes(src: &Path) -> Fallible<Vec<rars::Archive>> {
+    let mut volumes = Vec::new();
+    for path in rar_volume_paths(src) {
+        match rars::ArchiveReader::read_path(&path) {
+            Ok(archive) => volumes.push(archive),
+            // The first volume failing is the archive failing. A later volume
+            // failing means the set is incomplete: stop there and let
+            // extraction report the missing continuation.
+            Err(e) if volumes.is_empty() => {
+                return Err(Error::ExtractionFailed(format!("cannot open rar: {}", e)));
+            }
+            Err(_) => break,
+        }
+    }
+    if volumes.is_empty() {
+        return Err(Error::ExtractionFailed(
+            "cannot open rar: no volumes".into(),
+        ));
+    }
+    Ok(volumes)
+}
 
 fn extract_rar(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
-    use unrar::Archive;
+    use std::io::Write;
 
-    let mut archive = Archive::new(src)
-        .open_for_processing()
-        .map_err(|e| Error::ExtractionFailed(format!("cannot open rar: {}", e)))?;
-    let mut file_idx = 0usize;
+    let volumes = open_rar_volumes(src)?;
+    let members = rars::volume_members(&volumes)
+        .map_err(|e| Error::ExtractionFailed(format!("rar read entries: {}", e)))?;
 
-    loop {
-        let entry = match archive.read_header() {
-            Ok(Some(e)) => e,
-            Ok(None) => break,
-            Err(e) => return Err(Error::ExtractionFailed(format!("rar read header: {}", e))),
-        };
-
-        let name = entry.entry().filename.to_string_lossy().to_string();
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
-                archive = entry
-                    .skip()
-                    .map_err(|e| Error::ExtractionFailed(format!("rar skip: {}", e)))?;
-                continue;
-            }
-        }
-        emit_extract_progress(emitter, file_idx, None);
-        file_idx += 1;
-
+    // Refuse a traversal archive before writing anything. The previous backend
+    // sanitised `..` to `_` inside its C++ decoder, so this guard never fired
+    // for it; this decoder reports the stored name, so the guard is live now
+    // and rejecting up front leaves no half-written destination behind.
+    for member in &members {
+        let name = member.meta.name_lossy();
         let target = strip_dir(&name, filter).unwrap_or(name);
         if Path::new(&target)
             .components()
@@ -871,46 +1086,80 @@ fn extract_rar(
         {
             return Err(Error::PathTraversalDetected(format!("rar: {}", target)));
         }
+    }
+
+    let mut file_idx = 0usize;
+    rars::extract_volumes_to(&volumes, None, |meta| {
+        // The writer is only asked for once the entry is decoded, so an entry
+        // excluded by `extract_dir` is drained into a sink rather than written.
+        let sink = || Ok(Box::new(std::io::sink()) as Box<dyn Write>);
+
+        let name = meta.name_lossy();
+        if let Some(f) = filter
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            return sink();
+        }
+        emit_extract_progress(emitter, file_idx, None);
+        file_idx += 1;
+
+        let target = strip_dir(&name, filter).unwrap_or(name);
         let target_path = dest.join(&target);
 
-        if entry.entry().is_directory() {
-            crate::internal::fs::ensure_dir(&target_path)?;
-            archive = entry
-                .skip()
-                .map_err(|e| Error::ExtractionFailed(format!("rar skip dir: {}", e)))?;
-        } else {
-            if let Some(parent) = target_path.parent() {
-                crate::internal::fs::ensure_dir(parent)?;
-            }
-            let (data, rest) = entry
-                .read()
-                .map_err(|e| Error::ExtractionFailed(format!("rar read: {}", e)))?;
-            std::fs::write(&target_path, &data)?;
-            archive = rest;
+        if meta.is_directory {
+            crate::internal::fs::ensure_dir(&target_path).map_err(rars::Error::from)?;
+            return sink();
         }
-    }
+        if let Some(parent) = target_path.parent() {
+            crate::internal::fs::ensure_dir(parent).map_err(rars::Error::from)?;
+        }
+        let file = std::fs::File::create(&target_path)
+            .map_err(|e| rars::Error::from(std::io::Error::other(e.to_string())))?;
+        Ok(Box::new(file) as Box<dyn Write>)
+    })
+    .map_err(|e| Error::ExtractionFailed(format!("rar extract: {}", e)))?;
+
     Ok(())
 }
 
-// ─── Fallback: call external 7z.exe for ISO ─────────────────────────
+// ─── External helper tools ───────────────────────────────────────────
 
-fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>) -> Fallible<()> {
-    // Look for 7z.exe in PATH or in Scoop's shims directory
+/// Resolve a Scoop helper executable: the shim hok's own dependency install
+/// creates (`<SCOOP>\shims\<name>.exe`) first, then bare `PATH` lookup.
+///
+/// The shim is what `manifest::Manifest::dependencies` provisions — it injects
+/// `7zip` for any script mentioning `Expand-7zipArchive`, `innounp` for
+/// `Expand-InnoArchive` and `lessmsi` for `Expand-MsiArchive` — so the helper
+/// is present exactly when the script that needs it is.
+fn helper_exe(name: &str) -> PathBuf {
     let path_env = std::env::var("SCOOP").unwrap_or_default();
-    let shims_7z = std::path::Path::new(&path_env).join("shims").join("7z.exe");
-    let exe = if shims_7z.exists() {
-        shims_7z
+    let shim = Path::new(&path_env)
+        .join("shims")
+        .join(format!("{name}.exe"));
+    if shim.exists() {
+        shim
     } else {
-        std::path::PathBuf::from("7z.exe")
-    };
+        PathBuf::from(format!("{name}.exe"))
+    }
+}
 
-    let mut child = Command::new(&exe)
-        .arg("x")
-        .arg(src)
-        .arg(format!("-o{}", dest.display()))
-        .arg("-y")
-        .arg("-bso0")
-        .arg("-bsp1")
+/// Build `-<prefix><path>` as a single `OsString`, so a non-UTF-8 path is not
+/// mangled by a `display()` round-trip.
+fn arg_with_path(prefix: &str, path: &Path) -> std::ffi::OsString {
+    let mut arg = std::ffi::OsString::from(prefix);
+    arg.push(path);
+    arg
+}
+
+/// Run `7z.exe` with an explicit argument list, forwarding its `-bsp1`
+/// progress to the event bus; a non-zero exit is an error.
+fn run_7z_exe(
+    exe: &Path,
+    args: &[std::ffi::OsString],
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    let mut child = Command::new(exe)
+        .args(args)
         .stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .spawn()
@@ -943,10 +1192,9 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
                 .split('%')
                 .next()
                 .and_then(|s| s.parse::<u8>().ok())
+                && let Some(tx) = emitter
             {
-                if let Some(tx) = emitter {
-                    let _ = tx.send(Event::PackageExtractProgress(format!("7z {}%", pct)));
-                }
+                let _ = tx.try_send(Event::PackageExtractProgress(format!("7z {}%", pct)));
             }
         }
     }
@@ -964,13 +1212,495 @@ fn extract_with_7z_exe(src: &Path, dest: &Path, emitter: &Option<Sender<Event>>)
     Ok(())
 }
 
-// ─── Inno Setup extraction via innospect ─────────────────────────────
+/// Run an external helper to completion and fail on a non-zero exit, keeping
+/// its stderr in the message (helpers such as `innounp.exe` report the real
+/// reason there).
+fn run_helper(exe: &Path, args: &[std::ffi::OsString], tool: &str) -> Fallible<()> {
+    let output = Command::new(exe)
+        .args(args)
+        .output()
+        .map_err(|e| Error::ExtractionFailed(format!("failed to launch {tool}: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::ExtractionFailed(format!(
+            "{tool} exited with code {:?}: {}",
+            output.status.code(),
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+// ─── `Expand-*Archive` CLI options from package scripts ───────────────
+
+/// `-Overwrite` as declared by Scoop's `Expand-7zipArchive`
+/// (`lib/decompress.ps1:77-79`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overwrite {
+    /// `-Overwrite All` → 7-Zip `-aoa`.
+    All,
+    /// `-Overwrite Skip` → 7-Zip `-aos`.
+    Skip,
+    /// `-Overwrite Rename` → 7-Zip `-aou`.
+    Rename,
+}
+
+impl Overwrite {
+    /// Parse the lowercased `overwrite` marker field.
+    pub fn from_marker(field: &str) -> Option<Self> {
+        match field {
+            "all" => Some(Self::All),
+            "skip" => Some(Self::Skip),
+            "rename" => Some(Self::Rename),
+            _ => None,
+        }
+    }
+
+    /// The 7-Zip switch official maps this value to
+    /// (`lib/decompress.ps1:102-106`).
+    fn as_7z_switch(self) -> &'static str {
+        match self {
+            Self::All => "-aoa",
+            Self::Skip => "-aos",
+            Self::Rename => "-aou",
+        }
+    }
+}
+
+/// The command-line options a package script handed to a Scoop
+/// `Expand-*Archive` helper.
+///
+/// These are arguments of the *helper tools* (`7z.exe` / `innounp.exe` /
+/// `lessmsi.exe`), not an abstract request: official passes `-Switches`
+/// through `-split` verbatim (`lib/decompress.ps1:99-101`) and turns
+/// `-Overwrite` into `-aoa`/`-aos`/`-aou` (`:102-106`). hok therefore applies
+/// them by invoking the same tool rather than re-implementing its option
+/// semantics natively — dropping them is not an option, because `-p`
+/// (encrypted archives), `-x!`/`-xr!` (exclusions) and
+/// `-Overwrite Skip|Rename` all change what lands on disk.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ScriptCliOptions {
+    /// `-Switches`, already whitespace-split (official's `-split $Switches`).
+    pub switches: Vec<String>,
+    /// `-Overwrite`, declared only by `Expand-7zipArchive`.
+    pub overwrite: Option<Overwrite>,
+}
+
+impl ScriptCliOptions {
+    /// True when the call used neither `-Switches` nor `-Overwrite`; such a
+    /// marker keeps the native extractor, so calls that never passed these
+    /// options are byte-for-byte unchanged.
+    pub fn is_empty(&self) -> bool {
+        self.switches.is_empty() && self.overwrite.is_none()
+    }
+}
+
+/// Official `Expand-7zipArchive`'s `$IsTar` test (`lib/decompress.ps1:95`):
+/// `((strip_ext $Path) -match '\.tar$') -or ($Path -match '\.t[abgpx]z2?$')`.
+///
+/// Note that a bare `.tar` is *not* `$IsTar` upstream — only a compressed tar
+/// (`.tar.gz`) or a `.t[abgpx]z2?` name is.
+fn is_tar_container(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    // `strip_ext`: everything up to the last dot.
+    let stem = match name.rfind('.') {
+        Some(idx) => &name[..idx],
+        None => name.as_str(),
+    };
+    stem.ends_with(".tar")
+        || [".taz", ".tbz", ".tbz2", ".tgz", ".tpz", ".txz"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
+
+/// Official Scoop's `Expand-7zipArchive` argument list
+/// (`lib/decompress.ps1:94-106`), plus hok's own `-bso0 -bsp1` progress flags:
+///
+/// ```text
+/// x <path> -o<dest> -xr!*.nsis -y [-ir!<extract_dir>\*] [switches] [-ao*]
+/// ```
+///
+/// Pure so the parity with official can be asserted without running 7z.exe.
+/// `switch -Regex` order in official puts the `-ir!` include filter before the
+/// `-Switches`, and the `-ao*` overwrite switch after them.
+fn seven_zip_cli_args(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&str>,
+    switches: &[String],
+    overwrite: Option<Overwrite>,
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        std::ffi::OsString::from("x"),
+        src.as_os_str().to_os_string(),
+        arg_with_path("-o", dest),
+        // 7-Zip keeps `.nsis` side files out of the tree, like official.
+        std::ffi::OsString::from("-xr!*.nsis"),
+        std::ffi::OsString::from("-y"),
+    ];
+    // Official skips the include filter for tar containers: the first pass is
+    // only meant to unwrap the outer container (`:95-98`).
+    if !is_tar_container(src)
+        && let Some(dir) = extract_dir
+    {
+        args.push(std::ffi::OsString::from(format!("-ir!{dir}\\*")));
+    }
+    args.extend(switches.iter().map(std::ffi::OsString::from));
+    if let Some(overwrite) = overwrite {
+        args.push(std::ffi::OsString::from(overwrite.as_7z_switch()));
+    }
+    args.push(std::ffi::OsString::from("-bso0"));
+    args.push(std::ffi::OsString::from("-bsp1"));
+    args
+}
+
+/// Official Scoop's `Expand-InnoArchive` argument list
+/// (`lib/decompress.ps1:245-253`):
+///
+/// ```text
+/// -x -d<dest> <path> -y [-c{app}\<extract_dir> | -c<extract_dir> | -c{app}] [switches]
+/// ```
+///
+/// The `-c` component mirrors official's `switch -Regex ($ExtractDir)`: a
+/// non-`{`-prefixed value is anchored under `{app}`, an already-anchored value
+/// is taken as-is, and an absent one selects the whole `{app}` tree.
+fn innounp_cli_args(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&str>,
+    switches: &[String],
+) -> Vec<std::ffi::OsString> {
+    let mut args = vec![
+        std::ffi::OsString::from("-x"),
+        arg_with_path("-d", dest),
+        src.as_os_str().to_os_string(),
+        std::ffi::OsString::from("-y"),
+    ];
+    match extract_dir {
+        Some(dir) if dir.starts_with('{') => args.push(format!("-c{dir}").into()),
+        Some(dir) if !dir.is_empty() => args.push(format!("-c{{app}}\\{dir}").into()),
+        _ => args.push(std::ffi::OsString::from("-c{app}")),
+    }
+    args.extend(switches.iter().map(std::ffi::OsString::from));
+    args
+}
+
+/// Promote `dest/<extract_dir>` up into `dest`, mirroring official Scoop's
+/// `movedir "$DestinationPath\$ExtractDir" $DestinationPath` plus the
+/// empty-top-directory cleanup (`lib/decompress.ps1:122-129`).
+///
+/// Used by the 7z CLI path, where the include filter (`-ir!`) leaves the
+/// subtree nested; the native path instead filters and strips in one pass.
+fn promote_extract_dir(dest: &Path, extract_dir: &str) -> Fallible<()> {
+    let from = dest.join(extract_dir);
+    if from == dest || !from.exists() {
+        return Ok(());
+    }
+    // Same volume, so `rename` moves whole subtrees atomically; an existing
+    // destination entry is replaced first (robocopy's `/move` overwrites).
+    for entry in std::fs::read_dir(&from)
+        .map_err(|e| Error::ExtractionFailed(format!("read {}: {}", from.display(), e)))?
+    {
+        let entry = entry.map_err(|e| Error::ExtractionFailed(format!("read dir entry: {}", e)))?;
+        let dst = dest.join(entry.file_name());
+        let _ = std::fs::remove_file(&dst);
+        let _ = crate::internal::fs::remove_dir(&dst);
+        std::fs::rename(entry.path(), &dst).map_err(|e| {
+            Error::ExtractionFailed(format!("move '{}': {}", entry.path().display(), e))
+        })?;
+    }
+    // Drop the emptied subtree, then an emptied top component (`a/b` → `a`).
+    let _ = std::fs::remove_dir(&from);
+    if let Some(top) = extract_dir.split(['\\', '/']).next()
+        && !top.is_empty()
+    {
+        let _ = std::fs::remove_dir(dest.join(top));
+    }
+    Ok(())
+}
+
+/// Extract via external `7z.exe` with a script's `-Switches`/`-Overwrite`.
+///
+/// Mirrors official `Expand-7zipArchive`: the outer pass unpacks the container,
+/// and for a compressed tar it then unpacks the inner `.tar` — official's
+/// recursive call deliberately drops `$Switches`/`$Overwrite`
+/// (`lib/decompress.ps1:117`), so the inner pass is the plain native one.
+fn extract_7z_cli(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    let single_extract_dir = extract_dir.and_then(|d| d.first().copied());
+    let args = seven_zip_cli_args(src, dest, single_extract_dir, &cli.switches, cli.overwrite);
+    run_7z_exe(&helper_exe("7z"), &args, emitter)?;
+
+    if is_tar_container(src) {
+        let inner = inner_tar(dest)?;
+        let extract_dirs = extract_dir.map(|d| d.to_vec());
+        let extract_refs = extract_dirs.as_deref();
+        extract(&inner, dest, extract_refs, None, false, emitter)?;
+        let _ = std::fs::remove_file(&inner);
+        return Ok(());
+    }
+    if let Some(dir) = single_extract_dir {
+        promote_extract_dir(dest, dir)?;
+    }
+    Ok(())
+}
+
+/// The single `.tar` the first pass of a compressed-tar extraction left in
+/// `dest` — official finds it by regexing the `7z l` log
+/// (`lib/decompress.ps1:113-117`); scanning the destination is equivalent for
+/// the one-container case and does not depend on log formatting.
+fn inner_tar(dest: &Path) -> Fallible<PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dest)
+        .map_err(|e| Error::ExtractionFailed(format!("read {}: {}", dest.display(), e)))?
+    {
+        let entry = entry.map_err(|e| Error::ExtractionFailed(format!("read dir entry: {}", e)))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("tar"))
+        {
+            found.push(path);
+        }
+    }
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        n => Err(Error::ExtractionFailed(format!(
+            "expected one inner .tar in {}, found {}",
+            dest.display(),
+            n
+        ))),
+    }
+}
+
+/// Extract an Inno Setup installer via `innounp.exe` with a script's
+/// `-Switches` (official `Expand-InnoArchive`, `lib/decompress.ps1:244-254`).
+fn extract_inno_cli(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    _emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    if cli.overwrite.is_some() {
+        // Structurally unreachable: only `Expand-7zipArchive` declares
+        // `-Overwrite`, and the marker writer only emits the field from there.
+        // Fail loudly rather than drop a declared option on the floor.
+        return Err(Error::ExtractionFailed(
+            "innounp has no -Overwrite semantics; refusing to ignore it".into(),
+        ));
+    }
+    let args = innounp_cli_args(
+        src,
+        dest,
+        extract_dir.and_then(|d| d.first().copied()),
+        &cli.switches,
+    );
+    run_helper(&helper_exe("innounp"), &args, "innounp.exe")
+}
+
+/// Extract a marker that carried `Expand-*Archive` CLI options by handing them
+/// to the tool that defines them: `7z.exe` for the 7z family, `innounp.exe`
+/// for Inno Setup, `lessmsi.exe` for MSI. Dispatch is on the marker's declared
+/// `format`, which is the extractor the package script asked for.
+fn extract_with_cli(
+    format: &str,
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    cli: &ScriptCliOptions,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    crate::internal::fs::ensure_dir(dest)?;
+    match format {
+        "innosetup" => extract_inno_cli(src, dest, extract_dir, cli, emitter),
+        "msi" => {
+            if cli.overwrite.is_some() {
+                return Err(Error::ExtractionFailed(
+                    "lessmsi has no -Overwrite semantics; refusing to ignore it".into(),
+                ));
+            }
+            if !cli.switches.is_empty() {
+                tracing::debug!("msi extract: forwarding -Switches to lessmsi");
+            }
+            extract_msi(src, dest, extract_dir, &cli.switches, emitter)
+        }
+        // `7z` — and any future format hok does not know — use Scoop's
+        // `Expand-7zipArchive` semantics, whose options are 7-Zip's own.
+        _ => extract_7z_cli(src, dest, extract_dir, cli, emitter),
+    }
+}
+
+/// Fallback for formats only the external tool covers (`lzh`, `iso`).
+fn extract_with_7z_exe(
+    src: &Path,
+    dest: &Path,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    let args = vec![
+        std::ffi::OsString::from("x"),
+        src.as_os_str().to_os_string(),
+        arg_with_path("-o", dest),
+        std::ffi::OsString::from("-y"),
+        std::ffi::OsString::from("-bso0"),
+        std::ffi::OsString::from("-bsp1"),
+    ];
+    run_7z_exe(&helper_exe("7z"), &args, emitter)
+}
+
+// ─── MSI extraction via lessmsi ───────────────────────────────
+
+/// Extract a Windows Installer (`.msi`) archive via the external `lessmsi`
+/// utility, which hok installs as the `lessmsi` helper dependency whenever the
+/// manifest URL ends in `.msi` (see `manifest::Manifest::dependencies`).
+///
+/// Mirrors official Scoop's `Expand-MsiArchive`. lessmsi extracts in place
+/// into `dest` and always wraps the payload in a `SourceDir` folder, so the
+/// manifest's `extract_dir` subtree (or `SourceDir` itself) is then moved up
+/// into `dest` and the now-empty wrapper is removed. Extraction happens in
+/// place — no temporary staging directory and no double copy.
+///
+/// The trailing separator on the target argument is what tells lessmsi to treat
+/// it as an extraction directory rather than a filename filter.
+fn extract_msi(
+    src: &Path,
+    dest: &Path,
+    extract_dir: Option<&[&str]>,
+    switches: &[String],
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    // Resolve lessmsi.exe from Scoop's shims or PATH, like `extract_with_7z_exe`.
+    let exe = helper_exe("lessmsi");
+
+    // The trailing separator signals an extraction directory to lessmsi.
+    let target = format!("{}{}", dest.display(), std::path::MAIN_SEPARATOR);
+
+    let mut command = Command::new(&exe);
+    command.arg("x").arg(src).arg(&target);
+    // Official appends its `-Switches` after the base argument list
+    // (`lib/decompress.ps1:199-201`), which is where lessmsi's own options go.
+    command.args(switches);
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            Error::ExtractionFailed(format!(
+                "failed to launch lessmsi.exe (install 'lessmsi' via hok first): {}",
+                e
+            ))
+        })?;
+
+    // Parse `n/total filename` progress lines from stdout, like the 7z path.
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let n = reader
+                .read_line(&mut line)
+                .map_err(|e| Error::ExtractionFailed(format!("read lessmsi progress: {}", e)))?;
+            if n == 0 {
+                break;
+            }
+            // lessmsi reports `n/total filename`, so compute a percentage.
+            if let Some(part) = line.split_whitespace().next()
+                && let Some((n, t)) = part.split_once('/')
+                && let (Ok(n), Ok(t)) = (n.trim().parse::<f64>(), t.trim().parse::<f64>())
+                && t > 0.0
+                && let Some(tx) = emitter
+            {
+                let pct = (n / t * 100.0).round() as u8;
+                let _ = tx.try_send(Event::PackageExtractProgress(format!("msi {}%", pct)));
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| Error::ExtractionFailed(format!("failed to wait for lessmsi.exe: {}", e)))?;
+    if !status.success() {
+        return Err(Error::ExtractionFailed(format!(
+            "lessmsi.exe exited with code {:?}",
+            status.code()
+        )));
+    }
+
+    // Promote the extracted `SourceDir` payload into `dest`.
+    promote_msi_content(dest, extract_dir)
+}
+
+/// Promote a lessmsi/msiexec `SourceDir` payload up into `dest`, mirroring
+/// Scoop's `movedir` (`robocopy <from> <to> /e /move`).
+///
+/// lessmsi wraps the payload in `SourceDir`, so the manifest's `extract_dir`
+/// subtree (`SourceDir/<extract_dir>`, falling back to `<extract_dir>` or
+/// `SourceDir`) is promoted into `dest` and the now-empty `SourceDir` wrapper
+/// is removed. Promotion happens in place — no temporary staging directory.
+fn promote_msi_content(dest: &Path, extract_dir: Option<&[&str]>) -> Fallible<()> {
+    let source_dir = dest.join("SourceDir");
+    let mut content_root: PathBuf = if let Some(dirs) = extract_dir {
+        match dirs.iter().find(|d| !d.is_empty()) {
+            Some(dir) => {
+                let in_source = source_dir.join(dir);
+                if in_source.exists() {
+                    in_source
+                } else {
+                    dest.join(dir)
+                }
+            }
+            None => source_dir.clone(),
+        }
+    } else {
+        source_dir.clone()
+    };
+    if !content_root.exists() && source_dir.exists() {
+        content_root = source_dir.clone();
+    }
+
+    if content_root != dest && content_root.exists() {
+        // Same volume, so a plain `rename` moves whole trees atomically.
+        let entries = std::fs::read_dir(&content_root)
+            .map_err(|e| Error::ExtractionFailed(format!("read msi source: {}", e)))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| Error::ExtractionFailed(format!("read msi entry: {}", e)))?;
+            let dst = dest.join(entry.file_name());
+            let _ = std::fs::remove_file(&dst);
+            let _ = crate::internal::fs::remove_dir(&dst);
+            std::fs::rename(entry.path(), dst).map_err(|e| {
+                Error::ExtractionFailed(format!(
+                    "move msi entry '{}': {}",
+                    entry.path().display(),
+                    e
+                ))
+            })?;
+        }
+    }
+
+    // Remove the now-empty `SourceDir` wrapper (and any empty extract_dir dir).
+    if source_dir.exists() {
+        let _ = crate::internal::fs::remove_dir(&source_dir);
+    }
+    Ok(())
+}
 
 fn extract_innosetup(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
@@ -993,10 +1723,10 @@ fn extract_innosetup(
         if name.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| name.starts_with(d)) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !f.iter().any(|d| name.starts_with(d))
+        {
+            continue;
         }
         emit_extract_progress(emitter, i, None);
         let target = strip_dir(name, filter).unwrap_or_else(|| name.to_string());
@@ -1020,13 +1750,46 @@ fn extract_innosetup(
     Ok(())
 }
 
+/// Extract a manifest innosetup:true installer.
+///
+/// The pure-Rust innospect path is the primary route for genuine Inno Setup.
+/// Some installers (notably electron-builder NSIS) are also flagged
+/// innosetup:true, so if innospect rejects the file as not-Inno, fall back to
+/// the installer classifier (extract_pseudo_7z) which handles NSIS via the
+/// nsis crate, 7z SFX / zip SFX, and finally external 7z.exe.
+fn extract_innosetup_or_fallback(
+    src: &Path,
+    dest: &Path,
+    filter: Option<&[&str]>,
+    emitter: &Option<mpsc::Sender<Event>>,
+) -> Fallible<()> {
+    // Sniff the bytes once to pick Inno vs fallback. Genuine Inno is then
+    // extracted by extract_innosetup; a rejection falls through to the
+    // classifier (both re-read the file — acceptable for installer files).
+    let data = match std::fs::read(src) {
+        Ok(d) => d,
+        Err(e) => {
+            return Err(Error::ExtractionFailed(format!(
+                "cannot read {}: {}",
+                src.display(),
+                e
+            )));
+        }
+    };
+    if innospect::InnoInstaller::from_bytes(&data).is_ok() {
+        extract_innosetup(src, dest, filter, emitter)
+    } else {
+        extract_pseudo_7z(src, dest, filter, emitter)
+    }
+}
+
 // ─── NSIS extraction via the nsis crate ──────────────────────────────
 
 fn extract_nsis(
     src: &Path,
     dest: &Path,
     filter: Option<&[&str]>,
-    emitter: &Option<Sender<Event>>,
+    emitter: &Option<mpsc::Sender<Event>>,
 ) -> Fallible<()> {
     let data = std::fs::read(src)
         .map_err(|e| Error::ExtractionFailed(format!("cannot read {}: {}", src.display(), e)))?;
@@ -1050,6 +1813,22 @@ fn extract_nsis(
     // installer's own destination path; `to_install_path()` renders it in
     // 7-Zip's form — `$INSTDIR\` prefix stripped, `$VAR` directories kept
     // literally (`$PLUGINSDIR\app-64.7z`), backslash separators.
+    // Collect each file's destination path and a zero-copy view of its payload
+    // in a single pass, then fan decompression + disk write out to worker
+    // threads. Non-solid installers (e.g. we-meet: 6206 files, ~536 MB of
+    // decompressed LZMA) hold every file in an independent stream, so the decode
+    // itself parallelizes; solid installers are already decoded once by the
+    // crate (payload is a slice of the solid buffer), so at least the writes go
+    // in parallel. Progress is throttled like the zip/7z paths.
+    let method = installer.compression();
+    let budget = installer.max_decompressed_size();
+    // Stored per file: destination path, payload offset+length within the
+    // source buffer (original file for non-solid, the crate's once-decoded
+    // solid buffer for solid), and whether the stream is compressed. Workers
+    // slice the shared source by these offsets — zero-copy, no upfront copy
+    // of ~500 MB of payloads.
+    let solid = installer.compression_mode() == nsis::decompress::CompressionMode::Solid;
+    let mut files: Vec<(String, usize, usize, bool)> = Vec::new();
     for result in installer.files() {
         let file =
             result.map_err(|e| Error::ExtractionFailed(format!("nsis file error: {}", e)))?;
@@ -1060,10 +1839,10 @@ fn extract_nsis(
         if rel.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| rel.starts_with(d)) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !f.iter().any(|d| rel.starts_with(d))
+        {
+            continue;
         }
         // NSIS paths use backslashes and keep their `$VAR` directories
         // literally (`$PLUGINSDIR\app-64.7z`) — pre_install scripts refer to
@@ -1076,16 +1855,94 @@ fn extract_nsis(
         {
             return Err(Error::PathTraversalDetected(format!("nsis: {}", target)));
         }
-        let target_path = dest.join(&target);
-        if let Some(parent) = target_path.parent() {
-            crate::internal::fs::ensure_dir(parent)?;
+        // Locate the payload within the shared source. Non-solid entries
+        // are stored at `data_block_offset` past the data block start in the
+        // original file; solid entries are offsets into the decompressed
+        // solid buffer. Either way the payload follows a 4-byte length prefix.
+        let base = if solid {
+            file.data_block_offset() as usize
+        } else {
+            installer
+                .data_block_offset()
+                .saturating_add(file.data_block_offset() as usize)
+        };
+        let payload_off = base + 4;
+        let payload_len = file.data().len();
+        files.push((target, payload_off, payload_len, file.is_compressed()));
+    }
+    let total = files.len();
+
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let workers = total
+        .min(
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
+        )
+        .max(1);
+    let next = AtomicUsize::new(0);
+    let errors = Mutex::new(Vec::<String>::new());
+    let next_ref = &next;
+    let errors_ref = &errors;
+    let files_ref = &files;
+    // Shared payload source: the original file bytes (non-solid) or the
+    // crate's once-decompressed solid buffer (solid). Immutable, so worker
+    // threads read it concurrently without contention.
+    let source: &[u8] = if solid { installer.solid_data() } else { &data };
+    let dest_buf = dest.to_path_buf();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let dest = dest_buf.clone();
+            scope.spawn(move || {
+                loop {
+                    let i = next_ref.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let (target, payload_off, payload_len, is_compressed) = &files_ref[i];
+                    // Decompress the (independent) stream. A stored entry just
+                    // copies its already-raw payload.
+                    let payload = source
+                        .get(*payload_off..*payload_off + *payload_len)
+                        .unwrap_or(&[]);
+                    let content: Vec<u8> = if *is_compressed {
+                        match nsis::decompress::decompress_block(
+                            payload,
+                            method,
+                            nsis::decompress::DecodeLimit::Capped(budget),
+                        ) {
+                            Ok(decoded) => decoded.data,
+                            Err(e) => {
+                                errors_ref.lock().unwrap().push(e.to_string());
+                                continue;
+                            }
+                        }
+                    } else {
+                        payload.to_vec()
+                    };
+                    let target_path = dest.join(target);
+                    if let Some(parent) = target_path.parent()
+                        && let Err(e) = crate::internal::fs::ensure_dir(parent)
+                    {
+                        errors_ref.lock().unwrap().push(e.to_string());
+                        continue;
+                    }
+                    if let Err(e) = std::fs::write(&target_path, &content) {
+                        errors_ref.lock().unwrap().push(e.to_string());
+                        continue;
+                    }
+                    emit_extract_progress(emitter, i, Some(total));
+                }
+            });
         }
-        let content = file
-            .decompress()
-            .map_err(|e| Error::ExtractionFailed(format!("nsis decompress '{}': {}", rel, e)))?;
-        std::fs::write(&target_path, &content).map_err(|e| {
-            Error::ExtractionFailed(format!("cannot write {}: {}", target_path.display(), e))
-        })?;
+    });
+
+    if let Some(e) = errors_ref.lock().unwrap().first() {
+        return Err(Error::ExtractionFailed(format!(
+            "nsis extract error: {}",
+            e
+        )));
     }
 
     // Uninstaller stub: 7-Zip also emits `Uninstall.exe` from the
@@ -1101,10 +1958,10 @@ fn extract_nsis(
         if rel.is_empty() {
             continue;
         }
-        if let Some(f) = filter {
-            if !f.iter().any(|d| rel.starts_with(d)) {
-                continue;
-            }
+        if let Some(f) = filter
+            && !f.iter().any(|d| rel.starts_with(d))
+        {
+            continue;
         }
         emit_extract_progress(emitter, i, None);
         let rel_slashes = rel.replace('\\', "/");
@@ -1139,7 +1996,7 @@ fn extract_nsis(
 /// thousands of files (e.g. git's mingw64 tzdata) don't flood the event bus
 /// and terminal with per-file redraws. Formats without a known total emit
 /// nothing (Start/Done feedback is enough).
-fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Option<usize>) {
+fn emit_extract_progress(emitter: &Option<mpsc::Sender<Event>>, i: usize, total: Option<usize>) {
     const THROTTLE: usize = 50;
     let Some(total) = total else {
         return;
@@ -1148,7 +2005,7 @@ fn emit_extract_progress(emitter: &Option<Sender<Event>>, i: usize, total: Optio
         return;
     }
     if let Some(tx) = emitter {
-        let _ = tx.send(Event::PackageExtractProgress(format!(
+        let _ = tx.try_send(Event::PackageExtractProgress(format!(
             "{}/{}",
             i + 1,
             total
@@ -1203,6 +2060,181 @@ fn strip_dir(path: &str, filter: Option<&[&str]>) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Infra trait (archive capability)
+// ---------------------------------------------------------------------------
+
+/// The archive-extraction capability of a session.
+///
+/// The default implementation ([`RealArchive`]) wraps the free functions
+/// above verbatim; tests inject an in-memory fake via [`Session::set_archive`]
+/// to avoid touching real archive files. Lives in the tool layer. The
+/// progress callback (`emitter`) semantics are preserved exactly.
+#[async_trait::async_trait]
+pub trait Archive: Send + Sync {
+    /// Detect the archive format from a filename extension.
+    fn detect_format(&self, filename: &str) -> Option<&'static str>;
+
+    /// Extract an archive file to a destination directory.
+    async fn extract(
+        &self,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        extract_to: Option<&[&str]>,
+        innosetup: bool,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()>;
+
+    /// Extract a `[[HOK_EXTRACT]]` marker using the extractor its declared
+    /// `format` names, instead of re-deriving a format from `cache_path`.
+    ///
+    /// Separate from [`Archive::extract`] on purpose: the downloaded-archive
+    /// path must keep dispatching by filename ([`detect_format`]); only a
+    /// marker carries a declared format, and only a marker can be a renamed or
+    /// suffix-less download that the filename cannot identify.
+    async fn extract_marker(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()>;
+
+    /// Extract a `[[HOK_EXTRACT]]` marker that carried `Expand-*Archive` CLI
+    /// options (`-Switches` / `-Overwrite`), by handing them to the tool that
+    /// defines them (`7z.exe` / `innounp.exe` / `lessmsi.exe`).
+    ///
+    /// Separate from [`Archive::extract`] on purpose: a marker without options
+    /// must keep the native backend byte-for-byte, while these options are the
+    /// CLI's own arguments and cannot be honoured by re-decoding natively
+    /// without re-implementing 7-Zip's option semantics.
+    async fn extract_script_cli(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        cli: &ScriptCliOptions,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()>;
+}
+
+/// Default archive implementation wrapping the free functions above.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealArchive;
+
+#[async_trait::async_trait]
+impl Archive for RealArchive {
+    fn detect_format(&self, filename: &str) -> Option<&'static str> {
+        detect_format(filename)
+    }
+
+    async fn extract(
+        &self,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        extract_to: Option<&[&str]>,
+        innosetup: bool,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()> {
+        // Extraction (7z/zip/tar/rar decoding + disk writes) is CPU/IO
+        // intensive and blocking: offload it to the tokio blocking pool so a
+        // long extract never occupies a runtime worker thread. The emitter
+        // (a tokio `Sender`) is `Send`, so progress events stay in-band and
+        // keep firing from inside the blocking closure.
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let extract_to = extract_to.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let extract_to = extract_to
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract(
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                extract_to.as_deref(),
+                innosetup,
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract task panicked: {}", e)))?
+    }
+
+    async fn extract_marker(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()> {
+        // Same reasoning as `extract`: decoding + disk writes are blocking.
+        let format = format.to_owned();
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract_by_marker_format(
+                &format,
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract marker task panicked: {}", e)))?
+    }
+
+    async fn extract_script_cli(
+        &self,
+        format: &str,
+        cache_path: &Path,
+        dest_dir: &Path,
+        extract_dir: Option<&[&str]>,
+        cli: &ScriptCliOptions,
+        emitter: &Option<mpsc::Sender<Event>>,
+    ) -> Fallible<()> {
+        // Same reasoning as `extract`: spawning and waiting on an external
+        // tool is blocking work and must not occupy a runtime worker.
+        let format = format.to_owned();
+        let cache_path = cache_path.to_owned();
+        let dest_dir = dest_dir.to_owned();
+        let extract_dir = extract_dir.map(|d| d.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let cli = cli.clone();
+        let emitter = emitter.clone();
+        tokio::task::spawn_blocking(move || {
+            let extract_dir = extract_dir
+                .as_deref()
+                .map(|d| d.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            extract_with_cli(
+                &format,
+                &cache_path,
+                &dest_dir,
+                extract_dir.as_deref(),
+                &cli,
+                &emitter,
+            )
+        })
+        .await
+        .map_err(|e| Error::Custom(format!("extract task panicked: {}", e)))?
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1225,9 +2257,63 @@ mod tests {
         // path (Expand-7zipArchive $dir\$PLUGINSDIR\app-64.7z).
         let app7z = dest.join("$PLUGINSDIR").join("app-64.7z");
         assert!(app7z.exists(), "missing $PLUGINSDIR\\app-64.7z");
-        assert!(std::fs::metadata(&app7z)
-            .map(|m| m.len() > 0)
-            .unwrap_or(false));
+        assert!(
+            std::fs::metadata(&app7z)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        );
+    }
+
+    /// Path to a committed 7z fixture (see `tests/fixtures/7z/README.md`).
+    fn sevenz_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/7z")
+            .join(rel)
+    }
+
+    /// Stream-less 7z entries must be materialized: empty files and *every*
+    /// directory entry (empty ones included) belong to no block, so the
+    /// block-parallel decoder never visits them. Regression guard for the bug
+    /// that silently dropped files like `npm\.npmrc` / `py.typed` / empty
+    /// `__init__.py` from real archives (reproduced against the `nodejs`
+    /// package's `node-v26.9.0-win-x64.7z`).
+    #[test]
+    fn test_extract_7z_empty_entries() {
+        let src = sevenz_fixture("empty-entries.7z");
+        let dest = crate::test_utils::tmpdir("7z_empty_entries");
+        extract_pseudo_7z(&src, &dest, None, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("plain.txt")).unwrap(),
+            "hello"
+        );
+        for empty in ["empty.txt", "sub/empty2.txt"] {
+            let path = dest.join(empty);
+            assert!(path.is_file(), "empty file dropped: {empty}");
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        }
+        for dir in ["emptydir", "sub", "sub/emptydir2"] {
+            assert!(dest.join(dir).is_dir(), "directory missing: {dir}");
+        }
+    }
+
+    /// The stream-less pass must honour `extract_dir` like the block pass
+    /// does: only the filtered subtree lands, with its prefix stripped.
+    #[test]
+    fn test_extract_7z_empty_entries_with_extract_dir() {
+        let src = sevenz_fixture("empty-entries.7z");
+        let dest = crate::test_utils::tmpdir("7z_empty_entries_filtered");
+        extract_pseudo_7z(&src, &dest, Some(&["sub"]), &None).unwrap();
+
+        let empty = dest.join("empty2.txt");
+        assert!(empty.is_file(), "filtered empty file dropped");
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+        assert!(
+            dest.join("emptydir2").is_dir(),
+            "filtered empty dir missing"
+        );
+        assert!(!dest.join("plain.txt").exists(), "filter leaked plain.txt");
+        assert!(!dest.join("empty.txt").exists(), "filter leaked empty.txt");
     }
 
     #[test]
@@ -1243,9 +2329,40 @@ mod tests {
         assert_eq!(detect_format("foo.rar"), Some("rar"));
         assert_eq!(detect_format("foo.lzh"), Some("lzh"));
         assert_eq!(detect_format("foo.iso"), Some("iso"));
+        assert_eq!(detect_format("foo.msi"), Some("msi"));
         assert_eq!(detect_format("foo.zst"), Some("zst"));
         assert_eq!(detect_format("foo.exe"), None);
+        // Renamed downloads (`#/dl.7z_`): the non-marker path still cannot
+        // name them, which is exactly why a marker's declared format must
+        // drive its extraction (X6).
+        assert_eq!(detect_format("dl.7z_"), None);
+        assert_eq!(detect_format("64bit.zip_"), None);
         assert_eq!(detect_format(""), None);
+    }
+
+    /// The marker-format dispatch's native-name predicate must not drift from
+    /// the decoder table: every name it accepts must be one `extract_by_format`
+    /// decodes rather than rejects as "unsupported format".
+    #[test]
+    fn test_native_format_predicate_matches_dispatch() {
+        let dest = tmpdir("native_format_predicate");
+        for name in [
+            "7z", "zip", "tar", "gz", "bz2", "xz", "zst", "rar", "lzh", "iso", "msi",
+        ] {
+            assert!(is_native_format(name), "{name} must be a native format");
+            let err = extract_by_format(name, Path::new("does-not-exist"), &dest, None, &None)
+                .unwrap_err();
+            assert!(
+                !err.to_string().contains("unsupported format"),
+                "{name} reached the unsupported arm: {err}"
+            );
+        }
+        for name in ["", "banana", "zstd", "exe", "nupkg"] {
+            assert!(
+                !is_native_format(name),
+                "{name} must not be a native format"
+            );
+        }
     }
 
     #[test]
@@ -1418,9 +2535,9 @@ mod tests {
     use crate::test_utils::tmpdir;
 
     fn create_test_zip(path: &std::path::Path) {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let file = std::fs::File::create(path).unwrap();
         let mut zip = ZipWriter::new(file);
@@ -1444,9 +2561,9 @@ mod tests {
     /// to an illegal trailing-backslash path (os error 3 on Windows).
     #[test]
     fn test_extract_zip_backslash_separators() {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let dir = tmpdir("extract_zip_backslash");
         let archive_path = dir.join("backslash.zip");
@@ -1555,8 +2672,8 @@ mod tests {
     }
 
     fn create_test_tar_gz(path: &std::path::Path) {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use tar::Builder;
 
         let stagedir = tmpdir("tar_staging");
@@ -1621,6 +2738,42 @@ mod tests {
             std::fs::read_to_string(dest.join("deep.txt")).unwrap(),
             "Deep content"
         );
+    }
+
+    /// `promote_msi_content` strips the `SourceDir` wrapper (lessmsi/msiexec
+    /// always produce it) and the manifest's `extract_dir` prefix, moving the
+    /// payload up into `dest` exactly as Scoop's `Expand-MsiArchive` +
+    /// `movedir` do.
+    #[test]
+    fn test_promote_msi_content_strips_extract_dir() {
+        let dir = tmpdir("msi_promote");
+        let dest = dir.join("out");
+        std::fs::create_dir_all(dest.join("SourceDir/LLVM/bin")).unwrap();
+        std::fs::create_dir_all(dest.join("SourceDir/LLVM/lib")).unwrap();
+        std::fs::write(dest.join("SourceDir/LLVM/bin/llvm.exe"), b"PE").unwrap();
+        std::fs::write(dest.join("SourceDir/LLVM/lib/llvm.lib"), b"LIB").unwrap();
+
+        promote_msi_content(&dest, Some(&["LLVM"])).unwrap();
+
+        // Payload promoted to the app root, prefix stripped.
+        assert!(dest.join("bin/llvm.exe").exists());
+        assert!(dest.join("lib/llvm.lib").exists());
+        // SourceDir wrapper removed.
+        assert!(!dest.join("SourceDir").exists());
+    }
+
+    /// Without an `extract_dir`, the whole `SourceDir` payload is promoted.
+    #[test]
+    fn test_promote_msi_content_no_extract_dir() {
+        let dir = tmpdir("msi_promote_all");
+        let dest = dir.join("out");
+        std::fs::create_dir_all(dest.join("SourceDir/tools")).unwrap();
+        std::fs::write(dest.join("SourceDir/tools/app.exe"), b"PE").unwrap();
+
+        promote_msi_content(&dest, None).unwrap();
+
+        assert!(dest.join("tools/app.exe").exists());
+        assert!(!dest.join("SourceDir").exists());
     }
 
     #[test]
@@ -1698,7 +2851,7 @@ mod tests {
     }
 
     #[test]
-    fn test_innosetup_not_implemented() {
+    fn test_innosetup_falls_back_for_non_innosetup_file() {
         let dir = tmpdir("innosetup_notimpl");
         let archive_path = dir.join("setup.exe");
         std::fs::write(&archive_path, b"dummy exe").unwrap();
@@ -1706,16 +2859,13 @@ mod tests {
         let dest = dir.join("out");
         std::fs::create_dir_all(&dest).unwrap();
 
+        // `innosetup: true` on a non-InnoSetup file: innospect rejects it, then
+        // the installer classifier / external 7z fallback also fails. Extraction
+        // must still error with ExtractionFailed.
         let result = extract(&archive_path, &dest, None, None, true, &None);
-        // Should fail to parse as Inno Setup (not a valid PE/Inno installer)
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::ExtractionFailed(msg) => {
-                assert!(
-                    msg.contains("innospect") || msg.contains("parse"),
-                    "unexpected error: {msg}"
-                );
-            }
+            Error::ExtractionFailed(_) => {}
             _ => panic!("expected ExtractionFailed error"),
         }
     }
@@ -1747,12 +2897,19 @@ mod tests {
             let dest = dir.join(if with_progress { "out_p" } else { "out_n" });
             std::fs::create_dir_all(&dest).unwrap();
             let tx = if with_progress {
-                let (tx, rx) = flume::unbounded();
+                let (tx, mut rx) = tokio::sync::mpsc::channel(64);
                 std::thread::spawn(move || {
-                    while let Ok(ev) = rx.recv() {
-                        if let Event::PackageExtractProgress(ctx) = ev {
-                            print!("\r\x1b[2K  {ctx}");
-                            let _ = std::io::stdout().flush();
+                    loop {
+                        match rx.try_recv() {
+                            Ok(Event::PackageExtractProgress(ctx)) => {
+                                print!("\r\x1b[2K  {ctx}");
+                                let _ = std::io::stdout().flush();
+                            }
+                            Ok(_) => {}
+                            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                std::thread::sleep(std::time::Duration::from_millis(1));
+                            }
                         }
                     }
                 });
@@ -1835,8 +2992,8 @@ mod tests {
 
         let t = Instant::now();
         {
-            use std::sync::atomic::{AtomicUsize, Ordering};
             use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
             let archive = Arc::new(archive);
             let password = Arc::new(sevenz_rust2::Password::empty());
             let next = Arc::new(AtomicUsize::new(0));
@@ -1846,23 +3003,26 @@ mod tests {
                     let password = password.clone();
                     let next = next.clone();
                     let file_data = file_data.clone();
-                    std::thread::spawn(move || loop {
-                        let bi = next.fetch_add(1, Ordering::Relaxed);
-                        if bi >= archive.blocks.len() {
-                            break;
+                    std::thread::spawn(move || {
+                        loop {
+                            let bi = next.fetch_add(1, Ordering::Relaxed);
+                            if bi >= archive.blocks.len() {
+                                break;
+                            }
+                            let mut src = std::io::Cursor::new(&file_data[pos..]);
+                            let decoder = sevenz_rust2::BlockDecoder::new(
+                                1, bi, &archive, &password, &mut src,
+                            );
+                            decoder
+                                .for_each_entries(&mut |_e, r| {
+                                    let mut b = Vec::new();
+                                    r.read_to_end(&mut b).map_err(|e| {
+                                        sevenz_rust2::Error::Other(e.to_string().into())
+                                    })?;
+                                    Ok(true)
+                                })
+                                .expect("block decode");
                         }
-                        let mut src = std::io::Cursor::new(&file_data[pos..]);
-                        let decoder =
-                            sevenz_rust2::BlockDecoder::new(1, bi, &archive, &password, &mut src);
-                        decoder
-                            .for_each_entries(&mut |_e, r| {
-                                let mut b = Vec::new();
-                                r.read_to_end(&mut b).map_err(|e| {
-                                    sevenz_rust2::Error::Other(e.to_string().into())
-                                })?;
-                                Ok(true)
-                            })
-                            .expect("block decode");
                     })
                 })
                 .collect();
@@ -1880,5 +3040,871 @@ mod tests {
         let t = Instant::now();
         extract_pseudo_7z(std::path::Path::new(&path), &dest, None, &None).unwrap();
         println!("hok builtin extract git pkg: {:?}", t.elapsed());
+    }
+}
+
+/// `.rar` extraction parity.
+///
+/// The baseline is a committed golden file, `tests/fixtures/rar/expected-trees.txt`,
+/// recording for every fixture the relative path set, which entries are
+/// directories, and the SHA-256 of every extracted file. It encodes the
+/// behaviour of the `unrar` C++ decoder that `rars` replaced, so it is the
+/// contract the extraction path has to keep.
+///
+/// It is regenerated from WinRAR's `Rar.exe` rather than from a Rust crate: the
+/// reference decoder must share no code with the one under test. It is a
+/// committed file rather than a live comparison on every run because the
+/// original `unrar` crate was not safe to call repeatedly in one process —
+/// measured, it aborted inside a core unsafe-precondition check
+/// (`ptr::copy_nonoverlapping requires that both pointer arguments are aligned
+/// and non-null`) in roughly 1 run in 20, while any single fixture survived 40
+/// consecutive extractions, and such a process-level abort cannot be caught or
+/// retried. Freezing the reference output also makes it reviewable: it appears
+/// in the diff as the exact trees the extraction path must reproduce.
+///
+/// See `rar_regenerate_golden_baseline` below for how to regenerate it.
+///
+/// hok's own semantics (`extract_dir` stripping, traversal refusal) are pinned
+/// by their own checks against hand-written expectations, so a shared
+/// misunderstanding cannot hide on both sides of the comparison.
+///
+/// Fixture provenance, licence and the exact `Rar.exe` invocations that
+/// produced each archive are documented in `tests/fixtures/rar/README.md`.
+#[cfg(test)]
+mod rar_fixtures {
+    use super::*;
+    use crate::test_utils::tmpdir;
+    use sha2::{Digest, Sha256};
+
+    /// One filesystem node in an extracted tree.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Node {
+        Dir,
+        File(Vec<u8>),
+    }
+
+    /// An extracted tree: relative paths (always `/`-separated) to nodes.
+    type Tree = std::collections::BTreeMap<String, Node>;
+
+    fn rar_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rar")
+            .join(rel)
+    }
+
+    /// Snapshot a directory tree so two extractions compare exactly: relative
+    /// path set, file vs directory, and the bytes of every file.
+    fn snapshot(root: &Path) -> Tree {
+        fn walk(base: &Path, dir: &Path, out: &mut Tree) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(base)
+                    .expect("walked path is below root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if path.is_dir() {
+                    out.insert(rel, Node::Dir);
+                    walk(base, &path, out);
+                } else {
+                    out.insert(
+                        rel,
+                        Node::File(std::fs::read(&path).expect("read extracted")),
+                    );
+                }
+            }
+        }
+        let mut out = Tree::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    /// Run the production RAR path and snapshot what it wrote.
+    fn hok_extract(archive: &Path, dest: &Path, filter: Option<&[&str]>) -> Fallible<Tree> {
+        crate::internal::fs::ensure_dir(dest)?;
+        extract_rar(archive, dest, filter, &None)?;
+        Ok(snapshot(dest))
+    }
+
+    /// Fixtures the reference decoder reads, used for decoder parity.
+    const PARITY_FIXTURES: &[&str] = &[
+        // RAR5 (v6), produced by WinRAR 7.23 from content `gen-fixtures.ps1`
+        // generates. `rar5-x86filter.rar` is made with `-mcx+`, and the
+        // generator refuses to leave it in place unless `-mcx+` really does
+        // produce a smaller archive than `-mcx-` for that payload, so the
+        // fixture provably carries an x86-filtered stream.
+        "rar5-normal.rar",
+        "rar5-solid.rar",
+        "rar5-store.rar",
+        "rar5-x86filter.rar",
+        "rar5-vol.part1.rar",
+        // RAR4 (RAR 1.5-4.x), written by `examples/gen_rar_fixtures.rs`.
+        // WinRAR 7.23 cannot create RAR4 at all (`-ma4` is an unknown option),
+        // so these come from the rars writer instead.
+        "rar4-normal.rar",
+        "rar4-solid.rar",
+        "rar4-store.rar",
+        "rar4-largepayloads.rar",
+        "rar4-vol.rar",
+    ];
+
+    // ─── Golden baseline ────────────────────────────────────────────────────
+
+    fn golden_path() -> PathBuf {
+        rar_fixture("expected-trees.txt")
+    }
+
+    /// Render one tree in the golden file's format. Files carry the SHA-256 of
+    /// their bytes, so the file stays small and diff-friendly.
+    fn render_tree(name: &str, tree: &Tree) -> String {
+        let mut out = format!("[{name}]\n");
+        for (rel, node) in tree {
+            match node {
+                Node::Dir => out.push_str(&format!("D {rel}\n")),
+                Node::File(bytes) => {
+                    out.push_str(&format!("F {rel} {}\n", hex_digest(bytes)));
+                }
+            }
+        }
+        out
+    }
+
+    /// Lowercase hex of a file's SHA-256. `sha2`'s digest type does not
+    /// implement `LowerHex`, so the encoding is explicit.
+    fn hex_digest(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let digest = Sha256::digest(bytes);
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out
+    }
+
+    /// The same shape as a real tree, but with each file's bytes replaced by the
+    /// hex SHA-256 of those bytes, so it compares against a golden section with
+    /// a single `assert_eq!`.
+    fn hashed(tree: &Tree) -> Tree {
+        tree.iter()
+            .map(|(rel, node)| {
+                let node = match node {
+                    Node::Dir => Node::Dir,
+                    Node::File(bytes) => Node::File(hex_digest(bytes).into_bytes()),
+                };
+                (rel.clone(), node)
+            })
+            .collect()
+    }
+
+    /// Parse the golden file into fixture name -> hashed tree.
+    ///
+    /// The section under construction is tracked by name. It must not be found
+    /// with `BTreeMap::last_entry`, which yields the greatest *key* rather than
+    /// the most recent insert, and would silently attribute a section's lines to
+    /// whichever section happens to sort last.
+    fn parse_golden(text: &str) -> std::collections::BTreeMap<String, Tree> {
+        let mut out: std::collections::BTreeMap<String, Tree> = std::collections::BTreeMap::new();
+        let mut section = String::new();
+        for line in text.lines() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                section = name.to_string();
+                out.entry(section.clone()).or_default();
+                continue;
+            }
+            let current = out
+                .get_mut(&section)
+                .expect("golden entry appears before any section header");
+            match line.split_once(' ') {
+                Some(("D", rel)) => {
+                    current.insert(rel.to_string(), Node::Dir);
+                }
+                Some(("F", rest)) => {
+                    let (rel, hash) = rest.rsplit_once(' ').expect("F line carries a hash");
+                    current.insert(rel.to_string(), Node::File(hash.as_bytes().to_vec()));
+                }
+                _ => panic!("unrecognised golden line: {line:?}"),
+            }
+        }
+        out
+    }
+
+    // ─── Checks ─────────────────────────────────────────────────────────────
+
+    /// No lock is needed here. While the production path was the `unrar`
+    /// decoder these checks had to be serialised — `unrar` could not be driven
+    /// from several threads in one process, and with libtest's default
+    /// parallelism the suite aborted (`STATUS_ACCESS_VIOLATION`, or a core
+    /// unsafe-precondition failure in `ptr::copy_nonoverlapping`) in roughly 2
+    /// runs out of 15. The extraction path is pure Rust now, this module holds
+    /// no C++ dependency at all, and the checks run in parallel.
+    ///
+    /// Decoder parity: the production path must reproduce the golden baseline
+    /// exactly — same relative paths, same file/directory split, same bytes.
+    #[test]
+    fn rar_extraction_matches_the_golden_baseline() {
+        let golden = parse_golden(
+            &std::fs::read_to_string(golden_path())
+                .expect("read tests/fixtures/rar/expected-trees.txt"),
+        );
+        for name in PARITY_FIXTURES {
+            let archive = rar_fixture(name);
+            assert!(archive.is_file(), "missing fixture: {}", archive.display());
+            let actual = hok_extract(&archive, &tmpdir("rar_golden"), None)
+                .unwrap_or_else(|e| panic!("{name}: extraction failed: {e}"));
+            let want = golden
+                .get(*name)
+                .unwrap_or_else(|| panic!("golden file has no section [{name}]"));
+            assert_eq!(
+                want,
+                &hashed(&actual),
+                "fixture {name} differs from the golden baseline"
+            );
+        }
+    }
+
+    /// `extract_dir` semantics: only members under the prefix are written, and
+    /// the prefix is stripped.
+    ///
+    /// Byte correctness of the unfiltered tree is the golden check's job, so
+    /// this check derives its expected bytes from the production path's own
+    /// unfiltered run and asserts only the filtering policy.
+    #[test]
+    fn rar_extract_dir_filters_and_strips_the_prefix() {
+        let archive = rar_fixture("rar5-normal.rar");
+        let full = hok_extract(&archive, &tmpdir("rar_filter_ref"), None).expect("unfiltered");
+
+        let got = hok_extract(&archive, &tmpdir("rar_filter"), Some(&["sub"])).expect("filtered");
+
+        let mut want = Tree::new();
+        // `sub/deep/` -> `deep/`, `sub/nested.txt` -> `nested.txt`.
+        want.insert("deep".into(), Node::Dir);
+        want.insert("deep/leaf.bin".into(), full["sub/deep/leaf.bin"].clone());
+        want.insert("nested.txt".into(), full["sub/nested.txt"].clone());
+        assert_eq!(want, got, "extract_dir=[sub]");
+    }
+
+    /// A traversal fixture must never cause a write outside the destination.
+    ///
+    /// This is the security invariant, and it holds whichever way the backend
+    /// reaches it. The two backends reach it differently, which is why the
+    /// invariant — not a specific error variant — is what is pinned here:
+    ///
+    /// * the `unrar` backend sanitised `..` to `_` inside the C++ decoder
+    ///   (`..\evil.txt` arrived as `.._evil.txt`), so `extract_rar`'s own
+    ///   `ParentDir` guard never fired and the payload landed *inside* `dest`
+    ///   under a rewritten name;
+    /// * a backend that does not sanitise reaches the guard for real, which is
+    ///   what `rar_path_traversal_is_refused` pins.
+    #[test]
+    fn rar_traversal_never_writes_outside_the_destination() {
+        let archive = rar_fixture("traversal-rar5.rar");
+        let root = tmpdir("rar_traversal");
+        let dest = root.join("dest");
+        // `dest.join("..\\evil.txt")` resolves to `root.join("evil.txt")`, so
+        // that is exactly where an unguarded join would escape to.
+        let escape_target = root.join("evil.txt");
+
+        // Either outcome is acceptable here; the invariant is asserted below.
+        let _ = extract_rar(&archive, &dest, None, &None);
+
+        assert!(
+            !escape_target.exists(),
+            "extraction escaped the destination: {} was created",
+            escape_target.display()
+        );
+    }
+
+    /// A member whose name escapes the extraction root must be refused.
+    ///
+    /// The rars decoder reports the stored name, so `extract_rar`'s guard is
+    /// live: the archive is rejected up front and nothing is written, not even
+    /// the entries preceding the offending one. Under the previous backend this
+    /// assertion could not hold at all — `unrar` sanitised `..` to `_` inside its
+    /// C++ decoder, so the guard never saw a `ParentDir` component.
+    #[test]
+    fn rar_path_traversal_is_refused() {
+        let archive = rar_fixture("traversal-rar5.rar");
+        let root = tmpdir("rar_traversal_refused");
+        let dest = root.join("dest");
+
+        let err = extract_rar(&archive, &dest, None, &None)
+            .expect_err("a member escaping the destination must be refused");
+        assert!(
+            matches!(err, Error::PathTraversalDetected(_)),
+            "expected PathTraversalDetected, got {err:?}"
+        );
+        assert!(
+            !root.join("evil.txt").exists(),
+            "the refused archive still wrote outside the destination"
+        );
+        let wrote_entries = dest
+            .read_dir()
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+        assert!(
+            !wrote_entries,
+            "the refused archive wrote entries before being rejected"
+        );
+    }
+
+    /// A truncated archive must fail cleanly, never panic.
+    #[test]
+    fn rar_truncated_archive_errors_without_panicking() {
+        let archive = rar_fixture("rar5-truncated.rar");
+        let err = extract_rar(&archive, &tmpdir("rar_truncated"), None, &None)
+            .expect_err("truncated archive must not extract");
+        assert!(
+            matches!(err, Error::ExtractionFailed(_)),
+            "expected ExtractionFailed, got {err:?}"
+        );
+    }
+
+    /// An encrypted archive without a password must fail cleanly. hok's RAR path
+    /// has no password plumbing, so this is the reachable behaviour for both the
+    /// old and the new backend; the check pins that it stays an `Err` rather
+    /// than a silent partial extraction.
+    #[test]
+    fn rar_encrypted_archive_errors_without_a_password() {
+        let archive = rar_fixture("rar5-encrypted.rar");
+        let err = extract_rar(&archive, &tmpdir("rar_encrypted"), None, &None)
+            .expect_err("encrypted archive must not extract without a password");
+        assert!(
+            matches!(err, Error::ExtractionFailed(_)),
+            "expected ExtractionFailed, got {err:?}"
+        );
+    }
+
+    // ─── Golden regeneration (manual) ───────────────────────────────────────
+
+    /// The reference RAR extractor used to regenerate the baseline.
+    ///
+    /// WinRAR's console `Rar.exe`, not a Rust crate: the baseline has to come
+    /// from a decoder that shares no code with the one under test. Override
+    /// with `HOK_RAR_EXE` — any `Rar.exe` or `UnRAR.exe` that can read the
+    /// fixtures will do.
+    fn rar_exe() -> PathBuf {
+        std::env::var_os("HOK_RAR_EXE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"D:\App\Scoop\apps\winrar\current\Rar.exe"))
+    }
+
+    /// The oracle: extract `archive` with `Rar.exe` into `dest`, then snapshot
+    /// the result.
+    ///
+    /// Only reached by `rar_regenerate_golden_baseline`, which is `#[ignore]`d,
+    /// so neither CI nor a plain `cargo test` needs WinRAR installed.
+    fn rar_reference(archive: &Path, dest: &Path) -> Tree {
+        let exe = rar_exe();
+        assert!(
+            exe.is_file(),
+            "reference extractor not found at {}.\n\
+             Install WinRAR (https://www.winrar.com/download/) or point HOK_RAR_EXE at any\n\
+             `Rar.exe`/`UnRAR.exe` that can read the fixtures, then re-run.",
+            exe.display()
+        );
+        crate::internal::fs::ensure_dir(dest).expect("create dest");
+
+        // `x` keeps the stored directory structure, `-o+` overwrites, `-y`
+        // answers every prompt. The destination needs a trailing separator to
+        // be read as a directory rather than as another member filter.
+        let target = format!("{}{}", dest.display(), std::path::MAIN_SEPARATOR);
+        let output = Command::new(&exe)
+            .arg("x")
+            .arg("-o+")
+            .arg("-y")
+            .arg(archive)
+            .arg(&target)
+            .output()
+            .unwrap_or_else(|e| panic!("running {}: {}", exe.display(), e));
+
+        // 0 is success, 1 is "finished with a warning" — both extract.
+        let code = output.status.code();
+        assert!(
+            matches!(code, Some(0) | Some(1)),
+            "{} failed on {} (exit {:?})\nstdout:\n{}\nstderr:\n{}",
+            exe.display(),
+            archive.display(),
+            code,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        snapshot(dest)
+    }
+
+    /// Re-derive `expected-trees.txt` from WinRAR's `Rar.exe`.
+    ///
+    /// ```text
+    /// cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored
+    /// ```
+    ///
+    /// `HOK_RAR_EXE` overrides the extractor path. Then review the resulting
+    /// diff: every changed line is a claim about what the extraction path must
+    /// produce.
+    #[test]
+    #[ignore = "regenerates the golden baseline with WinRAR's Rar.exe; run manually"]
+    fn rar_regenerate_golden_baseline() {
+        let mut out = String::from(
+            "# Expected extraction trees for the RAR fixtures in this directory.\n\
+             #\n\
+             # Baseline decoder: WinRAR's `Rar.exe` (7.23 when this file was last\n\
+             # regenerated). The trees were originally produced by the `unrar` 0.5 crate,\n\
+             # i.e. a UnRAR 6.x generation; regenerating them with WinRAR 7.23 reproduced\n\
+             # them byte for byte. A `D` line is a directory, an `F` line is a file\n\
+             # followed by the SHA-256 of its extracted bytes.\n\
+             #\n\
+             # Regenerate with:\n\
+             #   cargo test -p libscoop --lib rar_regenerate_golden_baseline -- --ignored\n\
+             #\n\
+             # Every line here is a claim the extraction path has to reproduce exactly;\n\
+             # review the diff before accepting a regeneration.\n\n",
+        );
+        for name in PARITY_FIXTURES {
+            let tree = rar_reference(&rar_fixture(name), &tmpdir("rar_golden_regen"));
+            out.push_str(&render_tree(name, &tree));
+            out.push('\n');
+        }
+        std::fs::write(golden_path(), out).expect("write golden file");
+        eprintln!("wrote {}", golden_path().display());
+    }
+
+    // ─── Expand-*Archive CLI options (-Switches / -Overwrite) ─────────
+
+    use std::ffi::OsString;
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    /// `7z.exe` for the CLI-path tests: `HOK_7Z_EXE`, then Scoop's shim, then
+    /// `PATH`. `None` means "no 7zip on this machine" and the calling test
+    /// returns early — CI has no 7zip installed and only exercises the native
+    /// path, exactly like `pwsh_available` in `operations::script`.
+    fn seven_zip_for_test() -> Option<PathBuf> {
+        if let Some(exe) = std::env::var_os("HOK_7Z_EXE") {
+            let exe = PathBuf::from(exe);
+            return exe.is_file().then_some(exe);
+        }
+        let shim = helper_exe("7z");
+        if shim.is_file() {
+            return Some(shim);
+        }
+        Command::new("7z.exe")
+            .arg("i")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .is_some()
+            .then(|| PathBuf::from("7z.exe"))
+    }
+
+    /// Official `Expand-7zipArchive` argument-list parity
+    /// (`lib/decompress.ps1:94-106`): the `-ir!` include filter goes before the
+    /// `-Switches`, and the `-ao*` overwrite switch after them.
+    #[test]
+    fn test_seven_zip_cli_args_match_official_scoop() {
+        let src = Path::new(r"C:\pkg\dl.7z");
+        let dest = Path::new(r"C:\pkg");
+
+        // Plain call: no include filter, no switches, no overwrite.
+        assert_eq!(
+            seven_zip_cli_args(src, dest, None, &[], None),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // `-ExtractDir` becomes `-ir!<dir>\*` (official `:96-98`).
+        assert_eq!(
+            seven_zip_cli_args(src, dest, Some("app"), &[], None),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                r"-ir!app\*",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // Switches are appended verbatim (official `:99-101`), then `-ao*`
+        // (official `:102-106`) — not the other way round.
+        let cli = ScriptCliOptions {
+            switches: vec!["-pSECRET".into(), "-xr!*.pdb".into()],
+            overwrite: Some(Overwrite::Skip),
+        };
+        assert_eq!(
+            seven_zip_cli_args(src, dest, Some("app"), &cli.switches, cli.overwrite),
+            os_args(&[
+                "x",
+                r"C:\pkg\dl.7z",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                r"-ir!app\*",
+                "-pSECRET",
+                "-xr!*.pdb",
+                "-aos",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+
+        // A tar container drops the include filter on the first pass
+        // (official `:95-98`).
+        let tar = Path::new("pkg.tar.gz");
+        assert_eq!(
+            seven_zip_cli_args(tar, dest, Some("app"), &[], None),
+            os_args(&[
+                "x",
+                "pkg.tar.gz",
+                r"-oC:\pkg",
+                "-xr!*.nsis",
+                "-y",
+                "-bso0",
+                "-bsp1"
+            ])
+        );
+    }
+
+    /// Official `$IsTar` (`lib/decompress.ps1:95`) — a bare `.tar` is *not* a
+    /// tar container there, only a compressed one or the `.t[abgpx]z2?` set.
+    #[test]
+    fn test_is_tar_container_matches_official() {
+        for yes in [
+            "pkg.tar.gz",
+            "pkg.tar.bz2",
+            "pkg.tar.xz",
+            "pkg.tar.zst",
+            "pkg.tgz",
+            "pkg.tbz",
+            "pkg.tbz2",
+            "pkg.taz",
+            "pkg.tpz",
+            "pkg.txz",
+        ] {
+            assert!(is_tar_container(Path::new(yes)), "{yes} must be IsTar");
+        }
+        for no in ["pkg.tar", "pkg.7z", "dl.7z_", "pkg.zip", "pkg.tzst"] {
+            assert!(!is_tar_container(Path::new(no)), "{no} must not be IsTar");
+        }
+    }
+
+    /// `-Overwrite` values come from the marker lowercased (`all`/`skip`/
+    /// `rename`) and map to 7-Zip's `-aoa`/`-aos`/`-aou`.
+    #[test]
+    fn test_overwrite_marker_values_map_to_7z_switches() {
+        assert_eq!(Overwrite::from_marker("all"), Some(Overwrite::All));
+        assert_eq!(Overwrite::from_marker("skip"), Some(Overwrite::Skip));
+        assert_eq!(Overwrite::from_marker("rename"), Some(Overwrite::Rename));
+        assert_eq!(Overwrite::from_marker("Skip"), None, "marker is lowercased");
+        assert_eq!(Overwrite::from_marker(""), None);
+        assert_eq!(Overwrite::All.as_7z_switch(), "-aoa");
+        assert_eq!(Overwrite::Skip.as_7z_switch(), "-aos");
+        assert_eq!(Overwrite::Rename.as_7z_switch(), "-aou");
+
+        assert!(ScriptCliOptions::default().is_empty());
+        let mut cli = ScriptCliOptions::default();
+        cli.switches.push("-y".into());
+        assert!(!cli.is_empty());
+    }
+
+    /// Official `Expand-InnoArchive` argument-list parity
+    /// (`lib/decompress.ps1:245-253`), including the `-c` switch-regex branches.
+    #[test]
+    fn test_innounp_cli_args_match_official_scoop() {
+        let src = Path::new(r"C:\pkg\setup.exe");
+        let dest = Path::new(r"C:\pkg");
+
+        assert_eq!(
+            innounp_cli_args(src, dest, None, &[]),
+            os_args(&["-x", r"-dC:\pkg", r"C:\pkg\setup.exe", "-y", "-c{app}"])
+        );
+        // Unanchored `ExtractDir` is rooted at `{app}`.
+        assert_eq!(
+            innounp_cli_args(src, dest, Some("bin"), &[]),
+            os_args(&["-x", r"-dC:\pkg", r"C:\pkg\setup.exe", "-y", r"-c{app}\bin"])
+        );
+        // Already-anchored value is taken as-is.
+        assert_eq!(
+            innounp_cli_args(src, dest, Some(r"{app}\{tmp}"), &[]),
+            os_args(&[
+                "-x",
+                r"-dC:\pkg",
+                r"C:\pkg\setup.exe",
+                "-y",
+                r"-c{app}\{tmp}"
+            ])
+        );
+        // `-Switches` are appended last (official `:251-253`).
+        assert_eq!(
+            innounp_cli_args(src, dest, None, &["-a".to_string()]),
+            os_args(&[
+                "-x",
+                r"-dC:\pkg",
+                r"C:\pkg\setup.exe",
+                "-y",
+                "-c{app}",
+                "-a"
+            ])
+        );
+    }
+
+    /// `promote_extract_dir` hoists the `-ir!`-filtered subtree into `dest` and
+    /// drops the emptied directories — official's `movedir` + empty-top
+    /// cleanup (`lib/decompress.ps1:122-129`).
+    #[test]
+    fn test_promote_extract_dir_hoists_and_cleans_up() {
+        let root = tmpdir("promote_extract_dir");
+        let dest = root.join("dest");
+        let nested = dest.join("a").join("b");
+        crate::internal::fs::ensure_dir(&nested).unwrap();
+        std::fs::write(nested.join("hello.txt"), b"hi").unwrap();
+        crate::internal::fs::ensure_dir(&nested.join("sub")).unwrap();
+        std::fs::write(nested.join("sub").join("deep.txt"), b"deep").unwrap();
+        // An existing destination entry is replaced (robocopy /move semantics).
+        std::fs::write(dest.join("hello.txt"), b"stale").unwrap();
+
+        promote_extract_dir(&dest, r"a\b").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("hello.txt")).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("sub").join("deep.txt")).unwrap(),
+            "deep"
+        );
+        assert!(!dest.join("a").exists(), "emptied subtree must be removed");
+    }
+
+    /// Create a real 7z archive with `7z.exe` (optionally encrypted) so the CLI
+    /// path can be exercised against the tool official Scoop also uses.
+    fn create_7z(
+        exe: &Path,
+        archive: &Path,
+        work: &Path,
+        files: &[(&str, &str)],
+        password: Option<&str>,
+    ) {
+        crate::internal::fs::ensure_dir(work).unwrap();
+        for (name, body) in files {
+            let path = work.join(name);
+            if let Some(parent) = path.parent() {
+                crate::internal::fs::ensure_dir(parent).unwrap();
+            }
+            std::fs::write(&path, body).unwrap();
+        }
+        let mut cmd = Command::new(exe);
+        cmd.current_dir(work).arg("a").arg("-t7z");
+        if let Some(password) = password {
+            // `-mhe=on` also encrypts the header, like the `-p` corpora.
+            cmd.arg(format!("-p{password}")).arg("-mhe=on");
+        }
+        cmd.arg(archive);
+        for (name, _) in files {
+            cmd.arg(name);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "7z a failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The load-bearing half of X5: an encrypted archive (the `-p` corpora,
+    /// ~28 manifest lines) cannot be read natively without a password, and the
+    /// `-Switches` field is what makes `7z.exe` decrypt it.
+    #[test]
+    fn test_cli_path_applies_password_switch() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe (HOK_7Z_EXE / Scoop shim / PATH)");
+            return;
+        };
+        let root = tmpdir("cli_password");
+        let archive = root.join("secret.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("keep.txt", "SECRET-BODY")],
+            Some("HOK-PW"),
+        );
+
+        // Native path, no switches: fails (or writes nothing) — the password
+        // is not expressible there.
+        let native_dest = root.join("native");
+        let native = extract(&archive, &native_dest, None, None, false, &None);
+        assert!(
+            native.is_err() || !native_dest.join("keep.txt").exists(),
+            "an encrypted archive must not yield its payload without a password"
+        );
+
+        // CLI path with `-p`: payload lands.
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-pHOK-PW".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, None, &cli, &None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("keep.txt")).unwrap(),
+            "SECRET-BODY"
+        );
+    }
+
+    /// A switching option that *removes* content: `-xr!*.pdb` must keep the
+    /// excluded file out of the extracted tree.
+    #[test]
+    fn test_cli_path_applies_exclude_switch() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_exclude");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[
+                ("app/keep.txt", "keep"),
+                ("app/drop.pdb", "pdb"),
+                ("app/sub/deep.txt", "deep"),
+            ],
+            None,
+        );
+
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-xr!*.pdb".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, None, &cli, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(dest.join("app/sub/deep.txt").exists());
+        assert!(
+            !dest.join("app/drop.pdb").exists(),
+            "-xr!*.pdb must keep drop.pdb out"
+        );
+    }
+
+    /// `-Overwrite` parity: `All` replaces, `Skip` keeps the existing file,
+    /// `Rename` writes alongside it — official's `-aoa`/`-aos`/`-aou`.
+    #[test]
+    fn test_cli_path_applies_overwrite_modes() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_overwrite");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("keep.txt", "NEW")],
+            None,
+        );
+
+        let run = |mode: Overwrite, dest: &Path| {
+            crate::internal::fs::ensure_dir(dest).unwrap();
+            std::fs::write(dest.join("keep.txt"), b"OLD").unwrap();
+            let cli = ScriptCliOptions {
+                switches: Vec::new(),
+                overwrite: Some(mode),
+            };
+            extract_with_cli("7z", &archive, dest, None, &cli, &None).unwrap();
+        };
+
+        let all = root.join("all");
+        run(Overwrite::All, &all);
+        assert_eq!(
+            std::fs::read_to_string(all.join("keep.txt")).unwrap(),
+            "NEW"
+        );
+
+        let skip = root.join("skip");
+        run(Overwrite::Skip, &skip);
+        assert_eq!(
+            std::fs::read_to_string(skip.join("keep.txt")).unwrap(),
+            "OLD",
+            "-aos must leave an existing file alone"
+        );
+
+        let rename = root.join("rename");
+        run(Overwrite::Rename, &rename);
+        assert_eq!(
+            std::fs::read_to_string(rename.join("keep.txt")).unwrap(),
+            "OLD",
+            "-aou must keep the existing file"
+        );
+        let renamed = std::fs::read_dir(&rename)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .find(|n| n != "keep.txt")
+            .unwrap_or_else(|| panic!("-aou wrote no renamed copy"));
+        assert_eq!(
+            std::fs::read_to_string(rename.join(&renamed)).unwrap(),
+            "NEW",
+            "the renamed copy must hold the archive's content"
+        );
+    }
+
+    /// A `-ExtractDir` on the CLI path must produce the same layout as the
+    /// native path: only that subtree, hoisted into `dest`.
+    #[test]
+    fn test_cli_path_extract_dir_matches_native_layout() {
+        let Some(exe) = seven_zip_for_test() else {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        };
+        let root = tmpdir("cli_extract_dir");
+        let archive = root.join("pkg.7z");
+        create_7z(
+            &exe,
+            &archive,
+            &root.join("src"),
+            &[("app/hello.txt", "hi"), ("other/skip.txt", "no")],
+            None,
+        );
+
+        let dest = root.join("dest");
+        let cli = ScriptCliOptions {
+            switches: vec!["-t7z".into()],
+            overwrite: None,
+        };
+        extract_with_cli("7z", &archive, &dest, Some(&["app"]), &cli, &None).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("hello.txt")).unwrap(),
+            "hi"
+        );
+        assert!(
+            !dest.join("app").exists(),
+            "extract_dir subtree must be hoisted, not nested"
+        );
+        assert!(!dest.join("other").exists(), "filter leaked other/");
     }
 }

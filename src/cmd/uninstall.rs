@@ -1,10 +1,10 @@
 //! Uninstall package(s).
 
 use clap::Parser;
-use libscoop::{package, Session, SyncOption};
+use libscoop::{Session, SyncOption, package};
 
+use crate::Result;
 use crate::cmd::shared_args::ensure_global;
-use crate::{output, Result};
 
 /// Uninstall package(s)
 #[derive(Debug, Parser)]
@@ -12,18 +12,16 @@ pub struct Args {
     /// The package(s) to uninstall
     #[arg(required = true)]
     package: Vec<String>,
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    ignore_failure: bool,
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
-    escape_hold: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    ignore_failures: bool,
     /// Assume yes to all prompts and run non-interactively
     #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
     assume_yes: bool,
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = clap::ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
+    skip_hash_check: bool,
     /// Uninstall a globally installed app (from $SCOOP_GLOBAL)
     #[arg(short = 'g', long, action = clap::ArgAction::SetTrue)]
     global: bool,
@@ -32,7 +30,7 @@ pub struct Args {
     purge: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "uninstall")?;
 
     let mut options = vec![SyncOption::Remove];
@@ -41,34 +39,29 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         options.push(SyncOption::Purge);
     }
 
-    if args.escape_hold {
-        options.push(SyncOption::EscapeHold);
-    }
-
     if args.assume_yes {
         options.push(SyncOption::AssumeYes);
     }
 
-    if args.ignore_failure || session.config().ignore_failures() {
-        options.push(SyncOption::IgnoreFailure);
+    if args.ignore_failures || session.config().ignore_failures() {
+        options.push(SyncOption::IgnoreFailures);
     }
 
-    if args.no_hash_check {
-        options.push(SyncOption::NoHashCheck);
+    if args.skip_hash_check {
+        options.push(SyncOption::SkipHashCheck);
     }
 
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    let sync_result = package::sync::sync(session, queries, options);
-    handle.join().unwrap();
-    // A declined confirmation is not a failure: exit 0 without ok_all.
+    let sync_result = package::sync::sync(session, queries, options).await;
+    handle.await.unwrap();
+    // A declined confirmation is not a failure: exit 0.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
         return Ok(());
     }
     sync_result?;
-
-    output::done(rust_i18n::t!("output.ok_all"));
 
     Ok(())
 }

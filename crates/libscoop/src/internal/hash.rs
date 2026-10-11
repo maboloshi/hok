@@ -216,6 +216,31 @@ pub fn format_hash_value(algo: &str, hash: &str) -> String {
     }
 }
 
+/// Every hash algorithm hok supports, as `(name, hex digest length)`.
+///
+/// This is the single source for algorithm-name tables: `checkver_hash`'s
+/// length-based detection (upstream `format_hash`, `lib/autoupdate.ps1:12-18`)
+/// and `constant::REGEX_HASH`'s prefix and digest-length alternatives both
+/// read it, so a new algorithm cannot be added to one and forgotten in the
+/// other.
+///
+/// `manifest::HashString`'s variant-to-name mapping is *not* a copy of this
+/// table: it is the enum's own definition (deserialization target and display
+/// form), and driving it from here would need a macro or a moved type.
+pub const HASH_ALGORITHMS: [(&str, usize); 4] =
+    [("md5", 32), ("sha1", 40), ("sha256", 64), ("sha512", 128)];
+
+/// Resolve the algorithm whose hex digest is `len` characters long.
+///
+/// Upstream detects the algorithm from the digest length alone
+/// (`lib/autoupdate.ps1:12-18`); `None` is upstream's `default` branch.
+pub fn algorithm_for_digest_length(len: usize) -> Option<&'static str> {
+    HASH_ALGORITHMS
+        .iter()
+        .find(|(_, length)| *length == len)
+        .map(|(name, _)| *name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

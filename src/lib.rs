@@ -12,9 +12,6 @@
 //!   parses CLI arguments, initialises the [`Session`], and dispatches to the
 //!   appropriate command module. Core data structures and operations reside in
 //!   `libscoop`.
-//! - **Global detail mode**: The [`DETAIL_MODE`] atomic flag controls whether
-//!   extra operational detail is printed. It is set once at startup from the
-//!   `--detail` CLI flag and read by [`output::detail`] throughout.
 //! - **i18n-first**: Language detection happens before CLI parsing so that
 //!   help text is rendered in the correct language. See [`i18n`] module.
 //! - **Error reporting**: Library errors (`libscoop::Error`) are mapped to
@@ -37,15 +34,6 @@
 //!
 //! See `cmd/mod.rs` for details.
 
-use crossterm::{
-    style::{Color, Print, SetForegroundColor},
-    ExecutableCommand,
-};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{fmt::Display, io};
-
-rust_i18n::i18n!("locales");
-
 // ─── CLI framework infrastructure ────────────────────────────────────────
 
 mod cmd;
@@ -62,72 +50,177 @@ mod output;
 mod i18n;
 mod scoop_handler;
 
+// ─── Test support ────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod test_support;
+
 type Result<T> = anyhow::Result<T>;
 
-static DETAIL_MODE: AtomicBool = AtomicBool::new(false);
+/// A nonzero process exit code a command handler may request.
+///
+/// Most failures exit with code 1; a handful of Scoop commands are defined to
+/// exit with a specific code (`which` returns 2 when the command is not
+/// found, VirusTotal combines 2/4/8/16). The handler prints its own message and
+/// returns `Err(ExitCode(n).into())`; the CLI runner propagates `n` to the
+/// process exit code without rendering an additional error line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitCode(pub i32);
 
-pub fn set_detail(enabled: bool) {
-    DETAIL_MODE.store(enabled, Ordering::Relaxed);
+impl std::fmt::Display for ExitCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code {}", self.0)
+    }
 }
 
-pub fn is_detail() -> bool {
-    DETAIL_MODE.load(Ordering::Relaxed)
-}
-
-fn error<T: Display>(input: &T) -> io::Result<()> {
-    let mut stderr = io::stderr();
-    stderr
-        .execute(SetForegroundColor(Color::Red))?
-        .execute(Print("ERROR "))?
-        .execute(SetForegroundColor(Color::Reset))?
-        .execute(Print(input))?
-        .execute(Print("\n"))?;
-    Ok(())
-}
+impl std::error::Error for ExitCode {}
 
 fn translate_error(err: &libscoop::Error) -> String {
     match err {
         libscoop::Error::BucketNotFound(name) => {
-            rust_i18n::t!("error.bucket_not_found", name = name).to_string()
+            hok_i18n::t!("error.bucket_not_found", name = name).to_string()
         }
         libscoop::Error::BucketAlreadyExists(name) => {
-            rust_i18n::t!("error.bucket_already_exists", name = name).to_string()
+            hok_i18n::t!("error.bucket_already_exists", name = name).to_string()
         }
+        libscoop::Error::BucketInvalidGitUrl(repo) => {
+            hok_i18n::t!("error.bucket_invalid_git_url", repo = repo).to_string()
+        }
+        libscoop::Error::BucketRepoAlreadyExists(bucket, repo) => hok_i18n::t!(
+            "error.bucket_repo_already_exists",
+            bucket = bucket,
+            repo = repo
+        )
+        .to_string(),
+        libscoop::Error::BucketRepoUnreachable(repo, output) => hok_i18n::t!(
+            "error.bucket_repo_unreachable",
+            repo = repo,
+            output = output
+        )
+        .to_string(),
         libscoop::Error::PackageNotFound(name) => {
-            rust_i18n::t!("error.package_not_found", name = name).to_string()
+            hok_i18n::t!("error.package_not_found", name = name).to_string()
         }
         libscoop::Error::ConfigKeyInvalid(key) => {
-            rust_i18n::t!("error.config_key_invalid", key = key).to_string()
+            hok_i18n::t!("error.config_key_invalid", key = key).to_string()
+        }
+        libscoop::Error::ConfigKeyUnsupported(key) => {
+            hok_i18n::t!("error.config_key_unsupported", key = key).to_string()
         }
         libscoop::Error::ConfigValueInvalid(value) => {
-            rust_i18n::t!("error.config_value_invalid", value = value).to_string()
+            hok_i18n::t!("error.config_value_invalid", value = value).to_string()
         }
-        libscoop::Error::AppRunning(name) => {
-            rust_i18n::t!("error.app_running", name = name).to_string()
+        libscoop::Error::AliasReservedName(name) => {
+            hok_i18n::t!("error.alias_reserved_name", name = name).to_string()
+        }
+        libscoop::Error::ShimTargetMissing(path) => {
+            hok_i18n::t!("error.shim_target_missing", path = path).to_string()
         }
         libscoop::Error::ExtractionFailed(reason) => {
-            rust_i18n::t!("error.extraction_failed", reason = reason).to_string()
+            hok_i18n::t!("error.extraction_failed", reason = reason).to_string()
         }
+        libscoop::Error::DownloadTimedOut { url, timeout_secs } => {
+            hok_i18n::t!("error.download_timeout", url = url, secs = timeout_secs).to_string()
+        }
+        // The mismatch's Display is the stable English block (library-facing);
+        // the localized block lives with the context, so every user-visible
+        // path (here and `cmd.failed_verify`) renders the same translation.
+        libscoop::Error::HashMismatch(ctx) => ctx.localized(),
         _ => err.to_string(),
     }
 }
 
 fn report(err: &anyhow::Error) {
+    // A handler that signalled an explicit exit code already printed its own
+    // message; nothing more to render.
+    if err.downcast_ref::<ExitCode>().is_some() {
+        return;
+    }
     if let Some(libscoop_err) = err.downcast_ref::<libscoop::Error>() {
-        let msg = translate_error(libscoop_err);
-        let msg_s: String = msg;
-        let _ = error(&msg_s);
+        output::err(translate_error(libscoop_err));
     } else {
-        let _ = error(err);
+        output::err(err.to_string());
     }
     if let Some(cause) = err.source() {
-        eprintln!("\nCaused by:");
+        eprintln!("\n{}", hok_i18n::t!("error.caused_by"));
         for (i, e) in std::iter::successors(Some(cause), |e| e.source()).enumerate() {
             eprintln!("   {}: {}", i, e);
         }
     }
 }
 
-pub fn create_app() -> bool {
-    cmd::start().inspect_err(report).is_err()
+pub async fn create_app() -> i32 {
+    // Cooperative cancellation (purity P2): a Ctrl-C (SIGINT) aborts the
+    // whole command through a CancellationToken shared by every long-running
+    // operation (downloads, scripts, waits), so temp files, subprocesses and
+    // the terminal cursor are cleaned up instead of the runtime just dying.
+    let token = tokio_util::sync::CancellationToken::new();
+    let cancel = token.clone();
+    tokio::spawn(async move {
+        // In a non-console/CI context ctrl_c() may fail to install a handler;
+        // that is fine — cancellation is a best-effort nicety, not a guard.
+        if tokio::signal::ctrl_c().await.is_ok() {
+            cancel.cancel();
+        }
+    });
+
+    // The multi-thread runtime is provided by #[tokio::main] (rt-multi-thread
+    // + macros) in bin/hok.rs, so the CLI runs as an async entry point with
+    // no manual Runtime/block_on — concurrent commands (checkver/checkup/
+    // download, later install/upgrade) interleave their I/O on worker threads.
+    match cmd::start(token).await {
+        Ok(()) => 0,
+        // A handler signalled a documented nonzero exit code (e.g. `which`
+        // exits 2 on not-found); it printed its own message, so exit with that
+        // code and report nothing here.
+        Err(err) => {
+            if let Some(code) = err.downcast_ref::<ExitCode>() {
+                return code.0;
+            }
+            report(&err);
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The timeout must reach the user with its budget: the raw `reqwest`
+    /// request error never mentions a timeout, so `translate_error` is what
+    /// turns the typed variant into the localized "timed out" line.
+    ///
+    /// The assertions hold in either locale (the URL and the seconds are
+    /// interpolated in both templates, and this process's locale is shared with
+    /// `i18n`'s tests, which select `en`/`zh` concurrently); the en/zh key
+    /// parity itself is covered by the `locales/{en,zh}.yml` consistency test.
+    #[test]
+    fn translate_error_renders_a_download_timeout_with_its_budget() {
+        let err = libscoop::Error::DownloadTimedOut {
+            url: "http://127.0.0.1:1/app.bin".to_owned(),
+            timeout_secs: 120,
+        };
+        let text = translate_error(&err);
+        assert!(text.contains("http://127.0.0.1:1/app.bin"), "{text}");
+        assert!(text.contains("120"), "{text}");
+    }
+
+    /// A hash mismatch must not fall through to the context's English
+    /// `Display`: `translate_error` renders the localized block, and the four
+    /// fields have to survive the template substitution (a renamed placeholder
+    /// would silently render an empty value).
+    #[test]
+    fn translate_error_renders_a_localized_hash_mismatch() {
+        let err = libscoop::Error::HashMismatch(libscoop::package::HashMismatchContext::new(
+            "7zip".to_owned(),
+            "https://example.com/7zip.7z".to_owned(),
+            "abc123".to_owned(),
+            "def456".to_owned(),
+        ));
+        let text = translate_error(&err);
+        for field in ["7zip", "https://example.com/7zip.7z", "abc123", "def456"] {
+            assert!(text.contains(field), "{field} missing from: {text}");
+        }
+    }
 }

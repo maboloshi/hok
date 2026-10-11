@@ -11,6 +11,9 @@
 //!   (e.g. a field that can be a single string or an array).
 //! - **Two-layer structure**: [`Manifest`] wraps a [`ManifestSpec`] plus
 //!   the file path and hash; `ManifestSpec` holds the actual JSON data.
+//! - **Tolerant parsing**: manifests are read through [`crate::internal::json`],
+//!   which strips a leading BOM, tries strict JSON first and falls back to
+//!   JSON5; that module documents the measured tolerance contract.
 //! - **Runtime architecture**: architecture-specific fields are selected at
 //!   runtime from the host OS (see [`crate::internal::arch`]), mirroring
 //!   Scoop's `Get-DefaultArchitecture`, not at compile time.
@@ -22,6 +25,7 @@
 //! [manifest]: https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests
 //! [official Scoop manifest schema]: https://github.com/ScoopInstaller/Scoop/blob/master/schema.json
 
+use indexmap::IndexMap;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -62,7 +66,7 @@ pub struct Manifest {
 
     /// The raw manifest JSON text, kept only when the manifest was loaded
     /// from a string (URL download, local path, or generated user manifest).
-    /// Used to persist the exact content into `<app>/<version>/manifest.json`
+    /// Used to persist the exact content into `<app>/<version>/scoop-manifest.json`
     /// for isolated (URL/path) installs.
     #[serde(skip)]
     raw: Option<String>,
@@ -187,7 +191,7 @@ pub struct ManifestSpec {
     psmodule: Option<Psmodule>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggest: Option<HashMap<String, Vectorized<String>>>,
+    pub suggest: Option<IndexMap<String, Vectorized<String>>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkver: Option<Checkver>,
@@ -276,7 +280,7 @@ pub struct Sourceforge {
     pub path: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Checkver {
     #[serde(alias = "re")]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -306,6 +310,22 @@ pub struct Checkver {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sourceforge: Option<Sourceforge>,
+
+    /// `"checkver": "github"` — upstream's string shortcut. The repository is
+    /// taken from `homepage` (`bin/checkver.ps1:155-163`).
+    #[serde(skip)]
+    pub github_homepage: bool,
+
+    /// `"checkver": { "github": "owner/repo" }` — the map shortcut
+    /// (`bin/checkver.ps1:159-163`).
+    #[serde(skip)]
+    pub github: Option<String>,
+
+    /// `"checkver": "sourceforge"` — the string shortcut. Unlike the
+    /// `sourceforge` map form it derives the project from `homepage`, falling
+    /// back to `strip_ext($name)` (`bin/checkver.ps1:171-183`).
+    #[serde(skip)]
+    pub sourceforge_homepage: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -546,6 +566,18 @@ pub enum HashExtractionMode {
     Fosshub,
     #[serde(rename = "sourceforge")]
     Sourceforge,
+    /// Read the asset digest from the GitHub Releases API.
+    ///
+    /// Not listed in the official `schema.json` `mode` enum
+    /// (`schema.json:51-62`), but official Scoop never validates a manifest
+    /// against the schema — the mode is dispatched by
+    /// `switch ($hashmode)` in `lib/autoupdate.ps1:271-302`, which handles
+    /// `'github'` (`:298-301`; the API URL is built there when the download
+    /// URL matches the GitHub releases pattern of `:267-269`). Real-world
+    /// buckets rely on it (220 `scoop-app` manifests failed to parse without
+    /// this variant), so it must be accepted.
+    #[serde(rename = "github")]
+    Github,
 }
 
 impl<T: Serialize> Serialize for Vectorized<T> {
@@ -584,27 +616,122 @@ pub(crate) fn json_str_array(items: &[String]) -> serde_json::Value {
         )
     }
 }
+/// Update a manifest `hash` field while preserving its existing JSON shape,
+/// mirroring Scoop's `PropertyHelper` (lib/autoupdate.ps1).
+///
+/// This is the single hash *write-back* shared by both `checkver` (autoupdate)
+/// and `checkhashes` (`--update`). Only the write-back is shared — the two
+/// compute hashes differently, mirroring official Scoop:
+///
+/// - `checkhashes` is a verifier: it always downloads the real file and hashes
+///   it with the algorithm declared in the manifest hash (`bin/checkhashes.ps1`
+///   → `get_hash` → `Get-FileHash`). It has no extraction modes.
+/// - `checkver`/autoupdate discovers the hash for a *new* version without
+///   downloading the binary, so it uses the extraction modes in
+///   `get_hash_for_app` (extract/json/xpath/rdf/metalink/fosshub/sourceforge/
+///   github), falling back to download+compute.
+///
+/// Hence `sub` is `Some` only for checkver (substitute `$version`/`$baseurl`
+/// in object-form hash urls); checkhashes passes `None` (url left untouched).
+///
+/// - A bare string stays a bare string (growing into an array only when more
+///   hashes arrive than the field currently holds).
+/// - An array of strings stays an array of strings.
+/// - A `{ "url": ..., "hash": ... }` object (single or inside an array) keeps
+///   the object form: its `hash` member is refreshed with the new value at
+///   the matching index, and its `url` member is run through `sub` when
+///   given (variable substitution; `None` — e.g. from checkhashes — leaves
+///   the url untouched). This diverges from Scoop's `PropertyHelper`, which
+///   leaves such objects untouched; refreshing is required so the stored hash
+///   still matches the substituted URL/version after update.
+///
+/// When the incoming hash count exceeds the existing slots the field is
+/// rebuilt wholesale (`$Property = $Value` in Scoop), so a previously-single
+/// hash correctly grows into an array.
+pub(crate) fn update_hash_preserving_style(
+    existing: &serde_json::Value,
+    new_hashes: &[String],
+    sub: Option<&dyn Fn(&str) -> String>,
+) -> serde_json::Value {
+    let plain = json_str_array(new_hashes);
+    let existing_slots = match existing {
+        serde_json::Value::Array(a) => a.len(),
+        _ => 1,
+    };
+    let new_slots = match &plain {
+        serde_json::Value::Array(a) => a.len(),
+        _ => 1,
+    };
+    if existing_slots < new_slots {
+        return plain;
+    }
+    let new_elems: Vec<serde_json::Value> = if new_hashes.len() == 1 {
+        vec![serde_json::Value::String(new_hashes[0].clone())]
+    } else {
+        new_hashes
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect()
+    };
+    match existing {
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .enumerate()
+                .map(|(i, elem)| match elem {
+                    serde_json::Value::Object(map) => {
+                        // Preserve the {url, hash} object form and refresh members.
+                        let mut m = map.clone();
+                        if let Some(h) = new_elems.get(i).and_then(|v| v.as_str()) {
+                            m.insert("hash".to_string(), serde_json::Value::String(h.to_string()));
+                        }
+                        if let Some(u) = m.get("url").and_then(|v| v.as_str())
+                            && let Some(sub) = sub
+                        {
+                            m.insert("url".to_string(), serde_json::Value::String(sub(u)));
+                        }
+                        serde_json::Value::Object(m)
+                    }
+                    other => new_elems.get(i).cloned().unwrap_or_else(|| other.clone()),
+                })
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => {
+            // Single {url, hash} object form (not wrapped in an array).
+            let mut m = map.clone();
+            if let Some(h) = new_elems.first().and_then(|v| v.as_str()) {
+                m.insert("hash".to_string(), serde_json::Value::String(h.to_string()));
+            }
+            if let Some(u) = m.get("url").and_then(|v| v.as_str())
+                && let Some(sub) = sub
+            {
+                m.insert("url".to_string(), serde_json::Value::String(sub(u)));
+            }
+            serde_json::Value::Object(m)
+        }
+        _ => plain,
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //  Implementations for types
 ////////////////////////////////////////////////////////////////////////////////
 
-/// Macro to generate architecture-specific fields.
+/// Macro to select an architecture-specific manifest field.
+///
+/// Pure: takes the (already fallback-resolved) architecture explicitly, so
+/// field selection is deterministic and independent of host state. The
+/// host-dependent resolution — runtime arch (Scoop's
+/// `Get-DefaultArchitecture`, honouring the `default_architecture` config
+/// override) plus the ARM64 fallback of `Get-SupportedArchitecture` (on
+/// ARM64 hosts whose manifest has no `arm64` field, Windows 11 → 64bit,
+/// Windows 10 → 32bit) — lives in [`Manifest::effective_arch`], applied by
+/// the plain `*()` accessors.
 macro_rules! arch_specific_field {
-    ($self:ident, $field:ident) => {{
+    ($self:ident, $field:ident, $arch:expr) => {{
         let mut ret = $self.inner.$field.as_ref();
 
         if let Some(arch) = $self.inner.architecture.as_ref() {
-            // Architecture is selected at runtime from the host OS (Scoop's
-            // `Get-DefaultArchitecture`, honouring the `default_architecture`
-            // config override), plus the ARM64 fallback of Scoop's
-            // `Get-SupportedArchitecture`: on ARM64 hosts whose manifest has
-            // no `arm64` field, Windows 11 → 64bit, Windows 10 → 32bit.
-            let current = crate::internal::arch::Arch::supported(
-                crate::internal::arch::Arch::current(),
-                arch.aarch64.is_none(),
-            );
-            match current {
+            match $arch {
                 crate::internal::arch::Arch::Ia32 => {
                     if let Some(ia32) = &arch.ia32 {
                         let $field = ia32.$field.as_ref();
@@ -635,23 +762,37 @@ macro_rules! arch_specific_field {
     }};
 }
 
-/// Generate an accessor method that reads a field via `arch_specific_field!`
-/// and applies `devectorize()`.
+/// Generate an accessor pair for an architecture-specific field: a pure
+/// `$pure(arch)` variant (deterministic, host-independent — pass the
+/// effective architecture explicitly) plus the plain `$name()` wrapper that
+/// resolves the host architecture via [`Manifest::effective_arch`].
+///
+/// Both read the field via `arch_specific_field!` and apply `devectorize()`.
 macro_rules! arch_accessor {
     // Standard pattern — wrapped in Option
-    ($(#[$doc:meta])* fn $name:ident() -> Option<$ret:ty>) => {
+    ($(#[$doc:meta])* fn $name:ident() -> Option<$ret:ty>, $pure:ident) => {
+        $(#[$doc])*
+        #[doc = "Pure variant: select the field for an explicit architecture."]
+        pub fn $pure(&self, arch: crate::internal::arch::Arch) -> Option<$ret> {
+            let ret = arch_specific_field!(self, $name, arch);
+            ret.map(|v| v.devectorize())
+        }
         $(#[$doc])*
         pub fn $name(&self) -> Option<$ret> {
-            let ret = arch_specific_field!(self, $name);
-            ret.map(|v| v.devectorize())
+            self.$pure(self.effective_arch())
         }
     };
     // With `unwrap_or_default` — return type is not Option-wrapped
-    ($(#[$doc:meta])* fn $name:ident() -> $ret:ty, unwrap_or_default) => {
+    ($(#[$doc:meta])* fn $name:ident() -> $ret:ty, unwrap_or_default, $pure:ident) => {
+        $(#[$doc])*
+        #[doc = "Pure variant: select the field for an explicit architecture."]
+        pub fn $pure(&self, arch: crate::internal::arch::Arch) -> $ret {
+            let ret = arch_specific_field!(self, $name, arch);
+            ret.map(|v| v.devectorize()).unwrap_or_default()
+        }
         $(#[$doc])*
         pub fn $name(&self) -> $ret {
-            let ret = arch_specific_field!(self, $name);
-            ret.map(|v| v.devectorize()).unwrap_or_default()
+            self.$pure(self.effective_arch())
         }
     };
 }
@@ -659,71 +800,70 @@ macro_rules! arch_accessor {
 /// Empty placeholder for manifests that omit the `license` field.
 static EMPTY_LICENSE: std::sync::LazyLock<License> = std::sync::LazyLock::new(License::default);
 
-/// Parse manifest JSON tolerantly, mirroring the tolerance of upstream
-/// Scoop's PowerShell 7 `ConvertFrom-Json` (and `hok formatjson`):
+/// Parse a manifest JSON file from disk into a [`Manifest`].
 ///
-/// - a leading UTF-8 BOM (`\u{FEFF}`) is stripped (notepad "UTF-8 with
-///   BOM" manifests; upstream reads with `Get-Content -Encoding UTF8`)
-/// - strict `serde_json` is tried first — the fast path for well-formed
-///   bucket manifests, keeping the parse bottleneck fast — and JSON5
-///   (comments, trailing commas, single-quoted strings) is used only as
-///   a fallback for the rare hand-edited file
+/// The file-I/O boundary for the pure [`Manifest`] type: reading, UTF-8
+/// validation and path normalization happen here, so the type itself stays
+/// I/O-free (construct it from memory via [`Manifest::from_json`] or
+/// [`Manifest::parse_str`]).
 ///
-/// When both fail the strict error is returned: it points at the real
-/// problem (e.g. a type mismatch), unlike a JSON5 parse error.
-fn parse_manifest_spec(json: &str) -> Fallible<ManifestSpec> {
-    let cleaned = json.trim_start_matches('\u{FEFF}');
-    match serde_json::from_str::<ManifestSpec>(cleaned) {
-        Ok(inner) => Ok(inner),
-        Err(strict_err) => json5::from_str::<ManifestSpec>(cleaned)
-            .map_err(|_| crate::Error::Custom(strict_err.to_string())),
-    }
-}
+/// ## Errors
+///
+/// Returns a [`std::io::Error`] when the file cannot be read, and a
+/// serde error when the JSON deserialization fails.
+pub fn parse_file<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
+    let path = path.as_ref();
 
-impl Manifest {
-    /// Create a [`Manifest`] representation of a manfest JSON file with the
-    /// given path.
-    ///
-    /// ## Errors
-    ///
-    /// If the process fails to read the file, this method will return a
-    /// [`std::io::Error`].
-    ///
-    /// It returns a `serde_json::Error` when the JSON deserialization fails.
-    pub fn parse<P: AsRef<Path>>(path: P) -> Fallible<Manifest> {
-        let path = path.as_ref();
+    // Read the entire manifest JSON file into memory firstly and then
+    // deserialize it as this way is *a lot* faster than reading via
+    // `serde_json::from_reader`.
+    //
+    // Discussion in https://github.com/serde-rs/json/issues/160
+    let mut bytes = Vec::new();
+    File::open(path)?.read_to_end(&mut bytes)?;
 
-        // Read the entire manifest JSON file into memory firstly and then
-        // deserialize it as this way is *a lot* faster than reading via
-        // `serde_json::from_reader`.
-        //
-        // Discussion in https://github.com/serde-rs/json/issues/160
-        let mut bytes = Vec::new();
-        File::open(path)?.read_to_end(&mut bytes)?;
-
-        // Parsing manifest files is the key bottleneck of the entire
-        // project. We use `serde_json` because it's well documented and easy
-        // to integrate. But I believe there should be an alternative to
-        // `serde_json` which can parse JSON files much *faster*. Perhaps
-        // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
-        let text = std::str::from_utf8(&bytes).map_err(|e| {
+    // Parsing manifest files is the key bottleneck of the entire
+    // project. We use `serde_json` because it's well documented and easy
+    // to integrate. But I believe there should be an alternative to
+    // `serde_json` which can parse JSON files much *faster*. Perhaps
+    // `simd_json` can be the one. See https://github.com/serde-rs/json-benchmark
+    let text = std::str::from_utf8(&bytes)
+        .inspect_err(|e| {
+            warn!("failed to parse manifest {} (err: {})", path.display(), e);
+        })
+        .map_err(|e| {
             crate::Error::Custom(format!(
                 "failed to parse manifest {}: not valid UTF-8: {e}",
                 path.display()
             ))
         })?;
-        let inner: ManifestSpec = parse_manifest_spec(text).inspect_err(|e| {
-            warn!("failed to parse manifest {} (err: {})", path.display(), e);
-        })?;
-        let path = internal::path::normalize_path(path);
+    let inner: ManifestSpec = internal::json::parse_str(text).inspect_err(|e| {
+        warn!("failed to parse manifest {} (err: {})", path.display(), e);
+    })?;
+    let path = internal::path::normalize_path(path);
 
-        Ok(Manifest {
-            path,
-            inner,
-            raw: None,
-        })
-    }
+    Ok(Manifest {
+        path,
+        inner,
+        raw: None,
+    })
+}
 
+/// The user-facing notice for a manifest that exists but does not parse.
+///
+/// Official Scoop's sentence (`lib/manifest.ps1:10`) plus hok's reason, so a
+/// bucket maintainer recognises the line while still seeing why hok rejected
+/// the file. One constructor for every scan path that survives a failure —
+/// `query`, `checkver`, `checkurls` — so the wording cannot drift per command.
+pub(crate) fn parse_failure_message(path: &Path, err: &crate::Error) -> String {
+    hok_i18n::t!(
+        "cmd.manifest_parse_failed",
+        path = path.display().to_string(),
+        reason = err.to_string()
+    )
+}
+
+impl Manifest {
     /// Return the file path of this manifest.
     #[inline]
     pub fn path(&self) -> &Path {
@@ -735,7 +875,7 @@ impl Manifest {
     /// This is used when loading manifests from the SQLite cache, where no
     /// file path is available.
     pub fn from_json(name: &str, json: &str) -> Fallible<Manifest> {
-        let inner: ManifestSpec = parse_manifest_spec(json)?;
+        let inner: ManifestSpec = internal::json::parse_str(json)?;
         let path = PathBuf::from(name);
 
         Ok(Manifest {
@@ -753,7 +893,7 @@ impl Manifest {
     /// the source is not a bucket file. The `name` is used as the virtual
     /// path (e.g. the source URL), mirroring [`Manifest::from_json`].
     pub fn parse_str(name: &str, json: &str) -> Fallible<Manifest> {
-        let inner: ManifestSpec = parse_manifest_spec(json)?;
+        let inner: ManifestSpec = internal::json::parse_str(json)?;
         let path = PathBuf::from(name);
 
         Ok(Manifest {
@@ -763,10 +903,48 @@ impl Manifest {
         })
     }
 
+    /// Serialize the parsed manifest spec back to pretty JSON.
+    ///
+    /// Used when the original raw text is not retained and there is no
+    /// on-disk file to read - e.g. manifests loaded from the SQLite
+    /// manifest cache via Manifest::from_json, where the path is a
+    /// virtual identifier.
+    pub fn to_pretty_json(&self) -> Option<String> {
+        serde_json::to_string_pretty(&self.inner).ok()
+    }
+
     /// Return the raw JSON text this manifest was loaded from, if any.
     #[inline]
     pub fn raw(&self) -> Option<&str> {
         self.raw.as_deref()
+    }
+
+    /// Whether this manifest provides an `arm64` architecture section.
+    ///
+    /// This is the condition that disables Scoop's
+    /// `Get-SupportedArchitecture` fallback: on an ARM64 host, an `arm64`
+    /// section is used as-is; without one, Windows 11 falls back to
+    /// `64bit` and Windows 10 to `32bit` (lib/manifest.ps1).
+    fn has_arm64(&self) -> bool {
+        self.inner
+            .architecture
+            .as_ref()
+            .is_some_and(|a| a.aarch64.is_some())
+    }
+
+    /// Resolve the effective architecture used for field selection: the
+    /// runtime-detected architecture (with the `default_architecture`
+    /// config override) plus Scoop's `Get-SupportedArchitecture` ARM64
+    /// fallback.
+    ///
+    /// Host-dependent (reads the process architecture and, on ARM64
+    /// hosts, the Windows build number) — the `*_for(arch)` accessors
+    /// themselves are pure and deterministic.
+    fn effective_arch(&self) -> crate::internal::arch::Arch {
+        crate::internal::arch::Arch::supported(
+            crate::internal::arch::Arch::current(),
+            self.has_arm64(),
+        )
     }
     #[inline]
     pub fn version(&self) -> &str {
@@ -818,7 +996,18 @@ impl Manifest {
 
     arch_accessor! {
         /// Get `bin` field of this manifest.
-        fn bin() -> Option<Vec<Vec<&str>>>
+        fn bin() -> Option<Vec<Vec<&str>>>, bin_for
+    }
+
+    /// The generic (architecture-independent) `bin`, without consulting the
+    /// `architecture` sections.
+    ///
+    /// Mirrors Scoop's `arch_specific` when `$architecture` is `$null` — the
+    /// case `scoop info` hits for an app that is not installed
+    /// (libexec/scoop-info.ps1:229, where `$install.architecture` is `$null`):
+    /// upstream shows only the top-level field then.
+    pub fn bin_generic(&self) -> Option<Vec<Vec<&str>>> {
+        self.inner.bin.as_ref().map(|v| v.devectorize())
     }
 
     #[inline]
@@ -840,17 +1029,35 @@ impl Manifest {
 
     arch_accessor! {
         /// Returns `env_add_path` defined in this manifest.
-        fn env_add_path() -> Option<Vec<&str>>
+        fn env_add_path() -> Option<Vec<&str>>, env_add_path_for
+    }
+
+    /// Generic (architecture-independent) `env_add_path`; see [`Self::bin_generic`].
+    pub fn env_add_path_generic(&self) -> Option<Vec<&str>> {
+        self.inner.env_add_path.as_ref().map(|v| v.devectorize())
+    }
+
+    /// Generic (architecture-independent) `env_set`; see [`Self::bin_generic`].
+    pub fn env_set_generic(&self) -> Option<&HashMap<String, String>> {
+        self.inner.env_set.as_ref()
+    }
+
+    /// Pure variant: select `env_set` for an explicit architecture.
+    pub fn env_set_for(
+        &self,
+        arch: crate::internal::arch::Arch,
+    ) -> Option<&HashMap<String, String>> {
+        arch_specific_field!(self, env_set, arch)
     }
 
     /// Returns `env_set` defined in this manifest.
     pub fn env_set(&self) -> Option<&HashMap<String, String>> {
-        arch_specific_field!(self, env_set)
+        self.env_set_for(self.effective_arch())
     }
 
     arch_accessor! {
         /// Returns `extract_dir` defined in this manifest.
-        fn extract_dir() -> Option<Vec<&str>>
+        fn extract_dir() -> Option<Vec<&str>>, extract_dir_for
     }
 
     /// Returns `extract_to` defined in this manifest.
@@ -864,30 +1071,45 @@ impl Manifest {
         self.inner.innosetup.unwrap_or(false)
     }
 
+    /// Returns `suggest` defined in this manifest.
+    ///
+    /// An order-preserving map, not a `HashMap`: upstream iterates the object's
+    /// properties, so the rendered/rewritten order is the manifest order
+    /// (libexec/scoop-info.ps1:270-276).
     #[inline]
-    pub fn suggest(&self) -> Option<&HashMap<String, Vectorized<String>>> {
+    pub fn suggest(&self) -> Option<&IndexMap<String, Vectorized<String>>> {
         self.inner.suggest.as_ref()
     }
 
-    arch_accessor! { fn pre_install() -> Option<Vec<&str>> }
+    arch_accessor! { fn pre_install() -> Option<Vec<&str>>, pre_install_for }
 
-    arch_accessor! { fn post_install() -> Option<Vec<&str>> }
+    arch_accessor! { fn post_install() -> Option<Vec<&str>>, post_install_for }
 
-    arch_accessor! { fn pre_uninstall() -> Option<Vec<&str>> }
+    arch_accessor! { fn pre_uninstall() -> Option<Vec<&str>>, pre_uninstall_for }
 
-    arch_accessor! { fn post_uninstall() -> Option<Vec<&str>> }
+    arch_accessor! { fn post_uninstall() -> Option<Vec<&str>>, post_uninstall_for }
 
     /// Returns `notes` defined in this manifest.
     pub fn notes(&self) -> Option<Vec<&str>> {
         self.inner.notes.as_ref().map(|v| v.devectorize())
     }
 
+    /// Pure variant: select `installer` for an explicit architecture.
+    pub fn installer_for(&self, arch: crate::internal::arch::Arch) -> Option<&Installer> {
+        arch_specific_field!(self, installer, arch)
+    }
+
     pub fn installer(&self) -> Option<&Installer> {
-        arch_specific_field!(self, installer)
+        self.installer_for(self.effective_arch())
+    }
+
+    /// Pure variant: select `uninstaller` for an explicit architecture.
+    pub fn uninstaller_for(&self, arch: crate::internal::arch::Arch) -> Option<&Uninstaller> {
+        arch_specific_field!(self, uninstaller, arch)
     }
 
     pub fn uninstaller(&self) -> Option<&Uninstaller> {
-        arch_specific_field!(self, uninstaller)
+        self.uninstaller_for(self.effective_arch())
     }
 
     /// Returns `persist` defined in this manifest.
@@ -902,9 +1124,23 @@ impl Manifest {
         self.inner.psmodule.as_ref()
     }
 
-    pub fn shortcuts(&self) -> Option<Vec<Vec<&str>>> {
-        let ret = arch_specific_field!(self, shortcuts);
+    /// Pure variant: select `shortcuts` for an explicit architecture.
+    pub fn shortcuts_for(&self, arch: crate::internal::arch::Arch) -> Option<Vec<Vec<&str>>> {
+        let ret = arch_specific_field!(self, shortcuts, arch);
         ret.map(|v| {
+            v.iter()
+                .map(|v| v.iter().map(|s| s.as_str()).collect())
+                .collect()
+        })
+    }
+
+    pub fn shortcuts(&self) -> Option<Vec<Vec<&str>>> {
+        self.shortcuts_for(self.effective_arch())
+    }
+
+    /// Generic (architecture-independent) `shortcuts`; see [`Self::bin_generic`].
+    pub fn shortcuts_generic(&self) -> Option<Vec<Vec<&str>>> {
+        self.inner.shortcuts.as_ref().map(|v| {
             v.iter()
                 .map(|v| v.iter().map(|s| s.as_str()).collect())
                 .collect()
@@ -917,7 +1153,41 @@ impl Manifest {
         /// - For `amd64` return "64bit" urls if available else noarch urls;
         /// - For `ia32` return "32bit" urls if available else noarch urls;
         /// - For `aarch64` return "arm64" urls if available else noarch urls.
-        fn url() -> Vec<&str>, unwrap_or_default
+        fn url() -> Vec<&str>, unwrap_or_default, url_for
+    }
+
+    /// Walk this manifest's `architecture` sections in Scoop's fixed order
+    /// (`64bit → 32bit → arm64`, `bin/checkhashes.ps1:76-83`), skipping the
+    /// sections the manifest does not declare.
+    ///
+    /// Yields each section's JSON pointer — the location of its `hash` field,
+    /// e.g. `/architecture/64bit/hash`, which is also where the section's
+    /// manifest name is spelled — together with the section itself.
+    ///
+    /// This is the single source for every fixed-order architecture walk in
+    /// this module: [`Self::all_urls`], [`Self::all_hashes`],
+    /// [`Self::all_hash_segments`] and [`Self::checkhashes_accessors`]. The
+    /// per-architecture selection of `arch_specific_field!` is a different
+    /// mechanism (first-present-wins, one architecture chosen) and
+    /// deliberately does not use this.
+    fn arch_specs(&self) -> impl Iterator<Item = (&'static str, &ArchitectureSpec)> {
+        let arch = self.inner.architecture.as_ref();
+        [
+            (
+                "/architecture/64bit/hash",
+                arch.and_then(|a| a.amd64.as_ref()),
+            ),
+            (
+                "/architecture/32bit/hash",
+                arch.and_then(|a| a.ia32.as_ref()),
+            ),
+            (
+                "/architecture/arm64/hash",
+                arch.and_then(|a| a.aarch64.as_ref()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(pointer, spec)| spec.map(|spec| (pointer, spec)))
     }
 
     /// Collect ALL URLs from this manifest (noarch + all architectures).
@@ -936,15 +1206,10 @@ impl Manifest {
             }
         }
         // Add architecture-specific URLs (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(ref u) = spec.url {
-                    for s in u.devectorize() {
-                        urls.push(s);
-                    }
+        for (_, spec) in self.arch_specs() {
+            if let Some(ref u) = spec.url {
+                for s in u.devectorize() {
+                    urls.push(s);
                 }
             }
         }
@@ -966,15 +1231,10 @@ impl Manifest {
             }
         }
         // Add architecture-specific hashes (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for spec in [&arch.amd64, &arch.ia32, &arch.aarch64]
-                .into_iter()
-                .flatten()
-            {
-                if let Some(ref h) = spec.hash {
-                    for s in h.devectorize() {
-                        hashes.push(s);
-                    }
+        for (_, spec) in self.arch_specs() {
+            if let Some(ref h) = spec.hash {
+                for s in h.devectorize() {
+                    hashes.push(s);
                 }
             }
         }
@@ -1000,19 +1260,11 @@ impl Manifest {
             }
         }
         // Architecture-specific hashes (64bit → 32bit → arm64)
-        if let Some(ref arch) = self.inner.architecture {
-            for (arch_name, spec_opt) in [
-                ("64bit", &arch.amd64),
-                ("32bit", &arch.ia32),
-                ("arm64", &arch.aarch64),
-            ] {
-                if let Some(spec) = spec_opt {
-                    if let Some(ref h) = spec.hash {
-                        let count = h.devectorize().len();
-                        if count > 0 {
-                            segments.push((format!("/architecture/{arch_name}/hash"), count));
-                        }
-                    }
+        for (pointer, spec) in self.arch_specs() {
+            if let Some(ref h) = spec.hash {
+                let count = h.devectorize().len();
+                if count > 0 {
+                    segments.push((pointer.to_string(), count));
                 }
             }
         }
@@ -1025,7 +1277,67 @@ impl Manifest {
         /// - For `amd64` return "64bit" hashes if available else noarch hashes;
         /// - For `ia32` return "32bit" hashes if available else noarch hashes;
         /// - For `aarch64` return "arm64" hashes if available else noarch hashes.
-        fn hash() -> Vec<&HashString>, unwrap_or_default
+        fn hash() -> Vec<&HashString>, unwrap_or_default, hash_for
+    }
+
+    /// Download entry list for `checkhashes`, mirroring official Scoop.
+    ///
+    /// Unlike [`all_urls`]/[`all_hashes`] — which merge the noarch entries with
+    /// every architecture and are used by `checkurls` — this is an *either/or*
+    /// selection matching `bin/checkhashes.ps1:73-83`:
+    ///
+    /// - when the manifest has a top-level `url`, **only** the top-level
+    ///   `url`/`hash` pair is used (the `architecture` section is ignored);
+    /// - otherwise the architecture sections are walked in Scoop's fixed order
+    ///   (64bit → 32bit → arm64) and their entries are concatenated.
+    ///
+    /// Returns `(url, hash, json_pointer)` triples in the order they must be
+    /// downloaded and written back; the pointer is the manifest location of the
+    /// corresponding `hash` field. An empty vector means the manifest has
+    /// neither a top-level `url` nor any architecture URL — official Scoop
+    /// reports `Manifest does not contain URL property.` in that case.
+    ///
+    /// [`all_urls`]: Self::all_urls
+    /// [`all_hashes`]: Self::all_hashes
+    pub fn checkhashes_accessors(&self) -> Vec<(&str, &HashString, &'static str)> {
+        let mut out = Vec::new();
+
+        // Top level `url` present ⇒ use it exclusively.
+        if let Some(ref top_urls) = self.inner.url {
+            let urls = top_urls.devectorize();
+            let hashes = self
+                .inner
+                .hash
+                .as_ref()
+                .map(|h| h.devectorize())
+                .unwrap_or_default();
+            for (i, url) in urls.iter().enumerate() {
+                if let Some(hash) = hashes.get(i) {
+                    out.push((*url, *hash, "/hash"));
+                }
+            }
+            return out;
+        }
+
+        for (pointer, spec) in self.arch_specs() {
+            let urls = spec
+                .url
+                .as_ref()
+                .map(|u| u.devectorize())
+                .unwrap_or_default();
+            let hashes = spec
+                .hash
+                .as_ref()
+                .map(|h| h.devectorize())
+                .unwrap_or_default();
+            for (i, url) in urls.iter().enumerate() {
+                if let Some(hash) = hashes.get(i) {
+                    out.push((*url, *hash, pointer));
+                }
+            }
+        }
+
+        out
     }
 
     /// Returns the dependencies of this manifest.
@@ -1041,6 +1353,12 @@ impl Manifest {
     ///
     /// [`depends`]: #method.depends
     pub(crate) fn dependencies(&self) -> Vec<String> {
+        self.dependencies_for(self.effective_arch())
+    }
+
+    /// Pure variant of [`Manifest::dependencies`]: dependency resolution
+    /// for an explicit architecture (deterministic, host-independent).
+    pub(crate) fn dependencies_for(&self, arch: crate::internal::arch::Arch) -> Vec<String> {
         let mut deps = HashSet::new();
 
         if let Some(raw_depends) = self.depends() {
@@ -1059,11 +1377,13 @@ impl Manifest {
         //   `lessmsi` is always appended when triggered.
         // - The archive-URL check is an approximation of Scoop's
         //   `Test-7zipRequirement` pattern.
-        let urls = self.url();
+        let urls = self.url_for(arch);
         let hook_scripts = [
-            self.pre_install(),
-            self.post_install(),
-            self.installer().map(|i| i.script()).unwrap_or_default(),
+            self.pre_install_for(arch),
+            self.post_install_for(arch),
+            self.installer_for(arch)
+                .map(|i| i.script())
+                .unwrap_or_default(),
         ];
         let script = hook_scripts
             .into_iter()
@@ -1299,20 +1619,21 @@ pub struct InstallInfo {
 }
 
 impl InstallInfo {
-    pub fn parse<P: AsRef<Path>>(path: P) -> Fallible<InstallInfo> {
-        let path = path.as_ref();
-        let mut bytes = Vec::new();
-        File::open(path)?.read_to_end(&mut bytes)?;
-
-        let info = serde_json::from_slice(&bytes).inspect_err(|e| {
-            warn!(
-                "failed to parse install_info {} (err: {})",
-                path.display(),
-                e
-            );
-        })?;
-
-        Ok(info)
+    /// Construct install metadata for writing `scoop-install.json`, mirroring
+    /// upstream `save_install_info` (lib/install.ps1:73): null-valued
+    /// `bucket`/`url` are omitted on serialization (`skip_serializing_if`),
+    /// so bucket installs carry no `url` and isolated installs no `bucket`.
+    pub(crate) fn new(
+        architecture: String,
+        bucket: Option<String>,
+        url: Option<String>,
+    ) -> InstallInfo {
+        InstallInfo {
+            architecture,
+            bucket,
+            hold: None,
+            url,
+        }
     }
 
     #[inline]
@@ -1349,6 +1670,144 @@ mod tests {
         Manifest::from_json("test-pkg", json).unwrap()
     }
 
+    // ── arch-specific field selection (pure `*_for(arch)`) ────────────────
+
+    #[test]
+    fn arch_specific_url_selection_is_deterministic() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": {
+                    "32bit": { "url": "https://example.com/x86.zip" },
+                    "64bit": { "url": "https://example.com/x64.zip" },
+                    "arm64": { "url": "https://example.com/arm.zip" }
+                }
+            }"#,
+        );
+        // Pure selection: deterministic per architecture, no host state.
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Amd64),
+            vec!["https://example.com/x64.zip"]
+        );
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Ia32),
+            vec!["https://example.com/x86.zip"]
+        );
+        assert_eq!(
+            m.url_for(crate::internal::arch::Arch::Aarch64),
+            vec!["https://example.com/arm.zip"]
+        );
+        // Missing section falls back to noarch.
+        let m2 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": { "64bit": { "url": "https://example.com/x64.zip" } }
+            }"#,
+        );
+        assert_eq!(
+            m2.url_for(crate::internal::arch::Arch::Ia32),
+            vec!["https://example.com/noarch.zip"]
+        );
+        // Hashes follow the same per-arch selection.
+        assert_eq!(m.hash_for(crate::internal::arch::Arch::Amd64).len(), 1);
+    }
+
+    #[test]
+    fn arch_specific_bin_selection_via_pure_variant() {
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "architecture": {
+                    "32bit": { "bin": [["x86.exe", "app"]] },
+                    "64bit": { "bin": [["x64.exe", "app"]] }
+                }
+            }"#,
+        );
+        assert_eq!(
+            m.bin_for(crate::internal::arch::Arch::Amd64),
+            Some(vec![vec!["x64.exe", "app"]])
+        );
+        assert_eq!(
+            m.bin_for(crate::internal::arch::Arch::Ia32),
+            Some(vec![vec!["x86.exe", "app"]])
+        );
+    }
+
+    #[test]
+    fn arm64_fallback_respects_manifest_arm64_presence() {
+        // Regression: `Arch::supported` was previously fed `aarch64.is_none()`
+        // — inverted — applying Scoop's Get-SupportedArchitecture fallback
+        // exactly when the manifest *had* an arm64 section and skipping it
+        // when it did not. The trigger is the *presence* of an arm64 section
+        // (lib/manifest.ps1): only ARM64 hosts without one fall back
+        // (Windows 11 → 64bit, Windows 10 → 32bit).
+        let with_arm64 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": {
+                    "64bit": { "url": "https://example.com/x64.zip" },
+                    "arm64": { "url": "https://example.com/arm.zip" }
+                }
+            }"#,
+        );
+        assert!(with_arm64.has_arm64(), "arm64 section present");
+        // ARM64 host + arm64 section → arm64 urls, never the x64 fallback.
+        let arch = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            with_arm64.has_arm64(),
+            22631,
+        );
+        assert_eq!(arch, crate::internal::arch::Arch::Aarch64);
+        assert_eq!(
+            with_arm64.url_for(arch),
+            vec!["https://example.com/arm.zip"]
+        );
+
+        let without_arm64 = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/noarch.zip",
+                "hash": "9f67fe001e008b1419b442818ce48746e0e20c8cb28977cc7cbc04d774f20b8a",
+                "architecture": { "64bit": { "url": "https://example.com/x64.zip" } }
+            }"#,
+        );
+        assert!(!without_arm64.has_arm64(), "no arm64 section");
+        // ARM64 host + no arm64 section → Windows 11 falls back to 64bit.
+        let win11 = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            without_arm64.has_arm64(),
+            22631,
+        );
+        assert_eq!(win11, crate::internal::arch::Arch::Amd64);
+        assert_eq!(
+            without_arm64.url_for(win11),
+            vec!["https://example.com/x64.zip"]
+        );
+        // Windows 10 falls back to 32bit (noarch here: no 32bit section).
+        let win10 = crate::internal::arch::Arch::supported_with_build(
+            crate::internal::arch::Arch::Aarch64,
+            without_arm64.has_arm64(),
+            19045,
+        );
+        assert_eq!(win10, crate::internal::arch::Arch::Ia32);
+    }
+
     // ── json_str_array ──────────────────────────────────────────────────────
 
     #[test]
@@ -1367,6 +1826,133 @@ mod tests {
     fn json_str_array_empty_is_empty_array() {
         let v = json_str_array(&[]);
         assert_eq!(v, serde_json::json!([]));
+    }
+    // ── update_hash_preserving_style ────────────────────────────────────────
+
+    fn sub_noop(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn hash_preserves_bare_string_style() {
+        let existing = serde_json::json!("oldhash");
+        let v = update_hash_preserving_style(&existing, &["a".repeat(64)], Some(&sub_noop));
+        assert_eq!(
+            v,
+            serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn hash_preserves_string_array_style() {
+        let existing = serde_json::json!(["h1", "h2"]);
+        let v = update_hash_preserving_style(
+            &existing,
+            &["new1".to_string(), "new2".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(v, serde_json::json!(["new1", "new2"]));
+    }
+
+    #[test]
+    fn hash_preserves_object_array_style_and_refreshes_members() {
+        let existing = serde_json::json!([
+            { "url": "https://example.com/a.zip", "hash": "old-a" },
+            { "url": "https://example.com/b.zip", "hash": "old-b" }
+        ]);
+        let v = update_hash_preserving_style(
+            &existing,
+            &["new-a".to_string(), "new-b".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://example.com/a.zip", "hash": "new-a" },
+                { "url": "https://example.com/b.zip", "hash": "new-b" }
+            ])
+        );
+    }
+
+    #[test]
+    fn hash_preserves_object_array_style_and_substitutes_urls() {
+        let existing = serde_json::json!([
+            { "url": "$baseurl/a.zip", "hash": "old-a" }
+        ]);
+        let sub = |s: &str| s.replace("$baseurl", "https://cdn.example.com/2.0.0");
+        let v = update_hash_preserving_style(&existing, &["new-a".to_string()], Some(&sub));
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://cdn.example.com/2.0.0/a.zip", "hash": "new-a" }
+            ])
+        );
+    }
+
+    #[test]
+    fn hash_grows_bare_string_into_array_when_more_hashes() {
+        let existing = serde_json::json!("only");
+        let v = update_hash_preserving_style(
+            &existing,
+            &["h1".to_string(), "h2".to_string()],
+            Some(&sub_noop),
+        );
+        assert_eq!(v, serde_json::json!(["h1", "h2"]));
+    }
+
+    #[test]
+    fn hash_absent_becomes_plain_value() {
+        let existing = serde_json::Value::Null;
+        let v = update_hash_preserving_style(&existing, &["a".repeat(64)], Some(&sub_noop));
+        assert_eq!(
+            v,
+            serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn hash_preserves_single_object_form() {
+        // A lone {url, hash} object (not wrapped in an array) keeps its shape.
+        let existing = serde_json::json!({ "url": "$baseurl/a.zip", "hash": "old" });
+        let sub = |s: &str| s.replace("$baseurl", "https://cdn.example.com/2.0.0");
+        let v = update_hash_preserving_style(&existing, &["new-a".to_string()], Some(&sub));
+        assert_eq!(
+            v,
+            serde_json::json!({ "url": "https://cdn.example.com/2.0.0/a.zip", "hash": "new-a" })
+        );
+    }
+
+    #[test]
+    fn hash_preserves_algorithm_prefix_value() {
+        // A value that already carries an algorithm prefix (e.g. sha512:) is
+        // written through verbatim by the structure-preserving helper.
+        let new_hash = format!("sha512:{}", "a".repeat(128));
+        let existing = serde_json::json!("sha512:old");
+        let v = update_hash_preserving_style(
+            &existing,
+            std::slice::from_ref(&new_hash),
+            Some(&sub_noop),
+        );
+        assert_eq!(v, serde_json::Value::String(new_hash));
+    }
+
+    #[test]
+    fn hash_object_form_preserves_algorithm_prefix_value() {
+        let existing = serde_json::json!([
+            { "url": "https://example.com/a.zip", "hash": "sha1:old" }
+        ]);
+        let new_hash = format!("sha1:{}", "b".repeat(40));
+        let v = update_hash_preserving_style(
+            &existing,
+            std::slice::from_ref(&new_hash),
+            Some(&sub_noop),
+        );
+        assert_eq!(
+            v,
+            serde_json::json!([
+                { "url": "https://example.com/a.zip", "hash": new_hash }
+            ])
+        );
     }
 
     #[test]
@@ -1418,7 +2004,6 @@ mod tests {
         assert!(HashString::new("md5:xyz").is_err());
         assert!(HashString::new("sha1:").is_err());
     }
-
 
     // ── hook script fields (deserialize_hook_script) ────────────────────────
 
@@ -1495,7 +2080,6 @@ mod tests {
         assert!(spec.installer.is_some());
         assert!(spec.shortcuts.is_some());
     }
-
 
     #[test]
     fn test_hook_script_array_form_parses() {
@@ -1700,6 +2284,57 @@ mod tests {
     }
 
     #[test]
+    fn license_unknown_keys_do_not_eat_the_next_member() {
+        // Regression (pre-existing, found while seeding the manifest history
+        // index): `License::visit_map` consumed an unknown key's value twice —
+        // `next_entry` already had it — so the strict `serde_json` parse
+        // failed and the text fell through to the `json5` fallback, whose
+        // `Map::next_value_seed` panics on an exhausted map when the unknown
+        // key is the last member. Both profiles set `panic = "abort"`, so a
+        // single third-party manifest with a typo (`"url:"`, e.g. scoop-app's
+        // `pianobar_MCOfficer.json`) took the whole process down. Scoop never
+        // validates its schema at run time, so such keys are simply ignored.
+        let cases = [
+            // Unknown key last: used to abort the process.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"identifier":"Freeware","url:":"https://example.com/x"}}"#,
+                "Freeware",
+            ),
+            // Unknown key first: used to swallow `identifier`.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"url:":"https://example.com/x","identifier":"Freeware"}}"#,
+                "Freeware",
+            ),
+            // Unknown key with a non-string value.
+            (
+                r#"{"version":"1.0.0","homepage":"https://example.com","license":{"identifier":"MIT","weird":1}}"#,
+                "MIT",
+            ),
+        ];
+        for (json, identifier) in cases {
+            let m = manifest_from(json);
+            assert_eq!(m.license().identifier(), identifier, "{json}");
+        }
+    }
+
+    #[test]
+    fn checkver_sourceforge_unknown_keys_do_not_eat_the_next_member() {
+        // Same regression as the license one, for `Sourceforge::visit_map`.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "checkver": { "sourceforge": { "project": "foo", "bogus": "x" } }
+            }"#,
+        );
+        let cv = m.checkver().expect("checkver");
+        let sf = cv.sourceforge.as_ref().expect("sourceforge");
+        assert_eq!(sf.project.as_deref(), Some("foo"));
+    }
+
+    #[test]
     fn autoupdate_hash_string_form_parses() {
         // `autoupdate.hash` may be a plain string (e.g. "mode:json") —
         // upstream's HashHelper accepts objects, strings and arrays.
@@ -1716,6 +2351,35 @@ mod tests {
         );
         // Parsing succeeded is the assertion.
         assert_eq!(m.version(), "1.0.0");
+    }
+
+    #[test]
+    fn suggest_preserves_declaration_order() {
+        // `suggest` is an order-preserving map: upstream renders its properties
+        // in manifest order, and a rewritten manifest must not reorder them.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "suggest": {"zeta": ["z"], "alpha": ["a"]}
+            }"#,
+        );
+        let keys = m
+            .suggest()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["zeta", "alpha"]);
+
+        let json = m.to_pretty_json().unwrap();
+        let zeta = json.find("zeta").unwrap();
+        let alpha = json.find("alpha").unwrap();
+        assert!(
+            zeta < alpha,
+            "serialization keeps declaration order: {json}"
+        );
     }
 
     #[test]
@@ -1765,8 +2429,9 @@ mod tests {
 
     #[test]
     fn json5_manifest_parses_as_fallback() {
-        // Comments and trailing commas (hand-edited manifests) parse via
-        // the JSON5 fallback, like PowerShell 7's ConvertFrom-Json.
+        // Comments and trailing commas (hand-edited manifests) parse via the
+        // JSON5 fallback. PS 5.1 rejects both; the full tolerance contract
+        // (including the cases hok is stricter on) is in `internal::json`.
         let m = manifest_from(
             r#"{
                 // a hand-edited comment
@@ -1797,5 +2462,63 @@ mod tests {
         assert_eq!(es.get("COUNT").map(String::as_str), Some("3"));
         assert_eq!(es.get("FLAG").map(String::as_str), Some("true"));
         assert_eq!(es.get("NAME").map(String::as_str), Some("x"));
+    }
+
+    #[test]
+    fn test_env_set_cookie_accept_explicit_null() {
+        // Upstream Scoop writes an explicit `null` for every unset optional
+        // field in its stored manifests (e.g. apps/<app>/current/manifest.json
+        // has "env_set": null / "cookie": null). deserialize_string_map must
+        // treat these as absent instead of failing the whole parse, otherwise
+        // such apps are silently dropped from list/status.
+        let m = manifest_from(
+            r#"{
+                "version": "1.0.0",
+                "homepage": "https://example.com",
+                "license": "MIT",
+                "url": "https://example.com/pkg.zip",
+                "env_set": null,
+                "cookie": null,
+                "architecture": {
+                    "64bit": {
+                        "url": "https://example.com/pkg-x64.zip",
+                        "env_set": null,
+                        "env_add_path": null,
+                        "bin": null
+                    }
+                }
+            }"#,
+        );
+        assert_eq!(m.version(), "1.0.0");
+        assert!(
+            m.env_set().is_none(),
+            "explicit null env_set should be absent"
+        );
+        assert!(
+            m.cookie().is_none(),
+            "explicit null cookie should be absent"
+        );
+        assert!(m.env_add_path().is_none());
+        assert!(m.bin().is_none());
+    }
+
+    #[test]
+    fn install_info_tolerates_unknown_fields() {
+        // Upstream Scoop and third-party tools may write non-standard
+        // fields (e.g. a `version` key) into install.json. InstallInfo
+        // has no deny_unknown_fields, so these must be ignored, not
+        // fail the parse — otherwise the app is dropped from listings.
+        let info: InstallInfo = serde_json::from_str(
+            r#"{
+                "architecture": "64bit",
+                "bucket": "main",
+                "hold": false,
+                "version": "11.2.5",
+                "some_future_key": { "nested": true }
+            }"#,
+        )
+        .expect("install_info with unknown fields must parse");
+        assert_eq!(info.bucket(), Some("main"));
+        assert_eq!(info.arch(), "64bit");
     }
 }

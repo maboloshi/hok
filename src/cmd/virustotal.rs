@@ -1,9 +1,10 @@
 //! Look for malware using VirusTotal.
 
 use clap::Parser;
-use libscoop::{package, QueryOption, Session};
+use libscoop::{QueryOption, Session, package};
 
-use crate::{output, Result};
+use crate::output::style;
+use crate::{ExitCode, Result, output};
 
 /// Check a package's download URL against VirusTotal
 ///
@@ -18,14 +19,27 @@ pub struct Args {
     app: Vec<String>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let queries: Vec<&str> = args.app.iter().map(|s| s.as_str()).collect();
     let options = vec![QueryOption::Explicit];
-    let pkgs = package::query::query(session, queries, options, false)?;
+    let pkgs = package::query::query(session, queries.clone(), options, false)?;
 
+    // Scoop combines result bits, and sets bit 8 for every package whose
+    // manifest could not be found (`libexec/scoop-virustotal.ps1:272-275`
+    // `$_ERR_NO_INFO`): a missing manifest is a reportable outcome, not a
+    // hard failure. A query that matched nothing counts as that bit.
+    let unresolved = queries
+        .iter()
+        .copied()
+        .filter(|q| !pkgs.iter().any(|p| p.matches_bucket_query(q)))
+        .count();
+    let mut exit_code: u32 = if unresolved == 0 { 0 } else { 8 };
+
+    if unresolved > 0 {
+        output::err(hok_i18n::t!("cmd.no_pkgs_found"));
+    }
     if pkgs.is_empty() {
-        output::err(rust_i18n::t!("cmd.no_pkgs_found"));
-        return Ok(());
+        return Err(ExitCode(exit_code as i32).into());
     }
 
     // Get API key: env var > config > none
@@ -33,32 +47,74 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         .ok()
         .or_else(|| session.config().virustotal_api_key.clone());
 
+    // Scoop aborts with exit 16 when no API key is configured (it cannot do
+    // any work); mirror that instead of silently skipping every package.
+    if api_key.is_none() {
+        output::err(hok_i18n::t!("cmd.vt_no_key"));
+        return Err(ExitCode(16).into());
+    }
+
+    // Scoop accumulates the remaining result bits on top of the missing
+    // ones: 2 = at least one unsafe (malicious or suspicious) finding,
+    // 4 = at least one request exception.
+
     for pkg in &pkgs {
         let urls = pkg.manifest().url();
         if urls.is_empty() {
-            output::named(pkg.name(), rust_i18n::t!("cmd.no_download_urls"));
+            output::named(pkg.name(), hok_i18n::t!("cmd.no_download_urls"));
             continue;
         }
 
+        let Some(key) = &api_key else {
+            // Unreachable: the no-key guard above already returned; a package
+            // without URLs was skipped. Kept to satisfy the Option binding.
+            continue;
+        };
         let url = urls[0].split('#').next().unwrap_or(urls[0]);
-        print!("  {}: {} ... ", pkg.name(), url);
-
-        if let Some(key) = &api_key {
-            match package::virustotal::check_url(url, key) {
-                Ok(stats) => {
-                    if stats.malicious > 0 {
-                        output::err(format!("MALICIOUS {}/{} engines flagged", stats.malicious, stats.total));
-                    } else if stats.suspicious > 0 {
-                        output::warn(format!("SUSPICIOUS {}/{} suspicious", stats.suspicious, stats.total));
-                    } else {
-                        output::info(format!("OK {}/{} clean", stats.total - stats.harmless, stats.total));
-                    }
-                }
-                Err(e) => output::err(format!("{e}")),
+        match package::virustotal::check_url(url, key).await {
+            // A finding is result *data*: print it to stdout (colour-coded by
+            // severity) so redirecting stdout keeps the full report, and set the
+            // Scoop "unsafe" exit bit (2) for automation/CI. The name is
+            // emphasized, the verdict carries the severity role.
+            Ok(stats) if stats.malicious > 0 => {
+                exit_code |= 2;
+                println!(
+                    "  {}: {}",
+                    style::emphasis(pkg.name()),
+                    style::danger(hok_i18n::t!(
+                        "cmd.vt_malicious",
+                        n = stats.malicious,
+                        total = stats.total
+                    ))
+                );
             }
-        } else {
-            output::warn(rust_i18n::t!("cmd.vt_skip"));
+            Ok(stats) if stats.suspicious > 0 => {
+                exit_code |= 2;
+                println!(
+                    "  {}: {}",
+                    style::emphasis(pkg.name()),
+                    style::warning(hok_i18n::t!(
+                        "cmd.vt_suspicious",
+                        n = stats.suspicious,
+                        total = stats.total
+                    ))
+                );
+            }
+            Ok(stats) => println!(
+                "  {}: {}",
+                style::emphasis(pkg.name()),
+                style::success(hok_i18n::t!("cmd.vt_clean", total = stats.total))
+            ),
+            // A request exception is a real failure (Scoop bit 4).
+            Err(e) => {
+                exit_code |= 4;
+                output::err(format!("{}: {}", pkg.name(), e));
+            }
         }
+    }
+
+    if exit_code != 0 {
+        return Err(ExitCode(exit_code as i32).into());
     }
 
     Ok(())

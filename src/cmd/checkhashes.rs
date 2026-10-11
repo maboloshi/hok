@@ -1,21 +1,37 @@
 //! Check for hash problems in package manifests.
+//!
+//! Walks the manifests under `--dir`, downloads every URL they declare and
+//! compares the computed digest with the `hash` field, mirroring Scoop's
+//! `bin/checkhashes.ps1`. Manifests that declare a top-level `url` are checked
+//! against it alone; the rest are checked per architecture (64bit, 32bit,
+//! arm64).
+//!
+//! With `--update` a manifest whose hashes do not match is rewritten in place
+//! (CRLF, trailing newline preserved), while `--force` also rewrites manifests
+//! whose hashes are already correct.
 
 use clap::Parser;
 use libscoop::package::checkhashes::{self, CheckHashesStatus};
 use libscoop::Session;
 use std::path::PathBuf;
 
-use crate::cmd::shared_args::validate_dir;
+use crate::cmd::shared_args::{scan_dir, validate_dir, write_dir};
 use crate::{output, Result};
 
 /// Verify and update manifest hashes
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Bucket directory to scan for manifests
-    #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    ///
+    /// Defaults to the current directory, but required with `--update`/
+    /// `--force` (which rewrite manifests) or hok refuses to run.
+    #[arg(short = 'd', long)]
+    dir: Option<PathBuf>,
 
     /// Specific app(s) to check (supports wildcards, default: all)
+    ///
+    /// Matching is case-insensitive, like Scoop's `-App` filter; multiple
+    /// patterns are accepted and OR-ed together.
     #[arg(default_value = "*")]
     app: Vec<String>,
 
@@ -23,7 +39,10 @@ pub struct Args {
     #[arg(short = 'u', long, action = clap::ArgAction::SetTrue)]
     update: bool,
 
-    /// Force update manifest even when hash matches (re-hash)
+    /// Force update manifest even when hash matches
+    ///
+    /// Downloads are always re-fetched with this flag, even together with
+    /// `--keep-cache`.
     #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
     force: bool,
 
@@ -31,20 +50,36 @@ pub struct Args {
     #[arg(short = 's', long = "skip-correct", action = clap::ArgAction::SetTrue)]
     skip_correct: bool,
 
-    /// Keep downloaded files in cache after check completes
+    /// Keep downloaded files after the check completes
+    ///
+    /// Equivalent to Scoop's `-UseCache`: the next run reuses the cached files
+    /// instead of downloading them again, so it may check an already
+    /// out-of-date file. The cache is keyed by manifest version.
     #[arg(short = 'k', long = "keep-cache", action = clap::ArgAction::SetTrue)]
     keep_cache: bool,
 
     /// Use cache directory for downloaded files
+    ///
+    /// Defaults to a temporary directory that is removed at the end of the run
+    /// unless `--keep-cache` is given.
     #[arg(short = 'c', long)]
     cache: Option<PathBuf>,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
-    validate_dir(&args.dir)?;
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
+    // `--update` and `--force` both rewrite manifests (`--force` implies
+    // `--update`, like upstream's `if ($ForceUpdate) { $Update = $true }` in
+    // `bin/checkhashes.ps1:52`), so either one demands an explicit target.
+    // A plain check only reads, and keeps the current-directory default.
+    let dir = if args.update || args.force {
+        write_dir(args.dir, "checkhashes")?
+    } else {
+        scan_dir(args.dir)
+    };
+    validate_dir(&dir)?;
 
     let options = checkhashes::CheckhashesOptions {
-        dir: args.dir,
+        dir,
         app: args.app,
         update: args.update,
         force: args.force,
@@ -62,11 +97,11 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
             }
         }
         CheckHashesStatus::Updated => {
-            output::change(
-                rust_i18n::t!("cmd.checkhashes_mismatch_upd"),
-                "->",
-                &item.name,
-            );
+            output::done(format!(
+                "{}: {}",
+                item.name,
+                hok_i18n::t!("cmd.checkhashes_mismatch_upd")
+            ));
             for msg in &item.messages {
                 output::warn(msg);
             }
@@ -74,12 +109,13 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         CheckHashesStatus::Failed => {
             output::err(&item.name);
             for msg in &item.messages {
-                output::err(format!("  {msg}"));
+                output::err(format!("    {msg}"));
             }
         }
-    })?;
+    })
+    .await?;
 
-    output::info(rust_i18n::t!(
+    output::info(hok_i18n::t!(
         "cmd.checkhashes_summary",
         total = report.total,
         passed = report.passed,

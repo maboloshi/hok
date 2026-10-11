@@ -18,8 +18,8 @@ use serde_json::ser::PrettyFormatter;
 use std::io;
 use std::path::Path;
 
-use crate::error::Fallible;
 use crate::Error;
+use crate::error::Fallible;
 
 /// Ensure given `path` exist.
 #[inline]
@@ -60,7 +60,20 @@ where
     D: Serialize,
 {
     let path = path.as_ref();
-    ensure_dir(path.parent().unwrap())?;
+    // A path with no parent directory (empty, or a bare root) has nowhere to
+    // be written: report it instead of panicking. The config path is empty
+    // when `$HOME`/`USERPROFILE` is unset (see
+    // [`crate::config::default::home_join`]).
+    let parent = path.parent().ok_or_else(|| {
+        Error::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot write JSON to '{}': the path has no parent directory",
+                path.display()
+            ),
+        ))
+    })?;
+    ensure_dir(parent)?;
 
     // Use 4 spaces for indentation
     let formatter = PrettyFormatter::with_indent(b"    ");
@@ -110,9 +123,28 @@ pub fn remove_symlink<P: AsRef<Path>>(lnk: P) -> io::Result<()> {
 pub fn symlink_dir<P: AsRef<Path>, Q: AsRef<Path>>(src: P, lnk: Q) -> io::Result<()> {
     let src = src.as_ref();
     let lnk = lnk.as_ref();
-    let _ = remove_symlink(lnk);
+    // A leftover entry has to go before the link can be created. Removal fails
+    // for a real non-empty directory, which no link can replace anyway: report
+    // that failure rather than letting the link creation below surface the
+    // less informative `ERROR_ALREADY_EXISTS` (os error 183).
+    if let Err(e) = remove_symlink(lnk)
+        && lnk.exists()
+    {
+        return Err(e);
+    }
 
-    ensure_dir(lnk.parent().unwrap())?;
+    // Same degenerate-path guard as [`write_json`]: a link path with no
+    // parent directory cannot be created.
+    let parent = lnk.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cannot create a directory symlink at '{}': the path has no parent directory",
+                lnk.display()
+            ),
+        )
+    })?;
+    ensure_dir(parent)?;
     if std::os::windows::fs::symlink_dir(src, lnk).is_err() {
         junction::create(src, lnk)
     } else {
@@ -170,6 +202,76 @@ mod tests {
         assert!(
             text.ends_with("\r\n"),
             "rewritten file should end with CRLF"
+        );
+    }
+
+    /// A path with no parent directory (an empty path, as produced by
+    /// `config::default::hok_config_path` without a home directory) must be
+    /// rejected with an error instead of panicking.
+    #[test]
+    fn write_json_rejects_path_without_parent() {
+        let v = serde_json::json!({"version": "1.0"});
+
+        let err = write_json(std::path::PathBuf::new(), &v).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("no parent directory"),
+            "unexpected message: {err}"
+        );
+
+        // A bare root has no parent either.
+        let err = write_json("/", &v).unwrap_err();
+        assert!(matches!(err, Error::Io(_)), "got: {err:?}");
+    }
+
+    /// [`symlink_dir`] shares the degenerate-path guard: an empty link path is
+    /// an error, not a panic.
+    #[test]
+    fn symlink_dir_rejects_path_without_parent() {
+        let err = symlink_dir(".", std::path::PathBuf::new()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// A real non-empty directory at the link path cannot be replaced by a
+    /// link. The cleanup failure must be reported as-is instead of being
+    /// swallowed into the misleading `ERROR_ALREADY_EXISTS` the link creation
+    /// would raise (the shape that made a failed persist link read as
+    /// "os error 183").
+    #[test]
+    fn symlink_dir_reports_an_unremovable_existing_directory() {
+        let dir = crate::test_utils::tmpdir("fs_symlink_unremovable");
+        let src = dir.join("src");
+        let lnk = dir.join("lnk");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&lnk).unwrap();
+        std::fs::write(lnk.join("keep"), b"x").unwrap();
+
+        let err = symlink_dir(&src, &lnk).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::DirectoryNotEmpty);
+        assert!(
+            lnk.join("keep").exists(),
+            "the directory must be left alone"
+        );
+    }
+
+    /// A leftover link at the link path is still replaced silently — the
+    /// tightening above must not turn an ordinary re-link into an error.
+    #[test]
+    fn symlink_dir_replaces_an_existing_link() {
+        let dir = crate::test_utils::tmpdir("fs_symlink_relink");
+        let first = dir.join("first");
+        let second = dir.join("second");
+        let lnk = dir.join("lnk");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+
+        symlink_dir(&first, &lnk).unwrap();
+        symlink_dir(&second, &lnk).unwrap();
+
+        assert_eq!(
+            std::fs::canonicalize(&lnk).unwrap(),
+            std::fs::canonicalize(&second).unwrap()
         );
     }
 }

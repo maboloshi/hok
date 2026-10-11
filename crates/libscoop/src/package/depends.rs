@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use crate::{error::Fallible, QueryOption, Session};
+use crate::{QueryOption, Session, error::Fallible};
 
 /// A node in the flattened dependency tree.
 #[derive(Debug, Clone, PartialEq, Eq)]

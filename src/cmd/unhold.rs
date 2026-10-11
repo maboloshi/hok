@@ -22,7 +22,7 @@ pub struct Args {
     global: bool,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     ensure_global(session, args.global, "unhold")?;
-    hold_packages(session, &args.package, false, rust_i18n::t!("cmd.unholding"))
+    hold_packages(session, &args.package, false, hok_i18n::t!("cmd.unholding"))
 }

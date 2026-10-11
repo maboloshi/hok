@@ -13,7 +13,7 @@
 //!   `Cli::parse()` so that help text appears in the correct language.
 //!   The [`I18nHelp`] derive macro patches the clap command tree.
 //! - **Config-driven initialisation**: After parsing, session config is
-//!   read to apply `output_style`, `language`, and `no_color` — the CLI
+//!   read to apply `language`, and `no_color` — the CLI
 //!   `--lang` / `--no-color` flags take precedence over config values.
 //! - **Double-pass language init**: First pass detects `--lang` from raw
 //!   args for help text; second pass (after parse) re-initialises if the
@@ -34,16 +34,15 @@
 //!   other crates use `RUST_LOG` or the default filter.
 
 use clap::{
-    crate_description, crate_name, crate_version, CommandFactory, FromArgMatches, Parser,
-    Subcommand,
+    ArgAction, CommandFactory, FromArgMatches, Parser, Subcommand, crate_description, crate_name,
+    crate_version, error::ErrorKind,
 };
 use clap_verbosity_flag::Verbosity;
 use hok_i18n_derive::I18nHelp;
 use libscoop::Session;
-use rust_i18n::t;
 use std::ffi::OsString;
 use tracing_subscriber::{
-    filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+    EnvFilter, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
 use crate::i18n::{self, LanguageChoice};
@@ -53,6 +52,182 @@ use crate::i18n::{self, LanguageChoice};
 include!("__cmd_reg__.rs");
 
 use crate::Result;
+
+/// Resolve a manifest query for the read-only manifest commands
+/// (`cat`, `home`).
+///
+/// The source resolution itself is **not** done here: it lives in
+/// `libscoop::package::manifest_source::get_manifest`, the one `Get-Manifest`
+/// implementation shared by every command (URL / UNC / local file / installed
+/// record / bucket, in upstream's order). The only CLI-level concern kept here
+/// is hok's interactive pick when a bare, uninstalled name matches several
+/// buckets: the resolution entry reports the candidate set
+/// (`GetManifest::candidates`) rather than silently taking the first bucket
+/// the way upstream does (`lib/manifest.ps1:107-109`), and the pick is then
+/// re-resolved against the chosen bucket.
+///
+/// `multiple` renders the command's own "several candidates" heading for the
+/// candidate count; `not_found` and `invalid` are that command's already
+/// localized messages.
+pub(crate) async fn resolve_manifest_query(
+    session: &Session,
+    query: &str,
+    multiple: impl Fn(usize) -> String,
+    not_found: String,
+    invalid: String,
+) -> Result<libscoop::package::GetManifest> {
+    let resolved =
+        match libscoop::package::manifest_source::get_manifest(session, query, None).await {
+            Ok(resolved) => resolved,
+            // Each command keeps its own "not found" wording; everything else
+            // (an unreachable URL, an unreadable file, a parse failure) passes
+            // through untouched.
+            Err(libscoop::Error::PackageNotFound(_)) => {
+                return Err(anyhow::anyhow!(not_found));
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+    if resolved.candidates.len() <= 1 {
+        return Ok(resolved);
+    }
+
+    crate::output::info(multiple(resolved.candidates.len()));
+    for (index, bucket) in resolved.candidates.iter().enumerate() {
+        println!("  {index}. {bucket}/{}", resolved.name);
+    }
+    let index = crate::output::prompt_select(resolved.candidates.len())
+        .ok_or_else(|| anyhow::anyhow!(invalid))?;
+
+    Ok(libscoop::package::manifest_source::get_manifest(
+        session,
+        query,
+        Some(&resolved.candidates[index]),
+    )
+    .await?)
+}
+
+/// The `bat` invocation behind the `cat_style` setting.
+///
+/// Shared by the two commands that have to agree on it: `cat` renders the
+/// manifest through this command line, and `config` asks `bat` whether the
+/// value the user just typed is one it accepts. They must ask the *same*
+/// question — a longer or differently spelled invocation on either side would
+/// let a value pass `hok config` and still be rejected at render time.
+///
+/// `cat_style` is not hok's own vocabulary: it goes to `bat --style` verbatim,
+/// as it does upstream (`libexec/scoop-cat.ps1:21`). The accepted values
+/// therefore belong to the installed bat and change with it — components were
+/// added across its releases, and a `+`/`-` prefixed list modifies the previous
+/// set instead of replacing it — which is why neither caller keeps a list of
+/// them and the tool itself is asked instead.
+pub(crate) fn bat_command(style: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new("bat.exe");
+    cmd.args(["--no-paging", "--style", style, "--language", "json"]);
+    cmd
+}
+
+/// Localized Info-column word for one concern kind.
+///
+/// The *order* of the words is fixed once in
+/// `libscoop::package::status::AppStatus::info_kinds` and shared verbatim by
+/// `status` and `list`; this function only translates a kind into the
+/// currently selected language, so the two commands can never drift.
+///
+/// The wording itself is **not** shared: upstream spells the same state
+/// differently per command (`list` says `Deprecated package`, `status` says
+/// `Deprecated`), so the command is part of the lookup key rather than each
+/// command growing its own copy of the table.
+#[derive(Clone, Copy)]
+pub(crate) enum InfoContext {
+    List,
+    Status,
+}
+
+pub(crate) fn status_info_word(
+    kind: libscoop::package::status::InfoKind,
+    context: InfoContext,
+) -> String {
+    use libscoop::package::status::InfoKind;
+    match kind {
+        InfoKind::InstallFailed => hok_i18n::t!("cmd.status_install_failed").to_string(),
+        InfoKind::Held => hok_i18n::t!("cmd.status_held").to_string(),
+        InfoKind::Deprecated => match context {
+            InfoContext::List => hok_i18n::t!("cmd.list_info_deprecated").to_string(),
+            InfoContext::Status => hok_i18n::t!("cmd.status_deprecated").to_string(),
+        },
+        InfoKind::Orphaned => hok_i18n::t!("cmd.status_removed").to_string(),
+        InfoKind::BucketMissing => hok_i18n::t!("cmd.status_bucket_missing").to_string(),
+        InfoKind::SourceUnknown => hok_i18n::t!("cmd.status_source_unknown").to_string(),
+    }
+}
+
+/// The note a version row carries in the installed-version tables.
+///
+/// Shared by `list --versions` and `cleanup --list` so the two tables cannot
+/// drift on what a version directory means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VersionNote {
+    /// No note: the current version, or a further row of an app whose current
+    /// version cannot be resolved.
+    None,
+    /// A retained (non-current) version.
+    Old,
+    /// No version resolves as current, so the block says so instead of calling
+    /// a possibly-live version "old".
+    CurrentUnknown,
+}
+
+impl VersionNote {
+    /// The localized note text; empty for [`VersionNote::None`].
+    pub(crate) fn text(self) -> String {
+        match self {
+            VersionNote::None => String::new(),
+            VersionNote::Old => hok_i18n::t!("cmd.list_version_old").to_string(),
+            VersionNote::CurrentUnknown => {
+                hok_i18n::t!("cmd.cleanup_list_current_unknown").to_string()
+            }
+        }
+    }
+}
+
+/// Which note the `index`-th row of one app's version block carries.
+///
+/// `has_current` is false when the shared resolver named no current version —
+/// a broken install, e.g. an app dir whose `current\manifest.json` and
+/// `install.json` are both gone. Then **nothing** in the block may be called an
+/// old version: the first row says the current version is unknown and the rest
+/// stay unlabelled. Labelling them `Old` would claim the live version dir is a
+/// leftover, which is exactly what a read-only listing must not assert.
+pub(crate) fn version_note(index: usize, is_current: bool, has_current: bool) -> VersionNote {
+    match (is_current, has_current, index) {
+        (true, _, _) => VersionNote::None,
+        (false, true, _) => VersionNote::Old,
+        (false, false, 0) => VersionNote::CurrentUnknown,
+        (false, false, _) => VersionNote::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VersionNote;
+    use super::version_note;
+
+    /// A broken install (no resolvable current version) must not label its
+    /// versions old: the block says the current version is unknown instead,
+    /// while a healthy app keeps the `旧版本` notes.
+    #[test]
+    fn version_notes_distinguish_unknown_current_from_old_versions() {
+        // Healthy app: the current row is unlabelled, the rest are old.
+        assert_eq!(version_note(0, true, true), VersionNote::None);
+        assert_eq!(version_note(1, false, true), VersionNote::Old);
+
+        // Broken app: the first row reports the unknown current version and
+        // the remaining rows stay unlabelled — none of them is known-old.
+        assert_eq!(version_note(0, false, false), VersionNote::CurrentUnknown);
+        assert_eq!(version_note(1, false, false), VersionNote::None);
+    }
+}
 
 #[derive(Parser, I18nHelp)]
 #[command(
@@ -79,10 +254,6 @@ pub struct Cli {
     #[command(flatten)]
     verbose: Verbosity,
 
-    /// Show detailed operation information for debugging
-    #[arg(global = true, long)]
-    pub detail: bool,
-
     /// Force CLI language (auto/en/zh)
     #[arg(global = true, long = "lang", short = 'L', default_value_t = LanguageChoice::Auto, value_enum)]
     pub language: LanguageChoice,
@@ -90,6 +261,10 @@ pub struct Cli {
     /// Disable colored output
     #[arg(global = true, long = "no-color", short = 'N')]
     pub no_color: bool,
+
+    /// Force the transaction confirmation gate, ignoring the `confirm` config
+    #[arg(global = true, long)]
+    pub confirm: bool,
 }
 
 #[derive(Subcommand)]
@@ -113,7 +288,14 @@ pub enum Command {
     /// Download package(s) into the cache folder without installing
     Download(download::Args),
     Export(export::Args),
+    // Upstream's script is `bin/formatjson.ps1`, so the command is
+    // `formatjson` — without the explicit `name`, clap kebab-cases the variant
+    // ident to `format-json` and `hok formatjson` is rejected as an unknown
+    // subcommand. The kebab spelling stays as an alias for scripts already
+    // written against it.
+    #[clap(name = "formatjson", alias = "format-json")]
     FormatJson(formatjson::Args),
+    Health(health::Args),
     Hold(hold::Args),
     Home(home::Args),
     Import(import::Args),
@@ -138,6 +320,74 @@ pub enum Command {
     Which(which::Args),
 }
 
+/// Every top-level subcommand name and clap alias of `cmd`.
+fn command_names(cmd: &clap::Command) -> Vec<String> {
+    cmd.get_subcommands()
+        .flat_map(|s| {
+            let mut all = vec![s.get_name().to_string()];
+            all.extend(s.get_aliases().map(|a| a.to_string()));
+            all
+        })
+        .collect()
+}
+
+/// The top-level command names clap resolves for the freshly built CLI tree.
+///
+/// `alias add` uses this to reject alias names clap would match before the
+/// alias is ever consulted — such an alias could never run.
+pub(crate) fn cli_command_names() -> Vec<String> {
+    command_names(&Cli::command())
+}
+
+/// Index of the first positional token in the raw argv (the subcommand).
+///
+/// `argv[0]` is the program name and every leading option (including global
+/// options such as `--lang zh`) is skipped; hok commands are all
+/// single-level, so the first non-option argument is always the subcommand.
+fn subcommand_index(raw: &[OsString]) -> Option<usize> {
+    raw.iter()
+        .enumerate()
+        .skip(1) // argv[0] is the program name
+        .find(|(_, a)| {
+            let s = a.to_string_lossy();
+            !s.is_empty() && !s.starts_with('-')
+        })
+        .map(|(i, _)| i)
+}
+
+/// Render a clap parse outcome and turn it into the process exit code.
+///
+/// Scoop's own codes for the two screens differ from clap's defaults:
+/// help/version exit 0 (`bin/scoop.ps1:18-19` renders help for a bare
+/// `scoop`), while a usage error exits 1 (`libexec/scoop-install.ps1:60`
+/// reports `<app> missing` before `exit 1`, and `abort` defaults to 1 in
+/// `lib/core.ps1:293`). clap's `get_matches_from` would instead exit 2 for
+/// both, so the error is rendered here and the code chosen explicitly.
+///
+/// A bare invocation (`hok`, `hok --lang zh`) is Scoop's help screen and
+/// therefore exits 0; asking for help of a *subcommand* without its required
+/// arguments (`hok install`) is a usage error and exits 1.
+fn exit_for_parse_error(err: clap::error::Error, raw: &[OsString]) -> crate::ExitCode {
+    use clap::error::ErrorKind;
+
+    let asked_for_help = matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    );
+    let bare_invocation = err.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        && subcommand_index(raw).is_none();
+
+    let code = if asked_for_help || bare_invocation {
+        0
+    } else {
+        1
+    };
+    // `print` writes help/version to stdout and errors to stderr; the code
+    // above is what the process reports either way.
+    let _ = err.print();
+    crate::ExitCode(code)
+}
+
 /// Normalise the subcommand token in raw CLI args to lowercase so subcommand
 /// matching is case-insensitive, matching Scoop/PowerShell semantics.
 ///
@@ -145,25 +395,10 @@ pub enum Command {
 /// single-level). Only that token is rewritten, and only when it matches a
 /// known subcommand name or alias (ASCII case-insensitively) — so positional
 /// values like `hok search Foo` are never touched.
-fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsString> {
-    let names: Vec<String> = cmd
-        .get_subcommands()
-        .flat_map(|s| {
-            let mut all = vec![s.get_name().to_string()];
-            all.extend(s.get_aliases().map(|a| a.to_string()));
-            all
-        })
-        .collect();
+fn normalize_subcommand_case(cmd: &clap::Command, raw: &[OsString]) -> Vec<OsString> {
+    let names = command_names(cmd);
 
-    let sub_pos = raw
-        .iter()
-        .enumerate()
-        .skip(1) // argv[0] is the program name
-        .find(|(_, a)| {
-            let s = a.to_string_lossy();
-            !s.is_empty() && !s.starts_with('-')
-        })
-        .map(|(i, _)| i);
+    let sub_pos = subcommand_index(raw);
 
     raw.iter()
         .enumerate()
@@ -182,35 +417,249 @@ fn normalize_subcommand_case(cmd: &clap::Command, raw: Vec<OsString>) -> Vec<OsS
         .collect()
 }
 
+/// Split raw CLI arguments into an alias name and the arguments following it.
+///
+/// The name is the first non-option token; option *values* are skipped so that
+/// `hok --lang zh foo a` yields `("foo", ["a"])` rather than mistaking `zh` for
+/// the subcommand. Only called once clap has already rejected the token as an
+/// unknown subcommand, so a `None` here means there is nothing to dispatch.
+fn alias_invocation(cmd: &clap::Command, raw: &[OsString]) -> Option<(String, Vec<OsString>)> {
+    let mut i = 1; // argv[0] is the program name
+    while i < raw.len() {
+        let token = raw[i].to_string_lossy();
+        if token.starts_with('-') {
+            let takes_value = !token.contains('=') && option_takes_value(cmd, &token);
+            i += if takes_value { 2 } else { 1 };
+            continue;
+        }
+        return Some((token.into_owned(), raw[i + 1..].to_vec()));
+    }
+    None
+}
+
+/// Whether the top-level option spelled `-x` / `--xxx` consumes the next
+/// argument (`--lang zh`), as opposed to being a flag (`--no-color`).
+fn option_takes_value(cmd: &clap::Command, option: &str) -> bool {
+    let name = option.trim_start_matches('-');
+    let short = match name.chars().count() {
+        1 => name.chars().next(),
+        _ => None,
+    };
+    cmd.get_arguments().any(|a| {
+        a.get_action().takes_values()
+            && (a.get_long() == Some(name) || short.is_some_and(|c| a.get_short() == Some(c)))
+    })
+}
+
+/// Localize every structural section heading in the help of *all* commands.
+///
+/// clap renders arguments that carry **no** `help_heading` under hard-coded
+/// English titles ("Arguments:"/"Options:"), which is why a zh session used to
+/// mix English "Arguments"/"Options" headings with the localized ones the
+/// [`I18nHelp`] derive sets on the global args. Here we assign a localized
+/// `help_heading` to *every* argument of every command (positionals to the
+/// Arguments heading, options/help/version to the Options heading) so clap
+/// never falls back to its English literals, and so all option-style args
+/// (per-command flags + globals + -h/--help) merge into a single localized
+/// "Options" section instead of two parallel ones.
+///
+/// The pass is split around `Command::build()` because the two halves have
+/// opposite requirements:
+///
+/// - Reordering arguments (positionals first, so the Arguments section always
+///   precedes the Options section) needs `Command::mut_arg`, which removes the
+///   argument and pushes it back. clap caches an argument-name → index map the
+///   first time a command is built and never refreshes it, so that map must not
+///   exist yet — reordering a *built* tree silently points `--help` (and every
+///   other key) at whatever argument landed in its cached slot. See
+///   [`order_positionals_first`].
+/// - clap materialises `-h/--help` (and `-V/--version` on a command that
+///   carries a version) *inside* `build()`, so their localized text can only be
+///   applied afterwards — in place, via `Command::mut_args`. See
+///   [`localize_heading_level`].
+fn localize_structural_headings(mut cmd: clap::Command) -> clap::Command {
+    let args_h = hok_i18n::t!("cli_help.heading.arguments").to_string();
+    let opts_h = hok_i18n::t!("cli_help.heading.options").to_string();
+    let global_opts_h = hok_i18n::t!("cli_help.heading.global_options").to_string();
+
+    // Collect the global argument ids from the top-level Cli (before build,
+    // so we can distinguish them from per-subcommand options after build).
+    let global_ids: std::collections::HashSet<String> = cmd
+        .get_arguments()
+        .filter(|a| {
+            // clop 4.5 exposes is_global_set() on Arg; fall back to comparing
+            // against the parent command's known global args if unavailable.
+            a.is_global_set()
+        })
+        .map(|a| a.get_id().to_string())
+        .collect();
+
+    // Phase 1, before `build()`: put each command's positionals in front of its
+    // options.
+    cmd = order_positionals_first(cmd);
+
+    // Phase 2, after `build()`: label every argument — the user args ordered
+    // above, the globals clap propagated into the subcommands, and the
+    // -h/--help / -V/--version args clap added itself.
+    cmd.build();
+    localize_heading_level(cmd, &args_h, &opts_h, &global_opts_h, &global_ids)
+}
+
+/// Move every positional argument of every command in front of that command's
+/// options, preserving the relative order within each kind.
+///
+/// Help sections are emitted in the order their heading is first seen while
+/// walking the arguments, so this is what guarantees `Arguments:` renders
+/// before `Options:` no matter how a command declares its fields (`checkver`,
+/// for one, declares `-d/--dir` before its `[APP]...` positional).
+///
+/// Two rotations are needed because `mut_arg` can only move an argument to the
+/// *end*: first the positionals, then the options, which together leave the
+/// positionals in front.
+///
+/// **Must only run before `build()`.** `mut_arg` is remove + push, which clap's
+/// cached name → index map does not track, so reordering a built command is
+/// what made `hok checkver --help` answer with "a value is required for
+/// '--version <VERSION>'".
+fn order_positionals_first(cmd: clap::Command) -> clap::Command {
+    let mut cmd = cmd;
+    let ids: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| a.is_positional())
+        .chain(cmd.get_arguments().filter(|a| !a.is_positional()))
+        .map(|a| a.get_id().to_string())
+        .collect();
+    for id in &ids {
+        cmd = cmd.mut_arg(id, |a| a);
+    }
+    // `mut_subcommands` maps in place, so the subcommand order — and with it the
+    // rendered `Subcommands:` section — is left untouched.
+    cmd.mut_subcommands(order_positionals_first)
+}
+
+/// Assign the localized headings to one command and recurse into its
+/// subcommands.
+///
+/// Runs on a **built** tree, so the arguments are rewritten in place with
+/// `mut_args` instead of `mut_arg`: `mut_args` keeps every argument at its
+/// index, which is what the index map cached by `build()` depends on.
+///
+/// The auto-generated `-h/--help` and `-V/--version` args are recognised by
+/// their [`ArgAction`] rather than by their id, because two commands
+/// (`checkver` and `reset`) declare an argument of their own called `version` —
+/// matching on the id used to relabel those user args with clap's own
+/// "Print version" text (and, via `mut_arg`, corrupted the command outright).
+fn localize_heading_level(
+    cmd: clap::Command,
+    args_h: &str,
+    opts_h: &str,
+    global_opts_h: &str,
+    global_ids: &std::collections::HashSet<String>,
+) -> clap::Command {
+    let pos_h = args_h.to_string();
+    let opt_h = opts_h.to_string();
+    let global_opt_h = global_opts_h.to_string();
+    // Both short (-h/-V) and long (--help/--version) render paths must show the
+    // localized text: `help` is used for the short view and `long_help` for the
+    // long view, so set both.
+    let help_txt = hok_i18n::t!("cli_help.hok.args.help").to_string();
+    let version_txt = hok_i18n::t!("cli_help.hok.args.version").to_string();
+
+    let cmd = cmd.mut_args(move |a| match a.get_action() {
+        ArgAction::Help => a
+            .help_heading(global_opt_h.clone())
+            .help(help_txt.clone())
+            .long_help(help_txt.clone()),
+        ArgAction::Version => a
+            .help_heading(global_opt_h.clone())
+            .help(version_txt.clone())
+            .long_help(version_txt.clone()),
+        _ if a.is_positional() => a.help_heading(pos_h.clone()),
+        _ if global_ids.contains(a.get_id().as_str()) => a.help_heading(global_opt_h.clone()),
+        _ => a.help_heading(opt_h.clone()),
+    });
+
+    cmd.mut_subcommands(|sub| {
+        if sub.get_name() == "help" {
+            // clap auto-adds a `help` subcommand to any command that has
+            // subcommands, with a hard-coded English about; localize it too.
+            let about = hok_i18n::t!("cli_help.help.about").to_string();
+            sub.about(about)
+        } else {
+            localize_heading_level(sub, args_h, opts_h, global_opts_h, global_ids)
+        }
+    })
+}
+
 /// CLI entry point
-pub fn start() -> Result<()> {
+///
+/// `cancellation` is the process-wide cooperative cancellation token (wired
+/// to Ctrl-C by `create_app`) — it is mounted on the session so long-running
+/// operations (downloads, scripts, waits) can abort cleanly.
+pub async fn start(cancellation: tokio_util::sync::CancellationToken) -> Result<()> {
     // Detect language before Cli::parse() so help text is rendered in the right language
     let preselected_language = i18n::detect_language_choice_from_args();
     i18n::init_language(preselected_language);
 
     let args = {
-        let cmd = Cli::patch_i18n(Cli::command());
+        let cmd = localize_structural_headings(Cli::patch_i18n(Cli::command()));
         // Scoop (PowerShell) semantics: subcommand names are case-insensitive
         // (`hok INSTALL` == `hok install`). clap 4 dropped subcommand-level
         // `ignore_case`, so normalise the subcommand token (the first
         // non-option argument; hok commands are all single-level) to
         // lowercase before parsing — see [`normalize_subcommand_case`].
         let raw: Vec<OsString> = std::env::args_os().collect();
-        let normalized = normalize_subcommand_case(&cmd, raw);
-        Cli::from_arg_matches(&cmd.get_matches_from(normalized))
-    }?;
+        let normalized = normalize_subcommand_case(&cmd, &raw);
+        match cmd.clone().try_get_matches_from(normalized.clone()) {
+            Ok(matches) => Cli::from_arg_matches(&matches)?,
+            Err(err) => {
+                // Aliases are not clap subcommands: they are scripts in the
+                // shims directory, exactly as upstream resolves them
+                // (`command_files` globs `shims\scoop-*.ps1`). So an unknown
+                // subcommand may still name one.
+                if err.kind() == ErrorKind::InvalidSubcommand
+                    && let Some((name, rest)) = alias_invocation(&cmd, &normalized)
+                {
+                    // Aliases are scripts in the (root-derived) shims
+                    // directory, so they need a known root for the same
+                    // reason as the main dispatch below.
+                    let session = Session::default();
+                    session.config().require_root_path()?;
+                    if let Some(code) = alias::dispatch(&session, &name, &rest).await? {
+                        return if code == 0 {
+                            Ok(())
+                        } else {
+                            Err(crate::ExitCode(code).into())
+                        };
+                    }
+                }
+                // Everything that is not an alias is a clap parse outcome,
+                // rendered with Scoop's codes instead of clap's own 2 — see
+                // [`exit_for_parse_error`].
+                return Err(exit_for_parse_error(err, &raw).into());
+            }
+        }
+    };
 
     // If user explicitly set --lang in Cli args (not auto), re-init with explicit choice
     if !matches!(args.language, LanguageChoice::Auto) {
         i18n::init_language(args.language);
     }
 
-    setup_logger(args.verbose.tracing_level_filter(), args.detail)?;
-    crate::set_detail(args.detail);
+    setup_logger(args.verbose.tracing_level_filter())?;
 
     let session = Session::default();
-    let user_agent = format!("Scoop/1.0 (+https://scoop.sh/) Hok/{}", crate_version!());
-    let _ = session.set_user_agent(&user_agent);
+    // A stripped environment (neither `$SCOOP` nor a home directory) leaves the
+    // user-level root undetermined — and even a global run resolves `buckets`
+    // against it. Every layout path (`apps`, `shims`, `modules`, `persist`, the
+    // cache) derives from it, so fail fast with a clear error instead of
+    // silently resolving them against the current directory.
+    session.config().require_root_path()?;
+    // Force the confirmation gate for every sync command (`--confirm`).
+    session.set_force_confirm(args.confirm);
+    // Mount the process-wide Ctrl-C cancellation token so long-running
+    // operations (downloads, scripts, waits) can abort cleanly on interrupt.
+    session.set_cancellation_token(cancellation)?;
 
     // Route structured output emitted by libscoop to the CLI renderer. The
     // library never writes to stdout/stderr itself; without this sink its
@@ -220,6 +669,7 @@ pub fn start() -> Result<()> {
             libscoop::output::Output::Info(msg) => crate::output::info(msg),
             libscoop::output::Output::Warn(msg) => crate::output::warn(msg),
             libscoop::output::Output::Error(msg) => crate::output::err(msg),
+            libscoop::output::Output::Detail(msg) => crate::output::detail(msg),
             libscoop::output::Output::Done(msg) => crate::output::done(msg),
             libscoop::output::Output::Ok => crate::output::ok(),
             libscoop::output::Output::Progress { action, target } => {
@@ -231,80 +681,82 @@ pub fn start() -> Result<()> {
     ));
 
     // --- Config-driven initialization ---
-    let config = session.config();
+    // Read the config inside a scope so the read guard is dropped before the
+    // command dispatch below: the dispatch awaits every command, and a guard
+    // held across an await would block a command that takes `config_mut()`
+    // (e.g. `bucket update`), deadlocking or failing with `ConfigInUse`.
+    let no_color = {
+        let config = session.config();
 
-    // Set output style from config (default: scoop)
-    crate::output::set_style(config.output_style());
-
-    // Apply language from config if --lang was not explicitly set
-    if matches!(args.language, LanguageChoice::Auto) {
-        let cfg_lang = config.language();
-        if cfg_lang != "auto" {
-            let choice = match cfg_lang.to_lowercase().as_str() {
-                "en" => LanguageChoice::En,
-                "zh" => LanguageChoice::Zh,
-                _ => LanguageChoice::Auto,
-            };
-            i18n::init_language(choice);
+        // Apply language from config if --lang was not explicitly set
+        if matches!(args.language, LanguageChoice::Auto) {
+            let cfg_lang = config.language();
+            if cfg_lang != "auto" {
+                let choice = match cfg_lang.to_lowercase().as_str() {
+                    "en" => LanguageChoice::En,
+                    "zh" => LanguageChoice::Zh,
+                    _ => LanguageChoice::Auto,
+                };
+                i18n::init_language(choice);
+            }
         }
-    }
 
-    // Color setting: CLI --no-color > config no_color > default enabled
-    let no_color = args.no_color || config.no_color();
+        // Color setting: CLI --no-color > config no_color > default enabled
+        args.no_color || config.no_color()
+    };
     crate::output::set_color_enabled(!no_color);
 
-    drop(config);
+    // Verbose step output: the global `-v` (warn) and above turns on the
+    // per-package lifecycle transcript. Read before `args.command` is moved.
+    crate::output::set_show_steps(args.verbose.tracing_level_filter() >= LevelFilter::WARN);
+    // High-verbosity detail: the global `-vv` (info) and above adds the data
+    // behind a message (e.g. the running processes an app is held by).
+    crate::output::set_show_details(args.verbose.tracing_level_filter() >= LevelFilter::INFO);
 
     match args.command {
-        Command::Alias(args) => alias::execute(args, &session),
-        Command::CiAutoPr(args) => auto_pr::execute(args, &session),
-        Command::Bucket(args) => bucket::execute(args, &session),
-        Command::Cache(args) => cache::execute(args, &session),
-        Command::Cat(args) => cat::execute(args, &session),
-        Command::Checkhashes(args) => checkhashes::execute(args, &session),
-        Command::Checkup(args) => checkup::execute(args, &session),
-        Command::Checkurls(args) => checkurls::execute(args, &session),
-        Command::Checkver(args) => checkver::execute(args, &session),
-        Command::Cleanup(args) => cleanup::execute(args, &session),
-        Command::Completions(args) => completions::execute(args),
-        Command::Config(args) => config::execute(args, &session),
-        Command::Create(args) => create::execute(args, &session),
-        Command::Depends(args) => depends::execute(args, &session),
-        Command::Download(args) => download::execute(args, &session),
-        Command::Export(args) => export::execute(args, &session),
-        Command::FormatJson(args) => formatjson::execute(args),
-        Command::Hold(args) => hold::execute(args, &session),
-        Command::Home(args) => home::execute(args, &session),
-        Command::Import(args) => import::execute(args, &session),
-        Command::Info(args) => info::execute(args, &session),
-        Command::Install(args) => install::execute(args, &session),
-        Command::List(args) => list::execute(args, &session),
-        Command::MissingCheckver(args) => missing_checkver::execute(args),
-        Command::Prefix(args) => prefix::execute(args, &session),
-        Command::Reinstall(args) => reinstall::execute(args, &session),
-        Command::Search(args) => search::execute(args, &session),
-        Command::Shim(args) => shim::execute(args, &session),
-        Command::Reset(args) => reset::execute(args, &session),
-        Command::Status(args) => status::execute(args, &session),
-        Command::Unhold(args) => unhold::execute(args, &session),
-        Command::Uninstall(args) => uninstall::execute(args, &session),
-        Command::Update(args) => update::execute(args, &session),
-        Command::Upgrade(args) => upgrade::execute(args, &session),
-        Command::Virustotal(args) => virustotal::execute(args, &session),
-        Command::Which(args) => which::execute(args, &session),
+        Command::Alias(args) => alias::execute(args, &session).await,
+        Command::CiAutoPr(args) => auto_pr::execute(args, &session).await,
+        Command::Bucket(args) => bucket::execute(args, &session).await,
+        Command::Cache(args) => cache::execute(args, &session).await,
+        Command::Cat(args) => cat::execute(args, &session).await,
+        Command::Checkhashes(args) => checkhashes::execute(args, &session).await,
+        Command::Checkup(args) => checkup::execute(args, &session).await,
+        Command::Checkurls(args) => checkurls::execute(args, &session).await,
+        Command::Checkver(args) => checkver::execute(args, &session).await,
+        Command::Cleanup(args) => cleanup::execute(args, &session).await,
+        Command::Completions(args) => completions::execute(args).await,
+        Command::Config(args) => config::execute(args, &session).await,
+        Command::Create(args) => create::execute(args, &session).await,
+        Command::Depends(args) => depends::execute(args, &session).await,
+        Command::Download(args) => download::execute(args, &session).await,
+        Command::Export(args) => export::execute(args, &session).await,
+        Command::FormatJson(args) => formatjson::execute(args).await,
+        Command::Health(args) => health::execute(args, &session).await,
+        Command::Hold(args) => hold::execute(args, &session).await,
+        Command::Home(args) => home::execute(args, &session).await,
+        Command::Import(args) => import::execute(args, &session).await,
+        Command::Info(args) => info::execute(args, &session).await,
+        Command::Install(args) => install::execute(args, &session).await,
+        Command::List(args) => list::execute(args, &session).await,
+        Command::MissingCheckver(args) => missing_checkver::execute(args).await,
+        Command::Prefix(args) => prefix::execute(args, &session).await,
+        Command::Reinstall(args) => reinstall::execute(args, &session).await,
+        Command::Search(args) => search::execute(args, &session).await,
+        Command::Shim(args) => shim::execute(args, &session).await,
+        Command::Reset(args) => reset::execute(args, &session).await,
+        Command::Status(args) => status::execute(args, &session).await,
+        Command::Unhold(args) => unhold::execute(args, &session).await,
+        Command::Uninstall(args) => uninstall::execute(args, &session).await,
+        Command::Update(args) => update::execute(args, &session).await,
+        Command::Upgrade(args) => upgrade::execute(args, &session).await,
+        Command::Virustotal(args) => virustotal::execute(args, &session).await,
+        Command::Which(args) => which::execute(args, &session).await,
     }
 }
 
-fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
-    // When --detail is active, ensure at least DEBUG level (unless user set higher via -vv)
-    let effective_level = if detail {
-        level_filter.max(LevelFilter::DEBUG)
-    } else {
-        level_filter
-    };
-
-    // filter for low-level/depedency logs
-    let low_level_filter = match effective_level {
+fn setup_logger(level_filter: LevelFilter) -> Result<()> {
+    // filter for low-level/dependency logs
+    let low_level_filter = match level_filter {
         LevelFilter::OFF => LevelFilter::OFF,
         LevelFilter::ERROR => LevelFilter::ERROR,
         LevelFilter::WARN => LevelFilter::WARN,
@@ -314,7 +766,7 @@ fn setup_logger(level_filter: LevelFilter, detail: bool) -> Result<()> {
     };
 
     let mut layer_env_filter = EnvFilter::builder()
-        .with_default_directive(effective_level.into())
+        .with_default_directive(level_filter.into())
         .from_env()?;
 
     // The custom `HOK_LOG_LEVEL` environment variable was introduced to set the

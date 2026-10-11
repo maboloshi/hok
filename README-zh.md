@@ -24,7 +24,7 @@
 | `once_cell` | std（LazyLock/OnceCell） | Rust 1.70+ 已标准化，无需第三方 |
 | scoop_hash selfcontained | rustcrypto 后端（后合并进 libscoop `internal::hash`） | 手写 MD5/SHA1/SHA256/SHA512 ~4700 行是维护债务；独立 crate 仅本项目使用，0.2.0 起不再单独发布 |
 | `remove_dir_all` | `std::fs::remove_dir_all`（Rust 1.74+） | 原生支持 Windows 长路径，无需第三方 |
-| `unarc-rs` | `unrar` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
+| `unarc-rs` | `rars` + 7z.exe 兜底 | unarc-rs 是万能解压库，拉入旧版 sevenz-rust2 + zip v8，引发整条 crypto 链重复 |
 | `thiserror` 1 + 2 并存 | 统一升级到 v2 | 消除依赖树中同一 crate 两个 major 版本的冗余 |
 | `md-5`/`sha1`/`sha2` 0.10 + 0.11 并存 | 统一升级到 v0.11 | 同上，消除 RustCrypto digest 双版本 |
 
@@ -45,19 +45,34 @@
 
 | 分类 | Crate | 说明 |
 |------|-------|------|
-| **压缩 — 纯 Rust** | `sevenz-rust2`, `zip`, `tar`, `flate2`, `bzip2`, `lzma-rs`, `zstd` | 各对应一种归档/压缩格式 |
-| **压缩 — C++ 后端** | `unrar` | RARLab 官方库，RAR 无纯 Rust 替代 |
+| **压缩 — 纯 Rust** | `sevenz-rust2`, `zip`, `tar`, `flate2`, `bzip2`, `lzma-rust2`, `rars` | 各对应一种归档/压缩格式；`rars` 覆盖 RAR 1.3/1.4、1.5–4.x、5+（含分卷与 RARVM filter） |
+| **压缩 — C 后端** | `zstd` | zstd C 库绑定，仅用于 `.zst` 解压；纯 Rust 的 `ruzstd` 解码慢 1.4–3.5 倍，暂不采用 |
 | **压缩 — 外部进程** | 7z.exe（运行时降级） | 兜底 LZH / ISO 等罕见格式 |
 | **Windows 专用** | `junction`, `winreg`, `innospect`, `shortcuts-rs` | Win32 API 的 Rust 封装 |
-| **网络** | `ureq` | 比 `reqwest` 轻量，纯 Rust |
-| **Git** | `git2` | libgit2 C 绑定（试过 `gix`，依赖树更大） |
-| **SQLite 缓存** | `rusqlite` (bundled) | 兼容 Scoop，无纯 Rust SQLite 替代 |
+| **网络（异步）** | `reqwest` (native-tls) | 异步 HTTP，供 async `Network` trait / 下载 / checkver；Windows 上走 schannel（系统证书与代理）；GitHub / VirusTotal API 也统一走 reqwest |
+| **Git** | `git2` | libgit2 C 绑定；边际依赖只有 `git2`/`libgit2-sys`/`libssh2-sys`/`libz-sys` 四个，`gix` 未被采用 |
+| **SQLite 缓存** | `rusqlite` (bundled) | 默认编译 bundled SQLite 以兼容 Scoop schema；另有可选的 `winsqlite3` 形状（见下），无成熟纯 Rust SQLite 替代 |
 | **序列化** | `serde`, `serde_json`, `json5` | JSON / JSON5 |
 | **CLI 框架** | `clap`, `clap_complete`, `clap-verbosity-flag` | — |
 | **终端渲染** | `crossterm`, `indicatif` | 终端颜色 + 进度条 |
-| **其他** | `anyhow`, `thiserror`, `regex`, `time`, `dirs`, `flume`, `rayon`, `tracing` 等 | 标准基础设施 |
+| **其他** | `anyhow`, `thiserror`, `regex`, `time`, `tokio`, `rayon`, `tracing` 等 | 标准基础设施 |
 
 **已剔除：** `chrono`, `curl-static`, `futures`, `sysinfo`, `once_cell`, `remove_dir_all`, `unarc-rs`, `jiff`
+
+> `rars`（纯 Rust）已取代 `unrar`（RARLab C++ 库）成为 `.rar` 的解压后端；仓库里**已没有任何 RAR 相关依赖**（连 dev-dependency 都没有），`cargo test` 不再为 RAR 编译任何 C++。测试比对的是提交进来的 golden 基线 `crates/libscoop/tests/fixtures/rar/expected-trees.txt`——它历史上由 `unrar` 0.5（UnRAR 6.x 世代）产生，现在由 WinRAR 的 `Rar.exe` 再生（路径走 `HOK_RAR_EXE`），两者在该语料上**逐字节一致**。覆盖范围、已知差异与"未覆盖"清单见 `crates/libscoop/tests/fixtures/rar/README.md`。
+
+### 构建形状（SQLite）
+
+默认 `cargo build` 就是 **bundled** 形状（编译 SQLite 合并源，x86/x64/arm64 通吃）。需要更小的发布产物时用 **winsqlite3** 形状（改链 Windows 自带的 `winsqlite3.dll`，约小 1 MB）：
+
+```powershell
+pwsh scripts/build-hok.ps1                            # 默认 = bundled（显式，无惊喜）
+pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify   # 链接 winsqlite3.dll，并断言产物形状
+```
+
+- `-Mode winsqlite3` 从 Windows SDK 取出 `winsqlite3.h/.lib`，staging 到仓库内 gitignored 的 `.winsqlite3/`，并**只在该进程内**设置 `LIBSQLITE3_SYS_USE_PKG_CONFIG` / `SQLITE3_LIB_DIR` / `SQLITE3_INCLUDE_DIR`（不写用户环境变量、不写 `.cargo/config.toml`），因此之后的 `cargo build` 仍是 bundled；
+- **x86 不支持** winsqlite3：SDK 的 import lib 在 x86 上导出 `__stdcall` 修饰名（`_sqlite3_column_name@8`），与 rusqlite 的 cdecl 声明不匹配；i686 保持 bundled；
+- `crates/libscoop/build.rs` 对两种静默失败直接报错并给出修复命令：只设了 `SQLITE3_LIB_DIR` 却忘设 `LIBSQLITE3_SYS_USE_PKG_CONFIG`（否则会静默改编 C），以及 x86 + linked 模式。
 
 **重复版本已消除：** `sevenz-rust2`、`zip`、`thiserror`、`md-5`/`sha1`/`sha2` 在依赖树中各只保留一个版本。
 
@@ -68,9 +83,9 @@
 - **checkver 全套** —— 7 种版本提取模式（regex / JSONPath / XPath / Script / reverse / replace / GitHub / SourceForge）+ autoupdate 回写
 - **SQLite manifest 缓存** —— `use_sqlite_cache`，兼容 Scoop 格式
 - **新命令** —— `depends`、`prefix`、`which`、`checkup`、`alias`、`export`、`import`、`create`、`virustotal`、`shim`
+- **`shim -g` 位置自由** —— `-g/--global` 可写在子命令前或后（对齐官方 getopt；`hok shim list -g` 与 `hok shim -g list` 等价，只列全局 shim），`hok shim list *` 列出全部 shim。以 `-` 开头的 shim 参数必须放在 `--` 之后，要传给 shim 的 `-g`/`--global` 同样如此。**破坏性变更**：`hok shim add x cmd.exe -g` 现在创建**全局** shim（旧行为是把 `-g` 当作 shim 参数、创建到 local）
 - **native shim** —— 10KB `#![no_std]` 原生 exe shim，嵌入 hok 二进制，零外部依赖
 - **i18n 国际化** —— 全部用户消息迁移到 `rust_i18n`，支持中英文切换
-- **可切换输出风格** —— `hok config set output-style pacman`，Scoop/Pacman 两种风格
 - **列表表格化** —— `hok list` 表格显示，支持 CJK 对齐、可更新版本提示
 - **安装器文件** —— 支持 `installer.file`/`uninstaller.file` manifest 格式
 - **`--global/-g`** —— 全局安装支持（install/cleanup/uninstall/hold/unhold）
@@ -88,7 +103,6 @@
 | **下载无断点续传** | 分片下载中断后全部重来 | 支持 HTTP Range 续传，已下载的分片跳过，不完整的续传 |
 | **缺少 native shim** | 使用 `.cmd` 包装器做 shim，启动慢 | 新增 `hok-shim.exe`：native exe shim，支持 GUI 分离、Job Object、Ctrl+C 传播 |
 | **快捷方式依赖于 COM** | 使用 raw IShellLinkW FFI 创建 `.lnk`，vtable 布局不稳定导致部分包失败 | 替换为 `shortcuts-rs` 纯 Rust .lnk 写入器，支持参数和图标 |
-| **`update` 无短时保护** | 短期内重复 `hok update` 会重复拉取所有仓库 | 增加 15 分钟 cooldown，支持 `--force` 跳过；仅拉取当前 HEAD 分支 |
 | **缓存刷新无反馈** | `update` 最后 SQLite 缓存刷写时终端无响应 | 移到 binary 层并输出 `Refreshing manifest cache...` 提示 |
 | **缺少 reinstall** | 需要手动 `uninstall` + `install` | 新增 `reinstall` 命令，自动保持 held 状态 |
 | **`SetConsoleCtrlHandler(NULL)` 错误** | NULL 移除所有 handler 导致某些 Windows 版本上 crash | 替换为真实 handler 函数，返回 TRUE 吞掉 Ctrl+C |
@@ -122,38 +136,31 @@ hok 0.2.0-beta.1 起支持多语言切换：
 
 ```bash
 # 查看当前语言
-hok config LANG
+hok config language
 
 # 切换为英文
-hok config set LANG en
+hok config language en
 ```
 
 目前已内置 `zh`（中文）和 `en`（英文）两种语言，全部用户界面消息均已迁移到 `rust_i18n` 框架。CLI 帮助信息（`--help`/`-h`）也支持多语言，通过 `hok-i18n-derive` proc-macro 自动生成翻译键。
-
-### 输出风格切换
-
-```bash
-# 切换为 Pacman 风格
-hok config set output-style pacman
-
-# 恢复 Scoop 风格
-hok config set output-style scoop
-```
-
-Scoop 风格（默认）：`  Extracting... done` 逐步进度。
-Pacman 风格：`::` 标题前缀、`✓`/`⚠`/`✗` 状态符号，粗体标签 + 普通信息内容。
 
 ### 配置参考（Settings）
 
 hok 的配置文件位于 `~/.config/hok/config.json`（与 Scoop 的 `config.json` 格式兼容）。首次运行时会把受支持的键从 Scoop 配置文件迁移过来，之后只读写 hok 自己的文件。
 
 ```bash
-hok config list           # 当前配置（pretty JSON）
-hok config list --all     # 所有受支持键 + 当前值 + 默认值
-hok config set <key> <value>
-hok config unset <key>    # 删除键（回退到默认值）
+hok config                # 配置文件里实际保存的设置（键 = 值）
+hok config -j             # 同一份内容的 pretty JSON
+hok config -a             # 全部设置 + 当前值 + 生效默认值
+hok config <key>          # 打印单个设置项
+hok config <key> <value>  # 写入单个设置项
+hok config rm <key>       # 删除键（回退到默认值）
+hok config edit           # 用编辑器打开配置文件（hok 扩展）
 hok config --help         # 完整设置参考（含默认值与取值样式）
 ```
+
+设置名严格按下面表格的写法，没有别名。`-j` / `-a` 是 hok 扩展（`-a` 是唯一能看到
+hok 尚未保存的设置的视图）。
 
 | 键 | 类型 | 默认值 | 说明 |
 |----|------|--------|------|
@@ -162,17 +169,16 @@ hok config --help         # 完整设置参考（含默认值与取值样式）
 | `aria2-max-connection-per-server` | int | `5` | 每个下载对单个服务器的最大连接数 |
 | `aria2-min-split-size` | 大小 | `5M` | 触发分片下载的最小文件大小（如 `5M`、`10M`） |
 | `cache_path` | 路径 | `$SCOOP_CACHE` 或 `<root>/cache` | 下载缓存目录 |
-| `cat_style` | 字符串 | *(空)* | 设置后使用 `bat` 显示清单（需安装 `bat`） |
+| `cat_style` | 字符串 | *(空)* | 显示清单时传给 `bat --style` 的组件（需安装 `bat`；`bat` 不接受的值会退回纯 JSON 输出） |
 | `default_architecture` | `64bit`\|`32bit`\|`arm64` | 自动检测 | 安装时使用的首选架构 |
 | `global_path` | 路径 | `$SCOOP_GLOBAL` 或 `%ProgramData%\scoop` | 全局应用安装的根目录 |
 | `gh_token` | 字符串 | *(空)* | 用于认证请求的 GitHub API token |
-| `ignore-failures` | bool | `true` | 多包操作中单个包失败时继续处理其余包 |
+| `ignore_failures` | bool | `false` | 多包操作中单个包失败时继续处理其余包 |
 | `ignore_running_processes` | bool | `false` | 应用正在运行时仍继续（仅警告，不中止） |
 | `language` | `auto`\|`en`\|`zh` | `auto` | 消息与帮助文本使用的 CLI 语言 |
 | `last_update` | 字符串 | *(空)* | 上次 bucket 更新时间戳（由 hok 管理，仅可编辑文件） |
-| `no-color` | bool | `false` | 禁用彩色输出 |
+| `no_color` | bool | `false` | 禁用彩色输出 |
 | `no_junction` | bool | `false` | 不使用 `current` 目录联接；shim 直接指向版本目录 |
-| `output-style` | `scoop`\|`pacman` | `scoop` | 进度与状态消息的输出样式 |
 | `private_hosts` | 数组 | *(空)* | 需要额外认证头的私有主机（仅可编辑文件） |
 | `proxy` | 字符串 | `none` | 代理：`none` \| `default` \| `currentuser` \| `[username:password@]host:port` |
 | `root_path` | 路径 | `$SCOOP` 或 `~/scoop` | Scoop 根目录 |
@@ -180,7 +186,7 @@ hok config --help         # 完整设置参考（含默认值与取值样式）
 | `use_sqlite_cache` | bool | `false` | 使用 SQLite 数据库缓存清单（兼容 Scoop 的 schema） |
 | `virustotal_api_key` | 字符串 | *(空)* | 用于上传/扫描文件的 VirusTotal API key |
 
-大多数键可通过 `hok config set` 修改；`last_update` 与 `private_hosts` 只能直接编辑配置文件。别名（alias）通过 `hok alias` 命令管理。运行 `hok config list --all` 查看你机器上的生效默认值。
+大多数键可通过 `hok config <key> <value>` 修改；`last_update` 与 `private_hosts` 只能直接编辑配置文件。别名（alias）通过 `hok alias` 命令管理。运行 `hok config -a` 查看你机器上的生效默认值。
 
 ### Native Shim 基准测试
 
@@ -197,22 +203,35 @@ hok 内嵌了 **10KB** 的 `#![no_std]` 原生 exe shim，完全符合 [Scoop Sh
 
 hok-shim 在所有实现中体积最小（7-16 倍差距），速度与 Rust/Zig/C++ 处于同一量级。关键优化：`AttachConsole` 避免 GUI 子系统创建新控制台（节省约 400ms），`CreateJobObject` 确保子进程树清理。
 
+### 架构演进与本次重构的意义
+
+2026-08 起本分支进行了一次系统性重构（edition 2024 全量升级 + 架构演进）。目标：在保持行为等价的前提下，把「功能面领先」的 hok 进一步做到「工程面扎实」——通过领域纯化与单测离线化保障正确性、通过异步并发兑现性能、通过安全纪律与基准护栏防回归。
+
+- **Edition 2024 全量升级** —— workspace 全部 crate 迁移到 2024 edition；`unsafe extern` 在每一处 FFI 边界显式标注，`unsafe` 在安全 crate 全量 deny，仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块豁免（审计清单见 [`.agents/docs/active/audit/unsafe-audit.md`](.agents/docs/active/audit/unsafe-audit.md)）。
+- **分层单向依赖** —— CLI（hok）→ 门面（libscoop）→ 领域服务 → 核心 `package/` 逻辑 → `internal/` 工具。领域类型（`Package` / `Manifest` / `Version` / `Config`）**纯化**：零 I/O、零 async、零框架依赖，可确定性单测。
+- **基础设施 trait 化** —— `Network` / `Git` / `Archive` 抽成 trait + 内存 fake，下载 / checkver / bucket / 解压整条流水线可离线单测，不依赖真实网络与磁盘。
+- **真异步网络** —— CLI 跑在 tokio runtime 上；`Network` trait 基于 **`reqwest`（native-tls，Windows 走 schannel）** async 化，checkver 用 `buffer_unordered` 并发、分片下载并行、bucket 更新用 `tokio::spawn`；本地快操作（`list` / `search` / `status` / `which` / `config` / `cat`）保持同步。
+- **护栏** —— `unsafe_code = deny`、criterion 纯函数微基准、可复现的 hok-vs-Scoop 行为/性能基准（`scripts/benchmark_vs_scoop.ps1`）。
+
 ### 设计原则
 
 - **纯 Rust 优先，但有底线** —— 能不用 C 编译就不用，但 `git2`（libgit2）比 `gix`（20 分钟编译）更务实。「Pure Rust first」有实际边界。
 - **不要重复造轮子，但也不当冤大头** —— 标准算法（MD5/SHA）用现成 crate，平台特定 API（COM/Win32）用 raw FFI。后者没有合适的轻量 crate，几十行 FFI 比引入整个 crate 更合理。
 - **兼容原版 Scoop** —— SQLite 缓存 schema、config 格式、autoupdate 行为均保持兼容。
 - **零 warning 策略** —— 所有代码 0 warning，101 测试全过。
+- **`unsafe_code = deny` 护栏** —— 安全 crate 全量 deny `unsafe`；仅 `no_std` 的 `hok-shim` 与少量 Win32 FFI 模块（`internal::os`、`permission`）按审计豁免（审计清单见 [`.agents/docs/active/audit/unsafe-audit.md`](.agents/docs/active/audit/unsafe-audit.md)）。
+- **criterion 基准护栏** —— `cargo bench` 对关键纯函数（版本比较 / glob / 哈希 / manifest 解析 / URL 工具）跑微基准，防重构回归。
 
 ---
 
 ## 相关文档
 
-- [用 Rust 写的 Scoop 再实现 — Chawye Hsu（原版博文）](./用%20Rust%20写的%20Scoop%20再实现%20-%20Chawye%20Hsu.md)
+- [用 Rust 写的 Scoop 再实现 — Chawye Hsu（原版博文）](./docs/reference/rust-scoop-reimplementation-chawyehsu.zh.md)
 - [更新日志](./CHANGELOG.md)
 - [命令列表（英文）](./README.md#commands)
+- [hok-vs-Scoop 脚本基准](./scripts/benchmark_vs_scoop.ps1)（本机直跑，无需 Windows Sandbox）
 
 ## License
 
 **hok** © [Chawye Hsu](https://github.com/chawyehsu) and [contributors](https://github.com/maboloshi/hok/graphs/contributors).
-Released under the [Apache-2.0](../LICENSE) license.
+Released under the [Apache-2.0](./LICENSE) license.

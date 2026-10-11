@@ -7,6 +7,7 @@
 //! All logic lives in the `hok_shim` library crate; this binary only wires
 //! up the PE entry points and the panic handler, and sets the GUI subsystem.
 
+#![allow(unsafe_code)]
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 #![windows_subsystem = "windows"]
@@ -25,7 +26,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[cfg(not(test))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn mainCRTStartup() -> ! {
     let code = unsafe { hok_shim::entry() };
     hok_shim::exit_process(code)

@@ -36,6 +36,14 @@ pub enum QueryOption {
     /// Like `Upgradable` but does NOT exclude packages that are already
     /// at the latest version.
     UpgradableCheck,
+
+    /// Include broken/partial installs (an install that failed before
+    /// current/install metadata were written) when querying installed
+    /// packages. `list` surfaces them as install-failed; `uninstall` and
+    /// `reinstall` accept them so a broken install can be torn down or
+    /// recovered; `update` uses it to distinguish "broken, reinstall it"
+    /// from "not installed".
+    Broken,
 }
 
 /// A trait represents a matcher that can be used to do string matching.

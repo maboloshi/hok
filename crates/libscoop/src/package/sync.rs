@@ -29,9 +29,9 @@
 
 use std::cell::OnceCell;
 
-use crate::{error::Fallible, Error, Event, Session};
+use crate::{Error, Event, Session, error::Fallible};
 
-use super::{download::DownloadSize, Package};
+use super::{Package, download::DownloadSize};
 
 #[path = "sync_install.rs"]
 mod sync_install;
@@ -39,7 +39,7 @@ mod sync_install;
 mod sync_remove;
 
 pub use sync_install::install;
-pub use sync_install::{check_not_running, RunningCheck};
+pub use sync_install::{RunningAction, RunningCheck, check_not_running};
 pub use sync_remove::{remove, reset};
 
 /// Options that may be used to tweak behavior of package sync operation.
@@ -66,17 +66,6 @@ pub enum SyncOption {
     /// the download is done.
     DownloadOnly,
 
-    /// Force operations on held packages.
-    ///
-    /// # Note
-    ///
-    /// Held packages are ignored during the replace, upgrade or uninstall
-    /// operations by default. The option can be used to escape the hold and
-    /// enforce operations on the held packages.
-    ///
-    /// Packages will be held again after the replace or upgrade operation.
-    EscapeHold,
-
     /// Ignore local cache and force package download.
     ///
     /// # Note
@@ -85,7 +74,7 @@ pub enum SyncOption {
     /// option.
     ///
     /// [1]: SyncOption::Offline
-    IgnoreCache,
+    NoCache,
 
     /// Ignore transaction failure.
     ///
@@ -106,7 +95,7 @@ pub enum SyncOption {
     ///
     /// **NO rollback will be performed if this option is enabled**, which means
     /// there may be broken packages being committed to the system.
-    IgnoreFailure,
+    IgnoreFailures,
 
     /// Do not install dependencies.
     ///
@@ -130,7 +119,7 @@ pub enum SyncOption {
     ///
     /// It is highly **NOT** recommended to use this option unless you really
     /// know what you are doing.
-    NoHashCheck,
+    SkipHashCheck,
 
     /// Do not upgrade packages.
     ///
@@ -160,9 +149,9 @@ pub enum SyncOption {
     /// operation. However, the transaction may fail if there is any package file
     /// missing or invalid cache.
     ///
-    /// This option is basically the opposite of the [`IgnoreCache`][1] option.
+    /// This option is basically the opposite of the [`NoCache`][1] option.
     ///
-    /// [1]: SyncOption::IgnoreCache
+    /// [1]: SyncOption::NoCache
     Offline,
 
     /// Upgrade packages only.
@@ -352,28 +341,58 @@ impl Default for Transaction {
     }
 }
 
+/// Unified confirmation-gate decision (three layers + built-in TTY rule).
+///
+/// The gate controls whether the frontend waits for an interactive Y/n answer:
+///
+/// - `-y/--yes` ([`SyncOption::AssumeYes`]): force off — never gate.
+/// - `tty == false` (non-interactive stdin): built-in "no gate".
+/// - `--confirm` (`Session::force_confirm`): force on.
+/// - `config.confirm`: global default (`false` → no gate unless forced).
+///
+/// The transaction *plan* is always rendered regardless of this decision; only
+/// the wait-for-answer is gated.
+pub(crate) fn should_gate(session: &Session, options: &[SyncOption], tty: bool) -> bool {
+    if options.contains(&SyncOption::AssumeYes) {
+        return false;
+    }
+    if !tty {
+        return false;
+    }
+    if session.force_confirm() {
+        return true;
+    }
+    session.config().confirm()
+}
+
 /// Send the transaction to the frontend for confirmation and wait for the result.
+///
+/// The plan is always rendered (the event is always sent); `gate` tells the
+/// frontend whether to wait for an interactive Y/n answer or auto-approve.
 ///
 /// Returns `Ok(true)` if confirmed, `Ok(false)` if rejected or no emitter is
 /// available (the channel sender is dropped before the response arrives).
-fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible<bool> {
+async fn confirm_transaction(
+    session: &Session,
+    transaction: &Transaction,
+    gate: bool,
+) -> Fallible<bool> {
     let tx = match session.emitter() {
         Some(tx) => tx,
         None => return Ok(true),
     };
 
     if tx
-        .send(Event::PromptTransactionNeedConfirm(transaction.clone()))
+        .try_send(Event::PromptTransactionNeedConfirm {
+            transaction: transaction.clone(),
+            gate,
+        })
         .is_err()
     {
         return Ok(true);
     }
 
-    let rx = session
-        .receiver()
-        .ok_or_else(|| Error::Custom("event bus not initialized".to_owned()))?;
-
-    while let Ok(event) = rx.recv() {
+    while let Some(event) = session.receive_response().await {
         if let Event::PromptTransactionNeedConfirmResult(ret) = event {
             return Ok(ret);
         }
@@ -402,29 +421,29 @@ fn confirm_transaction(session: &Session, transaction: &Transaction) -> Fallible
 ///
 /// [1]: crate::Error::PackageNotFound
 /// [2]: crate::Error::PackageMultipleCandidates
-pub fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
+pub async fn sync(session: &Session, queries: Vec<&str>, options: Vec<SyncOption>) -> Fallible<()> {
     // remove possible duplicates
     let queries = std::collections::HashSet::<&str>::from_iter(queries)
         .into_iter()
         .collect::<Vec<_>>();
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveStart);
+        let _ = tx.try_send(Event::PackageResolveStart);
     }
 
     let is_op_remove = options.contains(&SyncOption::Remove);
     let result = if is_op_remove {
-        remove(session, &queries, &options)
+        remove(session, &queries, &options).await
     } else {
-        install(session, &queries, &options)
+        install(session, &queries, &options).await
     };
 
     // Always close the resolve/sync phases — including error paths (e.g.
     // a declined confirmation) — so the event loop breaks and the CLI's
     // handle.join() cannot hang.
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageResolveDone);
-        let _ = tx.send(Event::PackageSyncDone);
+        let _ = tx.try_send(Event::PackageResolveDone);
+        let _ = tx.try_send(Event::PackageSyncDone);
     }
 
     result?;
@@ -437,48 +456,102 @@ mod tests {
     use super::*;
 
     /// Helper to create a session with an active event bus for confirm tests.
-    fn setup_confirm_test() -> (Session, flume::Sender<Event>, flume::Receiver<Event>) {
+    fn setup_confirm_test() -> (
+        Session,
+        tokio::sync::mpsc::Sender<Event>,
+        tokio::sync::mpsc::Receiver<Event>,
+    ) {
         let session = Session::new();
         let bus = session.event_bus();
         let frontend_tx = bus.sender(); // outer_tx → session.inner_rx
-        let frontend_rx = bus.receiver(); // outer_rx ← session.inner_tx
+        let frontend_rx = bus.receiver().expect("fresh event bus receiver"); // outer_rx ← session.inner_tx
         (session, frontend_tx, frontend_rx)
     }
 
     /// Test that confirm_transaction returns true when the frontend accepts.
-    #[test]
-    fn test_confirm_transaction_accepted() {
-        let (session, frontend_tx, frontend_rx) = setup_confirm_test();
+    #[tokio::test]
+    async fn test_confirm_transaction_accepted() {
+        let (session, frontend_tx, mut frontend_rx) = setup_confirm_test();
 
         // Pre-send the acceptance response (buffered channel)
         frontend_tx
             .send(Event::PromptTransactionNeedConfirmResult(true))
+            .await
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).unwrap();
+        let result = confirm_transaction(&session, &transaction, true)
+            .await
+            .unwrap();
         assert!(result, "should return true when frontend accepts");
 
-        // Verify the request was actually emitted
-        let request = frontend_rx.recv().unwrap();
+        // Verify the request was actually emitted (with the gate flag)
+        let request = frontend_rx.recv().await.unwrap();
         assert!(
-            matches!(request, Event::PromptTransactionNeedConfirm(_)),
-            "should have emitted PromptTransactionNeedConfirm"
+            matches!(
+                request,
+                Event::PromptTransactionNeedConfirm { gate: true, .. }
+            ),
+            "should have emitted a gated PromptTransactionNeedConfirm"
         );
     }
 
     /// Test that confirm_transaction returns false when the frontend rejects.
-    #[test]
-    fn test_confirm_transaction_rejected() {
+    #[tokio::test]
+    async fn test_confirm_transaction_rejected() {
         let (session, frontend_tx, _frontend_rx) = setup_confirm_test();
 
         // Pre-send the rejection response
         frontend_tx
             .send(Event::PromptTransactionNeedConfirmResult(false))
+            .await
             .unwrap();
 
         let transaction = Transaction::default();
-        let result = confirm_transaction(&session, &transaction).unwrap();
+        let result = confirm_transaction(&session, &transaction, true)
+            .await
+            .unwrap();
         assert!(!result, "should return false when frontend rejects");
+    }
+
+    // --- should_gate ---
+
+    /// `-y/--yes` force-off always wins, even on a TTY.
+    #[test]
+    fn should_gate_assume_yes() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(!should_gate(&session, &[SyncOption::AssumeYes], true));
+    }
+
+    /// Non-TTY stdin never gates, even with `--confirm` or `config.confirm`.
+    #[test]
+    fn should_gate_non_tty() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(!should_gate(&session, &[], false));
+    }
+
+    /// `--confirm` forces the gate on a TTY.
+    #[test]
+    fn should_gate_force_confirm() {
+        let session = Session::new();
+        session.set_force_confirm(true);
+        assert!(should_gate(&session, &[], true));
+    }
+
+    /// `config.confirm` enables the gate on a TTY; the default (`false`) does not.
+    #[test]
+    fn should_gate_config_confirm() {
+        let session = Session::new();
+        session
+            .config_mut()
+            .unwrap()
+            .set("confirm", "true")
+            .unwrap();
+        assert!(should_gate(&session, &[], true));
+
+        let default = Session::new();
+        assert!(!should_gate(&default, &[], true));
     }
 }

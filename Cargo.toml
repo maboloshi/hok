@@ -5,11 +5,39 @@ repository = "https://github.com/maboloshi/hok"
 version = "0.2.0"
 authors = ["Chawye Hsu <su+cratesio@chawyehsu.com>", "沙漠之子 <7850715+maboloshi@users.noreply.github.com>"]
 license = "Apache-2.0"
-edition = "2021"
+edition = "2024"
 readme = "README.md"
 
 [workspace]
-members = ["crates/libscoop", "crates/hok-shim", "crates/hok-i18n-derive", "crates/innospect"]
+members = [
+    "crates/libscoop",
+    "crates/hok-shim",
+    "crates/hok-i18n",
+    "crates/hok-i18n-derive",
+]
+
+# Shared dependency declarations. Members opt in with `{ workspace = true }`
+# and add only the extra features they need; keeping versions (and especially
+# decoder backends such as `flate2/zlib-rs`) in one place prevents silent
+# feature drift across crates.
+[workspace.dependencies]
+bzip2 = "0.6.1"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+hok-i18n = { path = "./crates/hok-i18n" }
+# Order-preserving map for `manifest.suggest`: upstream renders suggestions in
+# manifest order and rewrites must keep it (already in the tree via
+# serde_json/preserve_order).
+indexmap = { version = "2", features = ["serde"] }
+lzma-rust2 = { version = "0.21", default-features = false, features = ["std", "optimization"] }
+md-5 = "0.11"
+regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
+serde_json = "1.0.120"
+sha1 = "0.11"
+sha2 = "0.11"
+time = "0.3"
+tokio = "1"
+tokio-util = "0.7"
+tracing = "0.1"
 
 [lib]
 path = "src/lib.rs"
@@ -20,18 +48,29 @@ clap = { version = "4.5", features = ["wrap_help", "cargo", "derive", "string"] 
 clap-verbosity-flag = { version = "3.0.1", features = ["tracing"], default-features = false }
 clap_complete = "4.5.38"
 crossterm = "0.28"
-indicatif = "0.17.9"
-regex = { version = "1.5.3", default-features = false, features = ["std", "unicode-case", "perf"] }
-serde_json = { version = "1.0.120", features = ["preserve_order"] }
+indicatif = "0.18"
+regex = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = { workspace = true }
 
-rust-i18n = "3.1.5"
-sys-locale = "0.3"
-
+# In-house translation runtime, shared with `libscoop` so both translate
+# against the same build-time-generated locale tables. `hok-i18n-derive` only
+# patches the clap help tree, so it stays a CLI-side dependency.
+hok-i18n = { workspace = true }
 hok-i18n-derive = { path = "./crates/hok-i18n-derive" }
 
+sys-locale = "0.3"
+
+# Async runtime for the CLI (phase 4: operations async-ification).
+# `rt-multi-thread` + `macros` for the #[tokio::main] async entry point in `bin/hok.rs`;
+# `sync` for concurrency primitives used by concurrent commands.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "signal"] }
+# Cooperative cancellation (P2): CancellationToken + Ctrl-C wiring in `create_app()`.
+tokio-util = { workspace = true, features = ["rt"] }
+
 [build-dependencies]
-time = { version = "0.3", features = ["formatting", "macros", "local-offset"] }
+time = { workspace = true, features = ["formatting", "macros", "local-offset"] }
 
 [dependencies.libscoop]
 version = "0.2.0"
@@ -60,6 +99,9 @@ panic = "abort"
 inherits = "release"
 debug = true
 strip = false
+
+[lints.rust]
+unsafe_code = "deny"
 
 [lints.rustdoc]
 broken_intra_doc_links = "deny"

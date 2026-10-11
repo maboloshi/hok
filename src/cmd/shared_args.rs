@@ -16,7 +16,7 @@
 //! [`QueryArgs`] is the same idea for query operations (search etc.).
 
 use libscoop::{QueryOption, Session, SyncOption};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Shared arguments for sync operations (install, update, upgrade, reinstall, etc.).
 ///
@@ -31,9 +31,10 @@ pub struct SyncArgs {
     #[arg(short = 'y', long, action = clap::ArgAction::SetTrue)]
     pub assume_yes: bool,
 
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = clap::ArgAction::SetTrue)]
-    pub ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub ignore_failures: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = clap::ArgAction::SetTrue)]
@@ -41,27 +42,23 @@ pub struct SyncArgs {
 
     /// Skip package integrity check
     #[arg(short = 's', long, action = clap::ArgAction::SetTrue)]
-    pub no_hash_check: bool,
+    pub skip_hash_check: bool,
 
-    /// Do not install dependencies (may break packages)
-    #[arg(short = 'I', long, action = clap::ArgAction::SetTrue)]
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = clap::ArgAction::SetTrue)]
     pub independent: bool,
 
     /// Do not replace package(s)
     #[arg(short = 'R', long, action = clap::ArgAction::SetTrue)]
     pub no_replace: bool,
 
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = clap::ArgAction::SetTrue)]
-    pub escape_hold: bool,
-
     /// Do not upgrade package(s)
     #[arg(short = 'U', long, action = clap::ArgAction::SetTrue)]
     pub no_upgrade: bool,
 
-    /// Ignore cache and force download
-    #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
-    pub ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
+    pub no_cache: bool,
 
     /// Download package(s) without performing installation
     #[arg(short = 'd', long, action = clap::ArgAction::SetTrue)]
@@ -78,14 +75,11 @@ impl SyncArgs {
         if self.download_only {
             options.push(SyncOption::DownloadOnly);
         }
-        if self.escape_hold {
-            options.push(SyncOption::EscapeHold);
+        if self.ignore_failures || session.config().ignore_failures() {
+            options.push(SyncOption::IgnoreFailures);
         }
-        if self.ignore_failure || session.config().ignore_failures() {
-            options.push(SyncOption::IgnoreFailure);
-        }
-        if self.ignore_cache {
-            options.push(SyncOption::IgnoreCache);
+        if self.no_cache {
+            options.push(SyncOption::NoCache);
         }
         if self.no_upgrade {
             options.push(SyncOption::NoUpgrade);
@@ -99,8 +93,8 @@ impl SyncArgs {
         if self.independent {
             options.push(SyncOption::NoDependencies);
         }
-        if self.no_hash_check {
-            options.push(SyncOption::NoHashCheck);
+        if self.skip_hash_check {
+            options.push(SyncOption::SkipHashCheck);
         }
         options
     }
@@ -116,12 +110,37 @@ impl SyncArgs {
 pub(crate) fn ensure_global(session: &Session, global: bool, verb: &str) -> crate::Result<()> {
     session.set_global(global);
     if global && !session.is_admin() {
-        return Err(anyhow::anyhow!(rust_i18n::t!(
+        return Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.admin_rights_required",
             verb = verb
         )));
     }
     Ok(())
+}
+
+/// Resolve the bucket-scan directory for a run that writes to disk.
+///
+/// `-d/--dir` defaults to `.` only for read-only runs. As soon as a run
+/// rewrites manifests the target must be explicit, because the scan is a
+/// recursive `*.json` walk (`libscoop::package::manifest_walker`) that
+/// excludes only `package.json` and never checks whether a file looks like a
+/// Scoop manifest: a bare `hok formatjson` in a source checkout rewrites
+/// `tsconfig.json`, `package-lock.json`, everything under `target/`, and the
+/// user's own `config.json`. Upstream enforces the same thing by declaring
+/// `-Dir` `Mandatory = $true` (`bin/formatjson.ps1`, `bin/checkhashes.ps1`,
+/// `bin/checkurls.ps1`, `bin/missing-checkver.ps1`) or by throwing
+/// (`bin/checkver.ps1:85`); hok states the reason instead of only reporting a
+/// missing parameter. `cmd` names the command in that message.
+pub(crate) fn write_dir(dir: Option<PathBuf>, cmd: &str) -> crate::Result<PathBuf> {
+    dir.ok_or_else(|| {
+        anyhow::anyhow!(hok_i18n::t!("cmd.dir_required_for_write", cmd = cmd).to_string())
+    })
+}
+
+/// Resolve the bucket-scan directory for a read-only run: `-d/--dir` defaults
+/// to the current directory, exactly as before the write guard existed.
+pub(crate) fn scan_dir(dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Validate that `dir` is an existing directory, printing a localized error
@@ -136,7 +155,7 @@ pub(crate) fn validate_dir(dir: &Path) -> crate::Result<()> {
     if dir.is_dir() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!(rust_i18n::t!(
+        Err(anyhow::anyhow!(hok_i18n::t!(
             "cmd.dir_not_found",
             path = dir.display()
         )))
@@ -177,7 +196,7 @@ pub struct QueryArgs {
     pub with_binary: bool,
 
     /// Search through package descriptions as well
-    #[arg(short = 'D', long, action = clap::ArgAction::SetTrue)]
+    #[arg(short = 'k', long, action = clap::ArgAction::SetTrue)]
     pub with_description: bool,
 }
 

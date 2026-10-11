@@ -1,4 +1,4 @@
-use libscoop::Manifest;
+use libscoop::{Manifest, parse_file};
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,7 +19,7 @@ fn scoop_fixture(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn test_parse_simple_manifest() {
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     assert_eq!(manifest.version(), "1.0.0");
     assert_eq!(manifest.description(), Some("Simple test package"));
     assert_eq!(manifest.homepage(), "https://example.com/simple");
@@ -31,7 +31,7 @@ fn test_parse_simple_manifest() {
 
 #[test]
 fn test_parse_architecture_manifest() {
-    let manifest = Manifest::parse(fixture_path("architecture.json")).unwrap();
+    let manifest = parse_file(fixture_path("architecture.json")).unwrap();
     assert_eq!(manifest.version(), "2.0.0");
     assert_eq!(manifest.license().identifier(), "Apache-2.0");
     // Architecture-specific fields
@@ -42,7 +42,7 @@ fn test_parse_architecture_manifest() {
 
 #[test]
 fn test_parse_checkver_manifest() {
-    let manifest = Manifest::parse(fixture_path("checkver.json")).unwrap();
+    let manifest = parse_file(fixture_path("checkver.json")).unwrap();
     assert_eq!(manifest.version(), "3.0.0");
     // Checkver field
     let cv = manifest.checkver().expect("should have checkver");
@@ -55,7 +55,7 @@ fn test_parse_checkver_manifest() {
 
 #[test]
 fn test_parse_dependencies_manifest() {
-    let manifest = Manifest::parse(fixture_path("dependencies.json")).unwrap();
+    let manifest = parse_file(fixture_path("dependencies.json")).unwrap();
     assert_eq!(manifest.version(), "4.5.6");
     // Multiple URLs and hashes
     assert_eq!(manifest.url().len(), 2);
@@ -69,13 +69,13 @@ fn test_parse_dependencies_manifest() {
 
 #[test]
 fn test_parse_nonexistent_file() {
-    let result = Manifest::parse(fixture_path("nonexistent.json"));
+    let result = parse_file(fixture_path("nonexistent.json"));
     assert!(result.is_err());
 }
 
 #[test]
 fn test_manifest_version_accessor() {
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     let v = manifest.version();
     assert_eq!(v, "1.0.0");
     // Verify it's a &str not a cloned String
@@ -100,14 +100,14 @@ fn test_manifest_from_json() {
 #[test]
 fn test_manifest_roundtrip_url_hash_count() {
     // Verify URL and hash counts match
-    let manifest = Manifest::parse(fixture_path("simple.json")).unwrap();
+    let manifest = parse_file(fixture_path("simple.json")).unwrap();
     assert_eq!(
         manifest.url().len(),
         manifest.hash().len(),
         "URL and hash counts should match"
     );
 
-    let manifest = Manifest::parse(fixture_path("dependencies.json")).unwrap();
+    let manifest = parse_file(fixture_path("dependencies.json")).unwrap();
     assert_eq!(
         manifest.url().len(),
         manifest.hash().len(),
@@ -122,7 +122,7 @@ fn test_scoop_wget_manifest() {
     // Real-world Scoop manifest: wget.json contains an empty hash string ("")
     // for the cacert.pem URL, meaning "no verification" (original Scoop's
     // check_hash only warns). Our parser must accept it.
-    let manifest = Manifest::parse(scoop_fixture("manifest/wget.json")).unwrap();
+    let manifest = parse_file(scoop_fixture("manifest/wget.json")).unwrap();
     let hashes = manifest.all_hashes();
     // 64bit (2) + 32bit (2), each with [real_hash, ""]
     assert_eq!(hashes.len(), 4);
@@ -132,7 +132,7 @@ fn test_scoop_wget_manifest() {
 #[test]
 fn test_scoop_broken_wget() {
     // Malformed JSON (missing closing brace)
-    let result = Manifest::parse(scoop_fixture("manifest/broken_wget.json"));
+    let result = parse_file(scoop_fixture("manifest/broken_wget.json"));
     assert!(result.is_err(), "broken JSON should fail to parse");
 }
 
@@ -142,7 +142,7 @@ fn test_scoop_invalid_wget() {
     // Upstream Scoop never validates these, so hok now tolerates the
     // absence — missing fields surface as `formatjson` warnings instead
     // of failing the whole manifest parse.
-    let result = Manifest::parse(scoop_fixture("manifest/invalid_wget.json"));
+    let result = parse_file(scoop_fixture("manifest/invalid_wget.json"));
     assert!(
         result.is_ok(),
         "missing required fields should be tolerated (formatjson warns)"
@@ -152,7 +152,7 @@ fn test_scoop_invalid_wget() {
 #[test]
 fn test_scoop_broken_schema() {
     // JSON valid, schema valid but has broken references
-    let result = Manifest::parse(scoop_fixture("manifest/broken_schema.json"));
+    let result = parse_file(scoop_fixture("manifest/broken_schema.json"));
     assert!(
         result.is_err() || result.is_ok(),
         "schema may be valid depending on strictness"
@@ -163,7 +163,7 @@ fn test_scoop_broken_schema() {
 fn test_all_urls_arch_order_matches_scoop() {
     // Architecture segments must be emitted 64bit → 32bit → arm64, in the
     // same fixed order as Scoop's bin/checkhashes.ps1.
-    let manifest = Manifest::parse(fixture_path("arch-order.json")).unwrap();
+    let manifest = parse_file(fixture_path("arch-order.json")).unwrap();
 
     let urls = manifest.all_urls();
     assert_eq!(
@@ -203,7 +203,7 @@ fn test_all_urls_arch_order_matches_scoop() {
 
 #[test]
 fn test_parse_installer_file() {
-    let manifest = Manifest::parse(fixture_path("installer-file.json")).unwrap();
+    let manifest = parse_file(fixture_path("installer-file.json")).unwrap();
     assert_eq!(manifest.version(), "1.0.0");
 
     let installer = manifest.installer().expect("should have installer");
@@ -215,4 +215,73 @@ fn test_parse_installer_file() {
     assert_eq!(uninstaller.file(), Some("uninstall.exe"));
     assert_eq!(uninstaller.args(), Some(vec!["/S", "/D=$dir"]));
     assert!(uninstaller.script().is_none());
+}
+
+// ── autoupdate.hash.mode: github ──────────────────────────────────────────
+
+#[test]
+fn test_parse_hash_mode_github_real_manifest() {
+    // Real `scoop-app` manifest (provenance: tests/fixtures/README.md).
+    // `autoupdate.hash.mode` is `github` — a value the official `schema.json`
+    // `mode` enum omits (schema.json:51-62), but which the official runtime
+    // accepts via `switch ($hashmode)` (lib/autoupdate.ps1:271-302). 220 such
+    // manifests in a real bucket failed to parse before this variant existed,
+    // and because a parse failure is swallowed by the manifest walk
+    // (package/query.rs:120,285) the packages silently disappeared from
+    // `install`/`search`/`info` instead of reporting an error.
+    let manifest = parse_file(fixture_path("0x7eTeamTools.json")).expect("mode: github must parse");
+    assert_eq!(manifest.version(), "1.2");
+    assert_eq!(manifest.license().identifier(), "Apache-2.0");
+
+    let au = manifest.autoupdate().expect("should have autoupdate");
+    assert_eq!(
+        au.url.as_ref().map(|u| u.devectorize()),
+        Some(vec![
+            "https://github.com/0x7eTeam/0x7eTeamTools/releases/download/$version/0x7eTeamTools.v$version.zip"
+        ])
+    );
+    assert!(au.hash.is_some(), "autoupdate.hash must be modeled");
+
+    // The `rename` must round-trip: re-serializing the parsed manifest
+    // (`to_pretty_json`, used by `hok cat`) must not respell the mode.
+    let json = manifest.to_pretty_json().expect("serialize");
+    assert!(
+        json.contains("\"mode\": \"github\""),
+        "mode must round-trip as `github`: {json}"
+    );
+}
+
+#[test]
+fn test_parse_hash_mode_github_arch_specific() {
+    // The same mode also appears at `autoupdate.architecture.<arch>.hash`
+    // (e.g. `scoop-app`'s `smart-svg-viewer.json`), which is a separate
+    // `HashExtraction` entry point from the top-level one.
+    let json = r#"{
+        "version": "1.0.0",
+        "homepage": "https://example.com",
+        "license": "MIT",
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/o/r/releases/download/v$version/r-$version.zip",
+                "hash": "69c92b607e1d19555ab59db532920ddf4d30d5374cbada14a853fe4581605887"
+            }
+        },
+        "autoupdate": {
+            "architecture": {
+                "64bit": {
+                    "url": "https://github.com/o/r/releases/download/v$version/r-$version.zip",
+                    "hash": { "mode": "github" }
+                }
+            }
+        }
+    }"#;
+    let manifest =
+        Manifest::from_json("arch-github-mode", json).expect("arch-level mode must parse");
+    assert_eq!(manifest.version(), "1.0.0");
+
+    let json = manifest.to_pretty_json().expect("serialize");
+    assert!(
+        json.contains("\"mode\": \"github\""),
+        "arch-level mode must round-trip as `github`: {json}"
+    );
 }

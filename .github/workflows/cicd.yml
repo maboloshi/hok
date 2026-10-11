@@ -82,6 +82,34 @@ jobs:
       - name: Dev Build
         run: cargo build --locked --target ${{ matrix.target }}
 
+  # Regression guard for the opt-in winsqlite3 shape (the one release.yml
+  # publishes). Deliberately a separate job, not part of ci_test_build: the
+  # default matrix — the i686 leg in particular, where winsqlite3 exports
+  # __stdcall-decorated names that rusqlite's cdecl bindings cannot resolve —
+  # must keep building the bundled amalgamation on every target.
+  #
+  # Debug profile on purpose: -Verify asserts which DLLs the binary imports,
+  # which does not depend on the profile. Runs in parallel with ci_test_build,
+  # so it adds no wall-clock time to the workflow.
+  ci_winsqlite3_shape:
+    name: winsqlite3 Shape (x64)
+    runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: true
+      RUSTC_WRAPPER: sccache
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Rust Setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Setup
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Build and verify the winsqlite3 shape
+        run: pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Configuration debug -Verify
+
   # Create/Update release PR
   cd_release_please:
     name: Release Please

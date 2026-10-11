@@ -1,21 +1,30 @@
-//! HTTP networking using `ureq` (pure Rust).
+//! HTTP networking using `reqwest` (async, rustls).
 //!
-//! Replaced `curl` (libcurl bindings, static C build) to avoid C compilation
-//! overhead and align with the project's "pure Rust first" policy.
+//! Replaced `ureq` (blocking) so the [`Network`] trait can be async and
+//! deliver real non-blocking I/O on a tokio runtime (phase 4, 方案 B).
 //!
 //! # Architecture
 //!
-//! All configurable options are bundled into [`RequestOptions`]; the two core
+//! All configurable options are bundled into [`RequestOptions`]; the core
 //! functions [`head`] and [`download`] accept it by reference.  Simple callers
 //! that only need a proxy and timeout can use [`RequestOptions::default()`].
 //!
-//! Internal helpers `build_agent` and `apply_headers` are `pub(crate)` so
-//! that `package/download.rs` can reuse them without duplicating logic.
+//! Internal helpers `build_client` and `apply_headers` are `pub(crate)` so
+//! that `package/*` can reuse them without duplicating logic.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::future::Future;
+use std::io::Write;
+use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 use tracing::warn;
+
+use futures::StreamExt;
+use reqwest::header::{
+    ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, COOKIE, RANGE, REFERER, USER_AGENT,
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +36,8 @@ pub struct HeadResult {
     pub url: String,
     pub status_code: u16,
     pub error: Option<String>,
+    /// `Content-Length` reported by the server, when present.
+    pub content_length: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -46,42 +57,179 @@ pub struct RequestOptions<'a> {
     pub cookies: Option<&'a HashMap<String, String>>,
     pub token: Option<&'a str>,
     pub extra_headers: Option<&'a HashMap<String, String>>,
+    /// Attach upstream's GitHub API *download* `Accept:
+    /// application/octet-stream` header (`lib/download.ps1:97-101`).
+    pub github_accept: bool,
+    /// Attach `X-GitHub-Api-Version: 2022-11-28` — the download path
+    /// (`lib/download.ps1:101`) and `autoupdate`'s JSON hash fetcher
+    /// (`lib/autoupdate.ps1:124`).
+    pub github_api_version: bool,
+    /// Resume a partial single-stream download from this byte offset via a
+    /// `Range: bytes={range_start}-` request (0 = fresh download). Used by the
+    /// single-stream path so an interrupted `.download` resumes next run.
+    pub range_start: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Header profiles (upstream's per-call-site header contract)
+// ---------------------------------------------------------------------------
+
+/// Which upstream call site's header rules a request follows.
+///
+/// Upstream assembles request headers in four places, each with slightly
+/// different rules (downloads send no Referer, PRIVATE_HOSTS, GitHub API auth).
+/// The `autoupdate` hash fetchers are the one group whose members disagree:
+/// `find_hash_in_json` authorizes against the GitHub API, the other fetchers
+/// never do — so they get a profile each. This enum is the single description
+/// of those differences, so every hok request path can be checked against its
+/// upstream counterpart by name instead of by re-reading each call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderProfile {
+    /// `Invoke-Download` (`lib/download.ps1:88-111`) — the file downloader
+    /// behind install / update / download / reinstall / checkhashes.
+    Download,
+    /// `checkurls`' `test_dl` (`bin/checkurls.ps1:56-70`).
+    CheckUrls,
+    /// `checkver`'s page fetch (`bin/checkver.ps1:118-246`).
+    Checkver,
+    /// `find_hash_in_json` (`lib/autoupdate.ps1:114-146`) — the only
+    /// `autoupdate` fetcher that sends GitHub API headers.
+    AutoupdateJson,
+    /// The other `autoupdate` hash fetchers (`find_hash_in_textfile`,
+    /// `find_hash_in_xml`, `find_hash_in_rdf`, `find_hash_in_headers`,
+    /// `lib/autoupdate.ps1:20-206`).
+    Autoupdate,
+}
+
+/// Host fragment that marks a GitHub REST API URL.
+const GITHUB_API_HOST: &str = "api.github.com";
+
+impl HeaderProfile {
+    /// `Referer` value for `url`, or `None` when hok sends no Referer.
+    ///
+    /// **Downloads send no `Referer` at all**, where upstream's
+    /// `Invoke-Download` (`lib/download.ps1:94-96`) derives one from the URL's
+    /// own directory and drops it only for SourceForge/PortableApps. That
+    /// derived value *is* the download host, and Referer anti-leech rejects it:
+    /// `updatecdn.meeting.qq.com` answers 403 for it but 200 when the header is
+    /// absent (measured 2026-09-13, HEAD and GET). A host that needs a specific
+    /// Referer gets one from `PRIVATE_HOSTS` (`config.private_hosts`), the
+    /// mechanism upstream already offers for per-host headers.
+    ///
+    /// Deliberate deviation from upstream, registered as such: matching
+    /// `lib/download.ps1` here makes real packages undownloadable.
+    ///
+    /// The probe profiles keep upstream's Referer (`bin/checkurls.ps1:60`,
+    /// `bin/checkver.ps1:246`, `lib/autoupdate.ps1:25,55,117,145,186`).
+    pub fn referer(self, url: &str) -> Option<String> {
+        match self {
+            Self::Download => None,
+            Self::CheckUrls | Self::Checkver | Self::Autoupdate | Self::AutoupdateJson => {
+                Some(strip_filename(url))
+            }
+        }
+    }
+
+    /// Does upstream attach the GitHub API *download* `Accept` header to `url`?
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`.
+    pub fn uses_github_accept(self, url: &str) -> bool {
+        self == Self::Download && url.contains("api.github.com/repos")
+    }
+
+    /// Does upstream attach `X-GitHub-Api-Version: 2022-11-28` to `url`?
+    ///
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`;
+    /// `lib/autoupdate.ps1:122` matches `^https://api\.github\.com/.*` — HTTPS
+    /// only, so the token is never sent over plain HTTP.
+    pub fn uses_github_api_version(self, url: &str) -> bool {
+        match self {
+            Self::Download => url.contains("api.github.com/repos"),
+            Self::AutoupdateJson => is_https_github_api(url),
+            Self::CheckUrls | Self::Checkver | Self::Autoupdate => false,
+        }
+    }
+
+    /// Does upstream attach the configured GitHub token to `url`?
+    ///
+    /// `lib/download.ps1:97` matches `api\.github\.com/repos`;
+    /// `bin/checkver.ps1:219` matches any `api.github.com` path;
+    /// `lib/autoupdate.ps1:122` matches `^https://api\.github\.com/.*` — HTTPS
+    /// only. Upstream never sends the token anywhere else, so hok must not
+    /// either.
+    pub fn uses_github_token(self, url: &str) -> bool {
+        match self {
+            Self::Download => url.contains("api.github.com/repos"),
+            Self::Checkver => url.contains(GITHUB_API_HOST),
+            Self::AutoupdateJson => is_https_github_api(url),
+            Self::CheckUrls | Self::Autoupdate => false,
+        }
+    }
+}
+
+/// `$url -match '^https://api\.github\.com/.*'` (`lib/autoupdate.ps1:122`).
+/// PowerShell's `-match` is case-insensitive.
+fn is_https_github_api(url: &str) -> bool {
+    url.to_ascii_lowercase()
+        .starts_with("https://api.github.com/")
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers (pub(crate) for download.rs reuse)
 // ---------------------------------------------------------------------------
 
-/// Build a [`ureq::Agent`] from the proxy and timeout in `opts`.
-pub(crate) fn build_agent(opts: &RequestOptions) -> Result<ureq::Agent, String> {
-    let mut cfg =
-        ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(opts.timeout_secs)));
+/// Build a [`reqwest::Client`] from the proxy and timeout in `opts`.
+pub(crate) fn build_client<'a>(opts: &RequestOptions<'a>) -> Result<reqwest::Client, String> {
+    build_client_with_redirects(opts, true)
+}
+
+/// [`build_client`] with the redirect policy made explicit: `follow = false`
+/// returns the 3xx response itself instead of chasing the `Location` header.
+fn build_client_with_redirects<'a>(
+    opts: &RequestOptions<'a>,
+    follow: bool,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(opts.timeout_secs))
+        .danger_accept_invalid_certs(false);
     if let Some(proxy_url) = opts.proxy {
-        let p = ureq::Proxy::new(proxy_url).map_err(|e| e.to_string())?;
-        cfg = cfg.proxy(Some(p));
+        let p = reqwest::Proxy::all(proxy_url).map_err(|e| e.to_string())?;
+        builder = builder.proxy(p);
     }
-    Ok(cfg.build().new_agent())
+    if !follow {
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
+    builder.build().map_err(|e| e.to_string())
 }
 
 /// Inject common HTTP headers into a request based on the given options.
-pub(crate) fn apply_headers<B>(
-    mut req: ureq::RequestBuilder<B>,
-    opts: &RequestOptions,
-) -> ureq::RequestBuilder<B> {
+pub(crate) fn apply_headers<'a>(
+    mut req: reqwest::RequestBuilder,
+    opts: &RequestOptions<'a>,
+) -> reqwest::RequestBuilder {
     if let Some(ua) = opts.user_agent {
-        req = req.header("User-Agent", ua);
+        req = req.header(USER_AGENT, ua);
     }
     if let Some(r) = opts.referer {
-        req = req.header("Referer", r);
+        req = req.header(REFERER, r);
     }
     if let Some(cookies) = opts.cookies {
         let cookie_str: Vec<String> = cookies.iter().map(|(k, v)| format!("{k}={v}")).collect();
         if !cookie_str.is_empty() {
-            req = req.header("Cookie", cookie_str.join("; "));
+            req = req.header(COOKIE, cookie_str.join("; "));
         }
     }
     if let Some(token) = opts.token {
-        req = req.header("Authorization", &format!("Bearer {token}"));
+        // GitHub's documented scheme is `Bearer <token>`; upstream writes
+        // `token <token>` (`bin/checkver.ps1:223`) and GitHub accepts both.
+        // hok deliberately uses the standard spelling — a registered,
+        // intentional deviation from the reference implementation.
+        req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if opts.github_accept {
+        req = req.header(ACCEPT, "application/octet-stream");
+    }
+    if opts.github_api_version {
+        req = req.header("X-GitHub-Api-Version", "2022-11-28");
     }
     if let Some(extra) = opts.extra_headers {
         for (k, v) in extra {
@@ -146,22 +294,28 @@ fn parse_headers(headers: &str) -> impl Iterator<Item = (String, String)> + '_ {
 ///
 /// Returns a [`HeadResult`] that always succeeds at the `Result` level —
 /// network errors are captured inside the struct's `error` field.
-pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
-    let agent = match build_agent(opts) {
-        Ok(a) => a,
+pub async fn head(url: &str, opts: &RequestOptions<'_>) -> HeadResult {
+    let client = match build_client(opts) {
+        Ok(c) => c,
         Err(e) => {
             return HeadResult {
                 url: url.to_string(),
                 status_code: 0,
                 error: Some(format!("proxy error: {e}")),
+                content_length: None,
             };
         }
     };
-    let req = apply_headers(agent.head(url), opts);
+    let req = apply_headers(client.head(url), opts);
 
-    match req.call() {
+    match req.send().await {
         Ok(resp) => {
             let code = resp.status().as_u16();
+            let content_length = resp
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
             HeadResult {
                 url: url.to_string(),
                 status_code: code,
@@ -170,34 +324,77 @@ pub fn head(url: &str, opts: &RequestOptions) -> HeadResult {
                 } else {
                     Some(format!("HTTP {code}"))
                 },
+                content_length,
             }
         }
         Err(e) => HeadResult {
             url: url.to_string(),
             status_code: 0,
             error: Some(e.to_string()),
+            content_length: None,
         },
     }
 }
 
-/// Download a URL's content as bytes via HTTP GET with full option control.
-pub fn download(url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
-    let agent = build_agent(opts)?;
-    let req = apply_headers(agent.get(url), opts);
+/// Perform a HEAD request **without** following redirects, returning the
+/// response so the caller can inspect the 3xx status and its headers.
+///
+/// Used by the metalink hash probe, which mirrors Scoop's
+/// `AllowAutoRedirect = $false` + `Digest` header read in
+/// `find_hash_in_headers` (lib/autoupdate.ps1:181-206).
+pub(crate) async fn head_no_redirect(
+    url: &str,
+    opts: &RequestOptions<'_>,
+) -> Result<reqwest::Response, String> {
+    let client = build_client_with_redirects(opts, false)?;
+    apply_headers(client.head(url), opts)
+        .send()
+        .await
+        .map_err(|e| e.to_string())
+}
 
-    let mut body = Vec::new();
-    req.call()
-        .map_err(|e| format!("request failed: {e}"))?
-        .into_body()
-        .into_reader()
-        .read_to_end(&mut body)
-        .map_err(|e| format!("read failed: {e}"))?;
-    Ok(body)
+/// Download a URL's content as bytes via HTTP GET with full option control.
+pub async fn download(url: &str, opts: &RequestOptions<'_>) -> Result<Vec<u8>, String> {
+    let client = build_client(opts)?;
+    let req = apply_headers(client.get(url), opts);
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?;
+    let resp = resp.error_for_status().map_err(|e| e.to_string())?;
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| format!("read failed: {e}"))
 }
 
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+/// Decode a downloaded body into text the way upstream's `StreamReader` does
+/// (`lib/autoupdate.ps1:58-64`, `bin/checkver.ps1:289-295`): a body that starts
+/// with the gzip magic is inflated, and decoding never fails — an undecodable
+/// sequence becomes replacement characters rather than aborting the run.
+///
+/// Upstream picks the charset from the response's `Content-Type`; the
+/// [`Network`] trait only hands back bytes, so hok decodes as UTF-8 and
+/// substitutes on error.
+pub fn decode_body(raw: &[u8]) -> String {
+    let bytes: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
+        use std::io::Read;
+        let mut inflate = flate2::read::GzDecoder::new(raw);
+        let mut out = Vec::new();
+        match inflate.read_to_end(&mut out) {
+            Ok(_) => out,
+            Err(_) => raw.to_vec(),
+        }
+    } else {
+        raw.to_vec()
+    };
+    String::from_utf8_lossy(&bytes).into_owned()
+}
 
 /// Strip filename from a URL to produce a Referer value.
 /// Matches Scoop's `strip_filename` in lib/core.ps1.
@@ -214,6 +411,246 @@ pub fn strip_filename(url: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Infra trait (network capability)
+// ---------------------------------------------------------------------------
+
+/// Result of a single HTTP range request, with status and optional
+/// `Content-Range` start offset. Used by the fragmented downloader.
+#[derive(Debug, Clone)]
+pub struct RangeResponse {
+    pub status: u16,
+    pub content_range_start: Option<u64>,
+    pub bytes: Vec<u8>,
+}
+
+/// Error classifying whether a range request is retryable.
+#[derive(Debug)]
+pub enum RangeError {
+    /// Retrying cannot help (HTTP 4xx except 408/429, server ignoring
+    /// `Range`, bad response shape).
+    Final(String),
+    /// Transport-level, 5xx, 408/429 — safe to retry with backoff.
+    Transient(String),
+}
+
+impl std::fmt::Display for RangeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RangeError::Final(msg) | RangeError::Transient(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+/// Error from a single-stream download.
+///
+/// The timeout is a variant rather than text folded into the message:
+/// `reqwest`'s `Display` only renders `error sending request for url (...)`
+/// and keeps the reason (`operation timed out`) in its `source()` chain, so a
+/// caller that only sees the formatted string cannot tell a timeout from a
+/// connection failure. Classifying here lets the caller show a localized
+/// "timed out after Ns" instead of the opaque request error.
+#[derive(Debug, Clone)]
+pub enum DownloadError {
+    /// The configured request deadline (`RequestOptions::timeout_secs`)
+    /// elapsed, either before the response head or mid-body.
+    Timeout {
+        /// The deadline that elapsed, in seconds.
+        secs: u64,
+    },
+    /// Any other transport/HTTP/read/write failure, already formatted.
+    Other(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::Timeout { secs } => write!(f, "timed out after {secs}s"),
+            DownloadError::Other(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+/// Classify a `reqwest` error from a streaming download: timeouts become
+/// [`DownloadError::Timeout`] (the deadline is not visible in the message),
+/// every other failure keeps `prefix` and the error's own text.
+fn classify_download_error(e: &reqwest::Error, prefix: &str, timeout_secs: u64) -> DownloadError {
+    if e.is_timeout() {
+        DownloadError::Timeout { secs: timeout_secs }
+    } else {
+        DownloadError::Other(format!("{prefix}: {e}"))
+    }
+}
+
+/// An async download-progress callback: invoked with cumulative bytes
+/// written, returning a boxed future the caller awaits. Boxed (rather than
+/// `AsyncFnMut`, which is not dyn-compatible) so the [`Network`] trait can
+/// hold it as a trait object; returning a future lets the caller
+/// `send().await` on the event bus for backpressure (no dropped events).
+pub(crate) type ProgressCallback<'a> =
+    dyn FnMut(u64) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send;
+
+/// The HTTP networking capability of a session.
+///
+/// The default implementation ([`RealNetwork`]) wraps the free functions in
+/// this module verbatim; tests inject an in-memory fake via
+/// [`Session::set_network`] to avoid the real network. The trait lives here
+/// (the tool layer) so it has no dependency on any domain service.
+#[async_trait::async_trait]
+pub trait Network: Send + Sync {
+    /// Perform an HTTP HEAD request.
+    async fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult;
+
+    /// Download a URL's content as bytes via HTTP GET.
+    async fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String>;
+
+    /// Perform one range request (`bytes={start}-{end}`), returning the
+    /// response status, `Content-Range` start offset and body. The caller
+    /// (fragmented downloader) owns retry/resume/validation logic.
+    async fn range_get(
+        &self,
+        url: &str,
+        start: u64,
+        end: u64,
+        opts: &RequestOptions,
+    ) -> Result<RangeResponse, RangeError>;
+
+    /// Download a URL to `dest` in a streaming loop, reporting cumulative
+    /// bytes written through `on_progress` (an async callback so callers can
+    /// `send().await` on the event bus for backpressure — no dropped events).
+    ///
+    /// A failure is classified (timeout vs everything else) so the caller can
+    /// render the timeout with its deadline; see [`DownloadError`].
+    async fn download_stream(
+        &self,
+        url: &str,
+        opts: &RequestOptions,
+        dest: &Path,
+        on_progress: &mut ProgressCallback<'_>,
+    ) -> Result<(), DownloadError>;
+}
+
+/// Default network implementation wrapping the free functions above.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RealNetwork;
+
+#[async_trait::async_trait]
+impl Network for RealNetwork {
+    async fn head(&self, url: &str, opts: &RequestOptions) -> HeadResult {
+        head(url, opts).await
+    }
+
+    async fn download(&self, url: &str, opts: &RequestOptions) -> Result<Vec<u8>, String> {
+        download(url, opts).await
+    }
+
+    async fn range_get(
+        &self,
+        url: &str,
+        start: u64,
+        end: u64,
+        opts: &RequestOptions,
+    ) -> Result<RangeResponse, RangeError> {
+        let client = build_client(opts).map_err(RangeError::Transient)?;
+        let req = apply_headers(
+            client
+                .get(url)
+                .header(RANGE, format!("bytes={start}-{end}")),
+            opts,
+        );
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| RangeError::Transient(format!("request failed: {e}")))?;
+        let status = resp.status().as_u16();
+        if status == 206 {
+            let content_range_start = resp
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cr| cr.strip_prefix("bytes ").and_then(|r| r.split('-').next()))
+                .and_then(|s| s.parse::<u64>().ok());
+            let bytes = resp
+                .bytes()
+                .await
+                .map(|b| b.to_vec())
+                .map_err(|e| RangeError::Transient(format!("read failed: {e}")))?;
+            Ok(RangeResponse {
+                status,
+                content_range_start,
+                bytes,
+            })
+        } else if (400..500).contains(&status) && status != 408 && status != 429 {
+            // 4xx (except retryable 408/429) — the server rejected the
+            // request, retrying won't help.
+            Err(RangeError::Final(format!("HTTP {status} for {url}")))
+        } else if status >= 500 || status == 408 || status == 429 {
+            // 5xx, 408/429 — transient, safe to retry with backoff.
+            Err(RangeError::Transient(format!("HTTP {status}")))
+        } else {
+            // 2xx/3xx that is not 206 (e.g. the server ignored `Range`).
+            Err(RangeError::Final(format!(
+                "expected 206 Partial Content, got {status} (server ignored Range request)"
+            )))
+        }
+    }
+
+    async fn download_stream(
+        &self,
+        url: &str,
+        opts: &RequestOptions,
+        dest: &Path,
+        on_progress: &mut ProgressCallback<'_>,
+    ) -> Result<(), DownloadError> {
+        let client = build_client(opts).map_err(DownloadError::Other)?;
+        let mut req = apply_headers(client.get(url), opts);
+        // Resume from `range_start` (byte 0 = fresh). The Range infra mirrors
+        // the fragmented `range_get` path.
+        if opts.range_start > 0 {
+            req = req.header(RANGE, format!("bytes={}-", opts.range_start));
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| classify_download_error(&e, "download failed", opts.timeout_secs))?;
+        let resp = resp
+            .error_for_status()
+            .map_err(|e| DownloadError::Other(e.to_string()))?;
+
+        // Resume only when the server honored the Range request (206). If it
+        // ignored it and returned the whole body (200), rewrite from byte 0 —
+        // appending a full body to the partial file would corrupt it.
+        let resume = opts.range_start > 0 && resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let mut file = if resume {
+            OpenOptions::new().create(true).append(true).open(dest)
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(dest)
+        }
+        .map_err(|e| DownloadError::Other(e.to_string()))?;
+
+        let mut stream = resp.bytes_stream();
+        // Absolute progress: start from the resumed offset so the caller's
+        // progress bar reflects the real total, not just the transferred tail.
+        let mut dlnow = if resume { opts.range_start } else { 0 };
+        while let Some(chunk) = stream.next().await {
+            // A stalled transfer trips the same client deadline as a failed
+            // handshake, so it is classified with the same helper.
+            let chunk =
+                chunk.map_err(|e| classify_download_error(&e, "read failed", opts.timeout_secs))?;
+            file.write_all(&chunk)
+                .map_err(|e| DownloadError::Other(format!("write failed: {e}")))?;
+            dlnow += chunk.len() as u64;
+            on_progress(dlnow).await;
+        }
+        Ok(())
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +673,74 @@ mod tests {
     fn match_url(pairs: &[(&str, &[(&str, &str)])], url: &str) -> Option<HashMap<String, String>> {
         let entries = entries(pairs);
         match_private_hosts(entries.iter().map(|(p, h)| (p.as_str(), h.as_str())), url)
+    }
+
+    /// End-to-end HTTPS smoke check for the configured TLS backend.
+    ///
+    /// Ignored by default: it needs outbound network access. Run it manually
+    /// after touching the `reqwest` TLS features:
+    /// `cargo test -p libscoop --lib tls_https_smoke -- --ignored`
+    #[tokio::test]
+    #[ignore = "requires network access (manual TLS backend smoke check)"]
+    async fn tls_https_smoke() {
+        let opts = RequestOptions {
+            timeout_secs: 30,
+            // api.github.com answers 403 to requests without a User-Agent.
+            user_agent: Some("hok-tls-smoke/0.1"),
+            ..Default::default()
+        };
+        let body = download("https://api.github.com/", &opts)
+            .await
+            .expect("HTTPS request must succeed with the configured TLS backend");
+        assert!(body.len() > 16, "unexpected body length: {}", body.len());
+    }
+
+    /// A loopback server that accepts the connection but never sends a byte
+    /// must be classified as [`DownloadError::Timeout`]. `reqwest`'s `Display`
+    /// only renders "error sending request for url (...)" and keeps the reason
+    /// (`operation timed out`) in its `source()` chain, so without the
+    /// classification the caller cannot tell a timeout from a connection
+    /// failure — this pins the classification the reported symptom was about.
+    #[tokio::test]
+    async fn download_stream_classifies_a_silent_server_as_a_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // Hold the connection open without answering until the client's
+            // deadline has elapsed (dropping it earlier would look like a
+            // closed connection, not a timeout).
+            std::thread::sleep(Duration::from_secs(3));
+            drop(stream);
+        });
+
+        let opts = RequestOptions {
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let dest = std::env::temp_dir().join(format!(
+            "hok_download_stream_timeout_{}.bin",
+            std::process::id()
+        ));
+        let mut on_progress =
+            |_done: u64| -> Pin<Box<dyn Future<Output = ()> + Send>> { Box::pin(async {}) };
+
+        let err = RealNetwork
+            .download_stream(
+                &format!("http://{addr}/app.bin"),
+                &opts,
+                &dest,
+                &mut on_progress,
+            )
+            .await
+            .expect_err("the silent server must make the request time out");
+        assert!(
+            matches!(err, DownloadError::Timeout { secs: 1 }),
+            "expected a typed timeout, got {err:?}"
+        );
+
+        let _ = std::fs::remove_file(&dest);
+        server.join().unwrap();
     }
 
     #[test]
@@ -279,5 +784,161 @@ mod tests {
         .unwrap();
         assert_eq!(h.get("X-Two").map(|s| s.as_str()), Some("2"));
         assert_eq!(h.get("X-One"), None);
+    }
+
+    // ── HeaderProfile (upstream's per-call-site header contract) ────────────
+
+    #[test]
+    fn download_profile_never_sends_a_referer() {
+        // Deliberate deviation from `lib/download.ps1:94-96`: the Referer
+        // upstream derives is the download host itself, and Referer anti-leech
+        // rejects that (`updatecdn.meeting.qq.com`: 403 with it, 200 without).
+        // A host that needs one gets it from PRIVATE_HOSTS.
+        for url in [
+            "https://example.com/a/b/file.zip",
+            "https://downloads.sourceforge.net/project/x/y.exe",
+            "https://portableapps.com/x.exe",
+            "https://updatecdn.meeting.qq.com/cos/abc/pkg.exe#/dl.7z",
+        ] {
+            assert_eq!(
+                HeaderProfile::Download.referer(url),
+                None,
+                "downloads must not carry a Referer: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_profiles_always_send_the_referer() {
+        // `bin/checkurls.ps1:60` and `lib/autoupdate.ps1:186` have no host
+        // exception; `bin/checkver.ps1:246` neither.
+        for profile in [
+            HeaderProfile::CheckUrls,
+            HeaderProfile::Checkver,
+            HeaderProfile::Autoupdate,
+            HeaderProfile::AutoupdateJson,
+        ] {
+            assert_eq!(
+                profile.referer("https://downloads.sourceforge.net/project/x/y.exe"),
+                Some("https://downloads.sourceforge.net/project/x/".to_string()),
+                "{profile:?} must keep the Referer"
+            );
+        }
+    }
+
+    #[test]
+    fn github_download_accept_only_on_the_repos_path() {
+        // `lib/download.ps1:97` matches `api\.github\.com/repos`.
+        assert!(
+            HeaderProfile::Download.uses_github_accept("https://api.github.com/repos/o/r/releases")
+        );
+        assert!(!HeaderProfile::Download.uses_github_accept("https://api.github.com/"));
+        assert!(
+            !HeaderProfile::Checkver
+                .uses_github_accept("https://api.github.com/repos/o/r/releases")
+        );
+        // `lib/autoupdate.ps1:122` asks for JSON, never octet-stream.
+        assert!(
+            !HeaderProfile::AutoupdateJson
+                .uses_github_accept("https://api.github.com/repos/o/r/releases")
+        );
+    }
+
+    #[test]
+    fn github_api_version_only_where_upstream_sends_it() {
+        // Download: the repos path (`lib/download.ps1:97-101`).
+        assert!(
+            HeaderProfile::Download.uses_github_api_version("https://api.github.com/repos/o/r")
+        );
+        assert!(!HeaderProfile::Download.uses_github_api_version("https://api.github.com/"));
+        // Autoupdate's JSON hash fetcher (`lib/autoupdate.ps1:122-125`).
+        assert!(
+            HeaderProfile::AutoupdateJson
+                .uses_github_api_version("https://api.github.com/repos/o/r/releases")
+        );
+        // The other autoupdate fetchers add nothing.
+        assert!(
+            !HeaderProfile::Autoupdate.uses_github_api_version("https://api.github.com/repos/o/r")
+        );
+        // checkver sends only the bearer token (`bin/checkver.ps1:177`).
+        assert!(!HeaderProfile::Checkver.uses_github_api_version("https://api.github.com/x"));
+    }
+
+    #[test]
+    fn github_token_never_leaks_to_other_hosts() {
+        // The generic autoupdate fetchers and `bin/checkurls.ps1` never
+        // authorize.
+        assert!(!HeaderProfile::Autoupdate.uses_github_token("https://api.github.com/repos/o/r"));
+        assert!(!HeaderProfile::CheckUrls.uses_github_token("https://api.github.com/repos/o/r"));
+        // `lib/download.ps1:97` — the repos path only.
+        assert!(HeaderProfile::Download.uses_github_token("https://api.github.com/repos/o/r"));
+        assert!(!HeaderProfile::Download.uses_github_token("https://api.github.com/users/o"));
+        // `bin/checkver.ps1:219` — any api.github.com path.
+        assert!(HeaderProfile::Checkver.uses_github_token("https://api.github.com/users/o"));
+        assert!(!HeaderProfile::Checkver.uses_github_token("https://example.com/x"));
+        // `lib/autoupdate.ps1:122` — https only (`^https://api\.github\.com/.*`).
+        assert!(
+            HeaderProfile::AutoupdateJson.uses_github_token("https://api.github.com/repos/o/r")
+        );
+        assert!(
+            !HeaderProfile::AutoupdateJson.uses_github_token("http://api.github.com/repos/o/r")
+        );
+        assert!(!HeaderProfile::AutoupdateJson.uses_github_token("https://example.com/x"));
+    }
+
+    #[test]
+    fn github_api_download_headers_are_attached() {
+        // `lib/download.ps1:97-101` — the Accept / API-version / bearer triple.
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            user_agent: Some("ua"),
+            token: Some("tok"),
+            github_accept: true,
+            github_api_version: true,
+            ..Default::default()
+        };
+        let req = apply_headers(client.get("https://api.github.com/repos/o/r"), &opts)
+            .build()
+            .expect("request builds");
+
+        assert_eq!(req.headers()[ACCEPT], "application/octet-stream");
+        assert_eq!(req.headers()["x-github-api-version"], "2022-11-28");
+        assert_eq!(req.headers()[AUTHORIZATION], "Bearer tok");
+    }
+
+    #[test]
+    fn github_json_api_headers_carry_no_accept_type() {
+        // `lib/autoupdate.ps1:122-125` — bearer + API version, nothing else.
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            token: Some("tok"),
+            github_api_version: true,
+            ..Default::default()
+        };
+        let req = apply_headers(
+            client.get("https://api.github.com/repos/o/r/releases"),
+            &opts,
+        )
+        .build()
+        .expect("request builds");
+
+        assert!(req.headers().get(ACCEPT).is_none());
+        assert_eq!(req.headers()["x-github-api-version"], "2022-11-28");
+        assert_eq!(req.headers()[AUTHORIZATION], "Bearer tok");
+    }
+
+    #[test]
+    fn github_api_headers_stay_off_by_default() {
+        let client = reqwest::Client::new();
+        let opts = RequestOptions {
+            token: Some("tok"),
+            ..Default::default()
+        };
+        let req = apply_headers(client.get("https://example.com/x"), &opts)
+            .build()
+            .expect("request builds");
+
+        assert!(req.headers().get(ACCEPT).is_none());
+        assert!(req.headers().get("x-github-api-version").is_none());
     }
 }

@@ -5,24 +5,47 @@
 //!
 //! # Design
 //!
-//! - **Lazy full scan**: Most packages have no dependencies, so a costly
-//!   full-bucket scan is only triggered when at least one package declares
-//!   dependencies. The scan queries all synced packages at once for
-//!   efficient subsequent lookups.
+//! - **Lazy per-query resolution**: Most packages have no dependencies, so
+//!   no scan happens unless a package declares (or implicitly pulls in) a
+//!   dependency. Each dependency query is resolved through a name-prefiltered
+//!   query (only matching manifests are parsed) instead of a full-bucket
+//!   wildcard scan, keeping resolution O(matches) rather than O(all
+//!   manifests). Results are cached per query for deps-of-deps.
 //! - **Unique ordering**: The output is guaranteed to have no duplicates
 //!   and is sorted so that dependencies appear before their dependents.
 //! - **Cycle detection**: The [`DepGraph`] detects cyclic dependencies
 //!   and returns a [`CyclicError`] if any are found.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
+    Error, Session,
     error::Fallible,
     event,
     internal::dag::DepGraph,
-    package::{query, Package},
-    Error, Session,
+    package::{Package, query},
 };
+
+/// Names of the implicit installation helpers, mirroring Scoop's
+/// `Get-InstallationHelper` (lib/depends.ps1). A helper that is already
+/// installed is excluded from dependency resolution, so an app whose `.7z` URL
+/// implies `7zip` does not pull in a fresh resolution of an installed 7zip.
+const HELPERS: [&str; 4] = ["7zip", "lessmsi", "innounp", "dark"];
+
+/// Whether `name` is one of the implicit installation helpers AND is already
+/// installed. Only the helper names are ever checked; ordinary dependencies are
+/// unaffected.
+pub(crate) fn helper_installed(session: &Session, name: &str) -> bool {
+    if !HELPERS.contains(&name) {
+        return false;
+    }
+    super::install_state::load_install_state(
+        &session.apps_dir(),
+        name,
+        session.config().no_junction(),
+    )
+    .is_some()
+}
 
 /// Resolve dependencies of the given packages.
 ///
@@ -31,29 +54,29 @@ use crate::{
 /// This function ensures that packages are unique and sorted in dependency first
 /// order.
 ///
-/// When `ignore_failure` is enabled, a package whose dependencies cannot be
+/// When `ignore_failures` is enabled, a package whose dependencies cannot be
 /// resolved (missing dependency or undecidable multi-candidate) is dropped from
 /// the list and reported to stderr, so the remaining packages still proceed.
-pub(crate) fn resolve_dependencies(
+pub(crate) async fn resolve_dependencies(
     session: &Session,
     packages: &mut Vec<Package>,
-    ignore_failure: bool,
+    ignore_failures: bool,
     assume_yes: bool,
 ) -> Fallible<()> {
     let mut graph = DepGraph::<String>::new();
     let mut to_resolve = packages.clone();
     let mut skipped: HashSet<String> = HashSet::new();
 
-    // Only query all packages when there are actual dependencies to resolve.
-    // Most packages have no deps, so this avoids a costly full scan.
-    let has_deps = packages.iter().any(|p| !p.dependencies().is_empty());
-    let synced = if has_deps {
-        // For performance reason, a wildcard query is done here to get all the
-        // available packages in one shot and then used for the following queries.
-        query::query_synced(session, &["*"], &[])?
-    } else {
-        Vec::new()
-    };
+    // Dependency queries are resolved through name-prefiltered query_synced
+    // calls (only manifests whose name matches the query are parsed) instead
+    // of a full-bucket wildcard scan. A wildcard scan is O(all manifests) and
+    // dominated by disk I/O plus per-package install-state probing - the slow
+    // path whenever a package pulls in an implicit installation helper (e.g.
+    // 7zip for a .7z URL, lessmsi / innounp for those installers).
+    // Results are cached per query so deps-of-deps don't re-scan. query_synced
+    // still fills install state for matched packages, preserving the
+    // installed-candidate preference below.
+    let mut query_cache: HashMap<String, Vec<Package>> = HashMap::new();
 
     loop {
         if to_resolve.is_empty() {
@@ -69,7 +92,11 @@ pub(crate) fn resolve_dependencies(
             }
 
             let mut resolved = vec![];
-            let deps = pkg.dependencies();
+            let mut deps = pkg.dependencies();
+            // Mirror Scoop's Get-InstallationHelper !$All: an implicit helper
+            // (7zip/lessmsi/innounp/dark) that is already installed is not a
+            // real dependency and is dropped from resolution.
+            deps.retain(|d| !helper_installed(session, d));
 
             if deps.is_empty() {
                 graph.register_node(pkg.name().to_owned());
@@ -78,20 +105,25 @@ pub(crate) fn resolve_dependencies(
                 let mut failed = false;
 
                 for query in queries {
-                    let mut matched = synced
-                        .iter()
-                        .filter(|p| p.matches_bucket_query(query))
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    let mut matched = if let Some(cached) = query_cache.get(query) {
+                        cached.clone()
+                    } else {
+                        let resolved = query::query_synced_files(session, &[query], &[])?
+                            .into_iter()
+                            .filter(|p| p.matches_bucket_query(query))
+                            .collect::<Vec<_>>();
+                        query_cache.insert(query.to_owned(), resolved.clone());
+                        resolved
+                    };
 
                     match matched.len() {
                         0 => {
-                            if ignore_failure {
-                                session.output().error(format!(
-                                    "failed to resolve dependency '{}' of '{}': {}",
-                                    query,
-                                    pkg.name(),
-                                    Error::PackageNotFound(query.to_owned())
+                            if ignore_failures {
+                                session.output().error(hok_i18n::t!(
+                                    "cmd.failed_resolve_dependency",
+                                    query = query,
+                                    pkg = pkg.name(),
+                                    error = Error::PackageNotFound(query.to_owned())
                                 ));
                                 failed = true;
                                 break;
@@ -119,15 +151,15 @@ pub(crate) fn resolve_dependencies(
                             if !installed_candidate.is_empty() {
                                 matched = installed_candidate;
                             } else {
-                                match select_candidate(session, &mut matched, assume_yes) {
+                                match select_candidate(session, &mut matched, assume_yes).await {
                                     Ok(()) => {}
                                     Err(e) => {
-                                        if ignore_failure {
-                                            session.output().error(format!(
-                                                "failed to resolve dependency '{}' of '{}': {}",
-                                                query,
-                                                pkg.name(),
-                                                e
+                                        if ignore_failures {
+                                            session.output().error(hok_i18n::t!(
+                                                "cmd.failed_resolve_dependency",
+                                                query = query,
+                                                pkg = pkg.name(),
+                                                error = e
                                             ));
                                             failed = true;
                                             break;
@@ -214,20 +246,25 @@ pub(crate) fn resolve_dependencies(
 }
 
 /// Select one from multiple package candidates, interactively if possible.
-pub(crate) fn select_candidate(
+pub(crate) async fn select_candidate(
     session: &Session,
     candidates: &mut Vec<Package>,
     assume_yes: bool,
 ) -> Fallible<()> {
     let name = candidates[0].name().to_owned();
 
-    // Sort candidates by package ident, in other words, by alphabetical order
-    // of bucket name.
-    candidates.sort_by_key(|p| p.ident().to_lowercase());
+    // Known buckets first — upstream's `Get-LocalBucket` reordering, shared
+    // with `bucket list` — then by package ident, i.e. alphabetically by bucket
+    // name, for everything else.
+    candidates.sort_by(|a, b| {
+        crate::bucket::known_rank(a.bucket())
+            .cmp(&crate::bucket::known_rank(b.bucket()))
+            .then_with(|| a.ident().to_lowercase().cmp(&b.ident().to_lowercase()))
+    });
 
     if assume_yes {
-        // Non-interactive (assume-yes): pick the alphabetically-first
-        // candidate — the built-in selection algorithm.
+        // Non-interactive (assume-yes): pick the top-ranked candidate — the
+        // built-in selection algorithm.
         *candidates = vec![candidates[0].clone()];
         return Ok(());
     }
@@ -238,14 +275,10 @@ pub(crate) fn select_candidate(
         let question = candidates.iter().map(|p| p.ident()).collect::<Vec<_>>();
 
         if tx
-            .send(event::Event::PromptPackageCandidate(question))
+            .try_send(event::Event::PromptPackageCandidate(question))
             .is_ok()
         {
-            // The unwrap is safe here because we have obtained the outbound tx,
-            // so the inbound rx must be available.
-            let rx = session.receiver().unwrap();
-
-            while let Ok(answer) = rx.recv() {
+            while let Some(answer) = session.receive_response().await {
                 if let event::Event::PromptPackageCandidateResult(idx) = answer {
                     // bounds check
                     if idx < candidates.len() {
@@ -260,7 +293,10 @@ pub(crate) fn select_candidate(
         }
     }
 
-    // TODO: handle this case smartly using pre-defined bucket priority
+    // Candidates are ranked by bucket priority above, but hok still refuses to
+    // guess when it cannot ask: upstream takes `$matched_buckets[0]` and warns
+    // (`Find-AppBucket`), hok errors. Picking one here would install from a
+    // bucket the user did not choose, so this stays a registered deviation.
     Err(Error::PackageMultipleCandidates(name))
 }
 
@@ -273,11 +309,11 @@ pub(crate) fn select_candidate(
 /// depended by other installed packages.
 ///
 /// The purpose is to support cascading removal of installed packages.
-pub(crate) fn resolve_cascade(
-    session: &Session,
-    packages: &mut Vec<Package>,
-    escape_hold: bool,
-) -> Fallible<()> {
+///
+/// A held dependency is never cascaded away: that errors with
+/// [`Error::PackageCascadeRemoveHold`], so the user has to `hok unhold` it
+/// explicitly — hold has no CLI bypass.
+pub(crate) fn resolve_cascade(session: &Session, packages: &mut Vec<Package>) -> Fallible<()> {
     let mut to_resolve = packages.clone();
 
     // For performance reason, a wildcard query is done here to get all the
@@ -346,7 +382,7 @@ pub(crate) fn resolve_cascade(
                     .any(|p| !packages.contains(p) && !unneeded.contains(p));
 
                 if !needed {
-                    if dep_pkg.is_held() && !escape_hold {
+                    if dep_pkg.is_held() {
                         return Err(Error::PackageCascadeRemoveHold(dep_pkg.name().to_owned()));
                     }
                     unneeded.push(dep_pkg.to_owned());
@@ -431,14 +467,16 @@ mod tests {
 
     // ── resolve_dependencies ──────────────────────────────────────────────────
 
-    #[test]
-    fn resolve_orders_dependencies_first() {
+    #[tokio::test]
+    async fn resolve_orders_dependencies_first() {
         let (session, root) = setup("order");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -448,36 +486,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_no_deps_is_identity() {
+    /// A `.7z` URL implies the `7zip` helper; when 7zip is already installed it
+    /// must be dropped from dependency resolution (Scoop Get-InstallationHelper
+    /// !$All), so the graph contains only the requested package.
+    #[tokio::test]
+    async fn resolve_excludes_installed_helper() {
+        let (session, root) = setup("helper_installed_excluded");
+        crate::test_utils::mark_installed(
+            &root.0,
+            "7zip",
+            "main",
+            "{\"version\":\"1.0.0\",\"homepage\":\"https://example.com\",\"license\":\"MIT\"}",
+            false,
+        );
+
+        let json = "{\"version\":\"1.0.0\",\"homepage\":\"https://example.com\",\"license\":\"MIT\",\"url\":\"https://example.com/app.7z\"}";
+        let manifest = crate::package::Manifest::from_json("app", json).unwrap();
+        let pkg = Package::from("app", "main", manifest);
+        assert!(
+            pkg.dependencies().contains(&"7zip".to_owned()),
+            "precondition: .7z URL implies the 7zip helper"
+        );
+
+        let mut packages = vec![pkg];
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
+
+        let names: Vec<_> = packages.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec!["app"], "installed helper must be dropped");
+        assert!(
+            !packages.iter().any(|p| p.name() == "7zip"),
+            "7zip must not be added to the resolution"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_no_deps_is_identity() {
         let (session, _root) = setup("no_deps");
 
         let mut packages = vec![pkg("main", "solo", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["solo"]);
     }
 
-    #[test]
-    fn resolve_missing_dependency_errors() {
+    #[tokio::test]
+    async fn resolve_missing_dependency_errors() {
         let (session, root) = setup("missing_dep");
         write_manifest(&root.0, "main", "a", &["ghost"]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap_err();
 
         assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
     }
 
-    #[test]
-    fn resolve_missing_dependency_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_missing_dependency_skipped_with_ignore() {
         let (session, root) = setup("missing_dep_ignored");
         write_manifest(&root.0, "main", "a", &["ghost"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["ghost"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -487,8 +566,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_transitive_dependents_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_transitive_dependents_skipped_with_ignore() {
         let (session, root) = setup("missing_dep_transitive");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &["ghost"]);
@@ -496,7 +575,9 @@ mod tests {
         // a → b → ghost: b cannot be resolved, so a must be dropped too,
         // otherwise a would be committed with a missing dependency.
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert!(
@@ -505,8 +586,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_bucket_qualified_dep_not_collapsed_with_ignore() {
+    #[tokio::test]
+    async fn resolve_bucket_qualified_dep_not_collapsed_with_ignore() {
         let (session, root) = setup("bucket_qualified_ignore");
         // main/b fails (bad dep); c depends on alt/b explicitly. Even though
         // alt/b can't co-exist with main/b in the list (packages are deduped
@@ -518,7 +599,9 @@ mod tests {
         write_manifest(&root.0, "main", "c", &["alt/b"]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "c", &["alt/b"])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let idents = packages.iter().map(|p| p.ident()).collect::<Vec<_>>();
         assert_eq!(
@@ -528,15 +611,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_multilevel_dependencies_expanded() {
+    #[tokio::test]
+    async fn resolve_multilevel_dependencies_expanded() {
         let (session, root) = setup("multilevel");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &["main/c"]);
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -546,21 +631,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_duplicate_inputs_deduped() {
+    #[tokio::test]
+    async fn resolve_duplicate_inputs_deduped() {
         let (session, root) = setup("dedup");
         write_manifest(&root.0, "main", "a", &["main/b"]);
         write_manifest(&root.0, "main", "b", &[]);
 
         let mut packages = vec![pkg("main", "a", &["main/b"]), pkg("main", "b", &[])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["b", "a"], "no duplicates, deps first");
     }
 
-    #[test]
-    fn resolve_multiple_candidates_prefers_installed() {
+    #[tokio::test]
+    async fn resolve_multiple_candidates_prefers_installed() {
         let (session, root) = setup("multi_installed");
         // Same package name in two buckets
         write_manifest(&root.0, "main", "a", &[]);
@@ -570,7 +657,9 @@ mod tests {
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        resolve_dependencies(&session, &mut packages, false, false).unwrap();
+        resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
@@ -578,21 +667,54 @@ mod tests {
         assert_eq!(buckets, vec!["alt", "main"], "installed candidate wins");
     }
 
-    #[test]
-    fn resolve_multiple_candidates_without_emitter_errors() {
+    /// With no installed candidate the choice is not interactive, and the
+    /// official bucket priority must decide: upstream's `Get-LocalBucket` moves
+    /// the known buckets to the front, in `buckets.json` order
+    /// (`lib/buckets.ps1:56-75`), and `Find-AppBucket` takes the first match
+    /// (`lib/manifest.ps1:100-113`).
+    ///
+    /// The three candidates pin all three levels at once: `aaa` is an unknown
+    /// bucket, `extras` is known but ranks below `main`, and both sort before
+    /// `main` alphabetically. Ordering by name alone picked `aaa`; a
+    /// "known first, then alphabetical" rule picked `extras`.
+    #[tokio::test]
+    async fn resolve_multiple_candidates_prefers_official_bucket() {
+        let (session, root) = setup("multi_known_priority");
+        write_manifest(&root.0, "aaa", "a", &[]);
+        write_manifest(&root.0, "extras", "a", &[]);
+        write_manifest(&root.0, "main", "a", &[]);
+        write_manifest(&root.0, "main", "b", &["a"]);
+
+        let mut packages = vec![pkg("main", "b", &["a"])];
+        resolve_dependencies(&session, &mut packages, false, true)
+            .await
+            .unwrap();
+
+        let buckets = packages.iter().map(|p| p.bucket()).collect::<Vec<_>>();
+        assert_eq!(
+            buckets,
+            vec!["main", "main"],
+            "`main` outranks a lower-ranked known bucket and an unknown one"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_multiple_candidates_without_emitter_errors() {
         let (session, root) = setup("multi_no_emitter");
         write_manifest(&root.0, "main", "a", &[]);
         write_manifest(&root.0, "alt", "a", &[]);
         write_manifest(&root.0, "main", "b", &["a"]);
 
         let mut packages = vec![pkg("main", "b", &["a"])];
-        let err = resolve_dependencies(&session, &mut packages, false, false).unwrap_err();
+        let err = resolve_dependencies(&session, &mut packages, false, false)
+            .await
+            .unwrap_err();
 
         assert!(matches!(err, Error::PackageMultipleCandidates(name) if name == "a"));
     }
 
-    #[test]
-    fn resolve_multiple_candidates_skipped_with_ignore() {
+    #[tokio::test]
+    async fn resolve_multiple_candidates_skipped_with_ignore() {
         let (session, root) = setup("multi_no_emitter_ignored");
         write_manifest(&root.0, "main", "a", &[]);
         write_manifest(&root.0, "alt", "a", &[]);
@@ -600,7 +722,9 @@ mod tests {
         write_manifest(&root.0, "main", "c", &[]);
 
         let mut packages = vec![pkg("main", "b", &["a"]), pkg("main", "c", &[])];
-        resolve_dependencies(&session, &mut packages, true, false).unwrap();
+        resolve_dependencies(&session, &mut packages, true, false)
+            .await
+            .unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(
@@ -612,22 +736,22 @@ mod tests {
 
     // ── resolve_cascade ───────────────────────────────────────────────────────
 
-    #[test]
-    fn cascade_appends_unneeded_dependency() {
+    #[tokio::test]
+    async fn cascade_appends_unneeded_dependency() {
         let (session, root) = setup("cascade_unneeded");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, false);
 
         // a depends on b, and nothing else depends on b → b becomes unneeded
         let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, false).unwrap();
+        resolve_cascade(&session, &mut packages).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a", "b"]);
     }
 
-    #[test]
-    fn cascade_keeps_dependency_needed_by_others() {
+    #[tokio::test]
+    async fn cascade_keeps_dependency_needed_by_others() {
         let (session, root) = setup("cascade_needed");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         // c depends on b (read from its installed manifest.json)
@@ -637,34 +761,21 @@ mod tests {
 
         // a depends on b, but c also depends on b → b stays
         let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, false).unwrap();
+        resolve_cascade(&session, &mut packages).unwrap();
 
         let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
         assert_eq!(names, vec!["a"], "b is still needed by c");
     }
 
-    #[test]
-    fn cascade_held_dependency_blocks_without_escape() {
+    #[tokio::test]
+    async fn cascade_held_dependency_blocks() {
         let (session, root) = setup("cascade_held");
         crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
         crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
 
         let mut packages = vec![pkg("main", "a", &["b"])];
-        let err = resolve_cascade(&session, &mut packages, false).unwrap_err();
+        let err = resolve_cascade(&session, &mut packages).unwrap_err();
 
         assert!(matches!(err, Error::PackageCascadeRemoveHold(name) if name == "b"));
-    }
-
-    #[test]
-    fn cascade_held_dependency_removed_when_escaping() {
-        let (session, root) = setup("cascade_escape");
-        crate::test_utils::mark_installed(&root.0, "a", "main", BASE_MANIFEST, false);
-        crate::test_utils::mark_installed(&root.0, "b", "main", BASE_MANIFEST, true);
-
-        let mut packages = vec![pkg("main", "a", &["b"])];
-        resolve_cascade(&session, &mut packages, true).unwrap();
-
-        let names = packages.iter().map(|p| p.name()).collect::<Vec<_>>();
-        assert_eq!(names, vec!["a", "b"]);
     }
 }

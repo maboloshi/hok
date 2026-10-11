@@ -15,7 +15,7 @@
 //!   (BFS-based) for O(V+E) complexity.
 
 #![allow(dead_code)]
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::error::Error;
 use std::fmt::Display;
 use std::hash::Hash;

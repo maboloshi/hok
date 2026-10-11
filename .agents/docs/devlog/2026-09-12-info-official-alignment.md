@@ -1,0 +1,11 @@
+# `hok info` 全面对标官方
+
+> 2026-09-12 ｜ 已提交
+
+**结构**：新 `package/info.rs`（`Lookup`/`Info`/`VersionOutput`/`InstalledSize`/`DownloadSize`）负责全部装配（目录/HEAD/磁盘统计/git），`src/cmd/info.rs` 只渲染；`format::filesize` 复刻官方 `filesize`（`n1` 一位小数、严格 `-gt`、KB 以下 `n B`）。
+**对齐项**：默认字段 = Name(+`(DEPRECATED)`)/Description/Version(`(Update to X available)`)/Source/Website(去尾`/`)/License/Dependencies/Updated at/Updated by/Installed/Binaries/Shortcuts/Environment/Path Added/Suggestions/Notes；`-v` 追加 Manifest 路径、Installed 版本目录全路径、Installed size（Current/Old/Persisted/Cached/Total，仅非零行）或 Download size（默认架构 URL 逐个 HEAD + `(latest version is cached)` + `Unknown (…)`）。**查询语义改 exact**（`QueryOption::Explicit`，官方 Get-Manifest 是精确文件名；旧 hok 用正则导致 `info neovim` 列出 15 个候选）。**globals 自动优先**（`installed $app $true` → `set_global`）；**standalone**（URL/UNC/本地 manifest 路径 + `$same_source`）已支持；多 bucket 命中优先“严格已安装”（install.json 的 bucket，官方即取 `$install.bucket`），否则已安装项，再否则候选清单（hok 保留）。
+**实测证据（2026-09-12，与 `scoop info` 逐字段比对，值完全一致）**：7zip（默认+`-v`）、git、nodejs、uv（多版本 + Old versions/Persisted/Cached 全行）、neovim（未安装 → Download size）、`bucket/name`、本地 manifest 路径、not-found。
+**有意偏离**：(a) nightly 显示 `nightly`（hok `installed_version()` 模型）而官方显示 junction 目标日期目录名；(b) `bin` 单元素数组渲染为路径而非官方 `$_[1]`=null 的 `.ext`；(c) HEAD 有响应但无 `Content-Length`（含 4xx/5xx）→ “did not send a Content-Length header”，无响应（status 0）→ “is down”（官方按 PS 异常类型分支，语义等价）；(d) 布局用 hok 统一风格 `  Label value`（对齐标签列），非 PowerShell 列表视图 `Label : value`；(e) `-v` 复用全局 verbosity（Count），故 `hok -v info x` 也会开启详细视图。
+**关键实现点（勿踩）**：`Installed` 版本 = `<app>/*/install.json` 按 mtime 升序，排除 `current` 与 `_*.old*`（versions.ps1:98）；磁盘统计**不跟随** `current` junction（`FILE_ATTRIBUTE_REPARSE_POINT`），否则重复计数；缓存命中用 `package::cache_file_name`（与下载器同一公式，已从 `download_filenames` 抽出）；未安装时 arch_specific 传 `$null` ⇒ 只用 generic 字段（`manifest.rs` 新增 `*_generic()`）；`Updated at/by` = `git log -1 -- <manifest>`（新增 `internal::git::last_commit_for_file`），非 git 回退 mtime + 文件属主（新增 `internal::os::file_owner_name`，Win32 owner SID→账户名）；`$dir/$original_dir/$persist_dir` 非 `-v` 时替换为字面量 `<root>`。
+**Why:** 对标分轮进行，修复前查状态表与技能避免重复调研。
+**How to apply:** 下一轮建议 P1-9（update 先同步 buckets）或 P3#15（-q/--quiet）。修复后更新状态表（`active/audit/scoop-gap-status.md`）的 ✅/⏸ 标记。修 manifest 解析 bug 改 `ManifestSpec` 层 / `internal::json`（单入口自动覆盖）。官方参照 `$env:SCOOP\apps\scoop\current\libexec\` 或本地 `../Scoop\libexec\`，勿联网。

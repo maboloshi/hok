@@ -10,10 +10,10 @@
 //! `libscoop::operation` and `libscoop::package::sync`.
 
 use clap::{ArgAction, Parser};
-use libscoop::{package, Session};
+use libscoop::{Session, package};
 
-use crate::cmd::shared_args::{ensure_global, SyncArgs, SyncFlags};
-use crate::{output, Result};
+use crate::cmd::shared_args::{SyncArgs, SyncFlags, ensure_global};
+use crate::{Result, output};
 
 /// Install package(s)
 #[derive(Debug, Parser)]
@@ -31,9 +31,10 @@ pub struct Args {
     #[arg(short = 'd', long, action = ArgAction::SetTrue)]
     download_only: bool,
 
-    /// Ignore failures to ensure a complete transaction
-    #[arg(short = 'f', long, action = ArgAction::SetTrue)]
-    ignore_failure: bool,
+    /// Ignore failures to ensure a complete transaction (persistent setting:
+    /// 'hok config ignore_failures true')
+    #[arg(long, action = ArgAction::SetTrue)]
+    ignore_failures: bool,
 
     /// Leverage cache and suppress network access
     #[arg(short = 'o', long, action = ArgAction::SetTrue)]
@@ -43,29 +44,25 @@ pub struct Args {
     #[arg(short = 'y', long, action = ArgAction::SetTrue)]
     assume_yes: bool,
 
-    /// Ignore cache and force download (Scoop: -k, --no-cache)
-    #[arg(short = 'D', long, short_alias = 'k', visible_alias = "no-cache", action = ArgAction::SetTrue)]
-    ignore_cache: bool,
+    /// Don't use the download cache
+    #[arg(short = 'k', long, action = ArgAction::SetTrue)]
+    no_cache: bool,
 
-    /// Do not install dependencies (may break packages)
-    #[arg(short = 'I', long, action = ArgAction::SetTrue)]
+    /// Don't install dependencies automatically
+    #[arg(short = 'i', long, action = ArgAction::SetTrue)]
     independent: bool,
 
     /// Do not replace package(s)
     #[arg(short = 'R', long, action = ArgAction::SetTrue)]
     no_replace: bool,
 
-    /// Escape hold to allow changes on held package(s)
-    #[arg(short = 'S', long, action = ArgAction::SetTrue)]
-    escape_hold: bool,
-
     /// Do not upgrade package(s)
     #[arg(short = 'U', long, action = ArgAction::SetTrue)]
     no_upgrade: bool,
 
-    /// Skip package integrity check (Scoop: --skip-hash-check)
-    #[arg(short = 's', long, visible_alias = "skip-hash-check", action = ArgAction::SetTrue)]
-    no_hash_check: bool,
+    /// Skip package integrity check
+    #[arg(short = 's', long, action = ArgAction::SetTrue)]
+    skip_hash_check: bool,
 
     /// Use the specified architecture (32bit/64bit/arm64), overriding the
     /// runtime-detected and configured default (Scoop's `-a/--arch`)
@@ -78,20 +75,19 @@ impl SyncFlags for Args {
         SyncArgs {
             global: self.global,
             assume_yes: self.assume_yes,
-            ignore_failure: self.ignore_failure,
+            ignore_failures: self.ignore_failures,
             offline: self.offline,
-            no_hash_check: self.no_hash_check,
+            skip_hash_check: self.skip_hash_check,
             independent: self.independent,
             no_replace: self.no_replace,
-            escape_hold: self.escape_hold,
             no_upgrade: self.no_upgrade,
-            ignore_cache: self.ignore_cache,
+            no_cache: self.no_cache,
             download_only: self.download_only,
         }
     }
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     // `-a/--arch` overrides the effective architecture (Scoop's
     // `Format-ArchitectureString` + `Get-DefaultArchitecture` override).
     // Parsed after the session was created, so it beats the
@@ -105,9 +101,19 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let queries = args.package.iter().map(|s| s.as_str()).collect::<Vec<_>>();
 
     // Prune already-installed packages (matching PS1's prune_installed behavior)
-    let (to_install, already_installed) = package::query::prune_installed(session, &queries)?;
-    for name in &already_installed {
-        output::warn(format!("'{name}' is already installed. Skipping."));
+    let package::query::PrunedInstall {
+        to_install,
+        already_installed,
+    } = package::query::prune_installed(session, &queries)?;
+    for (name, version) in &already_installed {
+        // Upstream names the installed version and points at `scoop update`
+        // (`libexec/scoop-install.ps1:83`).
+        output::warn(hok_i18n::t!(
+            "cmd.already_installed",
+            name = name,
+            version = version,
+            global = if args.global { " --global" } else { "" }
+        ));
     }
     if to_install.is_empty() {
         return Ok(());
@@ -117,10 +123,9 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
 
     let handle = crate::eventloop::run_event_loop_default(session);
 
-    let sync_result = package::sync::sync(session, to_install.clone(), options);
-    handle.join().unwrap();
-    // A declined confirmation is not a failure: exit 0 without the
-    // "Everything is ok!" message.
+    let sync_result = package::sync::sync(session, to_install.clone(), options).await;
+    handle.await.unwrap();
+    // A declined confirmation is not a failure: exit 0.
     if matches!(sync_result, Err(libscoop::Error::UserAborted)) {
         return Ok(());
     }
@@ -130,16 +135,15 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
     let suggestions = package::query::suggest(session, &to_install)?;
     for entry in &suggestions {
         let joined = entry.candidates.join("' or '");
-        output::info(format!(
-            "'{}' suggests installing '{}'.",
-            entry.package, joined
+        output::suggest(hok_i18n::t!(
+            "cmd.suggests_install",
+            pkg = entry.package,
+            names = joined
         ));
     }
 
     if args.download_only {
-        output::done(rust_i18n::t!("output.downloaded_only"));
-    } else {
-        output::done(rust_i18n::t!("output.ok_all"));
+        output::done(hok_i18n::t!("output.downloaded_only"));
     }
 
     Ok(())

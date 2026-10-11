@@ -3,30 +3,16 @@ output:
   done: "完成"
   warn: "警告"
   error: "错误"
-  detail_prefix: "·"
   confirm_continue: "是否继续? [y/N]:"
   ok_all: "一切正常。"
   downloaded_only: "已下载（未安装）。"
-  field_identity: "标识:"
-  field_name: "名称:"
-  field_bucket: "仓库:"
-  field_description: "描述:"
-  field_version: "版本:"
-  field_homepage: "主页:"
-  field_license: "许可证:"
-  field_shims: "Shims:"
   select_prompt: "请选择一个，输入数字继续:"
-  select_one: "选择一个 (0-%{max}):"
 status:
   resolving: "正在解析包..."
   sizing: "正在计算下载大小..."
   downloading: "正在下载包..."
   checking_hash: "正在检查哈希..."
-  resolving_done: "包解析完成。"
-  sizing_done: "下载大小计算完成。"
-  downloading_done: "下载完成。"
 detail:
-  extract_done: "解压完成"
   shim_done: "shim 完成"
   shim_removed: "shim 已移除"
   shortcut_done: "快捷方式完成"
@@ -43,83 +29,173 @@ detail:
   removing_persist: "正在移除持久化数据..."
   psmodule_removed: "PS 模块已移除"
   extracting: "正在解压: %{ctx}"
-  extracting_done: "解压完成"
   checking_hash_item: "正在检查哈希...%{ctx}"
   creating_shim: "正在创建 shim: %{ctx}"
   creating_shortcut: "正在创建快捷方式: %{ctx}"
   removing_shim: "正在移除 shim: %{ctx}"
   removing_shortcut: "正在移除快捷方式: %{ctx}"
+  installing_psmodule: "正在安装 PS 模块: %{ctx}"
+  psmodule_installed: "PS 模块已安装"
   removing_psmodule: "正在移除 PS 模块: %{ctx}"
-  loading_cache: "正在从缓存加载 %{filename}"
+  loading_cache: "正在从缓存加载 %{name} %{version}"
+  verifying: "校验中"
   unlinking: "正在移除链接 %{path}"
   linking: "正在创建链接 %{from} => %{to}"
   shortcut_conflict: "快捷方式已存在，属于其他包，将被覆盖: %{path}"
   shortcut_not_found: "快捷方式未找到: %{path}"
   shim_conflict: "shim 已存在，属于其他包，将被覆盖: %{path}"
   config_fallback: "所有配置路径均加载失败，回退到默认配置"
+step:
+  extract: "正在解压 %{object}"
+  hook_script: "正在运行 %{object} 脚本"
+  installer: "正在运行安装程序: %{object}"
+  link_current: "正在链接 current"
+  unlink_current: "正在移除 current 链接"
+  refresh_shim: "正在刷新 %{object} 的 shim"
+  refresh_shortcut: "正在刷新 %{object} 的快捷方式"
+  create_shim: "正在为 %{object} 创建 shim"
+  remove_shim: "正在移除 %{object} 的 shim"
+  create_shortcut: "正在为 %{object} 创建快捷方式"
+  remove_shortcut: "正在移除 %{object} 的快捷方式"
+  add_psmodule: "正在安装 PS 模块 %{object}"
+  remove_psmodule: "正在移除 PS 模块 %{object}"
+  add_env_path: "正在添加 PATH 条目: %{object}"
+  remove_env_path: "正在移除 PATH 条目: %{object}"
+  set_env_var: "正在设置环境变量 %{object}"
+  remove_env_var: "正在移除环境变量 %{object}"
+  persist_link: "正在持久化 %{object}"
+  persist_unlink: "正在移除持久化链接 %{object}"
+  remove_dir: "正在移除 %{object}"
+  persist_purge: "正在清除持久化数据"
 reinstall:
   released: "包已释放。"
   reheld: "包已重新锁定。"
+  releasing: "正在释放被锁定的包：%{names}"
+  reholding: "正在重新锁定包：%{names}"
 cmd:
   header_aliases: "别名"
+  alias_header_name: "名称"
+  alias_header_command: "命令"
+  alias_header_summary: "描述"
   header_buckets: "正在更新仓库"
   header_buckets_list: "已知仓库"
   header_installed_apps: "已安装应用"
+  header_installed_apps_matching: "已安装应用匹配 '%{query}'"
   list_header_name: "名称"
   list_header_version: "版本"
   list_header_source: "源"
+  list_header_updated: "更新时间"
   list_header_info: "状态"
-  list_summary: "已安装 %{count} 个，锁定 %{held} 个，可更新 %{upgradable} 个"
+  list_info_deprecated: "已弃用包"
+  list_summary: "已安装 %{count} 个，锁定 %{held} 个，可更新 %{upgradable} 个，损坏 %{broken} 个，游离 %{orphaned} 个，隔离 %{isolated} 个"
+  list_version_old: "旧版本"
+  list_no_versions: "无版本目录"
+  list_no_match: "没有匹配的已安装应用。"
+  list_no_apps: "尚未安装任何应用。"
+  search_no_match: "未找到匹配项。"
+  search_no_query: "未提供查询参数。用法：hok search <查询> [选项]"
+  search_summary: "找到 %{count} 个匹配 '%{query}' 的包"
+  list_summary_versions: "在 %{apps} 个应用中保留了 %{versions} 个旧版本"
   no_aliases: "没有配置别名。"
-  alias_add_usage: "用法: hok alias add <名称> <命令>"
   alias_added: "别名已添加: %{name} -> %{value}"
-  alias_rm_usage: "用法: hok alias rm <名称>"
   alias_removed: "别名已删除: %{name}"
-  alias_unknown: "未知命令: '%{cmd}'。使用: list, add, rm"
   no_apps_found: "没有找到应用目录。"
   no_current_symlink: "没有 'current' 符号链接"
+  health_current_dangling: "'current' 链接指向的版本目录不存在：%{target}"
+  health_shim_broken: "shim 目标已丢失：%{target}"
+  health_shims_unreadable: "无法读取 shim 目录：%{e}"
   missing_install_json: "缺少 install.json"
   missing_manifest_json: "缺少 manifest.json"
   no_issues: "没有发现问题。"
   run_reset: "运行 'hok reset <app>' 修复"
-  bucket_err: "错误"
-  cache_cleaned: "缓存已清理。"
+  health_issue_count: "发现 %{count} 个问题。"
+  checkup_defender: "Windows Defender 的实时扫描可能会拖慢或干扰安装。"
+  checkup_defender_consider: "建议运行："
+  checkup_defender_exclude: "sudo Add-MpPreference -ExclusionPath '%{path}'"
+  checkup_defender_sudo: "（需要 'sudo' 命令。若没有请先运行 'hok install sudo'。）"
+  checkup_main_bucket: "尚未添加 main bucket。"
+  checkup_main_bucket_hint: "运行 'hok bucket add main'"
+  checkup_long_paths_unsupported: "该 Windows 版本不支持配置长路径（LongPaths）。"
+  checkup_long_paths_disabled: "未启用长路径（LongPaths）支持。"
+  checkup_long_paths_enable: "可通过以下命令启用："
+  checkup_long_paths_set: "sudo Set-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' -Name 'LongPathsEnabled' -Value 1"
+  checkup_developer_mode: "未启用 Windows 开发者模式。与符号链接相关的操作可能因权限不足而失败。"
+  checkup_developer_mode_read: "关于符号链接支持，可阅读："
+  checkup_developer_mode_link: "https://blogs.windows.com/windowsdeveloper/2016/12/02/symlinks-windows-10/"
+  checkup_missing_7zip: "未安装 '7-Zip'！解压大多数程序都需要它。请运行 'hok install 7zip'。"
+  checkup_missing_innounp: "未安装 'Inno Setup Unpacker'！解压 InnoSetup 文件需要它。请运行 'hok install innounp'。"
+  checkup_missing_dark: "未安装 'dark'！解压 WiX Toolset 生成的安装程序需要它。请运行 'hok install dark' 或 'hok install wixtoolset'。"
+  checkup_ntfs_global: "hok 需要 NTFS 卷才能工作！请将 '~/.config/hok/config.json' 中的 'global_path' 变量或 $env:SCOOP_GLOBAL 指向另一个驱动器。"
+  checkup_ntfs_root: "hok 需要 NTFS 卷才能工作！请将 '~/.config/hok/config.json' 中的 'root_path' 变量或 $env:SCOOP 指向另一个驱动器。"
+  checkup_no_problems: "未发现问题！"
+  checkup_performance_problems: "发现 %{count} 个性能问题。"
+  checkup_potential_problems: "发现 %{count} 个潜在问题。"
+  checkup_security_over_performance: "大多数情况下，安全比性能更重要。"
+  cleanup_all_done: "一切正常！"
+  checkver_autoupdate: "可用 autoupdate 更新"
+  create_failed: "创建清单失败：%{e}"
   cache_all_removed: "所有下载缓存已移除。"
   cache_matching_removed: "匹配 '%{query}' 的缓存已全部移除。"
+  cache_app_missing: "缺少 <app(s)>"
+  header_cache: "下载缓存"
+  cache_header_name: "名称"
+  cache_header_version: "版本"
+  cache_header_size: "大小"
+  cache_empty: "无下载缓存。"
   cat_not_found: "找不到名为 '%{query}' 的包。"
   cat_invalid: "无效输入。"
-  checkhashes_skipped: "跳过（无哈希）"
-  checkhashes_rehashed: "重新哈希"
+  cat_render_failed: "无法渲染清单。"
+  cat_bat_failed: "bat 无法渲染清单（cat_style = '%{style}'）：%{reason}"
   checkhashes_mismatch_upd: "哈希不匹配！已更新"
-  checkhashes_mismatch: "哈希不匹配，期望 %{expected}，实际 %{actual}"
+  checkhashes_mismatch: "哈希不匹配：期望 %{expected}，实际 %{actual}"
   checkhashes_summary: "已扫描 %{total}: %{passed} 通过, %{failed} 失败, %{updated} 已更新。"
+  checkhashes_no_url: "清单不含 URL 属性。"
+  checkhashes_parse_failed: "清单解析失败：%{e}"
+  checkhashes_download_failed: "下载失败：%{e}"
+  checkhashes_hash_failed: "哈希失败：%{e}"
+  checkhashes_path_not_found: "JSON 中找不到路径 %{path}"
   checkver_updated_to: "已更新到 %{ver}"
   checkver_update_failed: "更新失败: %{e}"
-  checkver_no_version: "脚本未返回版本号"
   checkver_script_err: "脚本错误: %{e}"
-  checkver_github_err: "无法从主页提取 GitHub 仓库信息"
-  checkver_sourceforge_err: "无法提取 SourceForge 项目"
+  checkver_script_fallback: "%{e}。回退到 checkver.script ..."
+  checkver_github_err: "%{name} 的 checkver 要求 %{field} 是有效的 GitHub 仓库 URL"
   checkver_no_url: "没有 checkver URL"
-  checkver_no_extract: "无法提取版本号"
-  checkver_version_wildcard: "不能将 --version 与通配符应用模式一起使用"
+  checkver_no_match: "在 %{url} 中匹配不到 '%{regex}'"
+  checkver_no_version: "在 %{url} 中找不到新版本"
+  checkver_checking: "正在检查清单 %{done}/%{total}"
+  checkver_no_manifests: "没有需要检查的清单。"
+  checkver_summary: "已检查 %{total} 个清单：%{outdated} 个可更新，%{failed} 个失败，%{current} 个已最新。"
   checkurls_summary: "已检查 %{total} 个 URL: %{valid} 有效, %{invalid} 无效。"
   checkurls_no_manifests: "没有需要检查的清单。"
   cleanup_no_old: "没有旧版本需要清理。"
-  cleanup_removed: "已清理 %{count} 个旧版本"
-  cleanup_removed_failed: "已清理 %{count} 个旧版本，%{failed} 个失败（重启后可重试）"
+  cleanup_app_missing: "缺少 <app>"
+  cleanup_not_installed_globally: "'%{name}' 未全局安装，但可能已本地安装。"
+  cleanup_try_local: "请去掉 --global（或 -g）参数重试。"
+  cleanup_not_installed_locally: "'%{name}' 未本地安装，但可能已全局安装。"
+  cleanup_try_global: "请加上 --global（或 -g）参数重试。"
+  cleanup_removing: "正在移除 %{name}："
+  cleanup_row: "%{name}：%{ver}"
+  cleanup_list_current_unknown: "当前版本未知"
+  cleanup_current_from_version_dirs: "'%{name}' 的 'current' 下没有可用清单；改以版本目录中的 '%{version}' 作为当前版本。"
+  cleanup_failed_summary: "%{count} 个应用的旧版本未能移除：%{apps}（请关闭占用这些文件的程序后重试；相关目录可能已被部分删除）"
+  cleanup_remove_failed: "无法移除 %{name} v%{ver}：%{e}"
+  cleanup_cache_removed: "过期下载缓存已删除：共 %{count} 个文件，%{size}"
+  cleanup_incomplete_removed: "残留下载分片已清理：共 %{count} 项，%{size}"
   config_set: "配置项 '%{key}' 已设置为 '%{value}'"
-  config_unset: "配置项 '%{key}' 已取消设置"
+  config_removed: "配置项 '%{key}' 已删除"
+  config_not_set: "配置项 '%{key}' 未设置"
+  config_cat_style_invalid: "bat 不接受样式 '%{value}'：%{reason}（cat_style 会原样传给 'bat --style'，可用组件见 'bat --help'）"
   create_url_required: "需要提供 URL。"
   create_manifest_saved: "清单已保存到: %{path}"
   depends_invalid: "无效选择。"
   depends_not_found: "找不到名为 '%{query}' 的包。"
   reset_app_missing: "缺少 <app>。使用 'hok reset <app>' 或 'hok reset -a' 重置所有应用。"
   dir_not_found: "错误: '%{path}' 不是目录"
+  dir_required_for_write: "%{cmd} 会写盘，因此必须显式指定目标：请传入 -d <目录>。（只读运行默认使用当前目录；写盘运行不会隐式扫描它。）"
   err_download: "下载失败: %{e}"
-  err_hash: "哈希错误: %{e}"
   formatjson_none: "没有清单需要格式化。"
+  formatjson_writing: "正在格式化 %{path}..."
   formatjson_count: "已格式化 %{count} 个清单。"
-  hold_err: "错误"
   already_held: "'%{name}' 已处于锁定状态。"
   not_held: "'%{name}' 未处于锁定状态。"
   hold_failed: "无法锁定 '%{name}'。"
@@ -127,50 +203,263 @@ cmd:
   hold_not_installed_global: "'%{name}' 未全局安装。"
   import_complete: "导入完成。"
   import_no_pkgs: "导入文件中没有找到包。"
-  install_ok: "所有应用都是最新。"
-  checkup_ok: "一切正常！"
+  header_status: "已安装应用状态"
+  status_header_name: "名称"
+  status_header_source: "来源"
+  status_header_installed: "已安装版本"
+  status_header_latest: "最新版本"
+  status_header_missing: "缺少依赖项"
+  status_header_info: "信息"
+  status_attention: "%{count} 项需处理：可更新 %{updatable} · 安装失败 %{broken} · 来源异常 %{source} · 缺失依赖 %{deps}"
+  status_install_failed: "安装失败"
+  status_held: "已锁定包"
+  status_deprecated: "已弃用"
+  status_removed: "清单已移除"
+  status_bucket_missing: "源 bucket 缺失"
+  status_source_unknown: "来源未知"
   no_apps: "没有安装应用。"
   no_old_versions: "没有旧版本需要清理。"
   no_pkgs_found: "没有找到包。"
-  outdated: "所有应用都是最新。"
-  prefix_installed: "已安装包 '%{pkg}' 但没有 'current' 符号链接。"
-  prefix_no_pkg: "包 '%{pkg}' 未安装。"
+  update_latest: "%{name}: %{version}（已是最新版本）"
+  update_all_latest: "所有应用都已是安装的最新版本！更多信息请运行 'hok status'"
+  update_cleanup_no_upgrade: "本次没有升级任何包，无需清理。可用 'hok cleanup -a' 清理所有应用的旧版本。"
+  prefix_not_found: "找不到应用 '%{pkg}' 的路径。"
   refresh_cache: "正在刷新清单缓存..."
   cache_done: "清单缓存已刷新。"
-  shim_info_usage: "用法: hok shim info <名称>"
+  cache_rebuilt: "清单缓存已重建。"
+  cache_rescanned: "清单缓存已刷新（重建仓库：%{buckets}）。"
+  cache_refresh_failed: "清单缓存刷新失败：%{e}。请重试 'hok update --force'。"
+  cache_stale: "清单缓存可能不是最新（%{count} 个仓库未同步）；运行 'hok update --force' 重建。"
+  cache_mismatch: "清单缓存与文件不一致：%{name} 缓存 %{cached}，文件 %{file}（已改用文件值）。"
+  cache_missing: "清单缓存与文件不一致：%{name} 的清单文件已不存在（已忽略缓存行）。"
+  manifest_parse_failed: "解析 JSON 出错：'%{path}'。%{reason}"
+  manifest_parse_failed_summary: "%{count} 个清单无法解析（使用 -vv 查看路径）。"
+  history_index: "正在维护清单历史索引..."
+  history_index_done: "清单历史索引已更新。"
+  history_index_skipped: "清单历史索引已跳过：%{e}（下次 update 会自动重试）。"
   shim_added: "已添加 shim: %{name}"
   shim_removed_by_name: "已移除 shim: %{name}"
   shim_not_found: "未找到 shim: %{name}"
+  shim_other_scope: "存在一个%{scope} shim；运行 '%{cmd}' 查看其信息"
+  shim_scope_local: "本地"
+  shim_scope_global: "全局"
+  shim_invalid_pattern: "无效的模式 '%{pattern}': %{e}"
+  shim_command_path_required: "子命令 'add' 必须指定 <command_path>"
   shim_no_dir: "没有找到 shims 目录。"
-  missing_checkver_scan: "已扫描 %{total} 个清单: %{missing} 缺少 checkver, %{noauto} 缺少 autoupdate。"
+  shim_header_name: "名称"
+  shim_header_source: "来源"
+  shim_header_alternatives: "备选来源"
+  shim_header_is_global: "全局"
+  shim_header_is_hidden: "已隐藏"
+  shim_true: "是"
+  shim_false: "否"
+  missing_checkver_scan: "已扫描 %{total} 个清单: %{missing} 缺少 checkver, %{noauto} 缺少 autoupdate, %{unparsable} 无法解析。"
   missing_checkver_all: "所有清单都有 checkver 和 autoupdate。"
   home_not_found: "找不到名为 '%{query}' 的包。"
   home_multiple: "找到多个名为 '%{query}' 的包:"
   home_invalid: "无效输入。"
-  header_buckets: "正在更新仓库"
+  home_no_homepage: "找不到 '%{pkg}' 清单中的主页。"
   header_installed: "以下包将被安装:"
   header_upgraded: "以下包将被升级:"
   header_replaced: "以下包将被替换:"
   header_removed: "以下包将被移除:"
-  vt_skip: "跳过（请设置 VT_API_KEY 环境变量）"
+  vt_no_key: "未配置 VirusTotal API key。请用 hok config virustotal_api_key <API key> 设置，或设置 VT_API_KEY 环境变量。"
   holding: "正在锁定"
   unholding: "正在解锁"
   unhold_failed: "无法解锁 '%{name}'。"
-  adding_bucket: "正在添加仓库"
+  bucket_checking_repo: "Checking repo... "
+  bucket_added_success: "仓库 %{name} 添加成功。"
+  bucket_list_empty: "未找到任何仓库。请运行 'hok bucket add main' 添加默认的 'main' 仓库。"
   removing_bucket: "正在移除仓库"
   downloading: "正在下载"
-  computing_hash: "正在计算哈希"
+  verifying_count: "校验 %{done}/%{total}"
   found: "找到 %{count} 个包匹配查询 '%{query}'"
   no_download_urls: "没有下载 URL"
   held_skip: "'%{name}' 已锁定到版本 %{version}"
+  held_install_skip: "'%{name}' 已锁定到版本 %{version}。如需安装或升级，请先运行 'hok unhold %{name}'。"
   reinstall_not_installed: "'%{name}' 未安装。请使用 'hok install' 进行安装。"
   admin_rights_required: "错误：需要管理员权限才能对全局应用执行 %{verb} 操作"
   update_global_no_app: "hok update：未指定 <app> 时 --global 参数无效。"
+  update_no_cache_no_app: "hok update：未指定 <app> 时 --no-cache 参数无效。"
   auto_err_token: "ci-auto-pr 需要设置 GITHUB_TOKEN 环境变量"
   auto_err_mode: "必须指定 --push 或 --request 参数"
   auto_err_upstream: "--request 模式需要 --upstream 参数（格式：<user>/<repo>:<branch>）"
   auto_pr_header: "ci-auto-pr"
   auto_pr_no_changes: "没有 manifest 被更新。"
+  info_not_found: "找不到匹配 '%{query}' 的任何包。"
+  info_more: "…… 以及另外 %{n} 个匹配。请细化查询以查看详情。"
+  info_name: "名称"
+  info_description: "描述"
+  info_version: "版本"
+  info_source: "来源"
+  info_website: "主页"
+  info_license: "许可证"
+  info_dependencies: "依赖项"
+  info_updated_at: "更新时间"
+  info_updated_by: "更新者"
+  info_manifest: "清单文件"
+  info_installed: "已安装版本"
+  info_installed_size: "安装大小"
+  info_download_size: "下载大小"
+  info_binaries: "二进制文件"
+  info_shortcuts: "快捷方式"
+  info_environment: "环境变量"
+  info_path_added: "添加的路径"
+  info_suggestions: "建议"
+  info_notes: "备注"
+  info_update_available: "%{installed}（可更新到 %{latest}）"
+  info_size_current_version: "当前版本:"
+  info_size_old_versions: "旧版本:"
+  info_size_persisted_data: "持久化数据:"
+  info_size_cached_downloads: "缓存下载:"
+  info_size_total: "总计:"
+  info_download_unknown: "未知（%{reason}）"
+  info_download_cached: "（最新版本已缓存）"
+  info_download_no_content_length: "服务器 %{host} 未返回 Content-Length 头"
+  info_download_server_down: "服务器 %{host} 无法访问"
+  which_not_found: "'%{command}' 未找到：不是 Scoop shim、shim 已损坏或不属于已安装应用的命令。"
+  import_read_err: "读取 '%{file}' 失败：%{e}"
+  import_parse_err: "解析 JSON 失败：%{e}"
+  import_found: "找到 %{count} 个待安装的包。"
+  import_err: "导入失败：%{e}"
+  import_bucket_added: "已添加 bucket '%{name}'。"
+  import_config_set: "'%{key}' 已设为 '%{value}'。"
+  import_config_set_mapped: "'%{key}' 已设为 '%{value}'（映射为 '%{hok_key}'）。"
+  import_alias_set: "别名 '%{name}' 已设为 '%{command}'。"
+  import_summary: "已导入 %{imported} 个应用；%{failed} 个未安装；跳过 %{skipped} 项（见上）。"
+  import_skip_app_arch: "已跳过需要架构 '%{arch}' 的包：%{e}"
+  import_skip_app_err: "已跳过部分包：%{e}"
+  import_skip_app_check: "无法确认导入结果：%{e}"
+  import_skip_app_failed: "已跳过应用 '%{name}'：Scoopfile 记录该应用安装失败。"
+  import_skip_app_bucket: "已跳过应用 '%{name}'：其来源 bucket '%{source}' 不可用。"
+  import_skip_app_version: "已跳过应用 '%{name}'：自动生成的清单缺少版本，无法重放。"
+  import_skip_bucket_err: "已跳过 bucket '%{name}'：%{e}"
+  import_skip_bucket_exists: "已跳过 bucket '%{name}'：已存在。"
+  import_skip_bucket_list: "无法列出已添加的 bucket：%{e}"
+  import_skip_bucket_local: "已跳过 bucket '%{name}'：'%{source}' 不是 git 远程仓库（hok 只支持 git bucket）。"
+  import_skip_config_err: "已跳过配置 '%{key}'：%{e}"
+  import_skip_config_machine: "已跳过配置 '%{key}'：该键与本机相关（官方导出同样会剔除）。"
+  import_skip_config_unsupported: "已跳过配置 '%{key}'：hok 没有对应设置项。"
+  import_skip_config_value: "已跳过配置 '%{key}'：hok 无法表示该值。"
+  import_skip_alias_err: "已跳过别名 '%{name}'：%{e}"
+  import_skip_alias_no_command: "已跳过别名 '%{name}'：文件中没有它的命令。"
+  import_skip_alias_index: "已跳过别名索引：该文件不含别名命令。"
+  import_skip_hold: "无法锁定 '%{name}'：%{e}"
+  create_creating: "正在为 %{url} 创建 manifest"
+  reset_admin_skip: "'%{name}' 是全局应用——重置它需要管理员权限。跳过。"
+  reset_broken_skip: "'%{name}' 未正确安装。请重新安装或修复其 manifest。"
+  reset_failed: "重置 '%{name}' 失败：%{e}"
+  vt_malicious: "MALICIOUS —— %{n}/%{total} 个引擎判定为恶意"
+  vt_suspicious: "SUSPICIOUS —— %{n}/%{total} 个引擎判定为可疑"
+  vt_clean: "OK —— 未发现风险（共检查 %{total} 个引擎）"
+  depends_already: "（已列出）"
+  header_buckets_local: "已添加仓库"
+  bucket_header_name: "名称"
+  bucket_header_manifests: "清单数"
+  bucket_header_updated: "更新时间"
+  bucket_header_source: "来源"
+  bucket_header_repo: "仓库"
+  config_col_key: "配置项"
+  config_col_value: "当前值"
+  config_col_default: "默认值"
+  config_col_desc: "说明"
+  header_config: "配置"
+  config_value_unset: "未设置"
+  config_value_auto: "自动检测"
+  config_desc_aria2_enabled: "启用分片下载"
+  config_desc_aria2_split: "每次分片连接数"
+  config_desc_aria2_max_connection_per_server: "单服务器最大连接数"
+  config_desc_jobs: "并发包下载数"
+  config_desc_aria2_min_split_size: "触发分片的最小大小"
+  config_desc_cache_path: "下载缓存目录"
+  config_desc_cat_style: "传给 'bat --style' 的组件"
+  config_desc_editor: "清单编辑用编辑器"
+  config_desc_default_architecture: "安装首选架构"
+  config_desc_global_path: "全局安装根目录"
+  config_desc_gh_token: "GitHub API 令牌"
+  config_desc_ignore_failures: "单包失败时继续"
+  config_desc_ignore_running_processes: "应用运行中仍继续"
+  config_desc_language: "CLI 语言"
+  config_desc_last_update: "上次仓库更新时间"
+  config_desc_no_color: "禁用彩色输出"
+  config_desc_confirm: "操作前询问确认"
+  config_desc_script_engine: "常驻 pwsh 脚本引擎"
+  config_desc_no_junction: "不使用 current 联接"
+  config_desc_autostash_on_conflict: "更新时暂存阻塞仓库 pull 的未提交改动（hok 作用于每次 bucket pull；上游仅 Scoop 自身仓库）"
+  config_desc_private_hosts: "需认证的私有主机"
+  config_desc_proxy: "代理设置"
+  config_desc_root_path: "Scoop 根目录"
+  config_desc_use_isolated_path: "独立 PATH 环境变量"
+  config_desc_use_sqlite_cache: "用 SQLite 缓存清单"
+  config_desc_virustotal_api_key: "VirusTotal API 密钥"
+  bucket_not_git_skipped: "'%{bucket}' 不是 git 仓库。已跳过。"
+  bucket_update_failed: "%{bucket} 更新失败：%{e}"
+  bucket_no_remote: "无法确定远程仓库 origin（缺失或 git 元数据损坏）"
+  bucket_update_failed_summary: "%{count} 个仓库更新失败：%{buckets}；运行 'hok update' 重试。"
+  multiple_candidates: "找到多个名为 '%{name}' 的包:"
+  script_failed: "脚本失败: %{stderr}"
+  total_download_size: "总下载大小: %{size}"
+  total_download_size_estimated: "总下载大小: %{size}（预估）"
+  nothing_to_download: "无需下载，均已在缓存中。"
+  download_size_unknown: "无法获取下载大小。"
+  cache_ignored: "忽略缓存。"
+  running_process_update: "检测到进程正在运行，跳过更新 '%{name}'。"
+  running_process_reinstall: "检测到进程正在运行，跳过重装 '%{name}'。"
+  running_process_uninstall: "检测到进程正在运行，跳过卸载 '%{name}'。"
+  running_process_reset: "检测到进程正在运行，跳过重置 '%{name}'。"
+  running_process_ignored: "'%{name}' 正在运行，已按配置忽略。\n     继续操作可能导致数据丢失或应用不稳定，建议先关闭再重试。"
+  not_installed: "'%{name}' 未安装。"
+  not_installed_version: "'%{name} (%{version})' 未安装。"
+  not_installed_correctly: "'%{name}' 未正确安装。请重新安装或修复其 manifest。"
+  failed_resolve: "无法解析 '%{query}': %{error}"
+  failed_resolve_dependency: "无法解析 '%{pkg}' 的依赖 '%{query}': %{error}"
+  failed_install: "安装 '%{name}' 失败: %{error}"
+  failed_remove: "卸载 '%{name}' 失败: %{error}"
+  failed_remove_cache: "删除缓存 '%{path}' 失败: %{error}"
+  failed_download: "下载 '%{name}' 失败: %{error}"
+  failed_reassemble: "合并 '%{name}' 的分片失败: %{error}"
+  failed_move_download: "移动 '%{name}' 的下载文件失败: %{error}"
+  failed_verify: "校验 '%{name}' 失败: %{error}"
+  failed_read_file: "读取 %{path} 失败: %{error}"
+  failed_read_dir: "读取目录 %{path} 失败: %{error}"
+  failed_parse_file: "解析 %{path} 失败: %{error}"
+  manifest_no_version_field: "%{path}: 缺少 version 字段"
+  manifests_updated: "已更新 %{count} 个 manifest"
+  installer_added_path: "安装程序将 '%{path}' 添加到了 PATH，正在移除。"
+  installer_added_system_path: "安装程序将 '%{path}' 添加到了系统 PATH，你可能需要手动移除（需要管理员权限）。"
+  already_installed: "包 '%{name}' (%{version}) 已安装。\n请用 'hok update %{name}%{global}' 安装新版本。"
+  suggests_install: "包 '%{pkg}' 建议安装 '%{names}'。"
+  cache_total_label: "合计:"
+  cache_total: "共 %{count} 个文件，%{size}"
+  cache_removing: "正在移除 %{name}..."
+  cache_deleted_label: "已删除:"
+  manifest_no_version: "包 '%{name}' 的 manifest 未指定版本。"
+  env_var_setting: "设置%{scope}环境变量：%{name} = %{value}"
+  env_var_removing: "移除%{scope}环境变量：%{name}"
+  manifest_version_invalid: "包 '%{name}' 的 manifest 版本包含不支持的字符。"
+  arch_unsupported: "包 '%{name}' 不支持当前架构！"
+  downloaded_success: "已成功下载 '%{name}' (%{version})！"
+  download_failed_list: "以下包下载失败: %{names}"
+  no_hash_skip: "包 '%{name}' 的 manifest 中没有哈希，跳过校验"
+  version_mismatch: "指定版本 (%{given}) 与 manifest (%{manifest}) 不一致"
+  resolving_historical_manifest: "正在解析 '%{name}' (%{version}) 的历史 manifest"
+  generating_manifest: "正在尝试为 '%{name}' (%{version}) 生成 manifest"
+  auto_pr_snapshotting: "正在快照"
+  auto_pr_manifests: "manifest"
+  auto_pr_checking: "正在检查"
+  auto_pr_for_updates: "更新"
+  auto_pr_forcing: "正在强制更新"
+  auto_pr_pushing: "正在推送"
+  auto_pr_creating: "正在创建"
+  auto_pr_branch_exists: "%{app} (%{version}): 分支已存在，跳过"
+  auto_pr_completed_push: "ci-auto-pr 完成：已推送 %{pushed} 个，跳过 %{skipped} 个"
+  auto_pr_completed_pr: "ci-auto-pr 完成：已创建 %{created} 个 PR，跳过 %{skipped} 个，已存在 %{existed} 个"
+  auto_pr_head_sha_failed: "%{app}: 获取 HEAD SHA 失败: %{error}"
+  auto_pr_commit_failed: "%{app}: 提交失败: %{error}"
+  auto_pr_create_branch_failed: "%{app}: 创建分支失败: %{error}"
+  auto_pr_create_pr_failed: "%{app}: 创建 PR 失败: %{error}"
+  auto_pr_pushed: "%{app} (%{version}) -> %{url}"
+  auto_pr_pr_created: "%{app} (%{version}) -> PR: %{url}"
 cli:
   config_set: "配置 '%{key}' 已设置为 '%{value}'"
   config_unset: "配置 '%{key}' 已取消设置"
@@ -178,15 +467,29 @@ error:
   bucket_not_found: "bucket '%{name}' 不存在"
   bucket_already_exists: "bucket '%{name}' 已存在"
   bucket_add_remote_required: "'%{name}' 不是已知 bucket，需要 <repo>"
+  bucket_invalid_git_url: "%{repo} 不是有效的 Git URL！"
+  bucket_invalid_git_url_hint: "有效形式请参见 https://git-scm.com/docs/git-clone#_git_urls。"
+  bucket_repo_already_exists: "仓库 %{repo} 已存在（bucket：%{bucket}）"
+  bucket_repo_unreachable: "'%{repo}' 看起来不是有效的 git 仓库\n\n错误信息：\n%{output}"
   bucket_update_not_fast_forward: "无法快进更新 bucket '%{ref}'：历史分叉或无关（远程可能已被改写）"
   bucket_update_merge_conflict: "更新 bucket '%{ref}' 时发生合并冲突；请在 bucket 目录解决冲突后重试"
   bucket_update_local_changes: "本地更改将被 bucket 更新覆盖：%{files}"
   config_in_use: "无法更改配置，配置正在使用中"
   config_key_invalid: "无效的配置键 '%{key}'"
+  config_key_unsupported: "'%{key}' 是官方 Scoop 的设置项，hok 没有对应实现；用 'hok config -a' 查看 hok 支持的设置项"
   config_value_invalid: "无效的配置值 '%{value}'"
+  alias_already_exists: "别名 '%{name}' 已存在。"
+  alias_not_found: "别名 '%{name}' 不存在。"
+  alias_script_exists: "文件 '%{file}' 已存在于 shims 目录中。"
+  alias_invalid_name: "无效的别名名称 '%{name}'"
+  alias_reserved_name: "'%{name}' 是内建命令，不能用作别名"
   user_agent_already_set: "User Agent 已设置"
   output_already_set: "输出通道已设置"
+  infra_already_set: "基础设施实现已设置"
+  cancellation_token_already_set: "取消令牌已设置"
   hash_mismatch: "哈希不匹配"
+  hash_mismatch_detail: "软件包 '%{name}' 哈希不匹配:\n     网址: %{url}\n    预期: %{expected}\n    实际: %{actual}"
+  download_timeout: "下载 '%{url}' 超时（%{secs} 秒）"
   invalid_cache_file: "无效的缓存文件"
   invalid_answer: "无效的回答"
   package_not_found: "找不到名为 '%{name}' 的软件包"
@@ -195,7 +498,7 @@ error:
   package_multiple_candidates: "找到 '%{name}' 的多个候选"
   package_hold_not_installed: "软件包 '%{name}' 未安装"
   package_hold_broken_install: "软件包 '%{name}' 损坏"
-  app_running: "'%{name}' 仍在运行！请在继续之前关闭该应用。"
+  shim_target_missing: "命令路径不存在: %{path}"
   user_aborted: "操作已取消。"
   custom: "%{msg}"
   extraction_failed: "解压归档失败: %{reason}"
@@ -207,19 +510,22 @@ error:
   regex: "正则表达式错误"
   sqlite: "SQLite 错误"
   serde: "序列化错误"
+  caused_by: "原因:"
 
 cli_help:
   heading:
     usage: "用法:"
     subcommands: "子命令"
     options: "选项"
+    arguments: "参数"
+    global_options: "全局选项"
   after_help: "输入 'hok help <命令>' 查看特定命令的帮助。"
   help:
     about: "打印此消息或给定子命令的帮助"
   hok:
     about: "Hok 是 Scoop 的 Rust 实现"
     args:
-      detail: "显示详细操作信息以便调试"
+      confirm: "强制开启事务确认闸门，忽略 confirm 配置"
       language: "强制 CLI 语言 (auto/en/zh)"
       no_color: "禁用彩色输出"
       verbose: "增加日志详细程度"
@@ -228,15 +534,22 @@ cli_help:
       version: "打印版本信息"
   alias:
     args:
-      command: "命令: list（默认），add，rm"
-      name: 别名名称（用于 add/rm）
-      value: 别名命令（用于 add）
+      add: 添加新别名
+      add.name: 别名名称
+      add.value: 要执行的命令
+      add.description: 别名描述（写入脚本首行的 `# Summary:`）
+      list: 列出所有别名（默认）
+      list.verbose: 显示别名描述列
+      remove: 删除别名
+      remove.name: 要删除的别名名称
     about: "列出、添加或删除 Scoop 别名"
     long_about: "列出、添加或删除 Scoop 别名\n\n示例:\n  hok alias list                   列出所有别名\n  hok alias add <名称> <命令>      添加别名\n  hok alias rm  <名称>             删除别名"
   bucket:
     about: 管理清单仓库
     args:
       add: 添加仓库
+      add.name: 仓库名称
+      add.repo: 仓库 URL（已知仓库可省略）
       list: 列出仓库
       list.known: 列出已知仓库
       known: "列出已知仓库（Scoop: scoop bucket known）"
@@ -245,23 +558,41 @@ cli_help:
   cache:
     about: 包缓存管理
     args:
+      app: 要列出缓存的包名称（默认为全部）
       list: 列出下载缓存
+      list.app: 列出指定包的缓存
       remove: 删除下载缓存
       remove.all: 删除所有缓存
+      remove.app: 删除指定包的缓存
   cat:
     args:
       package: 要检查的包名称
     about: 查看包的清单信息
   checkhashes:
     about: 验证并更新清单哈希值
+    long_about: |-
+      遍历 `--dir` 下的清单，下载其声明的每个 URL，并将计算结果与 `hash` 字段比对，对标官方 Scoop 的 `bin/checkhashes.ps1`。声明了顶层 `url` 的清单只按顶层校验；其余按架构（64bit、32bit、arm64）逐个校验。
+      使用 `--update` 时，哈希不匹配的清单会被原地重写（保留 CRLF 与末尾换行）；`--force` 则连哈希本就正确的清单也一并重写。
     args:
-      app: "要检查的特定应用（支持通配符，默认为全部）"
-      cache: 对下载的文件使用缓存目录
-      dir: 要扫描清单的仓库目录
-      force: 即使哈希匹配也强制更新清单（重新哈希）
+      app: |-
+        要检查的特定应用（支持通配符，默认为全部）
+        匹配不区分大小写（对齐官方 `-App` 过滤），可传多个模式，按 OR 组合。
+      cache: |-
+        对下载的文件使用缓存目录
+        默认为临时目录，运行结束时删除，除非给出 `--keep-cache`。
+      dir: |-
+        要扫描清单的仓库目录
+        默认为当前目录，但配合 `--update`/`--force`（会重写清单）时必须显式给出，否则 hok 拒绝运行。
+      force: |-
+        即使哈希匹配也强制更新清单
+        该标志下始终重新下载，即使同时给出 `--keep-cache`。
+      keep_cache: |-
+        检查完成后保留下载的文件
+        等价于官方 `-UseCache`：下次运行复用缓存文件而不重新下载，因此可能校验到过期的文件。缓存按清单版本区分。
+      skip_correct: 不输出哈希正确的清单
       update: 发现不匹配时用正确哈希更新清单
   checkup:
-    about: 检查已安装包的潜在问题
+    about: 检查潜在问题
   checkurls:
     about: 检查清单 URL 的有效性
     args:
@@ -273,19 +604,24 @@ cli_help:
     about: 检查清单是否有新版本
     args:
       app: "要检查的特定应用（支持通配符，默认为全部）"
-      dir: 要扫描清单的仓库目录
+      dir: |-
+        要扫描清单的仓库目录
+        默认为当前目录，但配合 `--update`/`--force-update`（会重写清单）时必须显式给出，否则 hok 拒绝运行。
       update: 用新版本更新清单并触发自动更新
-      force-update: 即使版本不变也强制更新（用于哈希更新场景）
-      skip-updated: 跳过已是最新的清单
+      force_update: 即使版本不变也强制更新（用于哈希更新场景）
+      skip_updated: 只输出可更新或出错的清单（跳过已最新的，对应官方 `-SkipUpdated`）
       version: 更新清单到指定版本（跳过版本检测）
       timeout: 请求超时秒数
+      jobs: 并发检查的清单数（0 表示不限）
+      throw_error: 遇到首个错误即抛出，而不是继续处理其余清单
   cleanup:
     about: 通过删除旧版本清理应用
     args:
-      app: 指定要清理的应用名称（留空表示全部）
-      all: 清理所有应用
+      app: 指定要清理的应用名称
+      all: 清理所有应用（相当于 '*'）
       global: 清理全局安装的应用
       cache: 同时删除下载缓存
+      list: 列出已安装的版本（不执行清理）
   completions:
     args:
       shell: Shell 类型
@@ -308,17 +644,24 @@ cli_help:
             每个下载对单个服务器的最大连接数。
       aria2-min-split-size: 大小，默认 5M
             触发分片下载的最小文件大小（如 5M、10M）。
+      jobs: int，默认 4
+            下载阶段并发处理的包数。
       cache_path: 路径，默认 $SCOOP_CACHE 或 <root>/cache
             下载缓存目录。
       cat_style: 字符串，默认无
-            设置后使用 'bat' 显示清单（需安装 bat）。
+            设置后 'bat' 以这些 --style 组件显示清单（需安装 bat；
+            bat 不接受的值退回纯 JSON 输出）。
+      editor: 字符串，默认无
+            'hok config edit' 使用的编辑器（未设置时回退 $EDITOR，再到系统处理程序）。
+      confirm: bool，默认 false
+            同步类操作执行前先询问确认。
       default_architecture: 64bit|32bit|arm64，默认自动检测
             安装时使用的首选架构。
       global_path: 路径，默认 $SCOOP_GLOBAL 或 %ProgramData%\scoop
             全局应用安装的根目录。
       gh_token: 字符串，默认无
             用于认证请求的 GitHub API token。
-      ignore-failures: bool，默认 true
+      ignore_failures: bool，默认 false
             多包操作中单个包失败时继续处理其余包。
       ignore_running_processes: bool，默认 false
             应用正在运行时仍继续（仅警告，不中止）。
@@ -326,18 +669,18 @@ cli_help:
             消息与帮助文本使用的 CLI 语言。
       last_update: 字符串，内部
             上次 bucket 更新的时间戳（由 hok 管理）。
-      no-color: bool，默认 false
+      no_color: bool，默认 false
             禁用彩色输出。
       no_junction: bool，默认 false
             不使用 'current' 目录联接；shim 直接指向版本目录。
-      output-style: scoop|pacman，默认 scoop
-            进度与状态消息的输出样式。
       private_hosts: 数组，编辑文件
             需要额外认证头的私有主机；请直接编辑配置文件。
       proxy: 字符串，默认 none
             代理设置：none | default | currentuser | [username:password@]host:port。
       root_path: 路径，默认 $SCOOP 或 ~/scoop
             Scoop 根目录。
+      script_engine: bool，默认 false
+            复用常驻 pwsh 进程执行安装/卸载脚本。
       use_isolated_path: bool|字符串，默认无
             将应用的 PATH 条目存入专用环境变量（默认为 SCOOP_PATH）。
       use_sqlite_cache: bool，默认 false
@@ -345,17 +688,25 @@ cli_help:
       virustotal_api_key: 字符串，默认无
             用于上传/扫描文件的 VirusTotal API key。
 
-      大多数设置可通过 'hok config set <key> <value>' 修改（空值表示取消
-      设置）。private_hosts 和 last_update 只能直接编辑配置文件。运行
-      'hok config list --all' 查看当前值与生效默认值。
+      裸 'hok config' 以 '键 = 值' 逐行输出配置文件里实际保存的设置；'-j' 输出
+      同一份内容的 JSON，'-a' 列出全部已知设置及其生效默认值。写入用
+      'hok config <key> <value>'，删除用 'hok config rm <key>'，与官方
+      'scoop config' 形态一致。private_hosts 和 last_update 只能直接编辑
+      配置文件。
+
+      设置名严格按上面列出的写法，没有别名。'hok config edit' 是 hok 扩展
+      （官方把 'edit' 当作键名），'-j' / '-a' 同样是 hok 扩展。
     args:
+      json: 以 JSON 输出设置
+      all: 列出全部设置及其生效默认值
+      key: 打印该设置项；后面跟值时改为写入该项
+      value: <KEY> 的新值
       edit: "编辑配置文件 [默认: 系统默认编辑器]"
-      list: "以键值对形式列出所有设置（--all 同时显示默认值）"
-      list.all: 同时显示每个设置生效的默认值
-      set: 向配置文件添加新设置
-      unset: 从配置文件删除设置
+      rm: 从配置文件删除设置
+      rm.key: 要删除的配置项名称
   create:
-    about: "从下载 URL 创建清单  下载文件、计算哈希并生成清单骨架。"
+    about: "从下载 URL 创建清单"
+    long_about: "下载文件、计算哈希并生成清单骨架。"
     args:
       url: 下载 URL
       output: "输出文件路径（可选，默认为 stdout）"
@@ -382,20 +733,26 @@ cli_help:
     args:
       package: 要下载的包（名称、bucket/名称、名称@版本，或 manifest URL/路径）
       force: 强制下载（覆盖缓存）
-      no_hash_check: 跳过包完整性检查
+      skip_hash_check: 跳过包完整性检查
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
   export:
     about: 导出已安装包列表
     args:
-      all: 包含非仓库包（URL/路径安装）
+      config: 同时导出配置（对齐官方 'scoop export -c'）
+      hok: 追加 hok 自有扩展（配置与逐应用状态）；官方 Scoop 会忽略，hok 可完整还原
   formatjson:
     about: 格式化仓库目录中的清单 JSON 文件
     args:
-      app: "要格式化的特定应用（支持通配符，默认为全部）"
-      dir: 要扫描清单的仓库目录
+      app: "要格式化的特定应用（通配符与 .json 后缀可省略，大小写不敏感；默认为全部）"
+      dir: |-
+        要扫描清单的仓库目录
+        必填：该命令会原地重写它找到的每个清单，而扫描是递归收集所有 `*.json`，无法分辨清单与其它 JSON 文件。
+  health:
+    about: 检查已安装包的潜在问题
   hold:
     about: 锁定包以禁止更改
     args:
+      global: 锁定全局安装的应用（来自 $SCOOP_GLOBAL）
       package: 要锁定的包
   home:
     args:
@@ -403,12 +760,13 @@ cli_help:
     about: 浏览包的主页
   import:
     args:
-      file: 要导入的 JSON 文件
-    about: 从文件导入已安装包
+      file: "要导入的 Scoopfile：本地路径、http(s) URL 或 UNC 路径"
+    about: 从 Scoopfile 导入已安装包
   info:
     args:
-      query: 查询字符串（支持正则）
-    about: 显示包的基本信息
+      query: 应用名称（也接受 `bucket/name`）、manifest URL 或本地 manifest 路径
+      verbose: 显示完整路径和 URL
+    about: 显示应用的信息
   install:
     about: 安装包
     long_about: |-
@@ -434,12 +792,11 @@ cli_help:
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
       download_only: 仅下载包而不执行安装
-      escape_hold: 绕过锁定以允许更改被锁定的包
       global: 全局安装（到 $SCOOP_GLOBAL）
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
-      independent: 不安装依赖（可能破坏包）
-      no_hash_check: 跳过包完整性检查
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      independent: 不自动安装依赖
+      skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
@@ -455,8 +812,9 @@ cli_help:
   missing_checkver:
     about: 检查缺少 checkver 和 autoupdate 的仓库清单
     args:
+      app: 要检查的特定应用（通配符与 .json 后缀可省略，大小写不敏感；默认为全部）
       dir: 要扫描清单的仓库目录
-      supported: 仅显示具有 checkver/autoupdate 的清单（反向筛选）
+      skip_supported: 跳过同时具有 checkver 和 autoupdate 的清单
   prefix:
     args:
       package: 包名称
@@ -464,19 +822,20 @@ cli_help:
   reinstall:
     about: 重新安装包
     args:
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      global: 全局安装（到 $SCOOP_GLOBAL）
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      skip_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
       package: 要重新安装的包
   reset:
     args:
-      app: 应用名称
-      version: 要重置到的特定版本
+      app: "要重置的应用（名称、bucket/名称或 名称@版本）"
       all: 重置所有已安装的应用
     about: "重置应用以解决冲突（重新创建 shim、快捷方式、运行 post_install）"
   search:
     about: "搜索可用包"
+    long_about: "从已同步的仓库中搜索可用包。默认按包名匹配；使用 --with-description 或 --with-binary 可同时搜索包的描述或可执行文件。"
     args:
       explicit: 关闭正则并使用精确匹配
       query: 查询字符串（默认支持正则）
@@ -487,15 +846,16 @@ cli_help:
     long_about: |-
       管理 Scoop shims（添加 / 移除 / 列出 / 检查）。
 
-      子命令:
-        add <名称> <目标> [参数...]  添加自定义 shim，指向任意命令路径
-                                     （或通过 PATH 解析的命令名）
-        rm <名称>...                 移除 shims（注意: 可能移除应用清单创建的 shim）
-        list [<正则模式>...]         列出所有 shims 或匹配的 shims
-        info <名称>                   显示 shim 的信息
+      示例:
+        hok shim add <名称> <目标> [参数...]  添加自定义 shim，指向任意命令路径
+                                              （或通过 PATH 解析的命令名）
+        hok shim rm <名称>...                 移除 shims（注意: 可能移除应用清单创建的 shim）
+        hok shim list [<正则模式>...]         列出所有 shims 或匹配的 shims
+        hok shim info <名称>                  显示 shim 的信息
 
-      选项:
-        -g, --global  操作全局 shim(s)
+      `-g/--global` 可出现在 `--` 之前的任意位置，`hok shim -g list` 与
+      `hok shim list -g` 是同一条命令，都只列出全局 shims。
+      `hok shim list *` 列出全部 shims。
 
       提示: 第一个 `--`（若有）被当作 POSIX 风格选项终止符，不会包含在
       shim 参数中；请把 `-` 开头的参数放在它后面:
@@ -503,6 +863,7 @@ cli_help:
     args:
       global: 操作全局 shim(s)
       add: 添加自定义 shim
+      add.long_about: "`hok shim add <名称> <目标> [参数...]` — 以 `-` 开头的参数必须放在 `--`（POSIX 风格选项终止符）之后；`-g`/`--global` 本身是 hok 的选项，要传给 shim 需放在 `--` 之后。"
       add.parts: "`<名称> <目标> [参数...]` — 名称，然后是目标命令路径（或通过 PATH 解析的命令名），再后是任意参数"
       remove: "移除 shims（注意: 可能移除应用清单创建的 shim）"
       remove.names: Shim 名称
@@ -517,48 +878,63 @@ cli_help:
   unhold:
     about: 解锁包以允许更改
     args:
+      global: 解锁全局安装的应用（来自 $SCOOP_GLOBAL）
       package: 要解锁的包
   uninstall:
     about: 卸载包
     args:
-      escape_hold: 绕过锁定以允许更改被锁定的包
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      assume_yes: 假设所有提示都是"是"并以非交互方式运行
+      global: 卸载全局安装的应用（来自 $SCOOP_GLOBAL）
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      skip_hash_check: 跳过包完整性检查
       package: 要卸载的包
+      purge: 删除所有持久化数据
   update:
     about: "获取并更新已订阅的仓库，或升级已安装的包"
     long_about: "获取并更新已订阅的仓库，或升级已安装的包\n\n示例:\n  hok update            仅更新仓库\n  hok update <应用>     升级特定包（兼容 Scoop）\n  hok update *          升级所有包"
     args:
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
-      escape_hold: 绕过锁定以允许升级被锁定的包
-      force: "强制更新：绕过冷却期并重装已达请求版本的软件"
-      ignore_cache: 忽略缓存并强制下载
-      ignore_failure: 忽略错误以确保事务完成
-      independent: 不安装依赖（可能破坏包）
-      no_hash_check: 跳过包完整性检查
+      force: "即使没有新版本也强制更新"
+      no_cache: "不使用下载缓存"
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      independent: 不自动安装依赖
+      skip_hash_check: 跳过包完整性检查
       no_replace: 不替换包
       no_upgrade: 不升级包
       offline: 利用缓存并禁止网络访问
       package: 要升级的包（省略则仅更新仓库）
       global: 全局安装（到 $SCOOP_GLOBAL）
       all: 升级所有已安装的包（相当于 '*'）
+      cleanup: "删除本次实际升级过的包的旧版本；只有已安装版本发生变化的包会被清理，没有包被升级时不执行清理（清理全部应用请用 'hok cleanup -a'）"
   upgrade:
     about: 升级已安装的包
     args:
+      all: 升级所有已安装的包（相当于 '*'）
+      cleanup: "删除本次实际升级过的包的旧版本；只有已安装版本发生变化的包会被清理，没有包被升级时不执行清理（清理全部应用请用 'hok cleanup -a'）"
       assume_yes: 假设所有提示都是"是"并以非交互方式运行
-      escape_hold: 绕过锁定以允许升级被锁定的包
-      ignore_failure: 忽略错误以确保事务完成
-      no_hash_check: 跳过包完整性检查
+      force: "强制升级：对已达请求版本的包重新安装"
+      global: 全局安装（到 $SCOOP_GLOBAL）
+      ignore_failures: "忽略错误以确保事务完成（可持久设置：'hok config ignore_failures true'）"
+      independent: 不自动安装依赖
+      no_cache: "不使用下载缓存"
+      skip_hash_check: 跳过包完整性检查
       offline: 利用缓存并禁止网络访问
       package: "要升级的包（默认为全部，被锁定的除外）"
   virustotal:
     about: "检查包下载 URL 是否被 VirusTotal 标记"
+    long_about: |-
+      需要 VirusTotal API key。设置方式:
+        hok config virustotal_api_key <key>
+      或设置 $VT_API_KEY 环境变量。
     args:
       app: 要检查的包名称
   which:
     about: 显示命令的 shim 位置
-  ciautopr:
+    args:
+      command: 要查找的命令名称
+  auto_pr:
     about: "通过 GitHub API 自动更新 manifest 并创建 Pull-Request（零外部二进制，CI 模式）"
+    long_about: 该命令在 CI 环境（例如 GitHub Actions）中运行，仅使用 GitHub API——不需要 git/hub 二进制。
     args:
       dir: 要扫描 manifest 的 bucket 目录
       upstream: "上游仓库及目标分支 (<user>/<repo>:<branch>)"
@@ -569,6 +945,8 @@ cli_help:
       skip_updated: 跳过已是最新的 manifest
       special: "强制更新指定的特殊雪花 app（逗号分隔）"
       token: "GitHub Token（默认从 GITHUB_TOKEN 环境变量读取）"
+      app_slug: "GitHub App 的 slug（例如 `my-bot`）；当令牌是 GitHub App 安装令牌时，用于为对应的 bot 用户生成 DCO 签名"
+      verbose: 显示每个 manifest 的 checkver 详情（找到的版本、更新、错误）
 
 # 命令别名（用于 shell 补全）
 cli_alias:

@@ -4,12 +4,14 @@
 //!
 //! - [`arch`] — Runtime OS architecture detection (Scoop-compatible)
 //! - [`archive`] — Archive extraction (7z, zip, tar, ...)
+//! - [`base64`] — Base64 codec (.NET-compatible decode, standard encode)
 //! - [`dag`] — Directed Acyclic Graph for dependency resolution
 //! - `env` — Windows Registry-backed environment variable management
 //! - [`fs`] — File-system utilities (ensure dir, remove dir, write JSON)
 //! - [`git`] — Git operations via `libgit2`
 //! - [`hash`] — Hash utilities (MD5/SHA1/SHA256/SHA512) via RustCrypto
-//! - [`network`] — HTTP networking via `ureq`
+//! - [`json`] — Tolerant JSON parsing (single entry point for JSON text)
+//! - [`network`] — HTTP networking via `reqwest` (async)
 //! - [`os`] — OS-level utilities (process info, disk space, FFI)
 //! - [`path`] — Path manipulation and normalisation
 //! - [`pe`] — PE executable introspection (subsystem detection)
@@ -29,12 +31,14 @@
 
 pub(crate) mod arch;
 pub(crate) mod archive;
+pub(crate) mod base64;
 pub(crate) mod dag;
 pub(crate) mod env;
 pub(crate) mod fs;
 pub(crate) mod git;
 pub(crate) mod github;
 pub(crate) mod hash;
+pub(crate) mod json;
 pub(crate) mod network;
 pub(crate) mod os;
 pub(crate) mod path;

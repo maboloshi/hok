@@ -9,6 +9,7 @@
 //! declared explicitly (rust-lld cannot infer it from the custom entry point
 //! under `#![no_main]`).
 
+#![allow(unsafe_code)]
 #![no_std]
 #![cfg_attr(not(test), no_main)]
 #![windows_subsystem = "console"]
@@ -27,7 +28,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 }
 
 #[cfg(not(test))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "system" fn mainCRTStartup() -> ! {
     let code = unsafe { hok_shim::entry() };
     hok_shim::exit_process(code)

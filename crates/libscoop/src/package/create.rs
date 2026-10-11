@@ -10,7 +10,8 @@
 //! use libscoop::Session;
 //!
 //! let session = Session::new();
-//! let manifest = create::create_manifest(&session, "https://example.com/app.zip");
+//! let runtime = tokio::runtime::Runtime::new().unwrap();
+//! let manifest = runtime.block_on(create::create_manifest(&session, "https://example.com/app.zip"));
 //! println!("{}", serde_json::to_string_pretty(&manifest.unwrap()).unwrap());
 //! ```
 //!
@@ -22,7 +23,7 @@
 
 use serde_json::Value;
 
-use crate::{error::Fallible, network, Session};
+use crate::{Session, error::Fallible, network};
 
 /// Extract the file name from a download URL, stripping any query string.
 fn extract_filename(url: &str) -> &str {
@@ -66,7 +67,7 @@ fn is_archive(filename: &str) -> bool {
 /// # Errors
 ///
 /// Returns an error if the download or the hash computation fails.
-pub fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
+pub async fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
     let url = url.trim();
     let filename = extract_filename(url);
     let name = derive_name(filename);
@@ -77,8 +78,8 @@ pub fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
     std::fs::create_dir_all(&tmp_dir)?;
     let dest = tmp_dir.join(filename);
 
-    let result = (|| -> Fallible<Value> {
-        network::download_file(session, url, &dest)?;
+    let result: Fallible<Value> = async {
+        network::download_file(session, url, &dest).await?;
         let hash = crate::internal::hash::compute_file_hash(&dest, "sha256")?;
 
         let mut manifest = serde_json::json!({
@@ -98,7 +99,8 @@ pub fn create_manifest(session: &Session, url: &str) -> Fallible<Value> {
         }
 
         Ok(manifest)
-    })();
+    }
+    .await;
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
     result

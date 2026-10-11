@@ -24,6 +24,7 @@
 
 mod extract;
 mod link;
+pub(crate) mod psengine;
 mod script;
 
 // ─── Re-exports ─────────────────────────────────────────────────────────────

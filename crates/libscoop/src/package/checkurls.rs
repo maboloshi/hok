@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::internal::url::strip_url_fragment;
-use crate::package::manifest_walker;
-use crate::{error::Fallible, network, Manifest, Session};
+use crate::package::{manifest, manifest_walker};
+use crate::{Session, error::Fallible, network};
 
 #[derive(Debug, Clone)]
 pub struct UrlCheckError {
@@ -29,7 +29,7 @@ pub struct CheckUrlsReport {
     pub results: Vec<ManifestUrlCheck>,
 }
 
-pub fn check_urls(
+pub async fn check_urls(
     session: &Session,
     dir: &Path,
     app_filters: &[String],
@@ -41,9 +41,18 @@ pub fn check_urls(
     let mut on_result = on_result;
 
     for (path, name) in manifest_walker::discover_matching(dir, app_filters)? {
-        let manifest = match Manifest::parse(path) {
+        let manifest = match manifest::parse_file(&path) {
             Ok(m) => m,
-            Err(_) => continue,
+            // Official checkurls reads each file through `parse_json`, which
+            // warns and returns `$null` (`lib/manifest.ps1:10`); the manifest
+            // then contributes an empty URL list (`bin/checkurls.ps1:37-38`).
+            // hok used to skip the file in silence.
+            Err(err) => {
+                session
+                    .output()
+                    .warn(manifest::parse_failure_message(&path, &err));
+                continue;
+            }
         };
 
         let raw_urls: Vec<String> = if manifest.url().is_empty() {
@@ -74,7 +83,8 @@ pub fn check_urls(
 
         for url in &urls {
             report.total_urls += 1;
-            let result = network::head_url(session, url, timeout_secs, manifest_cookies.as_ref());
+            let result =
+                network::head_url(session, url, timeout_secs, manifest_cookies.as_ref()).await;
 
             match result.error {
                 None => {

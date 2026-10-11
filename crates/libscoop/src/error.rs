@@ -38,6 +38,23 @@ pub enum Error {
     #[error("'{0}' is not a known bucket, <repo> is required")]
     BucketAddRemoteRequired(String),
 
+    /// Thrown when the repository URL is not a valid git URL, i.e. upstream's
+    /// `Convert-RepositoryUri` rejects it (`lib/buckets.ps1:83-102,135-138`).
+    #[error("{0} is not a valid Git URL!")]
+    BucketInvalidGitUrl(String),
+
+    /// Thrown when the target bucket name is free and the URL is valid, but an
+    /// already-added bucket subscribes to the same repository
+    /// (`lib/buckets.ps1:139-147`). Carries `(bucket name, repository url)`.
+    #[error("bucket '{0}' already exists for {1}")]
+    BucketRepoAlreadyExists(String, String),
+
+    /// Thrown when `git ls-remote` cannot reach the repository, i.e. upstream's
+    /// add-time precheck (`lib/buckets.ps1:149-154`). Carries
+    /// `(repository url, the git error)`.
+    #[error("'{0}' doesn't look like a valid git repository")]
+    BucketRepoUnreachable(String, String),
+
     /// Bucket not found error
     #[error("bucket '{0}' does not exist")]
     BucketNotFound(String),
@@ -67,9 +84,36 @@ pub enum Error {
     #[error("invalid config key '{0}'")]
     ConfigKeyInvalid(String),
 
+    /// An upstream Scoop setting hok has no equivalent for.
+    #[error("config key '{0}' is not supported by hok")]
+    ConfigKeyUnsupported(String),
+
     /// Invalid config value error
     #[error("invalid config value '{0}'")]
     ConfigValueInvalid(String),
+
+    /// Thrown when adding an alias whose name is already configured.
+    #[error("Alias '{0}' already exists.")]
+    AliasAlreadyExists(String),
+
+    /// Thrown when removing an alias that is not configured.
+    #[error("Alias '{0}' doesn't exist.")]
+    AliasNotFound(String),
+
+    /// Thrown when adding an alias whose script file is already present in the
+    /// shims directory (upstream `add_alias`'s second guard).
+    #[error("File '{0}' already exists in shims directory.")]
+    AliasScriptExists(String),
+
+    /// Thrown when an alias name cannot be used as a `scoop-<name>.ps1` script
+    /// name (empty, whitespace, or a path separator / reserved filename char).
+    #[error("invalid alias name '{0}'")]
+    AliasInvalidName(String),
+
+    /// Thrown when an alias name collides with a built-in command: clap
+    /// resolves built-ins before aliases, so such an alias is unreachable.
+    #[error("Alias '{0}' conflicts with a built-in command.")]
+    AliasReservedName(String),
 
     /// Thrown when trying to set the user agent twice.
     #[error("User agent already set")]
@@ -79,9 +123,33 @@ pub enum Error {
     #[error("Output sink already set")]
     OutputAlreadySet,
 
+    /// Thrown when trying to inject an infra implementation (network / git /
+    /// archive) into a session more than once.
+    #[error("Infra implementation already set")]
+    InfraAlreadySet,
+
+    /// Thrown when trying to inject a cancellation token into a session more
+    /// than once.
+    #[error("Cancellation token already set")]
+    CancellationTokenAlreadySet,
+
     /// Hash mismatch error
     #[error("{0}")]
     HashMismatch(HashMismatchContext),
+
+    /// A single-stream download exceeded its request deadline.
+    ///
+    /// Distinct from [`Error::Custom`] because the timeout has to be rendered
+    /// with its budget: `reqwest`'s request error says nothing about a timeout,
+    /// so the frontend can only tell the user `timed out after N seconds` from
+    /// this variant (`error.download_timeout`).
+    #[error("download '{url}' timed out after {timeout_secs}s")]
+    DownloadTimedOut {
+        /// The URL whose transfer did not finish in time.
+        url: String,
+        /// The request deadline that elapsed, in seconds.
+        timeout_secs: u64,
+    },
 
     /// Invalid cache file error
     #[error("error")]
@@ -119,11 +187,12 @@ pub enum Error {
     #[error("package '{0}' is broken")]
     PackageHoldBrokenInstall(String),
 
-    /// Thrown when the app is currently running and must not be touched
-    /// (matches PS1's `test_running_process`). Callers skip this package and
-    /// continue with the rest of the batch, like Scoop's update/uninstall.
-    #[error("'{0}' is still running! Close the app(s) before proceeding.")]
-    AppRunning(String),
+    /// Thrown when `shim add` names a target that does not exist. Upstream
+    /// refuses to create such a shim and exits 3
+    /// (`libexec/scoop-shim.ps1:114-123`); the CLI maps this variant to that
+    /// code.
+    #[error("command path does not exist: {0}")]
+    ShimTargetMissing(String),
 
     /// Thrown when the user aborts an interactive confirmation prompt.
     /// Not a failure: callers exit 0 but skip success messages.
@@ -181,16 +250,28 @@ impl Error {
         match self {
             Error::BucketAlreadyExists(_) => "error.bucket_already_exists",
             Error::BucketAddRemoteRequired(_) => "error.bucket_add_remote_required",
+            Error::BucketInvalidGitUrl(_) => "error.bucket_invalid_git_url",
+            Error::BucketRepoAlreadyExists(_, _) => "error.bucket_repo_already_exists",
+            Error::BucketRepoUnreachable(_, _) => "error.bucket_repo_unreachable",
             Error::BucketNotFound(_) => "error.bucket_not_found",
             Error::BucketUpdateNotFastForward(_) => "error.bucket_update_not_fast_forward",
             Error::BucketUpdateMergeConflict(_) => "error.bucket_update_merge_conflict",
             Error::BucketUpdateLocalChanges(_) => "error.bucket_update_local_changes",
             Error::ConfigInUse => "error.config_in_use",
             Error::ConfigKeyInvalid(_) => "error.config_key_invalid",
+            Error::ConfigKeyUnsupported(_) => "error.config_key_unsupported",
             Error::ConfigValueInvalid(_) => "error.config_value_invalid",
+            Error::AliasAlreadyExists(_) => "error.alias_already_exists",
+            Error::AliasNotFound(_) => "error.alias_not_found",
+            Error::AliasScriptExists(_) => "error.alias_script_exists",
+            Error::AliasInvalidName(_) => "error.alias_invalid_name",
+            Error::AliasReservedName(_) => "error.alias_reserved_name",
             Error::UserAgentAlreadySet => "error.user_agent_already_set",
             Error::OutputAlreadySet => "error.output_already_set",
+            Error::InfraAlreadySet => "error.infra_already_set",
+            Error::CancellationTokenAlreadySet => "error.cancellation_token_already_set",
             Error::HashMismatch(_) => "error.hash_mismatch",
+            Error::DownloadTimedOut { .. } => "error.download_timeout",
             Error::InvalidCacheFile { .. } => "error.invalid_cache_file",
             Error::InvalidAnswer => "error.invalid_answer",
             Error::PackageNotFound(_) => "error.package_not_found",
@@ -199,7 +280,7 @@ impl Error {
             Error::PackageMultipleCandidates(_) => "error.package_multiple_candidates",
             Error::PackageHoldNotInstalled(_) => "error.package_hold_not_installed",
             Error::PackageHoldBrokenInstall(_) => "error.package_hold_broken_install",
-            Error::AppRunning(_) => "error.app_running",
+            Error::ShimTargetMissing(_) => "error.shim_target_missing",
             Error::UserAborted => "error.user_aborted",
             Error::Custom(_) => "error.custom",
             Error::ExtractionFailed(_) => "error.extraction_failed",
@@ -234,6 +315,18 @@ mod tests {
             "error.bucket_add_remote_required"
         );
         assert_eq!(
+            Error::BucketInvalidGitUrl("not-a-url".into()).error_key(),
+            "error.bucket_invalid_git_url"
+        );
+        assert_eq!(
+            Error::BucketRepoAlreadyExists("extras".into(), "https://e/x.git".into()).error_key(),
+            "error.bucket_repo_already_exists"
+        );
+        assert_eq!(
+            Error::BucketRepoUnreachable("https://e/x.git".into(), "boom".into()).error_key(),
+            "error.bucket_repo_unreachable"
+        );
+        assert_eq!(
             Error::BucketUpdateNotFastForward("refs/heads/main".into()).error_key(),
             "error.bucket_update_not_fast_forward"
         );
@@ -255,8 +348,36 @@ mod tests {
             "error.config_key_invalid"
         );
         assert_eq!(
+            Error::ConfigKeyUnsupported("x".into()).error_key(),
+            "error.config_key_unsupported"
+        );
+        assert_eq!(
             Error::ConfigValueInvalid("x".into()).error_key(),
             "error.config_value_invalid"
+        );
+    }
+
+    #[test]
+    fn test_error_key_alias() {
+        assert_eq!(
+            Error::AliasAlreadyExists("rm".into()).error_key(),
+            "error.alias_already_exists"
+        );
+        assert_eq!(
+            Error::AliasNotFound("rm".into()).error_key(),
+            "error.alias_not_found"
+        );
+        assert_eq!(
+            Error::AliasScriptExists("scoop-rm.ps1".into()).error_key(),
+            "error.alias_script_exists"
+        );
+        assert_eq!(
+            Error::AliasInvalidName("a b".into()).error_key(),
+            "error.alias_invalid_name"
+        );
+        assert_eq!(
+            Error::AliasReservedName("list".into()).error_key(),
+            "error.alias_reserved_name"
         );
     }
 
@@ -273,10 +394,6 @@ mod tests {
         assert_eq!(
             Error::PackageHoldNotInstalled("7zip".into()).error_key(),
             "error.package_hold_not_installed"
-        );
-        assert_eq!(
-            Error::AppRunning("7zip".into()).error_key(),
-            "error.app_running"
         );
     }
 
@@ -296,12 +413,24 @@ mod tests {
         );
         assert_eq!(Error::InvalidAnswer.error_key(), "error.invalid_answer");
         assert_eq!(
+            Error::DownloadTimedOut {
+                url: "https://e/x".into(),
+                timeout_secs: 120,
+            }
+            .error_key(),
+            "error.download_timeout"
+        );
+        assert_eq!(
             Error::UserAgentAlreadySet.error_key(),
             "error.user_agent_already_set"
         );
         assert_eq!(
             Error::OutputAlreadySet.error_key(),
             "error.output_already_set"
+        );
+        assert_eq!(
+            Error::InfraAlreadySet.error_key(),
+            "error.infra_already_set"
         );
     }
 }

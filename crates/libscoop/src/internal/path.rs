@@ -20,6 +20,31 @@ pub(crate) fn is_version_dir(s: &str) -> bool {
     s == "current" || s.chars().any(|c| c.is_ascii_digit())
 }
 
+// ─── User environment directories ────────────────────────────────────────
+// `dirs`-compatible helpers backed by environment variables only. Three call
+// sites used `dirs`, which dragged in `dirs-sys` + `windows-sys 0.48`; the
+// lookups below are Windows-first with a generic fallback, so no `cfg` branch
+// is needed. A missing variable yields `None` so callers fall back instead of
+// panicking (service accounts, stripped environments).
+
+/// User home directory: `%USERPROFILE%`, falling back to `$HOME`.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Per-user configuration directory: `%APPDATA%` (Roaming) on Windows,
+/// `$XDG_CONFIG_HOME` or `$HOME/.config` elsewhere.
+pub(crate) fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA")
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home_dir().map(|home| home.join(".config")))
+}
+
 /// Return the Leaf, i.e. file name (with extension), or directory name
 /// of given path.
 #[inline(always)]
@@ -36,10 +61,13 @@ pub fn leaf_base<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 }
 
 // ─── Scoop layout helpers ────────────────────────────────────────────────
-// Root-parameterised layout resolvers. Kept only for call sites that cannot
-// use `Session` methods — i.e. rayon parallel scans in `package::query`,
-// where `&Session` is not `Sync` and cannot cross thread boundaries. All
-// other layout accessors live on `Session` (`session.apps_dir()` etc.).
+// Root-parameterised layout resolver, kept for call sites that carry only a
+// resolved root instead of a `Session`: the rayon scans in `package::query`
+// hand their workers plain values (`root_path`, `apps_dir`, `no_junction`) and
+// borrow no session state. This is a data-threading choice, not a thread-safety
+// requirement — `Session` is `Sync + Send` since the RwLock/AtomicBool/OnceLock
+// refactor (locked in by `session.rs` `session_is_sync_send`). All other layout
+// accessors live on `Session` (`session.apps_dir()` etc.).
 //
 // # User-level vs effective root
 //

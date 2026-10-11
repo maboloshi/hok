@@ -1,10 +1,11 @@
 //! Inspect the manifest of a package.
 
 use clap::Parser;
-use libscoop::{fs, os, package, QueryOption, Session};
-use std::path::Path;
+use libscoop::{Session, fs, os, package};
+use std::io::Write;
+use std::process::Stdio;
 
-use crate::{output, Result};
+use crate::{Result, output};
 
 /// Inspect the manifest of a package
 #[derive(Debug, Parser)]
@@ -14,68 +15,111 @@ pub struct Args {
     package: String,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
-    let query = args.package;
-
-    let queries = vec![query.as_str()];
-    let options = vec![QueryOption::Explicit];
-    let mut result = package::query::query(session, queries, options, false)?;
-
-    if result.is_empty() {
-        output::err(rust_i18n::t!("cmd.cat_not_found", query = query))
+/// Pretty-print a resolved manifest as JSON, rendering from the in-memory
+/// content so it also works when the manifest is served by the (SQLite)
+/// manifest cache or came from a URL.
+fn pretty_manifest(resolved: &package::GetManifest) -> Result<String> {
+    let manifest = &resolved.manifest;
+    // Prefer the retained raw text; else read the on-disk manifest file; else
+    // (SQLite manifest cache / URL - no raw text, virtual path) render the
+    // parsed spec so the content is always shown.
+    let content: String = if let Some(raw) = manifest.raw() {
+        raw.to_string()
+    } else if manifest.path().is_file() {
+        fs::read_to_string(manifest.path())?
     } else {
-        let length = result.len();
-        let package = if length == 1 {
-            &result[0]
-        } else {
-            result.sort_by_key(|p| p.ident());
-
-            println!("Found multiple packages named '{query}':\n");
-            for (idx, pkg) in result.iter().enumerate() {
-                println!(
-                    "  {idx}. {}/{} ({})",
-                    pkg.bucket(),
-                    pkg.name(),
-                    pkg.homepage()
-                );
-            }
-            output::prompt(rust_i18n::t!("output.select_prompt"));
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
-            let num = match input.trim().parse::<usize>() {
-                Ok(n) if n < length => n,
-                _ => {
-                    output::err(rust_i18n::t!("cmd.cat_invalid"));
-                    return Ok(());
-                }
-            };
-            &result[num]
-        };
-
-        let path = package.manifest().path();
-        output::info(format!("{}", path.display()));
-
-        // Use bat.exe for syntax-highlighted output if available
-        // (install via: hok install bat)
-        if os::is_program_available("bat.exe") {
-            let config = session.config();
-            let mut args = vec!["--no-paging"];
-            let cat_style = config.cat_style();
-            if !cat_style.is_empty() {
-                args.push("--style");
-                args.push(cat_style);
-            }
-            args.push("--language");
-            args.push("json");
-            let path_str = path.to_str().unwrap_or_default();
-            let mut cmd_args = vec![path_str];
-            cmd_args.extend(args);
-            os::run_program(Path::new("bat.exe"), &cmd_args, None)?;
-        } else {
-            let content = fs::read_to_string(path)?;
-            println!("{}", content.trim());
-        }
+        manifest
+            .to_pretty_json()
+            .ok_or_else(|| anyhow::anyhow!(hok_i18n::t!("cmd.cat_render_failed")))?
+    };
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) => Ok(serde_json::to_string_pretty(&value).unwrap_or(content)),
+        Err(_) => Ok(content),
     }
-    Ok(())
 }
 
+/// Pipe a JSON string through bat for syntax highlighting; the child's exit
+/// status is what tells the caller whether the manifest reached the user.
+///
+/// `stdout` stays inherited — bat writes the highlighted manifest straight to
+/// the terminal — while `stderr` is captured, so a rejected `cat_style` can be
+/// reported as hok's own warning naming the setting instead of as a bare bat
+/// parser error with no hint of where the value came from.
+fn run_bat(json: &str, style: &str) -> std::io::Result<std::process::Output> {
+    let mut child = super::bat_command(style)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // A style bat rejects makes it exit while parsing its arguments, before
+        // it reads anything, so the pipe may already be gone. That is not a
+        // failure of ours: the exit status below carries the diagnosis.
+        let _ = stdin.write_all(json.as_bytes());
+    }
+    child.wait_with_output()
+}
+
+/// bat's own one-line diagnosis of a failed run.
+///
+/// A silent failure (a bat that exited without saying anything) still has to
+/// produce a reason, or the warning would trail off after its colon.
+fn bat_diagnosis(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        return stderr.to_string();
+    }
+    match output.status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => "terminated".to_string(),
+    }
+}
+
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
+    let query = args.package;
+
+    // Source resolution (URL / UNC / local file / installed record / bucket)
+    // is `Get-Manifest`, shared with `home`; the picker only kicks in for a
+    // bare, uninstalled name held by several buckets.
+    let resolved = super::resolve_manifest_query(
+        session,
+        &query,
+        |count| hok_i18n::t!("cmd.found", count = count, query = query).to_string(),
+        hok_i18n::t!("cmd.cat_not_found", query = query).to_string(),
+        hok_i18n::t!("cmd.cat_invalid").to_string(),
+    )
+    .await?;
+
+    let json = pretty_manifest(&resolved)?;
+
+    // Only delegate to bat when a style is configured and bat is on PATH;
+    // otherwise (or when bat fails) print the plain pretty JSON so the
+    // manifest content is always shown.
+    let config = session.config();
+    let style = config.cat_style();
+    if !style.is_empty() && os::is_program_available("bat.exe") {
+        match run_bat(&json, style) {
+            // bat rendered it: the manifest is already on the terminal.
+            Ok(output) if output.status.success() => return Ok(()),
+            // bat ran but rejected the invocation — `cat_style` is not a value
+            // its `--style` accepts. Name the setting (bat's message alone does
+            // not) and fall through to the plain JSON rather than ending the
+            // command with an empty screen.
+            Ok(output) => output::warn(hok_i18n::t!(
+                "cmd.cat_bat_failed",
+                style = style,
+                reason = bat_diagnosis(&output)
+            )),
+            // On PATH but unusable (a broken binary, a directory placeholder).
+            Err(err) => output::warn(hok_i18n::t!(
+                "cmd.cat_bat_failed",
+                style = style,
+                reason = err.to_string()
+            )),
+        }
+    }
+
+    println!("{json}");
+    Ok(())
+}

@@ -3,7 +3,7 @@
 use std::path::Path;
 use tracing::debug;
 
-use crate::{error::Fallible, internal, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, internal, package::Package};
 
 /// Extract the downloaded archive files of `pkg` into `working_dir`.
 ///
@@ -19,7 +19,7 @@ use crate::{error::Fallible, internal, package::Package, Event, Session};
 /// the remaining downloaded files.
 ///
 /// [1]: crate::package::Package::download_filenames
-pub fn extract_archives(
+pub async fn extract_archives(
     session: &Session,
     pkg: &Package,
     working_dir: &Path,
@@ -36,6 +36,12 @@ pub fn extract_archives(
     // The archive decision is delegated to `internal::archive::detect_format`
     // (the single source of truth) — this also covers `.tar.bz`, `.lzma`,
     // `.iso`, etc. that a hand-maintained extension list would drift from.
+    //
+    // `detect_format` does not recognize `.exe`, so a manifest that marks its
+    // installer with top-level `innosetup: true` (and no `Expand-InnoArchive`
+    // script) would otherwise be copied, never decompressed. Route those
+    // installer files to `extract` explicitly.
+    let innosetup = pkg.manifest().innosetup();
     let archives: Vec<usize> = files
         .iter()
         .enumerate()
@@ -47,7 +53,8 @@ pub fn extract_archives(
             let stripped = internal::url::strip_url_query(url);
             let target_name = stripped.rsplit('/').next().unwrap_or(f);
 
-            if internal::archive::detect_format(target_name).is_some() {
+            let is_installer = innosetup && target_name.to_ascii_lowercase().ends_with(".exe");
+            if session.archive().detect_format(target_name).is_some() || is_installer {
                 Some(idx)
             } else {
                 None
@@ -69,23 +76,26 @@ pub fn extract_archives(
             let src = cache_path.join(filename);
             if src.exists() {
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractStart(format!(
+                    let _ = tx.try_send(Event::PackageExtractStart(format!(
                         "{}/{}",
                         pkg.name(),
                         filename
                     )));
                 }
                 let emit = session.emitter();
-                internal::archive::extract(
-                    &src,
-                    working_dir,
-                    pkg.manifest().extract_dir().as_deref(),
-                    pkg.manifest().extract_to().as_deref(),
-                    pkg.manifest().innosetup(),
-                    &emit,
-                )?;
+                session
+                    .archive()
+                    .extract(
+                        &src,
+                        working_dir,
+                        pkg.manifest().extract_dir().as_deref(),
+                        pkg.manifest().extract_to().as_deref(),
+                        pkg.manifest().innosetup(),
+                        &emit,
+                    )
+                    .await?;
                 if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageExtractDone);
+                    let _ = tx.try_send(Event::PackageExtractDone);
                 }
             }
         }
@@ -141,35 +151,114 @@ pub fn copy_downloaded_files(
     Ok(())
 }
 
-/// Process P2 extraction marker files left behind by package scripts.
+/// Process `[[HOK_EXTRACT]]` marker lines left behind by package scripts.
 ///
-/// Package PowerShell scripts may write `<format>|<source>|<dest>` lines into
-/// `hok_extract_markers.txt` inside `working_dir`; each marker is extracted
-/// natively by Rust. Extraction failures are logged but do not abort, matching
-/// the original behaviour (the PS script has its own error handling).
-pub fn extract_markers(session: &Session, working_dir: &Path) {
+/// `asset_scripts/decompress.ps1`'s `Expand-*Archive` helpers do not extract
+/// anything themselves; they emit one marker line per call into
+/// `hok_extract_markers.txt` inside `working_dir`, using the seven-field
+/// protocol `format|source|dest|extract_dir|removal|switches|overwrite`. Each
+/// marker is extracted natively by Rust. Extraction failures are logged but do
+/// not abort.
+///
+/// This side owns the two semantics PowerShell cannot express correctly here:
+/// * `dest` is the *base* destination; `extract_dir` is applied here, giving
+///   Scoop's layout (extract only that subtree, then hoist it into `dest`).
+/// * `removal` deletes `source` only after a *successful* extraction, so a
+///   failed extraction never loses the archive.
+///
+/// The marker's `format` field selects the extractor: it names the Scoop
+/// `Expand-*Archive` function the script called, and official never derives a
+/// format from the download's name (`lib/decompress.ps1:94,193,245`). A marker
+/// therefore extracts a renamed download (`#/dl.7z_`, `#/dl.zip_`) or a
+/// suffix-less archive, which a filename-based [`detect_format`] would reject.
+/// An unrecognised `format` falls back to official's `7z.exe` route rather
+/// than silently copying the file.
+///
+/// [`detect_format`]: crate::internal::archive::detect_format
+///
+/// `switches` / `overwrite` are the CLI options of the helper tools
+/// (`-Switches`, `-Overwrite All|Skip|Rename`). When either is present the
+/// marker goes to [`Archive::extract_script_cli`], which hands them to the
+/// real `7z.exe` / `innounp.exe` / `lessmsi.exe`; official Scoop passes
+/// `-Switches` through `-split` verbatim and turns `-Overwrite` into
+/// `-aoa`/`-aos`/`-aou` (`lib/decompress.ps1:99-106`), so those arguments only
+/// mean anything to that CLI. A marker without them keeps the native backend,
+/// byte-for-byte as before.
+pub async fn extract_markers(session: &Session, working_dir: &Path) {
     let marker_path = working_dir.join("hok_extract_markers.txt");
-    if let Ok(markers) = std::fs::read_to_string(&marker_path) {
-        for line in markers.lines() {
-            let parts: Vec<&str> = line.split('|').collect();
-            if parts.len() < 3 {
-                continue;
-            }
-            let format = parts[0];
-            let source = Path::new(parts[1]);
-            let dest = Path::new(parts[2]);
-            let innosetup = format == "innosetup";
+    let Ok(markers) = std::fs::read_to_string(&marker_path) else {
+        return;
+    };
+    for raw in markers.lines() {
+        // PowerShell 5.1 creates the marker file as UTF-8 with a BOM.
+        let line = internal::string::strip_bom(raw).trim();
+        let Some(line) = line.strip_prefix("[[HOK_EXTRACT]]") else {
+            continue;
+        };
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let format = parts[0];
+        let source = Path::new(parts[1]);
+        let dest = Path::new(parts[2]);
+        let extract_dir = parts.get(3).copied().filter(|d| !d.is_empty());
+        let removal = parts.get(4).is_some_and(|r| *r == "removal");
+        // `-Switches` round-trips as one space-joined field; official splits it
+        // with `-split $Switches`, which is exactly `split_whitespace`.
+        let switches: Vec<String> = parts
+            .get(5)
+            .map(|s| s.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default();
+        let overwrite = parts
+            .get(6)
+            .copied()
+            .filter(|s| !s.is_empty())
+            .and_then(internal::archive::Overwrite::from_marker);
+        let cli = internal::archive::ScriptCliOptions {
+            switches,
+            overwrite,
+        };
 
-            if source.exists() {
-                let emit = session.emitter();
-                if let Err(e) =
-                    internal::archive::extract(source, dest, None, None, innosetup, &emit)
-                {
-                    // Log but don't abort — extraction errors may be handled
-                    // by the PS script's own error handling
-                    debug!("P2 extract failed for {}: {}", source.display(), e);
+        if !source.exists() {
+            continue;
+        }
+
+        let extract_dirs = extract_dir.map(|d| [d]);
+        let emit = session.emitter();
+        let result = if cli.is_empty() {
+            session
+                .archive()
+                .extract_marker(
+                    format,
+                    source,
+                    dest,
+                    extract_dirs.as_ref().map(|d| d.as_slice()),
+                    &emit,
+                )
+                .await
+        } else {
+            session
+                .archive()
+                .extract_script_cli(
+                    format,
+                    source,
+                    dest,
+                    extract_dirs.as_ref().map(|d| d.as_slice()),
+                    &cli,
+                    &emit,
+                )
+                .await
+        };
+        match result {
+            Ok(()) => {
+                if removal && let Err(e) = std::fs::remove_file(source) {
+                    debug!("P2 removal failed for {}: {}", source.display(), e);
                 }
             }
+            // Log but don't abort — extraction errors may be handled
+            // by the PS script's own error handling. The source is kept.
+            Err(e) => debug!("P2 extract failed for {}: {}", source.display(), e),
         }
     }
 }
@@ -179,9 +268,9 @@ mod tests {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
+    use crate::Session;
     use crate::package::{Manifest, Package};
     use crate::test_utils::{test_session, tmpdir};
-    use crate::Session;
 
     use super::*;
 
@@ -210,9 +299,9 @@ mod tests {
     /// Create a small real zip archive containing `app/hello.txt` and
     /// `app/sub/deep.txt` (mirrors `internal::archive::tests`).
     fn create_zip(path: &Path) {
-        use zip::write::FileOptions;
         use zip::CompressionMethod;
         use zip::ZipWriter;
+        use zip::write::FileOptions;
 
         let file = std::fs::File::create(path).unwrap();
         let mut zip = ZipWriter::new(file);
@@ -242,8 +331,8 @@ mod tests {
     /// Create a small real tar.bz2 archive containing `app/hello.txt` and
     /// `app/sub/deep.txt` (same layout as `create_zip`).
     fn create_tar_bz2(path: &Path) {
-        use bzip2::write::BzEncoder;
         use bzip2::Compression as BzCompression;
+        use bzip2::write::BzEncoder;
         use tar::{Builder, Header};
 
         fn append(tar: &mut Builder<BzEncoder<std::fs::File>>, name: &str, data: &[u8]) {
@@ -264,8 +353,8 @@ mod tests {
 
     // ─── extract_archives ───────────────────────────────────────────
 
-    #[test]
-    fn test_extract_archives_zip_only() {
+    #[tokio::test]
+    async fn test_extract_archives_zip_only() {
         let root = tmpdir("extract_archives_zip");
         let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/pkg.zip"));
@@ -276,7 +365,9 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
         assert!(working_dir.join("app/hello.txt").exists());
         assert_eq!(
@@ -286,8 +377,8 @@ mod tests {
         assert!(working_dir.join("app/sub/deep.txt").exists());
     }
 
-    #[test]
-    fn test_extract_archives_mixed_zip_and_plain() {
+    #[tokio::test]
+    async fn test_extract_archives_mixed_zip_and_plain() {
         let root = tmpdir("extract_archives_mixed");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -307,7 +398,9 @@ mod tests {
         std::fs::create_dir_all(&working_dir).unwrap();
 
         // Only the .zip URL is treated as an archive.
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
         assert!(working_dir.join("app/hello.txt").exists());
 
@@ -319,8 +412,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_extract_archives_iso_detected_as_archive() {
+    #[tokio::test]
+    async fn test_extract_archives_iso_detected_as_archive() {
         // `.iso` is recognised via `internal::archive::detect_format` (which
         // extracts via 7z). The actual extraction is not exercised here: it
         // requires the external `7z` executable, so the cache file is
@@ -333,12 +426,14 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
     }
 
-    #[test]
-    fn test_extract_archives_tar_bz_detected_and_extracted() {
+    #[tokio::test]
+    async fn test_extract_archives_tar_bz_detected_and_extracted() {
         // `.tar.bz` is recognised via detect_format (bz2 branch) and actually
         // extracted — covers the `.bz` extension end to end.
         let root = tmpdir("extract_archives_tar_bz");
@@ -355,7 +450,9 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
         assert!(working_dir.join("app/hello.txt").exists());
         assert_eq!(
@@ -365,8 +462,8 @@ mod tests {
         assert!(working_dir.join("app/sub/deep.txt").exists());
     }
 
-    #[test]
-    fn test_extract_archives_lzma_detected() {
+    #[tokio::test]
+    async fn test_extract_archives_lzma_detected() {
         // `.tar.lzma` / `.lzma` are recognised via detect_format (xz branch).
         // Extraction is not exercised here (needs a real lzma stream); the
         // cache file is not staged, so only the detection is asserted.
@@ -381,12 +478,14 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
     }
 
-    #[test]
-    fn test_extract_archives_unknown_extension_copied() {
+    #[tokio::test]
+    async fn test_extract_archives_unknown_extension_copied() {
         let root = tmpdir("extract_archives_unknown");
         let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/file.bin"));
@@ -396,7 +495,9 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert!(archives.is_empty());
 
         copy_downloaded_files(&session, &pkg, &working_dir, &archives).unwrap();
@@ -406,8 +507,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_extract_archives_url_with_query_detected() {
+    #[tokio::test]
+    async fn test_extract_archives_url_with_query_detected() {
         // Query parameters must be stripped before extension detection, so
         // `pkg.zip?download=1` is still recognised as a zip archive. The
         // cache filename derived from the URL must also stay `?`-free (the
@@ -427,13 +528,15 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
         assert!(working_dir.join("app/hello.txt").exists());
     }
 
-    #[test]
-    fn test_extract_archives_missing_cache_file_skipped() {
+    #[tokio::test]
+    async fn test_extract_archives_missing_cache_file_skipped() {
         // The archive index is still reported, but a missing cache file is
         // silently skipped (matching Scoop behaviour for partial downloads).
         let root = tmpdir("extract_archives_missing");
@@ -443,13 +546,15 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        let archives = extract_archives(&session, &pkg, &working_dir).unwrap();
+        let archives = extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
         assert_eq!(archives, vec![0]);
         assert!(!working_dir.join("app/hello.txt").exists());
     }
 
-    #[test]
-    fn test_extract_archives_with_extract_dir() {
+    #[tokio::test]
+    async fn test_extract_archives_with_extract_dir() {
         let root = tmpdir("extract_archives_extract_dir");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -467,7 +572,9 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        extract_archives(&session, &pkg, &working_dir).unwrap();
+        extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
 
         // Prefix `app/` stripped: files land directly in working_dir.
         assert!(working_dir.join("hello.txt").exists());
@@ -475,8 +582,8 @@ mod tests {
         assert!(working_dir.join("sub/deep.txt").exists());
     }
 
-    #[test]
-    fn test_extract_archives_with_extract_to() {
+    #[tokio::test]
+    async fn test_extract_archives_with_extract_to() {
         let root = tmpdir("extract_archives_extract_to");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -494,7 +601,9 @@ mod tests {
         let working_dir = root.join("work");
         std::fs::create_dir_all(&working_dir).unwrap();
 
-        extract_archives(&session, &pkg, &working_dir).unwrap();
+        extract_archives(&session, &pkg, &working_dir)
+            .await
+            .unwrap();
 
         // Everything lands under working_dir/myapp/.
         assert!(working_dir.join("myapp/app/hello.txt").exists());
@@ -502,8 +611,8 @@ mod tests {
 
     // ─── copy_downloaded_files ──────────────────────────────────────
 
-    #[test]
-    fn test_copy_downloaded_files_skips_archives() {
+    #[tokio::test]
+    async fn test_copy_downloaded_files_skips_archives() {
         let root = tmpdir("copy_skips_archives");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -530,8 +639,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_copy_downloaded_files_overwrites_existing() {
+    #[tokio::test]
+    async fn test_copy_downloaded_files_overwrites_existing() {
         let root = tmpdir("copy_overwrites");
         let session = test_session(&root);
         let pkg = Package::from("test-pkg", "main", manifest("https://example.com/b.exe"));
@@ -549,8 +658,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_copy_downloaded_files_missing_source_skipped() {
+    #[tokio::test]
+    async fn test_copy_downloaded_files_missing_source_skipped() {
         let root = tmpdir("copy_missing_source");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -567,8 +676,8 @@ mod tests {
         assert!(!working_dir.join("missing.exe").exists());
     }
 
-    #[test]
-    fn test_copy_downloaded_files_strips_query_from_target() {
+    #[tokio::test]
+    async fn test_copy_downloaded_files_strips_query_from_target() {
         let root = tmpdir("copy_strips_query");
         let session = test_session(&root);
         let pkg = Package::from(
@@ -594,13 +703,25 @@ mod tests {
 
     // ─── extract_markers ────────────────────────────────────────────
 
-    fn write_markers(working_dir: &Path, lines: &[&str]) {
-        let marker_path = working_dir.join("hok_extract_markers.txt");
-        std::fs::write(&marker_path, lines.join("\n")).unwrap();
+    /// A committed real-7z fixture (see `tests/fixtures/7z/README.md`).
+    fn sevenz_fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/7z")
+            .join(rel)
     }
 
-    #[test]
-    fn test_extract_markers_zip() {
+    fn write_markers(working_dir: &Path, lines: &[&str]) {
+        let marker_path = working_dir.join("hok_extract_markers.txt");
+        let body = lines
+            .iter()
+            .map(|l| format!("[[HOK_EXTRACT]]{l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&marker_path, body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_extract_markers_zip() {
         let root = tmpdir("markers_zip");
         let session = test_session(&root);
         let archive = root.join("pkg.zip");
@@ -614,12 +735,115 @@ mod tests {
             &[&format!("zip|{}|{}", archive.display(), dest.display())],
         );
 
-        extract_markers(&session, &working_dir);
+        extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
     }
 
-    #[test]
-    fn test_extract_markers_malformed_lines_skipped() {
+    /// X6: a renamed download (`#/dl.7z_`, e.g. dotnet-generic-unpacker's
+    /// `64bit.zip_`) carries the declared `7z` format. `detect_format` cannot
+    /// name `dl.7z_`, so the marker used to fail with "unknown archive format"
+    /// and nothing landed on disk; the declared format must now drive the
+    /// extractor and the real 7z fixture must be extracted.
+    #[tokio::test]
+    async fn test_extract_markers_renamed_7z_extracts() {
+        let root = tmpdir("markers_renamed_7z");
+        let session = test_session(&root);
+        let renamed = root.join("dl.7z_");
+        std::fs::copy(sevenz_fixture("empty-entries.7z"), &renamed).unwrap();
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("7z|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("plain.txt")).unwrap(),
+            "hello"
+        );
+        // The stream-less entries prove the 7z decoder (not a copy) ran.
+        assert!(dest.join("empty.txt").is_file());
+        assert!(dest.join("sub/empty2.txt").is_file());
+        assert!(dest.join("emptydir").is_dir());
+    }
+
+    /// X6: same for a renamed zip (`#/dl.zip_`). The declared `7z` format is
+    /// the 7-Zip family, whose content sniffer recognises the zip payload
+    /// without consulting the filename.
+    #[tokio::test]
+    async fn test_extract_markers_renamed_zip_extracts() {
+        let root = tmpdir("markers_renamed_zip");
+        let session = test_session(&root);
+        let renamed = root.join("dl.zip_");
+        create_zip(&renamed);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("7z|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/hello.txt")).unwrap(),
+            "Hello, World!"
+        );
+    }
+
+    /// A marker may also name a decoder directly (`zip` here, as the marker
+    /// tests do); a renamed `dl.zip_` still extracts because the declared
+    /// format, not the filename, picks `extract_zip`.
+    #[tokio::test]
+    async fn test_extract_markers_declared_zip_format_on_renamed_file() {
+        let root = tmpdir("markers_declared_zip");
+        let session = test_session(&root);
+        let renamed = root.join("dl.zip_");
+        create_zip(&renamed);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!("zip|{}|{}", renamed.display(), dest.display())],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+    }
+
+    /// An unrecognised marker `format` must not silently no-op or copy the
+    /// file: it takes official's `7z.exe` route, so the reported error names
+    /// `7z.exe` (launch failure or exit code) rather than the old
+    /// filename-based "unknown archive format", and nothing is copied to dest.
+    #[tokio::test]
+    async fn test_extract_marker_unknown_format_goes_to_7z_cli() {
+        let root = tmpdir("markers_unknown_format");
+        let session = test_session(&root);
+        let src = root.join("dl.7z_");
+        std::fs::write(&src, b"not an archive").unwrap();
+        let dest = root.join("dest");
+
+        let err = session
+            .archive()
+            .extract_marker("banana", &src, &dest, None, &None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("7z.exe"),
+            "unknown format must reach the 7z.exe fallback, got: {msg}"
+        );
+        assert!(!dest.join("dl.7z_").exists());
+    }
+
+    #[tokio::test]
+    async fn test_extract_markers_malformed_lines_skipped() {
         let root = tmpdir("markers_malformed");
         let session = test_session(&root);
         let archive = root.join("pkg.zip");
@@ -637,12 +861,12 @@ mod tests {
             ],
         );
 
-        extract_markers(&session, &working_dir);
+        extract_markers(&session, &working_dir).await;
         assert!(dest.join("app/hello.txt").exists());
     }
 
-    #[test]
-    fn test_extract_markers_missing_source_skipped() {
+    #[tokio::test]
+    async fn test_extract_markers_missing_source_skipped() {
         let root = tmpdir("markers_missing_source");
         let session = test_session(&root);
         let missing = root.join("does-not-exist.zip");
@@ -656,12 +880,12 @@ mod tests {
         );
 
         // No panic, nothing extracted, extraction does not abort.
-        extract_markers(&session, &working_dir);
+        extract_markers(&session, &working_dir).await;
         assert!(!dest.exists());
     }
 
-    #[test]
-    fn test_extract_markers_bad_archive_continues() {
+    #[tokio::test]
+    async fn test_extract_markers_bad_archive_continues() {
         let root = tmpdir("markers_bad_archive");
         let session = test_session(&root);
         // A file that exists but is not a valid archive.
@@ -682,7 +906,309 @@ mod tests {
         );
 
         // A failing marker must not abort processing of the remaining lines.
-        extract_markers(&session, &working_dir);
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+    }
+
+    /// `extract_dir` in the marker (4th field) restricts the extraction to
+    /// that subtree and hoists it into `dest` — Scoop's `Expand-7zipArchive`
+    /// layout. The old PS-side bug pre-joined the dir onto the destination and
+    /// produced `dest/app/app/hello.txt` instead.
+    #[tokio::test]
+    async fn test_extract_markers_extract_dir_hoists_into_dest() {
+        let root = tmpdir("markers_extract_dir");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}|app|",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("hello.txt").exists());
+        assert!(dest.join("sub/deep.txt").exists());
+        assert!(
+            !dest.join("app").exists(),
+            "extract_dir subtree must be hoisted, not nested under dest"
+        );
+    }
+
+    /// `removal` (5th field) deletes the source only after a successful
+    /// extraction.
+    #[tokio::test]
+    async fn test_extract_markers_removal_deletes_source_after_success() {
+        let root = tmpdir("markers_removal_ok");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}||removal",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(!archive.exists(), "source must be removed on success");
+    }
+
+    /// `removal` must NOT delete the source when extraction fails — the
+    /// archive is the only copy and the failure is logged, not fatal.
+    #[tokio::test]
+    async fn test_extract_markers_removal_keeps_source_on_failure() {
+        let root = tmpdir("markers_removal_fail");
+        let session = test_session(&root);
+        let bad = root.join("bad.zip");
+        std::fs::write(&bad, b"this is not a zip").unwrap();
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "zip|{}|{}||removal",
+                bad.display(),
+                root.join("dest").display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(bad.exists(), "a failed extraction must keep the source");
+    }
+
+    /// PowerShell 5.1 writes the marker file as UTF-8 with a BOM; the reader
+    /// must strip it, or the first `format` field becomes
+    /// `\u{feff}[[HOK_EXTRACT]]...` and the marker is ignored.
+    #[tokio::test]
+    async fn test_extract_markers_strips_utf8_bom() {
+        let root = tmpdir("markers_bom");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let line = format!(
+            "\u{feff}[[HOK_EXTRACT]]zip|{}|{}||removal",
+            archive.display(),
+            dest.display()
+        );
+        std::fs::write(working_dir.join("hok_extract_markers.txt"), line).unwrap();
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(!archive.exists());
+    }
+
+    // ─── extract_markers: -Switches / -Overwrite ────────────────────
+
+    /// A zip that also carries `app/drop.pdb`, so an exclusion switch has
+    /// something to exclude (the shared `create_zip` deliberately stays as is).
+    fn create_zip_with_pdb(path: &Path) {
+        use zip::CompressionMethod;
+        use zip::ZipWriter;
+        use zip::write::FileOptions;
+
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts: FileOptions<'_, ()> =
+            FileOptions::default().compression_method(CompressionMethod::Stored);
+
+        zip.start_file("app/hello.txt", opts).unwrap();
+        zip.write_all(b"Hello, World!").unwrap();
+        zip.start_file("app/sub/deep.txt", opts).unwrap();
+        zip.write_all(b"Deep content").unwrap();
+        zip.start_file("app/drop.pdb", opts).unwrap();
+        zip.write_all(b"debug symbols").unwrap();
+        zip.finish().unwrap();
+    }
+
+    /// `7z.exe` availability for the CLI-path marker tests: `HOK_7Z_EXE`, then
+    /// Scoop's shim, then `PATH` (mirrors `pwsh_available`).
+    fn seven_zip_available() -> bool {
+        if let Some(exe) = std::env::var_os("HOK_7Z_EXE") {
+            return Path::new(&exe).is_file();
+        }
+        let scoop = std::env::var("SCOOP").unwrap_or_default();
+        if Path::new(&scoop).join("shims").join("7z.exe").is_file() {
+            return true;
+        }
+        std::process::Command::new("7z.exe")
+            .arg("i")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    /// The `switches` field must reach the tool that defines it. The source is
+    /// deliberately a `#/dl.7z_`-style renamed download: the native extractor
+    /// classifies by extension and would reject it, so a successful extraction
+    /// *plus* the excluded file being absent proves the CLI backend ran with
+    /// the marker's switch.
+    #[tokio::test]
+    async fn test_extract_markers_switches_reach_the_cli_tool() {
+        if !seven_zip_available() {
+            eprintln!("skipping: no 7z.exe (HOK_7Z_EXE / Scoop shim / PATH)");
+            return;
+        }
+        let root = tmpdir("markers_switches");
+        let session = test_session(&root);
+        let archive = root.join("dl.7z_");
+        create_zip_with_pdb(&archive);
+        let dest = root.join("dest");
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "7z|{}|{}|||-xr!*.pdb|",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert!(dest.join("app/hello.txt").exists());
+        assert!(dest.join("app/sub/deep.txt").exists());
+        assert!(
+            !dest.join("app/drop.pdb").exists(),
+            "-xr!*.pdb must be applied by the CLI backend"
+        );
+    }
+
+    /// The `overwrite` field must not be swallowed: `-Overwrite Skip` keeps an
+    /// existing destination file (7-Zip `-aos`), while the rest of the archive
+    /// still lands — which is what proves the extraction ran at all.
+    #[tokio::test]
+    async fn test_extract_markers_overwrite_skip_keeps_existing_files() {
+        if !seven_zip_available() {
+            eprintln!("skipping: no 7z.exe");
+            return;
+        }
+        let root = tmpdir("markers_overwrite_skip");
+        let session = test_session(&root);
+        let archive = root.join("pkg.zip");
+        create_zip_with_pdb(&archive);
+        let dest = root.join("dest");
+        std::fs::create_dir_all(dest.join("app")).unwrap();
+        std::fs::write(dest.join("app/hello.txt"), b"STALE").unwrap();
+
+        let working_dir = root.join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        write_markers(
+            &working_dir,
+            &[&format!(
+                "7z|{}|{}||||skip",
+                archive.display(),
+                dest.display()
+            )],
+        );
+
+        extract_markers(&session, &working_dir).await;
+        assert_eq!(
+            std::fs::read_to_string(dest.join("app/hello.txt")).unwrap(),
+            "STALE",
+            "-Overwrite Skip must leave the existing file alone"
+        );
+        assert!(
+            dest.join("app/sub/deep.txt").exists(),
+            "the non-conflicting entry must still be extracted"
+        );
+    }
+
+    // --- spawn_blocking concurrency guardrail ------------------------
+
+    /// Two concurrent extractions (multi-package install scenario) both
+    /// succeed through the blocking pool: `RealArchive::extract` offloads
+    /// the blocking archive decode to `tokio::task::spawn_blocking`, so
+    /// joining two extracts must not deadlock and must produce correct
+    /// trees. Also verifies the runtime worker is not occupied: a short
+    /// async timer fires while both extracts run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_extracts_succeed_via_blocking_pool() {
+        let root = tmpdir("concurrent_extracts");
+        let session = test_session(&root);
+
+        let z1 = root.join("p1.zip");
+        let z2 = root.join("p2.zip");
+        create_zip(&z1);
+        create_zip(&z2);
+        let d1 = root.join("out1");
+        let d2 = root.join("out2");
+        std::fs::create_dir_all(&d1).unwrap();
+        std::fs::create_dir_all(&d2).unwrap();
+
+        let emit = session.emitter();
+        let a1 = session.archive().clone();
+        let a2 = a1.clone();
+        let (e1, e2) = tokio::join!(
+            a1.extract(&z1, &d1, None, None, false, &emit),
+            a2.extract(&z2, &d2, None, None, false, &emit),
+        );
+        e1.unwrap();
+        e2.unwrap();
+
+        for dir in [&d1, &d2] {
+            assert!(dir.join("app/hello.txt").exists());
+            assert!(dir.join("app/sub/deep.txt").exists());
+        }
+    }
+
+    /// A blocking extract on the blocking pool must not starve the runtime
+    /// worker: a concurrent short async timer fires on schedule even while
+    /// an archive is being decoded.
+    #[tokio::test]
+    async fn blocking_extract_does_not_starve_runtime() {
+        let root = tmpdir("extract_starve");
+        let session = test_session(&root);
+        let zip = root.join("p.zip");
+        create_zip(&zip);
+        let dest = root.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let archive = session.archive().clone();
+        let emit = session.emitter();
+        let extract_task = {
+            let zip = zip.clone();
+            let dest = dest.clone();
+            let emit = emit.clone();
+            tokio::spawn(async move {
+                archive
+                    .extract(&zip, &dest, None, None, false, &emit)
+                    .await
+                    .unwrap()
+            })
+        };
+
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "runtime worker was starved by blocking extract (elapsed {:?})",
+            elapsed
+        );
+
+        extract_task.await.unwrap();
         assert!(dest.join("app/hello.txt").exists());
     }
 }

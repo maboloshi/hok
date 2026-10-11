@@ -5,24 +5,94 @@
 //! execution — split out of [`super`] (`sync.rs`). It is a private
 //! sub-module of `sync`; the entry point is re-exported by `sync.rs`.
 
+use std::io::IsTerminal;
 use tracing::debug;
 
-use crate::package::{download, manifest_source, operations, query, resolve, Package};
+use crate::package::{
+    InstallInfo, Package, download, install_state, manifest_source, operations, query, resolve,
+};
 use crate::{
-    constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible, internal, persist, psmodule, shim,
-    shortcut, Error, Event, QueryOption, Session,
+    Error, Event, QueryOption, Session, constant::ISOLATED_PACKAGE_BUCKET, env, error::Fallible,
+    internal, persist, psmodule, shim, shortcut,
 };
 
-use super::{confirm_transaction, SyncOption, Transaction};
+use super::{SyncOption, Transaction, confirm_transaction, should_gate};
+
+/// Emit a verbose lifecycle step marker for the current package commit.
+///
+/// The frontend only renders these when verbose step output (`-v`) is on, so
+/// emitting them unconditionally keeps the library agnostic to verbosity while
+/// default stdout stays minimal. `object` carries the concrete target of the
+/// step (hook token, installer file, shim name, path, ...) or `None` for
+/// phrase-only steps.
+pub(super) fn emit_step(
+    session: &Session,
+    name: &str,
+    kind: crate::event::PackageStepKind,
+    object: Option<String>,
+) {
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageStep {
+            name: name.to_owned(),
+            kind,
+            object,
+        });
+    }
+}
+
+/// Scoop-style shim display names for `manifest.bin`, mirroring `Shim::new`
+/// (`[target, name, args...]` → `name`; bare `[target]` → target basename
+/// without extension). Used only to describe what `shim::add` is about to do.
+pub(super) fn shim_display_names(pkg: &Package) -> Vec<String> {
+    pkg.manifest()
+        .bin()
+        .into_iter()
+        .flatten()
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            if d.len() == 1 {
+                internal::path::leaf_base(d[0]).unwrap_or(d[0]).to_owned()
+            } else {
+                d[1].to_owned()
+            }
+        })
+        .collect()
+}
+
+/// Whether an object list is empty (so callers can omit a phrase-only step).
+pub(super) fn joined_or_none(items: Vec<String>) -> Option<String> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.join(", "))
+    }
+}
+
+/// Start-menu display names for `manifest.shortcuts` (the `[1]` element of
+/// each entry, mirroring `shortcut::add`). Used to describe what the shortcut
+/// step is about to create/remove.
+pub(super) fn shortcut_display_names(pkg: &Package) -> Vec<String> {
+    pkg.manifest()
+        .shortcuts()
+        .into_iter()
+        .flatten()
+        .filter(|s| s.len() > 1)
+        .map(|s| s[1].to_owned())
+        .collect()
+}
+
+/// Display name of a package's `psmodule` (mirroring `psmodule::add`).
+pub(super) fn psmodule_display_name(pkg: &Package) -> Option<String> {
+    pkg.manifest().psmodule().map(|m| m.name().to_owned())
+}
 
 /// Sync operation: install and/or upgrade packages.
-pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
+pub async fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> Fallible<()> {
     let mut packages = vec![];
 
     let only_upgrade = options.contains(&SyncOption::OnlyUpgrade);
     let force = options.contains(&SyncOption::Force);
-    let escape_hold = options.contains(&SyncOption::EscapeHold);
-    let ignore_failure = options.contains(&SyncOption::IgnoreFailure);
+    let ignore_failures = options.contains(&SyncOption::IgnoreFailures);
 
     if only_upgrade {
         // Named packages must already be installed. The Upgradable filter
@@ -39,15 +109,28 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
             }
             let matched = query::query_installed(session, &[q], &[])?;
             if matched.is_empty() {
-                if ignore_failure {
-                    session.output().error(format!(
-                        "failed to resolve '{}': {}",
-                        q,
-                        Error::PackageNotFound(q.to_owned())
-                    ));
+                // A broken/partial install (app dir exists but `current`/
+                // manifest/install are missing) cannot be updated — mirror
+                // Scoop (`scoop-update.ps1`: `app_status.installed` is false
+                // for a broken install, so it is skipped with the message
+                // "Please reinstall it or fix the manifest." instead of being
+                // updated). Warn and skip rather than hard-erroring, so the
+                // user is told how to recover.
+                let broken = query::query_installed(session, &[q], &[QueryOption::Broken])?;
+                if !broken.is_empty() {
+                    session
+                        .output()
+                        .warn(hok_i18n::t!("cmd.not_installed_correctly", name = q));
                     continue;
                 }
-                return Err(Error::PackageNotFound(q.to_owned()));
+                // Not installed at all: Scoop's Confirm-InstallationStatus
+                // reports it and drops the app from the batch
+                // (`lib/core.ps1:1084-1121`); the command still exits 0
+                // (`scoop-update.ps1:424-427,468`).
+                session
+                    .output()
+                    .error(hok_i18n::t!("cmd.not_installed", name = q));
+                continue;
             }
         }
 
@@ -88,7 +171,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         let mut regular: Vec<&str> = Vec::new();
 
         for &query in queries {
-            match manifest_source::resolve_isolated_query(session, query) {
+            match manifest_source::resolve_isolated_query(session, query).await {
                 Ok(Some(p)) => {
                     if !isolated.contains(&p) {
                         isolated.push(p);
@@ -96,10 +179,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 }
                 Ok(None) => regular.push(query),
                 Err(e) => {
-                    if ignore_failure {
-                        session
-                            .output()
-                            .error(format!("failed to resolve '{}': {}", query, e));
+                    if ignore_failures {
+                        session.output().error(hok_i18n::t!(
+                            "cmd.failed_resolve",
+                            query = query,
+                            error = e
+                        ));
                         continue;
                     }
                     return Err(e);
@@ -108,10 +193,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         }
 
         // Regular bucket queries: exact-match against the synced scan.
+        // Operation-class: read manifests fresh from the bucket files (never
+        // the cache) so install acts on the authoritative, up-to-date manifest.
         let synced = if regular.is_empty() {
             vec![]
         } else {
-            query::query_synced(session, &regular, &[])?
+            query::query_synced_files(session, &regular, &[])?
         };
 
         for &query in &regular {
@@ -131,11 +218,11 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
             match matched.len() {
                 0 => {
-                    if ignore_failure {
-                        session.output().error(format!(
-                            "failed to resolve '{}': {}",
-                            query,
-                            Error::PackageNotFound(query.to_owned())
+                    if ignore_failures {
+                        session.output().error(hok_i18n::t!(
+                            "cmd.failed_resolve",
+                            query = query,
+                            error = Error::PackageNotFound(query.to_owned())
                         ));
                         continue;
                     }
@@ -144,8 +231,15 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                 1 => {
                     let p = matched.pop().unwrap();
 
-                    if p.is_held() && !escape_hold {
-                        // Skipping held package returns nothing to frontend...
+                    if p.is_held() {
+                        // An installed, held app: this install would upgrade it,
+                        // which is what the hold forbids. Report the skip
+                        // instead of returning nothing to the frontend.
+                        session.output().warn(hok_i18n::t!(
+                            "cmd.held_install_skip",
+                            name = p.name(),
+                            version = p.installed_version().unwrap_or(p.version())
+                        ));
                         continue;
                     }
 
@@ -154,9 +248,12 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                     }
                 }
                 _ => {
-                    let is_held = matched.iter().any(|p| p.is_held());
-
-                    if is_held && !escape_hold {
+                    if let Some(held) = matched.iter().find(|p| p.is_held()) {
+                        session.output().warn(hok_i18n::t!(
+                            "cmd.held_install_skip",
+                            name = held.name(),
+                            version = held.installed_version().unwrap_or(held.version())
+                        ));
                         continue;
                     }
 
@@ -164,11 +261,15 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
                         session,
                         &mut matched,
                         options.contains(&SyncOption::AssumeYes),
-                    ) {
-                        if ignore_failure {
-                            session
-                                .output()
-                                .error(format!("failed to resolve '{}': {}", query, e));
+                    )
+                    .await
+                    {
+                        if ignore_failures {
+                            session.output().error(hok_i18n::t!(
+                                "cmd.failed_resolve",
+                                query = query,
+                                error = e
+                            ));
                             continue;
                         }
                         return Err(e);
@@ -195,9 +296,10 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         resolve::resolve_dependencies(
             session,
             &mut packages,
-            ignore_failure,
+            ignore_failures,
             options.contains(&SyncOption::AssumeYes),
-        )?;
+        )
+        .await?;
     }
 
     let (installed, installable): (Vec<_>, Vec<_>) =
@@ -212,8 +314,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     // processed (mirrors scoop-update.ps1: test_running_process runs before
     // the upgrade list is confirmed/downloaded). Newly installed apps have
     // no apps/<name> directory yet, so `installable` never matches.
-    let (upgradable, replaceable) =
-        filter_not_running(session, upgradable, replaceable, ignore_failure)?;
+    let (upgradable, replaceable) = filter_not_running(session, upgradable, replaceable)?;
 
     if !only_upgrade && !installable.is_empty() {
         transaction.set_install(installable);
@@ -229,25 +330,21 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let no_upgrade = options.contains(&SyncOption::NoUpgrade);
     if !no_upgrade && !upgradable.is_empty() {
-        if !escape_hold {
-            let (held, upgradable_list): (Vec<_>, Vec<_>) =
-                upgradable.into_iter().partition(|p| p.is_held());
+        let (held, upgradable_list): (Vec<_>, Vec<_>) =
+            upgradable.into_iter().partition(|p| p.is_held());
 
-            // Emit PackageHeld for each held package
-            for p in &held {
-                if let Some(tx) = session.emitter() {
-                    let _ = tx.send(Event::PackageHeld {
-                        name: p.name().to_string(),
-                        version: p.version().to_string(),
-                    });
-                }
+        // Emit PackageHeld for each held package
+        for p in &held {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageHeld {
+                    name: p.name().to_string(),
+                    version: p.version().to_string(),
+                });
             }
+        }
 
-            if !upgradable_list.is_empty() {
-                transaction.set_upgrade(upgradable_list);
-            }
-        } else {
-            transaction.set_upgrade(upgradable);
+        if !upgradable_list.is_empty() {
+            transaction.set_upgrade(upgradable_list);
         }
     }
 
@@ -256,7 +353,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         transaction.set_replace(replaceable);
     }
 
-    let reuse_cache = !options.contains(&SyncOption::IgnoreCache);
+    let reuse_cache = !options.contains(&SyncOption::NoCache);
 
     let packages = transaction.add_view();
     if packages.is_empty() {
@@ -264,18 +361,17 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
     }
 
     let mut set = download::PackageSet::new(session, &packages, reuse_cache)?;
-    set.set_ignore_failure(ignore_failure);
+    set.set_ignore_failures(ignore_failures);
 
-    let assume_yes = options.contains(&SyncOption::AssumeYes);
     let offline = options.contains(&SyncOption::Offline);
     let mut should_offline = true;
 
     if !offline {
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadSizingStart);
+            let _ = tx.try_send(Event::PackageDownloadSizingStart);
         }
 
-        let download_size = set.calculate_download_size()?;
+        let download_size = set.calculate_download_size().await?;
         // Only a fully cache-hit set counts as offline. `estimated` means at
         // least one HEAD failed (size unknown) — treating that as offline
         // would silently turn a network failure into a bogus cache-miss
@@ -284,26 +380,37 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
         transaction.set_download_size(download_size);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageDownloadSizingDone);
+            let _ = tx.try_send(Event::PackageDownloadSizingDone);
         }
     }
 
-    if !assume_yes && !confirm_transaction(session, &transaction)? {
+    let gate = should_gate(session, options, std::io::stdin().is_terminal());
+    if !confirm_transaction(session, &transaction, gate).await? {
         // User declined: not an error, but not a success either — callers
         // exit 0 without the "Everything is ok!" message.
         return Err(Error::UserAborted);
     }
 
+    // The resolution/planning phase ends here: queries, dependency resolution,
+    // download sizing and user confirmation are done. Emit PackageResolveDone
+    // so the resolve phase is bounded before the download/commit phase (whose
+    // own status events take over the status line). sync() still re-sends it on
+    // error paths to keep the event loop from hanging.
+    if let Some(tx) = session.emitter() {
+        let _ = tx.try_send(Event::PackageResolveDone);
+    }
+
     // Idents of packages that failed to download / verify and must be
-    // skipped. Only populated when IgnoreFailure is enabled.
-    let no_hash_check = options.contains(&SyncOption::NoHashCheck);
+    // skipped. Only populated when IgnoreFailures is enabled.
+    let skip_hash_check = options.contains(&SyncOption::SkipHashCheck);
     // `set` already has remote_size filled by calculate_download_size above
     // (used for the confirm prompt) — fragmented download and the progress
     // bar depend on it, so the same set must be handed to the downloader.
     let failed =
-        download::download_and_verify(&mut set, no_hash_check, ignore_failure, should_offline)?;
+        download::download_and_verify(&mut set, skip_hash_check, ignore_failures, should_offline)
+            .await?;
 
-    // Drop packages that failed to download or verify (IgnoreFailure mode).
+    // Drop packages that failed to download or verify (IgnoreFailures mode).
     let packages = if failed.is_empty() {
         packages
     } else {
@@ -315,7 +422,7 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 
     let download_only = options.contains(&SyncOption::DownloadOnly);
     if !download_only {
-        commit_install(session, &packages, ignore_failure)?;
+        commit_install(session, &packages, ignore_failures).await?;
     }
 
     Ok(())
@@ -326,37 +433,73 @@ pub fn install(session: &Session, queries: &[&str], options: &[SyncOption]) -> F
 pub enum RunningCheck {
     /// No process is running under `apps/<name>`; the operation may proceed.
     NotRunning,
-    /// The app is running but `ignore_running_processes` is enabled.
-    /// A warning (with the process list) was already printed; the caller
-    /// decides whether to proceed or skip this package.
+    /// A process is running under `apps/<name>` and `ignore_running_processes`
+    /// is off: this package is skipped (the warning was already printed) while
+    /// the rest of the batch carries on.
+    ///
+    /// Scoop's default branch returns `$true`, which every caller turns into a
+    /// skip (`lib/install.ps1:543-547`, `scoop-update.ps1:297-300`,
+    /// `scoop-uninstall.ps1:65-67`, `scoop-reset.ps1:71-74`).
+    Running,
+    /// A process is running under `apps/<name>` but `ignore_running_processes`
+    /// is on: the operation proceeds and rewrites an app that is still open
+    /// (the warning was already printed).
+    ///
+    /// Scoop's ignore branch returns `$false` — "not running" — so the caller
+    /// carries on (`lib/install.ps1:539-542`); that is the configuration's
+    /// documented meaning, "proceed while the app is running".
     Ignored,
+}
+
+/// The sync verb that asks whether an app is running.
+///
+/// It selects the localized skip wording ("skip updating" / "skip
+/// reinstalling", ...). A gerund cannot be derived from a bare verb in every
+/// locale, so each verb owns its own message key instead of being interpolated
+/// into one template.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunningAction {
+    /// `hok update` / `hok upgrade` (the upgrade half of `install`).
+    Update,
+    /// `hok reinstall`.
+    Reinstall,
+    /// `hok uninstall`.
+    Uninstall,
+    /// `hok reset`.
+    Reset,
+}
+
+impl RunningAction {
+    /// The localized "Running process detected, skip <verb>ing '%{name}'."
+    /// message for this verb.
+    fn skip_message(self, name: &str) -> String {
+        match self {
+            Self::Update => hok_i18n::t!("cmd.running_process_update", name = name),
+            Self::Reinstall => hok_i18n::t!("cmd.running_process_reinstall", name = name),
+            Self::Uninstall => hok_i18n::t!("cmd.running_process_uninstall", name = name),
+            Self::Reset => hok_i18n::t!("cmd.running_process_reset", name = name),
+        }
+    }
 }
 
 /// Drop packages whose app is currently running, *before* the transaction is
 /// assembled, so the confirmation list matches what will actually be
-/// processed. With `ignore_failure` a running app is skipped with a warning
-/// (matching upstream's per-package skip when `ignore_failures` is on);
-/// without it the whole batch aborts.
+/// processed. A running app is skipped unless `ignore_running_processes` says
+/// to carry on — Scoop skips it by default and keeps updating the rest of the
+/// batch (`scoop-update.ps1:296-300`).
 fn filter_not_running(
     session: &Session,
     upgradable: Vec<Package>,
     replaceable: Vec<Package>,
-    ignore_failure: bool,
 ) -> Fallible<(Vec<Package>, Vec<Package>)> {
     let filter = |packages: Vec<Package>| -> Fallible<Vec<Package>> {
         let mut kept = Vec::new();
         for pkg in packages {
-            match check_not_running(session, pkg.name(), "updating") {
-                // Not running, or running but ignored (warning printed):
-                // update proceeds either way (matches Scoop's
-                // IGNORE_RUNNING_PROCESSES branch, which continues).
-                Ok(_) => kept.push(pkg),
-                Err(Error::AppRunning(name)) if ignore_failure => {
-                    session
-                        .output()
-                        .warn(format!("Running process detected, skip updating '{name}'."));
-                }
-                Err(e) => return Err(e),
+            match check_not_running(session, pkg.name(), RunningAction::Update)? {
+                // The check printed the reason: a `Running` app is dropped
+                // from the batch, an `Ignored` one is carried through.
+                RunningCheck::Running => {}
+                RunningCheck::NotRunning | RunningCheck::Ignored => kept.push(pkg),
             }
         }
         Ok(kept)
@@ -364,16 +507,26 @@ fn filter_not_running(
     Ok((filter(upgradable)?, filter(replaceable)?))
 }
 
-/// Check if the given package's process is currently running under
-/// `apps/<name>`. Returns an error if so, to prevent install/upgrade/
-/// uninstall/reset while the app is in use (matches PS1's
-/// `test_running_process`).
+/// Check whether the given package's process is running under `apps/<name>`
+/// (matches PS1's `test_running_process`).
 ///
-/// When `ignore_running_processes` is enabled, prints a warning listing the
-/// running processes and returns `Ok(RunningCheck::Ignored)` instead — the
-/// caller decides whether to proceed or skip the package (matches PS1's
-/// `test_running_process` + `IGNORE_RUNNING_PROCESSES` branch).
-pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallible<RunningCheck> {
+/// A running process warns — never fails — and the message it prints is the
+/// whole decision: without `ignore_running_processes` the app is skipped
+/// ([`RunningCheck::Running`]), with it the operation carries on
+/// ([`RunningCheck::Ignored`]). Those are exactly the two branches of
+/// `lib/install.ps1:534-551`: the default one returns `$true` (skip), the
+/// ignore one `$false` (proceed).
+///
+/// The individual processes are emitted as [`Output::Detail`][1] rather than
+/// baked into the message, so a frontend shows them only where it is verbose
+/// enough for them; libscoop stays agnostic to that choice.
+///
+/// [1]: crate::output::Output::Detail
+pub fn check_not_running(
+    session: &Session,
+    name: &str,
+    action: RunningAction,
+) -> Fallible<RunningCheck> {
     let app_dir = session.app_dir(name);
     // Process enumeration failure must not be silently treated as "nothing
     // is running" — that could overwrite an app which is in use. Fail
@@ -391,28 +544,54 @@ pub fn check_not_running(session: &Session, name: &str, action: &str) -> Fallibl
     if running.is_empty() {
         return Ok(RunningCheck::NotRunning);
     }
-    if session.config().ignore_running_processes() {
-        let procs = running
-            .iter()
-            .map(|p| format!("  {} (pid {})", p.name, p.pid))
-            .collect::<Vec<_>>()
-            .join("\n");
-        session.output().warn(format!(
-            "'{name}' is still running. hok is configured to ignore this condition \
-             (ignore_running_processes), continuing to {action}.\n{procs}"
-        ));
-        return Ok(RunningCheck::Ignored);
+
+    let ignored = session.config().ignore_running_processes();
+    if ignored {
+        // The ignore branch rewrites an app that is still open, so say what
+        // that risks instead of announcing a skip that will not happen.
+        session
+            .output()
+            .warn(hok_i18n::t!("cmd.running_process_ignored", name = name));
+    } else {
+        session.output().warn(action.skip_message(name));
     }
-    Err(Error::AppRunning(name.to_owned()))
+
+    // The process list trails the message it belongs to, as gated detail
+    // rather than part of the message.
+    for p in &running {
+        session
+            .output()
+            .detail(format!("{} (pid {})", p.name, p.pid));
+    }
+
+    Ok(if ignored {
+        RunningCheck::Ignored
+    } else {
+        RunningCheck::Running
+    })
 }
 
 /// Commit package installation: extract files, run scripts, create symlinks,
 /// shims, and shortcuts.
-fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool) -> Fallible<()> {
-    for &pkg in packages.iter() {
-        if let Err(e) = commit_one_install(session, pkg) {
-            let msg = format!("failed to install '{}': {}", pkg.name(), e);
-            if ignore_failure {
+async fn commit_install(
+    session: &Session,
+    packages: &[&Package],
+    ignore_failures: bool,
+) -> Fallible<()> {
+    let total = packages.len();
+    for (i, &pkg) in packages.iter().enumerate() {
+        let index = i + 1;
+        if let Err(e) = commit_one_install(session, pkg, index, total).await {
+            if let Some(tx) = session.emitter() {
+                let _ = tx.try_send(Event::PackageCommitFailed {
+                    name: pkg.name().to_owned(),
+                    index,
+                    total,
+                    error: e.to_string(),
+                });
+            }
+            let msg = hok_i18n::t!("cmd.failed_install", name = pkg.name(), error = e);
+            if ignore_failures {
                 session.output().error(msg);
                 continue;
             }
@@ -422,8 +601,18 @@ fn commit_install(session: &Session, packages: &[&Package], ignore_failure: bool
     Ok(())
 }
 
-fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
-    let config = session.config();
+async fn commit_one_install(
+    session: &Session,
+    pkg: &Package,
+    index: usize,
+    total: usize,
+) -> Fallible<()> {
+    // Extract config-derived values before the awaits so the config read guard
+    // is dropped (a guard held across an await would block `config_mut()`).
+    let no_junction = {
+        let config = session.config();
+        config.no_junction()
+    };
     let apps_dir = session.apps_dir();
 
     // The install layout version: upstream rewrites `nightly` to
@@ -439,20 +628,27 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     if let Some(tx) = session.emitter() {
         let old_ver = pkg.installed_version().unwrap_or_default().to_owned();
         let new_ver = pkg.version().to_owned();
-        let _ = tx.send(Event::PackageVersionKnown {
+        let _ = tx.try_send(Event::PackageCommitStart {
             name: pkg.name().to_owned(),
+            index,
+            total,
             old_version: old_ver,
             new_version: new_ver,
         });
-        let _ = tx.send(Event::PackageCommitStart(pkg.name().to_owned()));
     }
 
     // 1. extract/copy downloaded files
-    let archives = operations::extract_archives(session, pkg, &working_dir)?;
+    let archives = operations::extract_archives(session, pkg, &working_dir).await?;
     operations::copy_downloaded_files(session, pkg, &working_dir, &archives)?;
 
     // 2. pre_install (Scoop order: after extract/copy, before link_current)
     if pkg.manifest().pre_install().is_some() {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::RunHookScript,
+            Some("pre_install".to_owned()),
+        );
         debug!("commit: {} v{} - pre_install", pkg.name(), pkg.version());
         operations::run_script(
             session,
@@ -462,11 +658,38 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             "pre_install",
             "install",
             pkg.manifest().pre_install(),
-        )?;
+        )
+        .await?;
     }
 
     // 3. installer, $dir = version dir)
     if let Some(installer) = pkg.manifest().installer() {
+        match installer.file() {
+            Some(file) => {
+                let mut object = file.to_owned();
+                if let Some(args) = installer.args()
+                    && !args.is_empty()
+                {
+                    object.push(' ');
+                    object.push_str(&args.join(" "));
+                }
+                emit_step(
+                    session,
+                    pkg.name(),
+                    crate::PackageStepKind::RunInstallerFile,
+                    Some(object),
+                );
+            }
+            None => {
+                // Script-only installer: surfaced as a hook-script line.
+                emit_step(
+                    session,
+                    pkg.name(),
+                    crate::PackageStepKind::RunHookScript,
+                    Some("installer".to_owned()),
+                );
+            }
+        }
         operations::run_hook(
             session,
             pkg,
@@ -477,7 +700,8 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             installer.args(),
             installer.keep(),
             installer.script(),
-        )?;
+        )
+        .await?;
     }
 
     // 3.25 Undo installers that added the app directory to PATH
@@ -496,18 +720,17 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             old_version
         );
         let version = session.current_dir_name(old_version);
-        // Locate the old manifest: with junctions, `current` still points at
-        // the old version; without junctions, use the versioned dir directly.
-        // Fall back to the new manifest if the old one can't be read.
-        let old_manifest_path = if config.no_junction() {
-            apps_dir
-                .join(pkg.name())
-                .join(old_version)
-                .join("manifest.json")
-        } else {
-            session.current_dir(pkg.name()).join("manifest.json")
-        };
-        let old_manifest = crate::package::Manifest::parse(old_manifest_path).ok();
+        // Locate the old manifest in the *real* version directory: `current`
+        // still points at the old version here (link_current runs later), but
+        // it is only a junction to this dir — going through it would mean
+        // re-resolving a version we already know, and would land on a
+        // different dir if the junction is stale. Fall back to the new
+        // manifest if the old one can't be read. The old dir carries whichever
+        // metadata name its installer wrote (`scoop-manifest.json` for hok and
+        // Scoop >= 0.6.0, `manifest.json` before that).
+        let old_dir = session.versioned_dir(pkg.name(), old_version);
+        let old_manifest = install_state::installed_manifest_path(&old_dir)
+            .and_then(|path| crate::package::manifest::parse_file(path).ok());
         match old_manifest {
             Some(m) => env::remove_with_manifest(session, pkg, &m, version)?,
             None => env::remove(session, pkg)?,
@@ -516,11 +739,13 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
 
     // 4. link_current (Scoop order: after installer, before shims)
     debug!("commit: {} v{} - link_current", pkg.name(), pkg.version());
-    operations::link_current(
-        &apps_dir.join(pkg.name()),
-        &working_dir,
-        config.no_junction(),
-    )?;
+    operations::link_current(&apps_dir.join(pkg.name()), &working_dir, no_junction)?;
+    emit_step(
+        session,
+        pkg.name(),
+        crate::PackageStepKind::LinkCurrent,
+        None,
+    );
 
     // 5. shims + shortcuts
     debug!(
@@ -528,19 +753,80 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         pkg.name(),
         pkg.version()
     );
+    for shim_name in shim_display_names(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::CreateShim,
+            Some(shim_name),
+        );
+    }
     shim::add(session, pkg)?;
+    for shortcut_name in shortcut_display_names(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::CreateShortcut,
+            Some(shortcut_name),
+        );
+    }
     shortcut::add(session, pkg)?;
 
     // 5.25 psmodule (Scoop order: after shims/shortcuts, before env)
     debug!("commit: {} v{} - psmodule", pkg.name(), pkg.version());
+    if let Some(module) = psmodule_display_name(pkg) {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::AddPsModule,
+            Some(module),
+        );
+    }
     psmodule::add(session, pkg)?;
 
     // 5.5 env (Scoop order: after shims/shortcuts, before persist)
     debug!("commit: {} v{} - env", pkg.name(), pkg.version());
+    if let Some(paths) = pkg.manifest().env_add_path()
+        && !paths.is_empty()
+    {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::AddEnvPath,
+            joined_or_none(paths.iter().map(|s| s.to_string()).collect()),
+        );
+    }
+    if let Some(vars) = pkg.manifest().env_set() {
+        let mut keys = vars.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        for key in keys {
+            emit_step(
+                session,
+                pkg.name(),
+                crate::PackageStepKind::SetEnvVar,
+                Some(key),
+            );
+        }
+    }
     env::add(session, pkg)?;
 
     // 6. persist (Scoop order: after shims, before post_install)
     debug!("commit: {} v{} - persist", pkg.name(), pkg.version());
+    if let Some(persist) = pkg.manifest().persist() {
+        for item in persist {
+            let source = item
+                .first()
+                .copied()
+                .unwrap_or_default()
+                .trim_end_matches(['/', '\\']);
+            emit_step(
+                session,
+                pkg.name(),
+                crate::PackageStepKind::PersistLink,
+                Some(source.to_owned()),
+            );
+        }
+    }
     persist::link(session, pkg)?;
     // 6.1 persist_permission (upstream install.ps1:67): global installs
     // with persist data grant the Users group write access on the global
@@ -551,6 +837,12 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
     // `current` junction (upstream `link_current` reassigns $dir), while
     // `$original_dir` stays the real version dir.
     if pkg.manifest().post_install().is_some() {
+        emit_step(
+            session,
+            pkg.name(),
+            crate::PackageStepKind::RunHookScript,
+            Some("post_install".to_owned()),
+        );
         debug!("commit: {} v{} - post_install", pkg.name(), pkg.version());
         let runtime_dir = session
             .app_dir(pkg.name())
@@ -563,11 +855,16 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             "post_install",
             "install",
             pkg.manifest().post_install(),
-        )?;
+        )
+        .await?;
     }
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackageCommitDone(pkg.name().to_owned()));
+        let _ = tx.try_send(Event::PackageCommitDone {
+            name: pkg.name().to_owned(),
+            index,
+            total,
+        });
     }
 
     // Emit post-install notes if the manifest has them.
@@ -582,7 +879,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
             .collect::<Vec<_>>()
             .join("\n");
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackageNotes(notes_text));
+            let _ = tx.try_send(Event::PackageNotes(notes_text));
         }
     }
 
@@ -600,8 +897,9 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
         .app_dir(pkg.name())
         .join(session.current_dir_name(&version));
 
-    // 1. Copy manifest from bucket to <meta_dir>/manifest.json
-    let manifest_dst = meta_dir.join("manifest.json");
+    // 1. Copy manifest from bucket to <meta_dir>/scoop-manifest.json
+    // (upstream `save_installed_manifest`, lib/manifest.ps1:123-132)
+    let manifest_dst = meta_dir.join(install_state::SCOOP_MANIFEST_JSON);
     if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
         // Isolated installs (URL / local path / generated version): persist
         // the raw manifest text captured at resolve time; fall back to
@@ -613,7 +911,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                     return Err(Error::Custom(format!(
                         "could not write manifest to {:?}: {}",
                         manifest_dst, e
-                    )))
+                    )));
                 }
             },
             None => match std::fs::copy(pkg.manifest().path(), &manifest_dst) {
@@ -623,7 +921,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                         "could not copy manifest from {:?}: {}",
                         pkg.manifest().path(),
                         e
-                    )))
+                    )));
                 }
             },
         }
@@ -635,11 +933,7 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 .join("bucket")
                 .join(format!("{}.json", pkg.name()));
             let fallback = bucket_path.join(format!("{}.json", pkg.name()));
-            if primary.exists() {
-                primary
-            } else {
-                fallback
-            }
+            if primary.exists() { primary } else { fallback }
         };
         match std::fs::copy(&manifest_src, manifest_dst) {
             Ok(_) => {}
@@ -647,37 +941,41 @@ fn commit_one_install(session: &Session, pkg: &Package) -> Fallible<()> {
                 return Err(Error::Custom(format!(
                     "could not copy manifest from {:?}: {}",
                     manifest_src, e
-                )))
+                )));
             }
         }
     }
 
-    // 2. Write <meta_dir>/install.json
+    // 2. Write <meta_dir>/scoop-install.json
     // (upstream `save_install_info` stores architecture, url, bucket —
     //  lib/install.ps1:73; the architecture is the *selected* one, i.e.
     //  after the `default_architecture` config and `-a/--arch` overrides)
     let arch = crate::internal::arch::Arch::current().name();
-    // Isolated installs record the manifest source (URL / local path /
-    // generated workspace file) as `url`, mirroring upstream
-    // `save_install_info`; bucket installs keep the download URL.
-    let install_url = if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
-        Some(pkg.manifest().path().display().to_string())
-    } else {
-        pkg.download_urls().first().map(|s| s.to_string())
-    };
-    let install_info = serde_json::json!({
-        "architecture": arch,
-        "url": install_url,
-        // Isolated installs carry no bucket (upstream `save_install_info`
-        // drops null values; readers fall back to `ISOLATED_PACKAGE_BUCKET`).
-        "bucket": if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
-            serde_json::Value::Null
+    // `url`/`bucket` mirror upstream `save_install_info` (lib/install.ps1:73):
+    // isolated installs record the manifest *source* as `url` (no bucket);
+    // bucket installs record the bucket (no `url`). Null-valued fields are
+    // omitted on serialization (InstallInfo `skip_serializing_if`), exactly
+    // like Scoop's null-key stripping — writing the download URL here would
+    // otherwise make original Scoop's `manifest()` try to `ConvertFrom-Json`
+    // the artifact (lib/manifest.ps1: `if ($url) { url_manifest $url }`).
+    let install_info = InstallInfo::new(
+        arch.to_owned(),
+        if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+            None
         } else {
-            serde_json::json!(pkg.bucket())
+            Some(pkg.bucket().to_owned())
         },
-    });
-    if let Err(e) = internal::fs::write_json(meta_dir.join("install.json"), &install_info) {
-        return Err(Error::Custom(format!("install.json write: {}", e)));
+        if pkg.bucket() == ISOLATED_PACKAGE_BUCKET {
+            Some(pkg.manifest().path().display().to_string())
+        } else {
+            None
+        },
+    );
+    if let Err(e) = internal::fs::write_json(
+        meta_dir.join(install_state::SCOOP_INSTALL_JSON),
+        &install_info,
+    ) {
+        return Err(Error::Custom(format!("scoop-install.json write: {}", e)));
     }
 
     Ok(())
@@ -688,8 +986,8 @@ mod tests {
     use super::*;
 
     /// Test that installer.file execution path works correctly.
-    #[test]
-    fn test_installer_file_execution() {
+    #[tokio::test]
+    async fn test_installer_file_execution() {
         let tmp = crate::test_utils::tmpdir("installer_file");
 
         // Test 1: capture exit code via cmd.exe /c
@@ -720,9 +1018,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Test URL fragment rename: url#/installer.exe → copy directly as installer.exe
+    /// A verbose lifecycle step marker is delivered over the event bus.
+    #[tokio::test]
+    async fn test_emit_step_delivers_package_step() {
+        let root = crate::test_utils::tmpdir("emit_step");
+        let session = crate::test_utils::test_session(&root);
+        let mut rx = session.event_bus().receiver().expect("event bus receiver");
+
+        emit_step(
+            &session,
+            "app",
+            crate::PackageStepKind::CreateShim,
+            Some("7z".to_owned()),
+        );
+
+        let event = rx.try_recv().expect("PackageStep should be delivered");
+        assert!(
+            matches!(
+                event,
+                Event::PackageStep {
+                    name,
+                    kind: crate::PackageStepKind::CreateShim,
+                    object: Some(object),
+                } if name == "app" && object == "7z"
+            ),
+            "expected a CreateShim PackageStep for '7z'"
+        );
+    }
+
+    /// Shim display names mirror `Shim::new`: bare `[target]` yields the target
+    /// basename, `[target, name, args...]` yields the explicit name.
     #[test]
-    fn test_url_fragment_rename() {
+    fn test_shim_display_names() {
+        use crate::package::manifest::{Manifest, parse_file};
+        let root = crate::test_utils::tmpdir("shim_display");
+        let json = r#"{
+            "version": "1.0.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "bin": [["bin/tool.exe"], ["bin/gui.exe", "tool-gui"], ["tool.bat", "tb", "-x"]]
+        }"#;
+        let p = root.join("manifest.json");
+        std::fs::write(&p, json).unwrap();
+        let manifest: Manifest = parse_file(&p).unwrap();
+        // Wrap a Package so shim_display_names can read `.bin()`.
+        let pkg = crate::package::Package::from("tool", "main", manifest);
+        let names = shim_display_names(&pkg);
+        assert_eq!(names, vec!["tool", "tool-gui", "tb"]);
+    }
+
+    /// Shortcut and ps-module display helpers read `manifest.shortcuts[][1]`
+    /// and `manifest.psmodule.name`, mirroring the add/remove operations.
+    #[test]
+    fn test_shortcut_and_psmodule_display_helpers() {
+        use crate::package::manifest::{Manifest, parse_file};
+        let root = crate::test_utils::tmpdir("shortcut_display");
+        let json = r#"{
+            "version": "1.0.0",
+            "homepage": "https://example.com",
+            "license": "MIT",
+            "shortcuts": [["bin/tool.exe", "My Tool", "-a"], ["bin/other.exe", "Other"]],
+            "psmodule": { "name": "MyToolPS" }
+        }"#;
+        let p = root.join("manifest.json");
+        std::fs::write(&p, json).unwrap();
+        let manifest: Manifest = parse_file(&p).unwrap();
+        let pkg = crate::package::Package::from("tool", "main", manifest);
+
+        assert_eq!(shortcut_display_names(&pkg), vec!["My Tool", "Other"]);
+        assert_eq!(psmodule_display_name(&pkg).as_deref(), Some("MyToolPS"));
+    }
+    #[tokio::test]
+    async fn test_url_fragment_rename() {
         let tmp = crate::test_utils::tmpdir("fragment_rename");
 
         // Simulate cache file with hash-based name
@@ -746,8 +1113,8 @@ mod tests {
     }
 
     /// Test URL without fragment: use original filename from URL path
-    #[test]
-    fn test_url_filename_without_fragment() {
+    #[tokio::test]
+    async fn test_url_filename_without_fragment() {
         let url = "https://example.com/dopus_patcher.exe";
         let filename = std::path::Path::new(url)
             .file_name()
@@ -761,30 +1128,34 @@ mod tests {
     const TEST_MANIFEST: &str =
         r#"{"version": "1.0.0", "homepage": "https://example.com", "license": "MIT"}"#;
 
-    /// A named package that is not installed must fail fast instead of
-    /// silently reporting "all apps are up to date".
-    #[test]
-    fn only_upgrade_missing_package_errors() {
+    /// A named package that is not installed must not abort the batch:
+    /// Scoop's `Confirm-InstallationStatus` reports it and drops it, and the
+    /// command still exits 0 (`scoop-update.ps1:424-427,468`).
+    #[tokio::test]
+    async fn only_upgrade_missing_package_is_reported_not_fatal() {
         let root = crate::test_utils::tmpdir("only_upgrade_missing");
         let session = crate::test_utils::test_session(&root);
 
-        let err = install(&session, &["ghost"], &[SyncOption::OnlyUpgrade]).unwrap_err();
-        assert!(matches!(err, Error::PackageNotFound(name) if name == "ghost"));
+        install(&session, &["ghost"], &[SyncOption::OnlyUpgrade])
+            .await
+            .expect("a missing package must not fail the batch");
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An installed package without a newer version must NOT be reported as
     /// missing — the Upgradable filter below silently skips it.
-    #[test]
-    fn only_upgrade_installed_without_upgrade_is_ok() {
+    #[tokio::test]
+    async fn only_upgrade_installed_without_upgrade_is_ok() {
         let root = crate::test_utils::tmpdir("only_upgrade_no_new");
         let session = crate::test_utils::test_session(&root);
 
         crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
 
         // No bucket manifest → nothing upgradable → Ok, no error raised.
-        install(&session, &["curl"], &[SyncOption::OnlyUpgrade]).unwrap();
+        install(&session, &["curl"], &[SyncOption::OnlyUpgrade])
+            .await
+            .unwrap();
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -793,8 +1164,8 @@ mod tests {
     /// reinstalled at its current version — the transaction must not be
     /// empty (a regression: the upgradable_version filter used to drop all
     /// Force packages, making `update --force` a silent no-op).
-    #[test]
-    fn only_upgrade_force_reinstalls_current_version() {
+    #[tokio::test]
+    async fn only_upgrade_force_reinstalls_current_version() {
         let root = crate::test_utils::tmpdir("only_upgrade_force");
         let session = crate::test_utils::test_session(&root);
 
@@ -806,6 +1177,7 @@ mod tests {
             &["curl"],
             &[SyncOption::OnlyUpgrade, SyncOption::Force],
         )
+        .await
         .unwrap();
 
         // The reinstall committed: a version dir was created under apps/curl.
@@ -817,22 +1189,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// With IgnoreFailure, a missing package is skipped (reported to stderr)
-    /// instead of aborting the whole upgrade.
-    #[test]
-    fn only_upgrade_ignore_failure_skips_missing() {
+    /// A missing package in a mixed batch is skipped (reported to stderr)
+    /// while the installed one is still processed; `IgnoreFailures` no longer
+    /// changes that, it only keeps a *commit* failure from aborting.
+    #[tokio::test]
+    async fn only_upgrade_ignore_failures_skips_missing() {
         let root = crate::test_utils::tmpdir("only_upgrade_ignore");
         let session = crate::test_utils::test_session(&root);
 
         crate::test_utils::mark_installed(&root, "curl", "main", TEST_MANIFEST, false);
 
-        // "ghost" is missing but IgnoreFailure lets the rest proceed.
+        // "ghost" is missing but IgnoreFailures lets the rest proceed.
         install(
             &session,
             &["ghost", "curl"],
-            &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailure],
+            &[SyncOption::OnlyUpgrade, SyncOption::IgnoreFailures],
+        )
+        .await
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A broken/partial install (app dir exists, no usable `current`) cannot
+    /// be updated — mirror Scoop (`scoop-update.ps1` skips it with "Please
+    /// reinstall it or fix the manifest.") so it must not hard-error as
+    /// "not found", and the broken dir must be left untouched.
+    #[tokio::test]
+    async fn only_upgrade_broken_install_warns_and_skips() {
+        let root = crate::test_utils::tmpdir("only_upgrade_broken");
+        let session = crate::test_utils::test_session(&root);
+        let pkg_dir = root.join("apps").join("doubao");
+        // Version dir with metadata but no `current` junction: broken.
+        std::fs::create_dir_all(pkg_dir.join("1.0.0")).unwrap();
+        std::fs::write(pkg_dir.join("1.0.0").join("manifest.json"), TEST_MANIFEST).unwrap();
+        std::fs::write(
+            pkg_dir.join("1.0.0").join("install.json"),
+            r#"{"architecture": "64bit", "bucket": "main"}"#,
         )
         .unwrap();
+
+        // Must not hard-error: a broken install is skipped with a warning,
+        // not treated as "package not found".
+        install(&session, &["doubao"], &[SyncOption::OnlyUpgrade])
+            .await
+            .unwrap();
+
+        // update must not modify the broken app dir.
+        assert!(
+            pkg_dir.exists(),
+            "update must not remove the broken app dir"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -845,29 +1252,37 @@ mod tests {
         "license": "MIT"
     }"#;
 
-    /// A local-path manifest installs as an isolated package: `manifest.json`
-    /// persists the raw source text and `install.json` records the source
-    /// path with no bucket.
-    #[test]
-    fn install_local_path_manifest_is_isolated() {
+    /// A local-path manifest installs as an isolated package:
+    /// `scoop-manifest.json` persists the raw source text and
+    /// `scoop-install.json` records the source path with no bucket (the names
+    /// Scoop >= 0.6.0 writes).
+    #[tokio::test]
+    async fn install_local_path_manifest_is_isolated() {
         let root = crate::test_utils::tmpdir("install_local_path");
         let session = crate::test_utils::test_session(&root);
 
         let manifest_path = root.join("myapp.json");
         std::fs::write(&manifest_path, NO_DOWNLOAD_MANIFEST).unwrap();
 
-        install(&session, &[manifest_path.to_str().unwrap()], &[]).unwrap();
+        install(&session, &[manifest_path.to_str().unwrap()], &[])
+            .await
+            .unwrap();
 
         let app_dir = root.join("apps").join("myapp");
         let meta_dir = app_dir.join("current");
         assert!(meta_dir.is_dir(), "app should be installed under current");
 
-        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        let saved = std::fs::read_to_string(meta_dir.join("scoop-manifest.json")).unwrap();
         assert_eq!(saved, NO_DOWNLOAD_MANIFEST, "raw manifest text persisted");
+        assert!(
+            !meta_dir.join("manifest.json").exists(),
+            "only the new manifest name is written"
+        );
 
-        let install_info: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(meta_dir.join("install.json")).unwrap())
-                .unwrap();
+        let install_info: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(meta_dir.join("scoop-install.json")).unwrap(),
+        )
+        .unwrap();
         assert!(
             install_info["bucket"].is_null(),
             "isolated installs carry no bucket: {}",
@@ -876,7 +1291,7 @@ mod tests {
         let url = install_info["url"].as_str().unwrap();
         assert!(
             url.ends_with("myapp.json"),
-            "install.json url records the manifest source: {}",
+            "the install record url records the manifest source: {}",
             url
         );
         assert!(!url.contains("apps"), "url is the source, not an app path");
@@ -886,8 +1301,8 @@ mod tests {
 
     /// An `app@version` query where the version matches the resolved
     /// manifest installs that manifest as an isolated package.
-    #[test]
-    fn install_version_matching_manifest_is_isolated() {
+    #[tokio::test]
+    async fn install_version_matching_manifest_is_isolated() {
         let root = crate::test_utils::tmpdir("install_version_match");
         let session = crate::test_utils::test_session(&root);
 
@@ -899,10 +1314,11 @@ mod tests {
             &[&format!("{}@1.0.0", manifest_path.display())],
             &[],
         )
+        .await
         .unwrap();
 
         let meta_dir = root.join("apps").join("myapp").join("current");
-        let saved = std::fs::read_to_string(meta_dir.join("manifest.json")).unwrap();
+        let saved = std::fs::read_to_string(meta_dir.join("scoop-manifest.json")).unwrap();
         assert_eq!(saved, NO_DOWNLOAD_MANIFEST);
 
         let _ = std::fs::remove_dir_all(&root);
@@ -910,8 +1326,8 @@ mod tests {
 
     /// A `name@version` query without autoupdate capability fails with the
     /// upstream error instead of installing the wrong version.
-    #[test]
-    fn install_version_without_autoupdate_errors() {
+    #[tokio::test]
+    async fn install_version_without_autoupdate_errors() {
         let root = crate::test_utils::tmpdir("install_version_no_au");
         let session = crate::test_utils::test_session(&root);
 
@@ -923,6 +1339,7 @@ mod tests {
             &[&format!("{}@2.0.0", manifest_path.display())],
             &[],
         )
+        .await
         .unwrap_err();
         assert!(
             err.to_string()
@@ -938,18 +1355,18 @@ mod tests {
 
     /// `hok install Obsidian` must resolve the lowercase `obsidian` manifest,
     /// mirroring Scoop's case-insensitive package lookup (Windows FS).
-    #[test]
-    fn install_query_is_case_insensitive() {
+    #[tokio::test]
+    async fn install_query_is_case_insensitive() {
         let root = crate::test_utils::tmpdir("install_case_insensitive");
         let session = crate::test_utils::test_session(&root);
         crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
 
-        install(&session, &["Obsidian"], &[]).unwrap();
+        install(&session, &["Obsidian"], &[]).await.unwrap();
 
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");
         assert!(
-            app_dir.join("current").join("manifest.json").exists(),
+            app_dir.join("current").join("scoop-manifest.json").exists(),
             "manifest persisted"
         );
 
@@ -958,17 +1375,216 @@ mod tests {
 
     /// Bucket prefix matching is case-insensitive too: `Main/Obsidian` finds
     /// the `main` bucket's `obsidian` manifest.
-    #[test]
-    fn install_query_bucket_prefix_is_case_insensitive() {
+    #[tokio::test]
+    async fn install_query_bucket_prefix_is_case_insensitive() {
         let root = crate::test_utils::tmpdir("install_bucket_case");
         let session = crate::test_utils::test_session(&root);
         crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
 
-        install(&session, &["Main/Obsidian"], &[]).unwrap();
+        install(&session, &["Main/Obsidian"], &[]).await.unwrap();
 
         let app_dir = root.join("apps").join("obsidian");
         assert!(app_dir.join("current").is_dir(), "app should be installed");
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A bucket install records no `url` key in the install record — upstream
+    /// `save_install_info` (lib/install.ps1:73) strips null-valued keys, so
+    /// the byte output matches Scoop (`{"architecture","bucket"}`), and
+    /// Scoop's `manifest()` won't try to `ConvertFrom-Json` an artifact URL.
+    #[tokio::test]
+    async fn install_from_bucket_writes_null_url() {
+        let root = crate::test_utils::tmpdir("install_bucket_null_url");
+        let session = crate::test_utils::test_session(&root);
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        install(&session, &["obsidian"], &[]).await.unwrap();
+
+        let install_info: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("apps/obsidian/current/scoop-install.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            install_info.get("url").is_none(),
+            "bucket installs must not record a url key (Scoop strips nulls): {}",
+            install_info
+        );
+        assert_eq!(install_info["bucket"], "main", "bucket is recorded");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── per-package counting closure (phase 3a) ─────────────────────────
+
+    /// A successful install emits a `PackageCommitStart`/`PackageCommitDone`
+    /// pair carrying the package's 1-based index and the commit total, so the
+    /// CLI can render a `(k/N)` per-package closure.
+    #[tokio::test]
+    async fn commit_emits_indexed_start_done() {
+        let root = crate::test_utils::tmpdir("commit_index_done");
+        let session = crate::test_utils::test_session(&root);
+
+        // Attach the frontend side of the event bus and pre-accept the
+        // confirmation so `install` does not block waiting for a response.
+        let bus = session.event_bus();
+        let frontend_tx = bus.sender();
+        let mut frontend_rx = bus.receiver().expect("fresh event bus receiver");
+        frontend_tx
+            .send(Event::PromptTransactionNeedConfirmResult(true))
+            .await
+            .unwrap();
+
+        crate::test_utils::write_bucket_manifest(&root, "main", "obsidian", NO_DOWNLOAD_MANIFEST);
+
+        // Use the `sync` shell (not bare `install`) so it emits the
+        // `PackageSyncDone` sentinel the drain loop below waits on.
+        super::super::sync(&session, vec!["obsidian"], vec![SyncOption::AssumeYes])
+            .await
+            .unwrap();
+
+        // Collect the per-package closure events with their counters. The
+        // outbound channel is held open by the session, so drain until the
+        // `PackageSyncDone` sentinel the sync shell always emits last.
+        let mut starts = vec![];
+        let mut dones = vec![];
+        while let Some(event) = frontend_rx.recv().await {
+            match event {
+                Event::PackageCommitStart {
+                    name, index, total, ..
+                } => {
+                    starts.push((name, index, total));
+                }
+                Event::PackageCommitDone { name, index, total } => {
+                    dones.push((name, index, total));
+                }
+                Event::PackageSyncDone => break,
+                _ => {}
+            }
+        }
+        assert_eq!(starts, vec![("obsidian".to_owned(), 1, 1)]);
+        assert_eq!(dones, vec![("obsidian".to_owned(), 1, 1)]);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A running app is a *skip* by default and a *carry-on* once
+    /// `ignore_running_processes` is enabled, matching Scoop's
+    /// `test_running_process` (`lib/install.ps1:534-551`: the default branch
+    /// returns `$true` → the callers skip, the ignore branch `$false` → they
+    /// carry on). Both outcomes warn; neither fails.
+    ///
+    /// The running processes are reported as `Detail`, not baked into the
+    /// message, so only a frontend that is verbose enough shows them.
+    #[test]
+    fn check_not_running_skips_by_default_and_continues_when_ignored() {
+        use std::sync::{Arc, Mutex};
+
+        let root = crate::test_utils::tmpdir("check_not_running");
+        let session = crate::test_utils::test_session(&root);
+
+        // A long-running program living under `apps/<name>`, so the process
+        // image path is inside the app directory (the same criterion as
+        // Scoop's `$_.Path -like "$appdir\*"`).
+        let app_dir = session.app_dir("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let exe = app_dir.join("app.exe");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        std::fs::copy(
+            std::path::Path::new(&system_root)
+                .join("System32")
+                .join("cmd.exe"),
+            &exe,
+        )
+        .unwrap();
+
+        let mut child = std::process::Command::new(&exe)
+            .args(["/c", "ping -n 30 127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        // Wait until the child is visible to the process scan: it may take a
+        // moment to start, and a false negative would make the assertions
+        // below flaky.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while crate::internal::os::running_processes_under(&app_dir)
+            .unwrap()
+            .is_empty()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child process never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // One ordered transcript of every message, so the assertions below pin
+        // both the wording and the order (the process list must *trail* its
+        // message, never precede it).
+        let events = Arc::new(Mutex::new(Vec::<(&'static str, String)>::new()));
+        {
+            let events = Arc::clone(&events);
+            session
+                .set_output(Arc::new(move |out: crate::output::Output| match out {
+                    crate::output::Output::Warn(m) => events.lock().unwrap().push(("warn", m)),
+                    crate::output::Output::Error(m) => events.lock().unwrap().push(("error", m)),
+                    crate::output::Output::Detail(m) => events.lock().unwrap().push(("detail", m)),
+                    _ => {}
+                }))
+                .unwrap();
+        }
+
+        // Default config: the app is skipped with the action's skip wording,
+        // and the single live process follows it as one `name (pid N)` detail
+        // (the name and the pid are live, so only the shape is asserted).
+        assert_eq!(
+            check_not_running(&session, "app", RunningAction::Update).unwrap(),
+            RunningCheck::Running
+        );
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 2, "one warning plus one detail");
+            assert_eq!(events[0].0, "warn", "a skip is not an error");
+            assert_eq!(
+                events[0].1,
+                hok_i18n::t!("cmd.running_process_update", name = "app")
+            );
+            assert_eq!(events[1].0, "detail");
+            assert!(
+                events[1].1.starts_with("app (pid ") && events[1].1.ends_with(')'),
+                "unexpected detail line: {}",
+                events[1].1
+            );
+        }
+
+        // `ignore_running_processes` carries on instead of skipping: the same
+        // warning-then-detail shape, a different outcome and wording.
+        session
+            .config_mut()
+            .unwrap()
+            .set("ignore_running_processes", "true")
+            .unwrap();
+        assert_eq!(
+            check_not_running(&session, "app", RunningAction::Update).unwrap(),
+            RunningCheck::Ignored
+        );
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 4, "the second check appends");
+            assert_eq!(events[2].0, "warn");
+            assert_eq!(
+                events[2].1,
+                hok_i18n::t!("cmd.running_process_ignored", name = "app")
+            );
+            assert_eq!(events[3].0, "detail");
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -10,8 +10,13 @@
 //! ```no_run
 //! use libscoop::package::virustotal::{check_url, ScanStats};
 //!
-//! let stats: ScanStats = check_url("https://example.com/app.exe", "your_api_key").unwrap();
-//! println!("Total engines: {}, Malicious: {}", stats.total, stats.malicious);
+//! #[tokio::main]
+//! async fn main() {
+//!     let stats: ScanStats = check_url("https://example.com/app.exe", "your_api_key")
+//!         .await
+//!         .unwrap();
+//!     println!("Total engines: {}, Malicious: {}", stats.total, stats.malicious);
+//! }
 //! ```
 //!
 //! # Notes
@@ -19,7 +24,7 @@
 //! - API requests will poll up to 5 times (with a 3-second interval between each) to wait for analysis to complete.
 //! - Network errors or timeouts will be returned as [`crate::Error`].
 
-use crate::{error::Fallible, Error};
+use crate::{Error, error::Fallible};
 
 /// Scan statistics returned by VirusTotal.
 #[derive(Debug, Clone)]
@@ -45,23 +50,25 @@ pub struct ScanStats {
 ///
 /// Returns an error if the HTTP request fails, the JSON response is unexpected,
 /// or the analysis does not complete within the polling window (5 × 3 s).
-pub fn check_url(url: &str, api_key: &str) -> Fallible<ScanStats> {
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
+pub async fn check_url(url: &str, api_key: &str) -> Fallible<ScanStats> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
         .build()
-        .new_agent();
+        .map_err(|e| Error::Custom(format!("VT client error: {}", e)))?;
 
     // Step 1: submit URL for analysis
     let submit_body = serde_json::json!({ "url": url });
-    let submit_resp = agent
+    let submit_resp = client
         .post("https://www.virustotal.com/api/v3/urls")
         .header("x-apikey", api_key)
-        .send_json(&submit_body)
+        .json(&submit_body)
+        .send()
+        .await
         .map_err(|e| Error::Custom(format!("VT submit error: {}", e)))?;
 
     let submit_json: serde_json::Value = submit_resp
-        .into_body()
-        .read_json()
+        .json()
+        .await
         .map_err(|e| Error::Custom(format!("VT response error: {}", e)))?;
 
     let analysis_id = submit_json["data"]["id"]
@@ -72,17 +79,18 @@ pub fn check_url(url: &str, api_key: &str) -> Fallible<ScanStats> {
     let analysis_url = format!("https://www.virustotal.com/api/v3/analyses/{}", analysis_id);
 
     for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let resp = agent
+        let resp = client
             .get(&analysis_url)
             .header("x-apikey", api_key)
-            .call()
+            .send()
+            .await
             .map_err(|e| Error::Custom(format!("VT poll error: {}", e)))?;
 
         let json: serde_json::Value = resp
-            .into_body()
-            .read_json()
+            .json()
+            .await
             .map_err(|e| Error::Custom(format!("VT parse error: {}", e)))?;
 
         let status = json["data"]["attributes"]["status"].as_str().unwrap_or("");

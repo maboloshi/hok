@@ -3,7 +3,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use crate::cmd::shared_args::validate_dir;
+use crate::cmd::shared_args::{validate_dir, write_dir};
 use crate::{output, Result};
 use libscoop::package::formatjson;
 
@@ -11,19 +11,25 @@ use libscoop::package::formatjson;
 #[derive(Debug, Parser)]
 pub struct Args {
     /// Bucket directory to scan for manifests
-    #[arg(short = 'd', long, default_value = ".")]
-    dir: PathBuf,
+    ///
+    /// Required: this command rewrites every manifest it finds in place, and
+    /// the scan is a recursive `*.json` walk that cannot tell a manifest from
+    /// any other JSON file.
+    #[arg(short = 'd', long)]
+    dir: Option<PathBuf>,
 
     /// Specific app(s) to format (supports wildcards, default: all)
     #[arg(default_value = "*")]
     app: Vec<String>,
 }
 
-pub fn execute(args: Args) -> Result<()> {
-    validate_dir(&args.dir)?;
-    let dir = &args.dir;
+pub async fn execute(args: Args) -> Result<()> {
+    // Always a write: every manifest found under `dir` is rewritten in place,
+    // so the target may never default to the current directory.
+    let dir = write_dir(args.dir, "formatjson")?;
+    validate_dir(&dir)?;
 
-    let report = formatjson::format_manifests(dir, &args.app)?;
+    let report = formatjson::format_manifests(&dir, &args.app)?;
 
     for msg in &report.errors {
         output::err(msg);
@@ -33,12 +39,22 @@ pub fn execute(args: Args) -> Result<()> {
         output::warn(msg);
     }
 
-    if report.formatted == 0 && report.errors.is_empty() {
-        output::info(rust_i18n::t!("cmd.formatjson_none"));
+    // Name every rewritten file: the risk of this command is that the scan is
+    // blind to manifest shape, so the blast radius must be visible (upstream
+    // prints nothing — hok value-add, a registered deliberate deviation).
+    for path in &report.formatted {
+        output::status(hok_i18n::t!(
+            "cmd.formatjson_writing",
+            path = path.display()
+        ));
+    }
+
+    if report.formatted_count() == 0 && report.errors.is_empty() {
+        output::info(hok_i18n::t!("cmd.formatjson_none"));
     } else {
-        output::info(rust_i18n::t!(
+        output::info(hok_i18n::t!(
             "cmd.formatjson_count",
-            count = report.formatted
+            count = report.formatted_count()
         ));
     }
 

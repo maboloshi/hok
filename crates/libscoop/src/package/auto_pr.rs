@@ -19,12 +19,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::Fallible as Result;
+use crate::error::{Error, Fallible};
 
+use crate::Session;
+use crate::internal::git;
 use crate::internal::github;
 use crate::internal::url;
+use crate::package::checkver::{CheckverEvent, CheckverReport};
 use crate::package::manifest_walker;
-use crate::Session;
 
 // ---------------------------------------------------------------------------
 // Public configuration type
@@ -54,6 +56,10 @@ pub struct AutoPrConfig {
     pub skip_updated: bool,
     /// Additional manifests to force-update even if already up-to-date.
     pub special: Vec<String>,
+    /// GitHub App slug (e.g. `my-bot`); when set, the DCO sign-off is
+    /// generated for the corresponding bot user (`my-bot[bot]`) instead
+    /// of the authenticated user.
+    pub app_slug: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,27 +69,34 @@ pub struct AutoPrConfig {
 /// Run the full auto-PR pipeline.
 ///
 /// 1. Snapshots manifests in `config.dir`.
-/// 2. Runs `checkver --update` to refresh versions.
+/// 2. Runs `checkver --update` to refresh versions, streaming the per-manifest
+///    [`CheckverReport`]s to `on_report` as each completes.
 /// 3. Detects which manifests changed.
 /// 4. For each changed manifest either pushes a commit or creates a PR,
 ///    depending on `config.push` / `config.request`.
-pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
+///
+/// `on_report` is the presentation hook: `None` keeps the compact
+/// progress/ok markers, `Some(callback)` streams the checkver reports to the
+/// caller, which decides how (or whether) to render them.
+pub async fn run_auto_pr(
+    config: AutoPrConfig,
+    session: &Session,
+    mut on_report: Option<impl FnMut(&CheckverReport)>,
+) -> Fallible<()> {
     // Validate token
     if config.token.is_empty() {
-        return Err(crate::Error::Custom(
-            rust_i18n::t!("cmd.auto_err_token").to_string(),
+        return Err(Error::Custom(
+            hok_i18n::t!("cmd.auto_err_token").to_string(),
         ));
     }
 
     // Validate modes
     if !config.push && !config.request {
-        return Err(crate::Error::Custom(
-            rust_i18n::t!("cmd.auto_err_mode").to_string(),
-        ));
+        return Err(Error::Custom(hok_i18n::t!("cmd.auto_err_mode").to_string()));
     }
     if config.request && config.upstream_repo_nwo.is_empty() {
-        return Err(crate::Error::Custom(
-            rust_i18n::t!("cmd.auto_err_upstream").to_string(),
+        return Err(Error::Custom(
+            hok_i18n::t!("cmd.auto_err_upstream").to_string(),
         ));
     }
 
@@ -92,7 +105,7 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
     let origin_owner = repo_nwo.split('/').next().unwrap_or("").to_string();
 
-    session.output().header(rust_i18n::t!("cmd.auto_pr_header"));
+    session.output().header(hok_i18n::t!("cmd.auto_pr_header"));
     session.output().named("Repository", &repo_nwo);
     session.output().named("Branch", &config.origin_branch);
     if config.request {
@@ -109,18 +122,27 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         config.dir.clone()
     };
     if !dir.is_dir() {
-        return Err(crate::Error::Custom(
-            rust_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
+        return Err(Error::Custom(
+            hok_i18n::t!("cmd.dir_not_found", path = dir.display()).to_string(),
         ));
     }
 
     // Snapshot manifests before running checkver
-    session.output().progress("Snapshoting", "manifests");
+    session.output().progress(
+        hok_i18n::t!("cmd.auto_pr_snapshotting"),
+        hok_i18n::t!("cmd.auto_pr_manifests"),
+    );
     let before = read_manifests(session, &dir)?;
     session.output().ok();
 
-    // Run checkver to update all manifests
-    session.output().progress("Checking", "for updates");
+    // Run checkver to update all manifests. Reports stream to the caller's
+    // callback; without one, the compact progress/ok pair is shown instead.
+    if on_report.is_none() {
+        session.output().progress(
+            hok_i18n::t!("cmd.auto_pr_checking"),
+            hok_i18n::t!("cmd.auto_pr_for_updates"),
+        );
+    }
     let cv_args = crate::package::checkver::CheckverOptions {
         dir: dir.clone(),
         app: vec!["*".to_string()],
@@ -129,13 +151,31 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         skip_updated: config.skip_updated,
         version: None,
         timeout: 30,
+        // `ci-auto-pr` keeps upstream's unbounded, completion-order fetch; its
+        // own output topic can cap it later.
+        jobs: 0,
+        ordered: false,
+        throw_error: false,
     };
-    let _ = crate::package::checkver::execute(cv_args, session, |_| {});
-    session.output().ok();
+    let _ = crate::package::checkver::execute(cv_args, session, |ev| {
+        if let CheckverEvent::Report(report) = ev
+            && let Some(cb) = on_report.as_mut()
+        {
+            cb(report);
+        }
+    })
+    .await;
+    if on_report.is_none() {
+        session.output().ok();
+    }
 
     // Force-update special manifests
     for name in &config.special {
-        session.output().progress("Forcing", name);
+        if on_report.is_none() {
+            session
+                .output()
+                .progress(hok_i18n::t!("cmd.auto_pr_forcing"), name);
+        }
         let cv_args = crate::package::checkver::CheckverOptions {
             dir: dir.clone(),
             app: vec![name.to_string()],
@@ -144,9 +184,21 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
             skip_updated: false,
             version: None,
             timeout: 30,
+            jobs: 0,
+            ordered: false,
+            throw_error: false,
         };
-        let _ = crate::package::checkver::execute(cv_args, session, |_| {});
-        session.output().ok();
+        let _ = crate::package::checkver::execute(cv_args, session, |ev| {
+            if let CheckverEvent::Report(report) = ev
+                && let Some(cb) = on_report.as_mut()
+            {
+                cb(report);
+            }
+        })
+        .await;
+        if on_report.is_none() {
+            session.output().ok();
+        }
     }
 
     // Detect which manifests changed
@@ -154,12 +206,12 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
     if changed.is_empty() {
         session
             .output()
-            .info(rust_i18n::t!("cmd.auto_pr_no_changes"));
+            .info(hok_i18n::t!("cmd.auto_pr_no_changes"));
         return Ok(());
     }
     session
         .output()
-        .info(format!("{} manifest(s) updated", changed.len()));
+        .info(hok_i18n::t!("cmd.manifests_updated", count = changed.len()));
 
     // Process each changed manifest
     let mut success_count = 0u32;
@@ -169,27 +221,33 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
         let manifest_str = match std::fs::read_to_string(manifest_path) {
             Ok(s) => s,
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("read {}: {}", manifest_path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_read_file",
+                    path = manifest_path.display(),
+                    error = e
+                ));
                 continue;
             }
         };
-        let json: serde_json::Value = match serde_json::from_str(&manifest_str) {
+        // Tolerant read: upstream `bin/auto-pr.ps1:190` uses `parse_json`.
+        let json: serde_json::Value = match crate::internal::json::parse_str(&manifest_str) {
             Ok(v) => v,
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("parse {}: {}", manifest_path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_parse_file",
+                    path = manifest_path.display(),
+                    error = e
+                ));
                 continue;
             }
         };
         let version = match json["version"].as_str() {
             Some(v) => v.to_string(),
             None => {
-                session
-                    .output()
-                    .error(format!("{}: no version field", manifest_path.display()));
+                session.output().error(hok_i18n::t!(
+                    "cmd.manifest_no_version_field",
+                    path = manifest_path.display()
+                ));
                 continue;
             }
         };
@@ -211,22 +269,25 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
         if config.push {
             // Push mode: commit directly to origin branch
-            session
-                .output()
-                .progress("Pushing", format!("{} ({})", app, version));
+            session.output().progress(
+                hok_i18n::t!("cmd.auto_pr_pushing"),
+                format!("{} ({})", app, version),
+            );
 
             let parent_sha =
-                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
+                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
-                        session
-                            .output()
-                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session.output().error(hok_i18n::t!(
+                            "cmd.auto_pr_head_sha_failed",
+                            app = app,
+                            error = e
+                        ));
                         continue;
                     }
                 };
 
-            let dco = github::set_dco_signature(&config.token);
+            let dco = github::set_dco_signature(&config.token, config.app_slug.as_deref()).await;
 
             match github::graphql_commit_push(
                 &repo_nwo,
@@ -236,17 +297,24 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &dco,
                 &parent_sha,
                 &config.token,
-            ) {
+            )
+            .await
+            {
                 Ok(url) => {
-                    session
-                        .output()
-                        .done(format!("{} ({}) -> {}", app, version, url));
+                    session.output().done(hok_i18n::t!(
+                        "cmd.auto_pr_pushed",
+                        app = app,
+                        version = version,
+                        url = url
+                    ));
                     success_count += 1;
                 }
                 Err(e) => {
-                    session
-                        .output()
-                        .error(format!("{}: commit failed: {}", app, e));
+                    session.output().error(hok_i18n::t!(
+                        "cmd.auto_pr_commit_failed",
+                        app = app,
+                        error = e
+                    ));
                 }
             }
         } else {
@@ -255,40 +323,47 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
             // Skip if the remote branch already exists
             if let Ok(Some(_)) =
-                github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token)
+                github::get_ref_sha_optional(&repo_nwo, &branch_name, &config.token).await
             {
-                session.output().warn(format!(
-                    "{} ({}): branch already exists, skipping",
-                    app, version
+                session.output().warn(hok_i18n::t!(
+                    "cmd.auto_pr_branch_exists",
+                    app = app,
+                    version = version
                 ));
                 skip_count += 1;
                 continue;
             }
 
-            session
-                .output()
-                .progress("Creating", format!("{} ({})", app, version));
+            session.output().progress(
+                hok_i18n::t!("cmd.auto_pr_creating"),
+                format!("{} ({})", app, version),
+            );
 
             let parent_sha =
-                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token) {
+                match github::get_ref_sha(&repo_nwo, &config.origin_branch, &config.token).await {
                     Ok(s) => s,
                     Err(e) => {
-                        session
-                            .output()
-                            .error(format!("{}: get HEAD SHA failed: {}", app, e));
+                        session.output().error(hok_i18n::t!(
+                            "cmd.auto_pr_head_sha_failed",
+                            app = app,
+                            error = e
+                        ));
                         continue;
                     }
                 };
 
-            if let Err(e) = github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token)
+            if let Err(e) =
+                github::create_ref(&repo_nwo, &branch_name, &parent_sha, &config.token).await
             {
-                session
-                    .output()
-                    .error(format!("{}: create branch failed: {}", app, e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.auto_pr_create_branch_failed",
+                    app = app,
+                    error = e
+                ));
                 continue;
             }
 
-            let dco = github::set_dco_signature(&config.token);
+            let dco = github::set_dco_signature(&config.token, config.app_slug.as_deref()).await;
 
             if let Err(e) = github::graphql_commit_push(
                 &repo_nwo,
@@ -298,10 +373,14 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &dco,
                 &parent_sha,
                 &config.token,
-            ) {
-                session
-                    .output()
-                    .error(format!("{}: commit failed: {}", app, e));
+            )
+            .await
+            {
+                session.output().error(hok_i18n::t!(
+                    "cmd.auto_pr_commit_failed",
+                    app = app,
+                    error = e
+                ));
                 continue;
             }
 
@@ -323,17 +402,24 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
                 &commit_msg,
                 &pr_body,
                 &config.token,
-            ) {
+            )
+            .await
+            {
                 Ok(pr_url) => {
-                    session
-                        .output()
-                        .done(format!("{} ({}) -> PR: {}", app, version, pr_url));
+                    session.output().done(hok_i18n::t!(
+                        "cmd.auto_pr_pr_created",
+                        app = app,
+                        version = version,
+                        url = pr_url
+                    ));
                     success_count += 1;
                 }
                 Err(e) => {
-                    session
-                        .output()
-                        .error(format!("{}: create PR failed: {}", app, e));
+                    session.output().error(hok_i18n::t!(
+                        "cmd.auto_pr_create_pr_failed",
+                        app = app,
+                        error = e
+                    ));
                 }
             }
         }
@@ -341,17 +427,17 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 
     // Summary
     if config.push {
-        session.output().info(format!(
-            "ci-auto-pr completed: {} pushed, {} skipped",
-            success_count,
-            changed.len() - success_count as usize
+        session.output().info(hok_i18n::t!(
+            "cmd.auto_pr_completed_push",
+            pushed = success_count,
+            skipped = changed.len() - success_count as usize
         ));
     } else {
-        session.output().info(format!(
-            "ci-auto-pr completed: {} PRs created, {} skipped, {} already existed",
-            success_count,
-            changed.len() - success_count as usize - skip_count as usize,
-            skip_count
+        session.output().info(hok_i18n::t!(
+            "cmd.auto_pr_completed_pr",
+            created = success_count,
+            skipped = changed.len() - success_count as usize - skip_count as usize,
+            existed = skip_count
         ));
     }
 
@@ -363,14 +449,16 @@ pub fn run_auto_pr(config: AutoPrConfig, session: &Session) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Read all JSON manifest files in `dir` into a map of `path → raw bytes`.
-fn read_manifests(session: &Session, dir: &Path) -> Result<HashMap<PathBuf, Vec<u8>>> {
+fn read_manifests(session: &Session, dir: &Path) -> Fallible<HashMap<PathBuf, Vec<u8>>> {
     let mut map = HashMap::new();
     let manifest_paths = match manifest_walker::discover(dir) {
         Ok(paths) => paths,
         Err(e) => {
-            session
-                .output()
-                .error(format!("read dir {}: {}", dir.display(), e));
+            session.output().error(hok_i18n::t!(
+                "cmd.failed_read_dir",
+                path = dir.display(),
+                error = e
+            ));
             return Ok(map);
         }
     };
@@ -381,9 +469,11 @@ fn read_manifests(session: &Session, dir: &Path) -> Result<HashMap<PathBuf, Vec<
                 map.insert(path, content);
             }
             Err(e) => {
-                session
-                    .output()
-                    .error(format!("read {}: {}", path.display(), e));
+                session.output().error(hok_i18n::t!(
+                    "cmd.failed_read_file",
+                    path = path.display(),
+                    error = e
+                ));
             }
         }
     }
@@ -410,36 +500,31 @@ fn detect_changes(before: &HashMap<PathBuf, Vec<u8>>) -> Vec<PathBuf> {
 // Repository / path helpers
 // ---------------------------------------------------------------------------
 
+/// Message used for every "no repository information" failure.
+const NO_REPO_MESSAGE: &str = "Cannot determine repository. Set GITHUB_REPOSITORY env var.";
+
 /// Resolve the repository NWO (`owner/name`) from the `GITHUB_REPOSITORY`
 /// environment variable (set by GitHub Actions) or from the git remote URL.
-fn resolve_repo_nwo() -> Result<String> {
-    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY") {
-        if !repo.is_empty() {
-            return Ok(repo);
-        }
+fn resolve_repo_nwo() -> Fallible<String> {
+    if let Ok(repo) = std::env::var("GITHUB_REPOSITORY")
+        && !repo.is_empty()
+    {
+        return Ok(repo);
     }
 
-    let output = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .map_err(|_| {
-            crate::Error::Custom(
-                "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
-            )
-        })?;
-
-    if !output.status.success() {
-        return Err(crate::Error::Custom(
-            "Cannot determine repository. Set GITHUB_REPOSITORY env var.".to_string(),
-        ));
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // libgit2 reads the `origin` URL, searching parent directories from the
+    // current directory exactly like `git remote get-url origin` — no `git`
+    // binary is spawned (see the module docs).
+    let cwd = std::env::current_dir().map_err(|_| Error::Custom(NO_REPO_MESSAGE.to_string()))?;
+    let url = git::remote_url_containing(&cwd, "origin")
+        .ok()
+        .flatten()
+        .ok_or_else(|| Error::Custom(NO_REPO_MESSAGE.to_string()))?;
 
     if let Some((owner, repo)) = url::github_owner_repo(&url) {
         Ok(format!("{owner}/{repo}"))
     } else {
-        Err(crate::Error::Custom(format!(
+        Err(Error::Custom(format!(
             "Cannot parse repository NWO from remote URL: {}",
             url
         )))
@@ -449,10 +534,10 @@ fn resolve_repo_nwo() -> Result<String> {
 /// Make `path` relative to the current working directory, returning the
 /// original path unchanged if stripping the prefix fails.
 fn repo_relative_path(path: &Path) -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(relative) = path.strip_prefix(&cwd) {
-            return relative.to_path_buf();
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(relative) = path.strip_prefix(&cwd)
+    {
+        return relative.to_path_buf();
     }
     path.to_path_buf()
 }

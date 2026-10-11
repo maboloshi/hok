@@ -36,26 +36,29 @@
 pub mod auto_pr;
 // ─── Submodules ────────────────────────────────────────────────────────────
 pub mod checkhashes;
-pub mod checkup;
 pub mod checkurls;
 pub mod checkver;
 pub mod cleanup;
 pub mod create;
 pub mod depends;
+pub mod diagnostic;
 pub mod download;
 pub(crate) mod download_apps;
 pub(crate) mod download_fragmented;
 pub(crate) mod download_verify;
 pub mod export;
 pub mod formatjson;
+pub mod health;
 pub mod hold;
 pub(crate) mod identity;
 pub mod import;
+pub mod info;
 pub(crate) mod install_state;
 pub mod list;
 pub(crate) mod manifest;
 pub mod manifest_cache;
-pub(crate) mod manifest_source;
+pub mod manifest_history;
+pub mod manifest_source;
 pub(crate) mod manifest_walker;
 pub mod missing_checkver;
 pub(crate) mod operations;
@@ -63,6 +66,8 @@ pub mod query;
 pub(crate) mod query_matcher;
 pub(crate) mod resolve;
 pub mod shim;
+pub mod source;
+pub mod status;
 pub mod sync;
 pub mod virustotal;
 
@@ -72,7 +77,9 @@ use std::cell::OnceCell;
 use std::{fmt, path::PathBuf};
 
 pub use manifest::{HashString, InstallInfo, License, Manifest};
+pub use manifest_source::GetManifest;
 pub use query_matcher::QueryOption;
+pub use source::SourceState;
 pub use sync::SyncOption;
 
 pub(crate) use identity::*;
@@ -103,6 +110,12 @@ pub struct Package {
     /// This field is never serialized.
     #[serde(skip)]
     upgradable: OnceCell<Option<Box<Package>>>,
+
+    /// Whether this install is broken/partial (missing `current` junction
+    /// or install metadata under it). Set by `query_installed`
+    /// only when [`QueryOption::Broken`] is active; never serialized.
+    #[serde(skip)]
+    install_failed: OnceCell<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -155,6 +168,7 @@ impl Package {
             name: name.to_owned(),
             manifest,
             origin: OnceCell::new(),
+            install_failed: OnceCell::new(),
             install_state: OnceCell::new(),
             upgradable: OnceCell::new(),
         }
@@ -280,29 +294,7 @@ impl Package {
         self.manifest
             .url()
             .into_iter()
-            .map(|u| {
-                let mut hasher = crate::internal::hash::ChecksumBuilder::new()
-                    .sha256()
-                    .build();
-                hasher.consume(u.as_bytes());
-                let mut hash = hasher.finalize();
-                hash.truncate(7);
-                // Strip the query so `?download=1`-style URLs do not produce
-                // cache filenames containing `?` (illegal on Windows). The
-                // `#/rename.ext` Scoop fragment is kept — its extension is
-                // what matters for archive detection.
-                let path = PathBuf::from(internal::url::strip_url_query(u));
-                let mut ext = path
-                    .extension()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if !ext.is_empty() {
-                    ext.insert(0, '.');
-                }
-
-                format!("{}#{}#{}{}", self.name(), self.version(), hash, ext)
-            })
+            .map(|u| cache_file_name(self.name(), self.version(), u))
             .collect::<Vec<_>>()
     }
 
@@ -342,6 +334,31 @@ impl Package {
         }
     }
 
+    /// Get the architecture recorded in the package's install record.
+    ///
+    /// This is the architecture *selected* at install time (after the
+    /// `default_architecture` config and `-a/--arch` overrides), mirroring the
+    /// `$install.architecture` that `scoop info` uses to pick
+    /// architecture-specific manifest fields (libexec/scoop-info.ps1:229).
+    pub fn installed_arch(&self) -> Option<&str> {
+        match self.install_state.get()? {
+            InstallState::NotInstalled => None,
+            InstallState::Installed(info) => Some(info.arch.as_str()),
+        }
+    }
+
+    /// Get the source URL recorded in the package's install record.
+    ///
+    /// Only URL / local-manifest installs carry one; bucket installs record a
+    /// bucket instead. Mirrors upstream's `$install.url`
+    /// (libexec/scoop-info.ps1:41-47).
+    pub fn installed_url(&self) -> Option<&str> {
+        match self.install_state.get()? {
+            InstallState::NotInstalled => None,
+            InstallState::Installed(info) => info.url(),
+        }
+    }
+
     /// Check if the package is held.
     ///
     /// # Note
@@ -363,6 +380,15 @@ impl Package {
         self.installed_version().is_some()
     }
 
+    /// Check if the package is a `nightly` build — the single entry for
+    /// "is this the nightly version?" on every hash-skipping path.
+    ///
+    /// The match is exact (case-sensitive). Upstream's comparisons are not
+    /// (`$version -eq 'nightly'` is `-ieq`, `lib/install.ps1:21`,
+    /// `bin/checkhashes.ps1:68`); that difference is registered as a deliberate
+    /// deviation in `.agents/docs/active/audit/command-deviation-audit-2026-09.md`
+    /// ("nightly 判定"), which is why `checkhashes` keeps its own
+    /// case-insensitive comparison instead of folding into this method.
     #[inline]
     pub fn is_nightly(&self) -> bool {
         self.version() == "nightly"
@@ -372,9 +398,17 @@ impl Package {
     /// in scripts). Upstream rewrites `nightly` to `nightly-YYYYMMDD`
     /// (lib/install.ps1:21-25, `nightly_version`), giving each daily build
     /// its own versioned directory — hok mirrors that here.
+    ///
+    /// Host-dependent (reads the wall clock); the deterministic
+    /// computation lives in [`Package::effective_version_at`].
     pub fn effective_version(&self) -> String {
+        self.effective_version_at(time::OffsetDateTime::now_utc())
+    }
+
+    /// Pure variant of [`Package::effective_version`]: the nightly date
+    /// stamp against an explicit clock (deterministic, testable).
+    pub fn effective_version_at(&self, now: time::OffsetDateTime) -> String {
         if self.is_nightly() {
-            let now = time::OffsetDateTime::now_utc();
             format!(
                 "nightly-{:04}{:02}{:02}",
                 now.year(),
@@ -490,6 +524,21 @@ impl Package {
         let upgradable = Some(Box::new(upgradable));
         let _ = self.upgradable.set(upgradable);
     }
+
+    /// Whether this package has a broken/partial install.
+    pub fn is_install_failed(&self) -> bool {
+        self.install_failed.get().copied().unwrap_or(false)
+    }
+
+    /// Whether this installed package is isolated (installed from a URL or
+    /// local path, not managed by any synced bucket).
+    pub fn is_isolated(&self) -> bool {
+        self.bucket() == ISOLATED_PACKAGE_BUCKET
+    }
+
+    pub(crate) fn mark_install_failed(&self) {
+        let _ = self.install_failed.set(true);
+    }
 }
 
 impl PartialEq for Package {
@@ -550,6 +599,53 @@ impl HashMismatchContext {
     pub fn actual(&self) -> &str {
         self.actual.as_str()
     }
+
+    /// The user-facing, localized form of this mismatch.
+    ///
+    /// [`Display`][fmt::Display] stays the stable English block for library
+    /// consumers and logs; every user-visible path renders this instead —
+    /// `translate_error` for the propagated `Error::HashMismatch`, and the
+    /// `cmd.failed_verify` messages that embed the error text.
+    pub fn localized(&self) -> String {
+        hok_i18n::t!(
+            "error.hash_mismatch_detail",
+            name = self.name(),
+            url = self.url(),
+            expected = self.expected(),
+            actual = self.actual()
+        )
+    }
+}
+
+/// The cache file name of one download URL: `<name>#<version>#<hash><ext>`.
+///
+/// The single definition of hok's cache naming — [`Package::download_filenames`]
+/// (what the downloader writes) and the `info` command's "is this version
+/// cached" probe (upstream `cache_path $app $version $url`) both go through it,
+/// so a change to the formula cannot leave `info` reporting a stale cache
+/// state. Upstream derives the same shape in `cache_path` (lib/core.ps1:367)
+/// with a SHA256 prefix of the URL as the unique part.
+pub(crate) fn cache_file_name(name: &str, version: &str, url: &str) -> String {
+    let mut hasher = crate::internal::hash::ChecksumBuilder::new()
+        .sha256()
+        .build();
+    hasher.consume(url.as_bytes());
+    let mut hash = hasher.finalize();
+    hash.truncate(7);
+    // Strip the query so `?download=1`-style URLs do not produce cache
+    // filenames containing `?` (illegal on Windows). The `#/rename.ext` Scoop
+    // fragment is kept — its extension is what matters for archive detection.
+    let path = PathBuf::from(internal::url::strip_url_query(url));
+    let mut ext = path
+        .extension()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    if !ext.is_empty() {
+        ext.insert(0, '.');
+    }
+
+    format!("{name}#{version}#{hash}{ext}")
 }
 
 #[cfg(test)]
@@ -583,5 +679,20 @@ mod tests {
         let pkg = pkg("app", "1.0.0");
         assert!(!pkg.is_nightly());
         assert_eq!(pkg.effective_version(), "1.0.0");
+    }
+
+    #[test]
+    fn effective_version_at_is_deterministic_for_fixed_clock() {
+        // Pure variant: the nightly stamp depends only on the given clock.
+        let nightly = pkg("nightly-app", "nightly");
+        let now = time::OffsetDateTime::parse(
+            "2026-08-21T12:34:56Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(nightly.effective_version_at(now), "nightly-20260821");
+        // Non-nightly ignores the clock entirely.
+        let normal = pkg("app", "1.0.0");
+        assert_eq!(normal.effective_version_at(now), "1.0.0");
     }
 }

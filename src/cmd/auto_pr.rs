@@ -5,10 +5,11 @@
 //! [`libscoop::package::auto_pr::run_auto_pr`].
 
 use clap::Parser;
+use libscoop::package::checkver::{CheckverReport, ReportSeverity};
 use libscoop::Session;
 use std::path::PathBuf;
 
-use crate::Result;
+use crate::{output, Result};
 
 /// Auto-update manifests and create pull-requests via GitHub API (CI mode)
 ///
@@ -52,9 +53,19 @@ pub struct Args {
     /// GitHub Token (default from GITHUB_TOKEN env var)
     #[arg(short = 'T', long)]
     pub(crate) token: Option<String>,
+
+    /// GitHub App slug (e.g. `my-bot`); used to generate the DCO
+    /// sign-off for the corresponding bot user when the token is a GitHub App
+    /// installation token
+    #[arg(long)]
+    pub(crate) app_slug: Option<String>,
+
+    /// Show per-manifest checkver details (versions found, updates, errors)
+    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    pub(crate) verbose: u8,
 }
 
-pub fn execute(args: Args, session: &Session) -> Result<()> {
+pub async fn execute(args: Args, session: &Session) -> Result<()> {
     let token = args
         .token
         .clone()
@@ -91,8 +102,57 @@ pub fn execute(args: Args, session: &Session) -> Result<()> {
         message: args.message,
         skip_updated: args.skip_updated,
         special,
+        app_slug: args
+            .app_slug
+            .or_else(|| std::env::var("GITHUB_APP_SLUG").ok()),
     };
 
-    libscoop::package::auto_pr::run_auto_pr(config, session)
+    // Presentation is a CLI concern: with `-v`, stream the per-manifest
+    // checkver reports through the same renderer as the standalone
+    // `checkver` command; otherwise pass no callback and auto-pr keeps its
+    // compact progress/ok output.
+    let on_report: Option<&mut dyn FnMut(&CheckverReport)> = if args.verbose > 0 {
+        Some(&mut render_checkver_report)
+    } else {
+        None
+    };
+
+    libscoop::package::auto_pr::run_auto_pr(config, session, on_report)
+        .await
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Render a per-manifest checkver report, mirroring the standalone
+/// `checkver` command (`src/cmd/checkver.rs`): status lines for version
+/// changes, done/warn/err for outcomes and failures.
+fn render_checkver_report(report: &CheckverReport) {
+    if let Some(msg) = &report.message {
+        match report.severity {
+            ReportSeverity::Warn => output::warn(format!("{}: {}", report.stem, msg)),
+            _ => output::err(format!("{}: {}", report.stem, msg)),
+        }
+        return;
+    }
+
+    let Some(ver) = &report.new_version else {
+        return;
+    };
+
+    if ver == &report.current {
+        output::status(format!("  {} ({})", report.stem, ver));
+        if report.updated {
+            output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
+        }
+    } else {
+        output::status(format!(
+            "  {} ({} -> {})",
+            report.stem, report.current, ver
+        ));
+        if report.autoupdate_available {
+            output::status(format!("    {}", hok_i18n::t!("cmd.checkver_autoupdate")));
+        }
+        if report.updated {
+            output::done(hok_i18n::t!("cmd.checkver_updated_to", ver = ver));
+        }
+    }
 }

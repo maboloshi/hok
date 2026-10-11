@@ -19,7 +19,7 @@ use std::ffi::OsString;
 use tracing::debug;
 
 use crate::internal;
-use crate::{error::Fallible, package::Package, Event, Session};
+use crate::{Event, Session, error::Fallible, package::Package};
 
 /// Install the PowerShell module declared by a package into the modules
 /// directory, mirroring upstream Scoop's `install_psmodule`
@@ -36,14 +36,14 @@ pub fn add(session: &Session, package: &Package) -> Fallible<()> {
     let module_name = psmodule.name();
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePsModuleAddStart(module_name.to_owned()));
+        let _ = tx.try_send(Event::PackagePsModuleAddStart(module_name.to_owned()));
     }
 
     link_module(session, package)?;
     ensure_in_psmodulepath(session)?;
 
     if let Some(tx) = session.emitter() {
-        let _ = tx.send(Event::PackagePsModuleAddDone);
+        let _ = tx.try_send(Event::PackagePsModuleAddDone);
     }
     Ok(())
 }
@@ -84,7 +84,7 @@ fn ensure_in_psmodulepath(session: &Session) -> Fallible<()> {
     let current = if current.is_empty() && !session.is_global() {
         // Upstream defaults to the per-user PowerShell modules folder when
         // PSModulePath is unset for the user scope.
-        dirs::home_dir()
+        internal::path::home_dir()
             .map(|h| {
                 h.join("Documents")
                     .join("WindowsPowerShell")
@@ -121,7 +121,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         let mut psmodule_path = session.modules_dir();
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePsModuleRemoveStart(
+            let _ = tx.try_send(Event::PackagePsModuleRemoveStart(
                 psmodule.name().to_owned(),
             ));
         }
@@ -130,7 +130,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
         let _ = std::fs::remove_dir(psmodule_path);
 
         if let Some(tx) = session.emitter() {
-            let _ = tx.send(Event::PackagePsModuleRemoveDone);
+            let _ = tx.try_send(Event::PackagePsModuleRemoveDone);
         }
     }
     Ok(())
@@ -140,7 +140,7 @@ pub fn remove(session: &Session, package: &Package) -> Fallible<()> {
 mod tests {
     use super::*;
     use crate::package::manifest::Manifest;
-    use crate::package::{operations, Package};
+    use crate::package::{Package, operations};
     use crate::test_utils;
 
     fn make_package(name: &str, psmodule: &str) -> Package {
