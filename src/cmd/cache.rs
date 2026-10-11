@@ -18,7 +18,7 @@ struct Row {
 // <app>` list, and only the literal `rm` removes (`scoop-cache.ps1:61-71`).
 // hok keeps explicit subcommands but mirrors that default — a bare
 // `hok cache` and `hok cache <app>` both list.
-/// Package cache management
+/// Manage the download cache
 #[derive(Debug, Parser)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct Args {

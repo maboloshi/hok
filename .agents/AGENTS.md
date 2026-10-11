@@ -20,7 +20,7 @@
 
 | 位置 | 语言 | 说明 |
 |---|---|---|
-| 仓库根文档（含 `docs/`） | **英文** | `AGENTS.md`、`ARCHITECTURE.md`、`README.md`、`CHANGELOG.md`、`docs/**`；中文版另开文件（现有 `README-zh.md`、`docs/reference/*.zh.md`） |
+| 仓库根文档（含 `docs/`） | **英文** | `AGENTS.md`、`ARCHITECTURE.md`、`DESIGN.md`、`README.md`、`CHANGELOG.md`、`docs/**`；中文版另开文件（现有 `README-zh.md`、`DESIGN-zh.md`、`docs/reference/*.zh.md`） |
 | `.agents/**` | **中文** | 技能、工作文档、各目录 `AGENTS.md` —— 本工作区是维护者的中文语料 |
 
 - 引用路径、代码、命令、标识符一律保持原文，不翻译。

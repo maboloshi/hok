@@ -389,6 +389,7 @@ cmd:
   config_desc_private_hosts: "Private hosts needing auth"
   config_desc_proxy: "Proxy settings"
   config_desc_root_path: "Scoop root directory"
+  config_desc_use_git_history: "Resolve historical manifests from bucket git history"
   config_desc_use_isolated_path: "Dedicated PATH environment variable"
   config_desc_use_sqlite_cache: "Cache manifests in SQLite"
   config_desc_virustotal_api_key: "VirusTotal API key"
@@ -556,7 +557,7 @@ cli_help:
       remove: Remove bucket(s)
       remove.name: The bucket name(s)
   cache:
-    about: Package cache management
+    about: Manage the download cache
     args:
       app: "App name(s) whose caches are listed (default: all)"
       list: List download caches
@@ -642,7 +643,7 @@ cli_help:
             Number of connections used for each fragmented download.
       aria2-max-connection-per-server: int, default 5
             Maximum number of connections to one server per download.
-      aria2-min-split-size: size, default 5M
+      aria2-min-split-size: size, default 20M
             Minimum file size to trigger fragmented downloads (e.g. 5M, 10M).
       jobs: int, default 4
             Number of packages downloaded concurrently in the download phase.
@@ -673,12 +674,17 @@ cli_help:
             Disable colored output.
       no_junction: bool, default false
             Do not use the 'current' junction; shims point to version dirs instead.
+      autostash_on_conflict: bool, default false
+            Stash uncommitted changes that block a repo pull during update
+            (hok: every bucket pull; upstream: only Scoop's own repo).
       private_hosts: array, edit file
             Private hosts needing extra auth headers; edit the config file directly.
       proxy: string, default none
             Proxy settings: none | default | currentuser | [username:password@]host:port.
       root_path: path, default $SCOOP or ~/scoop
             Scoop root directory.
+      use_git_history: bool, default true
+            Resolve historical manifests through the bucket's git history.
       script_engine: bool, default false
             Reuse one resident pwsh process for installer/uninstaller scripts.
       use_isolated_path: bool|string, default none
@@ -692,8 +698,8 @@ cli_help:
       'key = value' line each; '-j' prints the same as JSON and '-a' lists
       every known setting with its effective default. A setting is written
       with 'hok config <key> <value>' and removed with 'hok config rm <key>',
-      the shapes upstream 'scoop config' uses. private_hosts and last_update
-      are only editable in the file.
+      the shapes upstream 'scoop config' uses. private_hosts is only editable
+      in the file.
 
       Setting names are used exactly as listed above; there are no aliases.
       'hok config edit' is a hok extension (upstream reads 'edit' as a key
@@ -720,7 +726,7 @@ cli_help:
   download:
     about: Download apps in the cache folder and verify hashes
     long_about: |-
-      Download app files into the cache directory without installing them
+      Download app files into the cache directory and verify their hashes
       (uses your local 'buckets'):
            hok download git
 

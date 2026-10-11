@@ -2,7 +2,7 @@
 name = "hok-i18n"
 description = "In-house i18n runtime for hok: build-time locale tables plus a lookup macro"
 repository = "https://github.com/maboloshi/hok"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Chawye Hsu <su+cratesio@chawyehsu.com>", "沙漠之子 <7850715+maboloshi@users.noreply.github.com>"]
 license = "Apache-2.0"
 edition = "2024"

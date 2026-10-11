@@ -18,7 +18,7 @@ hok (binary)                         ← repository root crate, src/
 │   ├── Package download, manifest, resolve, sync
 │   ├── Event-driven operation pipeline
 │   └── Shim / shortcut / persist management
-├── hok-shim (shim generation)       ← crates/hok-shim/  (no_std, Win32 FFI)
+├── hok-shim (shim generation)       ← crates/hok-shim/  (no_std core; console + GUI bins)
 ├── hok-i18n (i18n runtime)          ← crates/hok-i18n/  (build-time locale tables + lookup macro)
 └── hok-i18n-derive (i18n derive)    ← crates/hok-i18n-derive/
 ```
@@ -34,8 +34,8 @@ CLI (hok)  →  facade (libscoop/src/lib.rs)  →  domain services (libscoop/src
 |---|---|---|
 | CLI | `src/bin/hok.rs`, `src/cmd/`, `eventloop.rs`, `output.rs`, `cui.rs`, `i18n.rs`, `scoop_handler.rs` | Arg parsing, event loop, rendering, dispatch. **No business logic and no filesystem access** (except output). |
 | Facade | `crates/libscoop/src/lib.rs` | `pub mod` / `pub use` only — no function bodies. |
-| Domain services | `session` `config` `bucket` `cache` `network` `event` `handler` `shim` `shortcut` `persist` `env` `psmodule` `constant` `error` | Public API of the library. |
-| Core business | `package/` — `mod.rs` (core types), `identity` `manifest*` `query` `resolve` `download` `sync*` `checkver*` `checkhashes` `checkurls` `operations/` | `pub(crate)`, selectively re-exported through `lib.rs`. May use utilities + domain services. |
+| Domain services | `libscoop/src/*.rs` top level (`session`, `config`, `bucket`, `alias`, `permission`, …) — `lib.rs` owns the full list | Public API of the library. |
+| Core business | `package/` — core types in `mod.rs` plus one module per concern (manifest parsing / cache / history, query, resolve, download, check*, sync*, `operations/`); the module list lives in that directory | `pub(crate)`, selectively re-exported through `lib.rs`. May use utilities + domain services. |
 | Utilities | `crates/libscoop/src/internal/` — domain-agnostic helpers: paths, hashing, network, archive decoding, PE/Inno/NSIS parsing | `pub(crate)`. **Must not depend on `package/` or domain-service types.** The module list lives in the directory — not enumerated here (enumeration drifts). |
 
 Accepted exceptions (checked, do not widen):
@@ -136,7 +136,8 @@ versioned directories (`Session::current_dir_name` / `versioned_dir`), and shim,
 
 ## Commands
 
-`src/cmd/` holds one file per command handler; `build.rs` scans that directory and generates
+`src/cmd/` holds one file per command handler (plus shared helper modules such as `shared_args.rs`);
+`build.rs` scans that directory and generates
 `__cmd_reg__.rs`, so **adding a command = dropping a `.rs` file that exposes `execute()`** plus the
 enum variant and match arm. The command count and list live in `src/cmd/` (`hok --help` shows the runtime result) — not hard-coded here.
 
@@ -162,10 +163,13 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-- CI (`.github/workflows/cicd.yml`) runs only on **pull requests** and **pushes to `main`** —
-  a push to a feature branch does not run it, so run the gates locally before merging.
+- CI (`.github/workflows/cicd.yml`) is defined for **pull requests** and **pushes to `main`**; a push
+  to a feature branch never triggered it. On this fork the workflow is additionally **disabled manually**
+  in the GitHub UI, so it runs for nobody (the README badge therefore shows no runs) — run the gates
+  locally before merging.
 - Release is **manual**: `.github/workflows/release.yml` (`workflow_dispatch` with a `tag` input)
-  builds the published shape with `pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify`.
+  builds the published shape with `pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify` and uploads the
+  single x64 `hok.exe` (no archive, no checksum).
 - The version source of truth is `Cargo.toml` (workspace + package); released history lives in
   `CHANGELOG.md`. On this fork the `cd_release_please` job never runs (it is gated on the upstream
   repository), so version bumps and changelog entries are maintained by hand.
@@ -188,6 +192,7 @@ cargo clippy --workspace --all-targets
 | File | Audience | Owns |
 |---|---|---|
 | [`README.md`](README.md) / [`README-zh.md`](README-zh.md) | users | Install, commands, configuration, behaviour |
+| [`DESIGN.md`](DESIGN.md) / [`DESIGN-zh.md`](DESIGN-zh.md) | users, contributors | Design rationale: technology choices, dependency policy, build shapes, benchmarks |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | contributors, agents | Shipped structure (this file) |
 | [`AGENTS.md`](AGENTS.md) | agents | Runtime conventions, build gates, workflow rules, doc routing |
 | [`CHANGELOG.md`](CHANGELOG.md) | users | Released changes |

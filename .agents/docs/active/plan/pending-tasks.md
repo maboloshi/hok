@@ -1,7 +1,7 @@
 # hok 待办总表
 
 Status: active
-Updated: 2026-10-11
+Updated: 2026-10-12
 维护者：用户（拍板）/ 各会话（回填）
 
 > **这是什么**：散在审计、专题计划与代码里的**未完成项**索引。已完成项不在本表——见 `devlog/` 与 `reports/`。
@@ -9,7 +9,8 @@ Updated: 2026-10-11
 > 删掉本行并回填来源。
 > **开工前置**：先过决策门（`investigate-first`：出报告 + 选项 + 等确认）再动手；worktree、门禁与落地纪律见
 > `.agents/skills/hok-worktree-parallel.md`，派活纪律见 `.agents/skills/hok-agent-orchestration.md`。
-> **基线**：主线分支名取自机器本地 git 配置（键名与取法见 `hok-worktree-parallel`），派活时以实测 tip 为准。
+> **基线**：集成分支是 `dev`、发布线是 `main`（后者只接发布提交与 tag）；分支名取自机器本地 git 配置
+> （键名与取法见 `hok-worktree-parallel`），派活时以实测 tip 为准。
 
 ## 1. 待拍板（有方案，缺决定）
 

@@ -9,7 +9,7 @@ use libscoop::{Session, package};
 
 use crate::{ExitCode, Result, output};
 
-/// Download package(s) into the cache folder without installing
+/// Download package(s) into the cache folder and verify hashes
 #[derive(Debug, Parser)]
 #[clap(arg_required_else_help = true)]
 pub struct Args {

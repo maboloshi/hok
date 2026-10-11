@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.3.0](https://github.com/maboloshi/hok/compare/v0.2.0...v0.3.0) (2026-10-12)
+
+本轮把一个内置英文输出的同步 CLI，改成了异步运行时 + 全量本地化 + 持久化清单缓存 + 与官方 Scoop 0.6.0 对齐的完整实现（416 个提交）。
+
+### Features
+
+* **i18n:** 内置 `hok-i18n` 运行时与构建期语言表，替换 `rust-i18n`，帮助与诊断输出全量本地化（[c99f07e](https://github.com/maboloshi/hok/commit/c99f07e)）
+* **libscoop:** 清单历史索引（SQLite 表 + 种子与增量维护），`@version` 可直接从索引解析（[615a6bb](https://github.com/maboloshi/hok/commit/615a6bb)、[27ce29e](https://github.com/maboloshi/hok/commit/27ce29e)）
+* **config:** 对齐官方的子命令形态：单键读取、裸 `config`、`rm` 别名，并说明拒绝某个键的原因（[f4300aa](https://github.com/maboloshi/hok/commit/f4300aa)、[cf1baec](https://github.com/maboloshi/hok/commit/cf1baec)）
+* **export,import:** 输出 / 读取 Scoopfile，并携带 hok 扩展段与别名（[110e160](https://github.com/maboloshi/hok/commit/110e160)、[2dd84b2](https://github.com/maboloshi/hok/commit/2dd84b2)）
+* **confirm:** 三层可关闭的事务确认门（`--confirm` / `-y` / 配置 / TTY）（[8076f49](https://github.com/maboloshi/hok/commit/8076f49)）
+* **checkup,health:** 对齐 Scoop 环境诊断，报告悬空的版本链接与损坏的 shim（[dd52a4f](https://github.com/maboloshi/hok/commit/dd52a4f)）
+* **info,search:** `info` 对齐官方字段与多行对齐，`search` 改为表格输出（[a2b42be](https://github.com/maboloshi/hok/commit/a2b42be)、[a1f580c](https://github.com/maboloshi/hok/commit/a1f580c)）
+* **libscoop:** 下载时逐文件校验并并入下载行；单流下载支持 Range 断点续传；Ctrl-C 协作取消（[ad6f910](https://github.com/maboloshi/hok/commit/ad6f910)、[aa51fb3](https://github.com/maboloshi/hok/commit/aa51fb3)、[28f77f4](https://github.com/maboloshi/hok/commit/28f77f4)）
+* **cleanup:** `-l/--list`，并用有界工作池并行删除旧版本（[54a87d0](https://github.com/maboloshi/hok/commit/54a87d0)）
+* **update:** 新增 `-c/--cleanup`，更新 / 升级时维护清单历史索引（[60e7acd](https://github.com/maboloshi/hok/commit/60e7acd)）
+* **libscoop:** 多桶命中时按官方桶优先级排序（[e8c999a](https://github.com/maboloshi/hok/commit/e8c999a)）
+* **alias,bucket:** `alias` 以上游式 shim 脚本运行；`cache` / `bucket list` 改为表格（[cf1baec](https://github.com/maboloshi/hok/commit/cf1baec)）
+
+### Performance
+
+* **update:** 清单缓存改为增量 SQLite 更新（按 git diff），同步查询走缓存而不是重读清单（[cdfd27b](https://github.com/maboloshi/hok/commit/cdfd27b)、[4453d79](https://github.com/maboloshi/hok/commit/4453d79)）
+* **resolve,status:** 依赖解析用名称预过滤、`status` / `list` 用定向清单探测，避免全桶扫描（[5d144bf](https://github.com/maboloshi/hok/commit/5d144bf)）
+* **download,nsis:** 跨包并发下载与事件进度；NSIS 解压并行化（[0cb0929](https://github.com/maboloshi/hok/commit/0cb0929)、[7a02c32](https://github.com/maboloshi/hok/commit/7a02c32)）
+
+### Build
+
+* 迁移到 edition 2024（[e19a7b9](https://github.com/maboloshi/hok/commit/e19a7b9)）
+* HTTPS 改用 schannel（native-tls）替代 rustls；统一 Windows 依赖并删除 `rust-i18n`、`dirs`（[4fc01f9](https://github.com/maboloshi/hok/commit/4fc01f9)、[c0dd4a1](https://github.com/maboloshi/hok/commit/c0dd4a1)）
+
+### Bug Fixes
+
+* **checkver:** 无清单声明 checkver 时不再挂起（[a932bd4](https://github.com/maboloshi/hok/commit/a932bd4)）
+* **config,fs:** `SCOOP`/`SCOOP_GLOBAL` 为空串时按未设置处理；无 home 目录时降级而非 panic（[9b67220](https://github.com/maboloshi/hok/commit/9b67220)）
+* **extract,packages:** 用 lessmsi 展开 `.msi`；补齐 RAR、7z 空条目、伪 7z 与 NSIS 边界（[e109924](https://github.com/maboloshi/hok/commit/e109924)）
+* **query,cache:** 清单解析失败不再静默丢弃；缓存命名支持任意版本拼写并清理残留 `.parts`（[628645b](https://github.com/maboloshi/hok/commit/628645b)）
+* **sync,list:** 运行中的应用告警、损坏安装的恢复与展示（[1a56b85](https://github.com/maboloshi/hok/commit/1a56b85)）
+* **config:** `hok config --help` 的设置手册与 `hok config -a` 对齐：`aria2-min-split-size` 默认写 `20M`（hok 实际默认，官方为 `5M`）、补上 `use_git_history` / `autostash_on_conflict` 两条、`use_git_history` 的 `-a` 描述不再为空、`last_update` 不再标为「只能编辑文件」（它可写）
+
 ## [0.2.0](https://github.com/maboloshi/hok/compare/v0.2.0-beta.3...v0.2.0) (2026-08-17)
 
 ### Features

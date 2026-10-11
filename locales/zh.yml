@@ -389,6 +389,7 @@ cmd:
   config_desc_private_hosts: "需认证的私有主机"
   config_desc_proxy: "代理设置"
   config_desc_root_path: "Scoop 根目录"
+  config_desc_use_git_history: "经桶的 git 历史解析历史清单"
   config_desc_use_isolated_path: "独立 PATH 环境变量"
   config_desc_use_sqlite_cache: "用 SQLite 缓存清单"
   config_desc_virustotal_api_key: "VirusTotal API 密钥"
@@ -556,7 +557,7 @@ cli_help:
       remove: 删除仓库
       remove.name: 仓库名称
   cache:
-    about: 包缓存管理
+    about: 管理下载缓存
     args:
       app: 要列出缓存的包名称（默认为全部）
       list: 列出下载缓存
@@ -642,7 +643,7 @@ cli_help:
             每次分片下载使用的连接数。
       aria2-max-connection-per-server: int，默认 5
             每个下载对单个服务器的最大连接数。
-      aria2-min-split-size: 大小，默认 5M
+      aria2-min-split-size: 大小，默认 20M
             触发分片下载的最小文件大小（如 5M、10M）。
       jobs: int，默认 4
             下载阶段并发处理的包数。
@@ -673,12 +674,16 @@ cli_help:
             禁用彩色输出。
       no_junction: bool，默认 false
             不使用 'current' 目录联接；shim 直接指向版本目录。
+      autostash_on_conflict: bool，默认 false
+            更新时暂存阻塞仓库 pull 的未提交改动（hok 作用于每次 bucket pull；上游仅 Scoop 自身仓库）。
       private_hosts: 数组，编辑文件
             需要额外认证头的私有主机；请直接编辑配置文件。
       proxy: 字符串，默认 none
             代理设置：none | default | currentuser | [username:password@]host:port。
       root_path: 路径，默认 $SCOOP 或 ~/scoop
             Scoop 根目录。
+      use_git_history: bool，默认 true
+            经桶的 git 历史解析历史清单。
       script_engine: bool，默认 false
             复用常驻 pwsh 进程执行安装/卸载脚本。
       use_isolated_path: bool|字符串，默认无
@@ -691,8 +696,7 @@ cli_help:
       裸 'hok config' 以 '键 = 值' 逐行输出配置文件里实际保存的设置；'-j' 输出
       同一份内容的 JSON，'-a' 列出全部已知设置及其生效默认值。写入用
       'hok config <key> <value>'，删除用 'hok config rm <key>'，与官方
-      'scoop config' 形态一致。private_hosts 和 last_update 只能直接编辑
-      配置文件。
+      'scoop config' 形态一致。private_hosts 只能直接编辑配置文件。
 
       设置名严格按上面列出的写法，没有别名。'hok config edit' 是 hok 扩展
       （官方把 'edit' 当作键名），'-j' / '-a' 同样是 hok 扩展。
@@ -716,9 +720,9 @@ cli_help:
       arch: "使用指定架构（32bit/64bit/arm64），覆盖检测到的默认架构"
     about: 显示包的依赖关系
   download:
-    about: 将包下载到缓存文件夹而不安装
+    about: 将包下载到缓存文件夹并校验哈希值
     long_about: |-
-      将包文件下载到缓存目录而不安装（使用本地 'buckets'）：
+      将包文件下载到缓存目录并校验哈希值（使用本地 'buckets'）：
            hok download git
 
       下载指定版本的包

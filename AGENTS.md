@@ -5,13 +5,13 @@ two independent Rust reimplementations (hok, hyperscoop), and shim test utilitie
 Each project is its own git repo (no root git); `reasonix.toml` at repo root defines
 the agent workspace/sandbox. **Current working directory = `hok/`.**
 
-> **Language convention** — repo-root docs (this file, `ARCHITECTURE.md`, `README.md`,
+> **Language convention** — repo-root docs (this file, `ARCHITECTURE.md`, `DESIGN.md`, `README.md`,
 > `CHANGELOG.md`) are **English**; the agent workspace (`.agents/**`) is **Chinese**. The per-location
 > rule (`<name>-zh.md` counterparts, translations) lives in [`.agents/AGENTS.md`](.agents/AGENTS.md) → 语言约定.
 
 ```
 Scoop/                  Original Scoop (PowerShell) package manager — v0.6.0
-hok/                    hok CLI — Rust Scoop reimplementation (v0.2.0)  ← current working directory
+hok/                    hok CLI — Rust Scoop reimplementation          ← current working directory
 hyperscoop/             hp CLI — Rust Scoop reimplementation (v4.2.0)
 shim_test/              Shim testing sandbox (C#/C++/Rust/Zig variants)
 hok_/, hok~/, hok~.zip  Historical hok backups/archives — do not modify
@@ -37,9 +37,9 @@ Rust Windows package manager, edition 2024, Rust 1.91.0.
 
 ## 2. hok/ — hok CLI (current working directory)
 
-Rust Scoop reimplementation, **edition 2024**, v0.2.0 (version source of truth: `Cargo.toml`); community-maintained fork of
+Rust Scoop reimplementation, **edition 2024** (version source of truth: `Cargo.toml`); community-maintained fork of
 [chawyehsu/hok](https://github.com/chawyehsu/hok) (upstream paused). Deep dive in `ARCHITECTURE.md`;
-user guide in `README.md`; this section highlights only what those don't cover.
+design rationale in `DESIGN.md`; user guide in `README.md`; this section highlights only what those don't cover.
 
 **Entry:** `src/bin/hok.rs` (binary), `src/lib.rs` (library).
 
@@ -50,7 +50,8 @@ user guide in `README.md`; this section highlights only what those don't cover.
   version pins and upstream-patch history live in `crates/libscoop/Cargo.toml` (do not restate them
   elsewhere — a copy drifts).
 - **Commands:** `cargo build` / `cargo test` (workspace auto-includes members); `cargo build/test -p libscoop`;
-  `cargo check`.
+  `cargo check`. `cargo test` skips the ignored corpus tests — NSIS real extraction is `#[ignore]` + `NSIS_SAMPLE`-gated
+  — so a green suite does not prove installer extraction works (see `.agents/docs/devlog/2026-10-09-nsis-0-6-upgrade.md`).
 - **Architecture:** `src/cmd/` per-cmd handlers; `build.rs` scans dir → auto-generates `__cmd_reg__.rs`
   (add a cmd = drop a `.rs` with `execute()` *and* add a variant to the `Command` enum in `src/cmd/mod.rs` —
   that enum, not the directory listing, is the command count). `src/eventloop.rs` async loop; `src/output.rs`
@@ -70,6 +71,23 @@ user guide in `README.md`; this section highlights only what those don't cover.
   sync `Output` sink + async **`tokio::sync::mpsc`** event bus owned by `libscoop::Session` (async overview:
   `ARCHITECTURE.md` → Async Runtime — `#[tokio::main]`, `spawn_blocking`, `CancellationToken`, backpressure); hashing in
   `libscoop::internal::hash` (md-5/sha1/sha2 direct deps).
+- **Silent-breakage guards (0.3-era; "simplifying" any of these is a regression):**
+  - **Write runs must be given `-d`** — `formatjson`, and `checkhashes`/`checkver` with `-u`/`-f`, refuse to start
+    without it (read-only runs still default to `.`); the walk behind them collects every `*.json`. Upstream declares
+    `-Dir` mandatory for the same reason.
+  - **Confirm gate = three layers** — `--confirm` forces, `-y, --assume-yes` (sync commands) skips,
+    `config.confirm` (default false) is the global default, non-TTY never gates, and a declined gate
+    exits **0**, not an error.
+  - **Metadata names follow Scoop 0.6.0** — write `scoop-manifest.json` / `scoop-install.json` and read new-name-first
+    with the legacy `manifest.json` / `install.json` fallback (`package::install_state`); hardcoding the legacy name
+    breaks `list` / `status` / `update` / `hold` / `uninstall`.
+  - **One shared SQLite cache** — `{SCOOP}/scoop.db`: the `app` table stays Scoop-schema-compatible, plus hok-only
+    `hok_manifest_sync` and the `hok_manifest_history*` tables that back `@version` installs (maintained by `hok update`;
+    an index failure warns — it must never fail the update).
+  - **PS decompress helpers emit a marker, they do not extract** — `Expand-*Archive` writes a seven-segment
+    `[[HOK_EXTRACT]]` line that Rust dispatches by `format` (unknown → `7z.exe`).
+  - **A new `unsafe` must be registered** — `unsafe_code = deny` crate-wide, exempting only `hok-shim` and
+    `libscoop::{internal::os, permission}`; add the entry to `.agents/docs/active/audit/unsafe-audit.md`.
 
 ---
 
@@ -160,9 +178,13 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
   - **never `git add -A` / `git add .`** (stage by topic, file by file) and **never `git clean -fd`**.
 
 ### Delivery and release
-- CI (`.github/workflows/cicd.yml`) runs only on **pushes to `main`** or on **pull requests** — a push
-  to a feature branch runs **no CI**, so run the gates locally before merging. See "Building, Testing
-  and Releasing" in `ARCHITECTURE.md`.
+- CI (`.github/workflows/cicd.yml`) is defined for **pushes to `main`** and **pull requests** — a feature-branch push
+  runs nothing. On this fork the workflow is additionally **disabled manually** in the GitHub UI, so it runs for
+  nobody: run the gates locally before merging (see "Building, Testing and Releasing" in `ARCHITECTURE.md`).
+- **Branch model** — `dev` is the integration line and `main` the release line (release commits and tags only); the
+  names come from machine-local git config. Landing prefers fast-forward, a merge commit is allowed once a branch has
+  genuinely diverged, and landed commits are never rewritten (rename history:
+  `.agents/docs/devlog/2026-10-12-dev-branch-rename-and-deadref-repair.md`).
 - Releases are **manual**: `.github/workflows/release.yml` (`workflow_dispatch` plus a tag input) →
   `pwsh scripts/build-hok.ps1 -Mode winsqlite3 -Verify`. The version source of truth is `Cargo.toml`;
   `cd_release_please` is gated on `chawyehsu/hok` and never runs on this fork, so version bumps and
@@ -182,6 +204,9 @@ Shim testing sandbox — four language impls: `C#_Shim_v0.1.1/`, `C++_Shim_v0.1.
 - **Never create `.dsh/`** (directory or link): with both project-level skill roots present, the
   rank-100 `.dsh/skills` shadows `.agents/skills`.
 - Human-facing reference material goes in the repo-root `docs/` (index: [`docs/README.md`](docs/README.md)).
+- **Root doc ownership** (the Doc Map in [`ARCHITECTURE.md`](ARCHITECTURE.md) is the本体, this is a pointer):
+  `README.md` / `README-zh.md` usage, `DESIGN.md` / `DESIGN-zh.md` design rationale, `ARCHITECTURE.md` shipped
+  structure, `CHANGELOG.md` per release, `docs/` long-lived reference, `.agents/docs/` working documents.
 - **Committing `.agents/**`**: the first landing is one dedicated commit; after that the plan/audit/skill
   back-fill rides along with its code topic (one topic = one commit), while the devlog entry ships as its
   own wrap-up commit — it has to cite that topic's sha. Files are staged explicitly (never `git add -A` / `.`),

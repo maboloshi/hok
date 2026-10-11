@@ -10,7 +10,7 @@
 
 | 日期 | 主题 | 提交 | 文件 |
 |---|---|---|---|
-| 2026-10-12 | 集成分支改名 dev 与两轮历史引用修复 | — | [`2026-10-12-dev-branch-rename-and-deadref-repair.md`](2026-10-12-dev-branch-rename-and-deadref-repair.md) |
+| 2026-10-12 | 集成分支改名 dev 与两轮历史引用修复 | `eb5deca` | [`2026-10-12-dev-branch-rename-and-deadref-repair.md`](2026-10-12-dev-branch-rename-and-deadref-repair.md) |
 | 2026-10-11 | 待办复核落地：bucket 优先级、安装态回落可见性、Start Menu 解析 | `28b04f3` `e8c999a` `ed308e5` `4df879c` | [`2026-10-11-pending-review-landing.md`](2026-10-11-pending-review-landing.md) |
 | 2026-10-11 | PS 兼容层 `-Switches`/`-Overwrite` 生效，参数声明对齐官方 | `caa1ba6` `56d3083` | [`2026-10-11-ps-decompress-switches.md`](2026-10-11-ps-decompress-switches.md) |
 | 2026-10-11 | marker 的 format 决定 extractor：改名下载不再静默失败 | `9f59e58` | [`2026-10-11-marker-format-extractor.md`](2026-10-11-marker-format-extractor.md) |
